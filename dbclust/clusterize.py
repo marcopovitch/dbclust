@@ -11,7 +11,11 @@ from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
 
-from dbclust.phase import import_phases
+try:
+    from phase import import_phases
+except:
+    from dbclust.phase import import_phases
+
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
