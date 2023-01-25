@@ -242,7 +242,11 @@ class NllLoc(object):
         print("%d events in catalog:" % len(self.catalog))
         print("OBSfile, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2")
         for e in self.catalog.events:
-            nll_obs = self.event_cluster_mapping[e.resource_id.id]
+            try:
+                nll_obs = self.event_cluster_mapping[e.resource_id.id]
+            except:
+               nll_obs = None 
+
             o = e.preferred_origin()
             print(
                 ", ".join(
@@ -296,5 +300,8 @@ def _multiple_test():
 
 if __name__ == "__main__":
     logger.setLevel(logging.DEBUG)
+    logger.info("++++++++++++++++Simple test")
     _simple_test()
+    logger.info("")
+    logger.info("++++++++++++++++Multiple test")
     _multiple_test()
