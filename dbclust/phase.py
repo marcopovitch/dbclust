@@ -17,13 +17,21 @@ class Phase(object):
         self,
         net=None,
         sta=None,
-        time_search=None,
+        coord=None,
+        fdsnws_time_search=None,
         fdsnws_station_url="http://10.0.1.36:8080",
     ):
         self.network = net
         self.station = sta
+        self.phase = None
+        self.time = None
+        self.proba = None
+        if coord:
+            self.coord = coord
+            return
+
         self.coord = {"latitude": None, "longitude": None, "elevation": None}
-        time_search = str(time_search)  # madatorry to use lru_cache
+        fdsnws_time_search = str(fdsnws_time_search)  # madatorry to use lru_cache
 
         if self.network and self.station:
             (
@@ -33,12 +41,9 @@ class Phase(object):
             ) = self.get_station_info(
                 self.network,
                 self.station,
-                time_search,
+                fdsnws_time_search,
                 fdsnws_station_url,
             )
-        self.phase = None
-        self.time = None
-        self.proba = None
 
     @staticmethod
     @functools.lru_cache(maxsize=None)
@@ -76,7 +81,11 @@ class Phase(object):
 
     def show_all(self):
         print(f"{self.network}.{self.station}:")
-        if self.coord['latitude'] and self.coord['longitude'] and self.coord['elevation']:
+        if (
+            self.coord["latitude"]
+            and self.coord["longitude"]
+            and self.coord["elevation"]
+        ):
             print(
                 f"    lat={self.coord['latitude']:.3f}, lon={self.coord['longitude']:.3f}, elev={self.coord['elevation']:.1f}"
             )
@@ -117,7 +126,7 @@ def import_phases(
         myphase = Phase(
             net=net,
             sta=sta,
-            time_search=phase_time,
+            fdsnws_time_search=phase_time,
             fdsnws_station_url=fdsnws_station_url,
         )
         myphase.set_phase_info(
@@ -130,15 +139,72 @@ def import_phases(
     return phases
 
 
-def test():
+def import_eqt_phases(fname=None, proba_threshold=0):
+    """
+    Read EQT csv picks file.
+    Returns a list of Phase objects.
+    """
+    if not fname:
+        logger.error("No file name defined !")
+        return None
+    try:
+        df = pd.read_csv(fname)
+    except Exception as e:
+        logger.error(e)
+        return None
+    phases = []
+    for i in range(len(df)):
+        net = df.iloc[i]["network"]
+        sta = df.iloc[i]["station"]
+        coord = {
+            "latitude": df.iloc[i]["station_lat"],
+            "longitude": df.iloc[i]["station_lon"],
+            "elevation": df.iloc[i]["station_elv"],
+        }
+        p_proba = df.iloc[i]["p_probability"]
+        s_proba = df.iloc[i]["s_probability"]
+
+        if p_proba and p_proba >= proba_threshold:
+            phase_type = "P"
+            phase_time = UTCDateTime(df.iloc[i]["p_arrival_time"])
+            myphase = Phase(net=net, sta=sta, coord=coord)
+            myphase.set_phase_info(
+                phase_type,
+                phase_time,
+                p_proba,
+            )
+            phases.append(myphase)
+            myphase.show_all()
+        
+        if s_proba and s_proba >= proba_threshold:
+            phase_type = "S"
+            phase_time = UTCDateTime(df.iloc[i]["s_arrival_time"])
+            myphase = Phase(net=net, sta=sta, coord=coord)
+            myphase.set_phase_info(
+                phase_type,
+                phase_time,
+                s_proba,
+            )
+            phases.append(myphase)
+            myphase.show_all()
+    return phases
+
+
+def test_phasenet_import():
     phases = import_phases(
         fname="../test/picks.csv",
         proba_threshold=0.8,
         fdsnws_station_url="http://10.0.1.36:8080",
-        #fdsnws_station_url="http://ws.resif.fr",
+        # fdsnws_station_url="http://ws.resif.fr",
     )
+def test_eqt_import():
+    phases = import_eqt_phases(
+        fname="../test/EQT-2022-09-10.csv",
+        proba_threshold=0.8,
+    )
+
 
 
 if __name__ == "__main__":
     logger.setLevel(logging.DEBUG)
-    test()
+    test_eqt_import()

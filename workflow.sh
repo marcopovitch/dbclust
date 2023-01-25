@@ -42,10 +42,18 @@ fi
 
 # generate  network, station location, channel file
 # to be used to convert NonLinLoc localisation to full QuakeML
+# '_' is the separaror !!!
 msi -T $MSEED_DIR/*  | \
         tail -n +2 | head -n-1 | cut -f1 -d' ' | \
         sort -u \
 > ${DATA_DIR}/chan.txt
+
+# Combine all EQT picks in one big file
+# find . -name "*.csv" -exec cat {} >> EQT-2022-09-10.csv \;
+
+# generate  network, station location, channel file from eqt file
+# '_' is the separaror !!!
+#cut -f1 -d, EQT-2022-09-10.csv | cut -f2 -d/ | cut -f1 -d_ | sort -u | tr "." "_" | grep -v file > ${DATA_DIR}/chan.txt
 
 
 # generate csv (mseed files list) file for phaseNet

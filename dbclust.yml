@@ -9,9 +9,14 @@ file:
   obs_path: !join [*DATA, "/", "obs"]
   qml_path: !join [*DATA, "/", "qml"]
 
-  # phaseNet picks file
+  # phaseNet/EQT picks file
   picks_path: !join &PICK_PATH [*DATA, "/", "picks"]
-  picks_csv: !join [*PICK_PATH, "/", "picks.csv"]
+  #picks_type: phasenet
+  #picks_csv: !join [*PICK_PATH, "/", "picks.csv"]
+  picks_type: eqt
+  picks_csv: !join [*PICK_PATH, "/", "picks_eqt.csv"]
+
+
 
 nll:
   bin: /opt/nll/bin/NLLoc
@@ -37,7 +42,7 @@ pick:
   S_uncertainty: 0.25
 
   # import only phase with proba >=phase_proba_threshold
-  phase_proba_threshold: 0.0
+  phase_proba_threshold: 0.5
 
 # parameters for dbscan clustering
 cluster:
