@@ -5,7 +5,7 @@ import logging
 import argparse
 import yaml
 
-from dbclust.phase import import_phases
+from dbclust.phase import import_phases, import_eqt_phases 
 from dbclust.clusterize import Clusterize
 from dbclust.localization import NllLoc
 
@@ -62,7 +62,9 @@ if __name__ == "__main__":
     for dir in [OBS_PATH, QML_PATH, TMP_PATH]:
         os.makedirs(dir, exist_ok=True)
 
-    # import *phaseNet* csv picks file
+    # import *phaseNet* or *eqt* csv picks file
+    picks_type = file_cfg["picks_type"]
+    assert(picks_type in ["eqt", "phasenet"]) 
     picks_file = file_cfg["picks_csv"]
 
     # NLLoc binary
@@ -93,8 +95,12 @@ if __name__ == "__main__":
     ########################################
 
     # get phaseNet picks
-    phases = import_phases(picks_file, phase_proba_threshold)
+    if picks_type == "eqt":
+        phases = import_eqt_phases(picks_file, phase_proba_threshold)
+    else:
+        phases = import_phases(picks_file, phase_proba_threshold)
     assert phases
+    logger.info(f"Read {len(phases)} phases.")
 
     # find clusters and generate nll obs files
     myclust = Clusterize(phases, max_search_dist, min_size, average_velocity)
