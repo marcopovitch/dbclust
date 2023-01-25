@@ -1,0 +1,51 @@
+file:
+  # root Data path
+  data_path: &DATA Data
+
+  #temporary directory
+  tmp_path: !join [*DATA, "/", "tmp"]
+
+  # path definition to store nll obs and qml files
+  obs_path: !join [*DATA, "/", "obs"]
+  qml_path: !join [*DATA, "/", "qml"]
+
+  # phaseNet picks file
+  picks_path: !join &PICK_PATH [*DATA, "/", "picks"]
+  picks_csv: !join [*PICK_PATH, "/", "picks.csv"]
+
+nll:
+  bin: /opt/nll/bin/NLLoc
+
+  # nll configuration template directory
+  nll_template_dir: &TEMPLATE_DIR nll_template
+
+  #template_conf: &TEMPLATE_CONF "nll_pyrenees_template.conf"
+  #template_conf: &TEMPLATE_CONF  "nll_auvergne_template.conf"
+  #template_conf: &TEMPLATE_CONF  "nll_alpes_template.conf"
+  template_conf: &TEMPLATE_CONF "nll_haslach_template.conf"
+  nll_template: !join [*TEMPLATE_DIR, "/", *TEMPLATE_CONF]
+
+  # file to keep track of SCNL when exporting to NLL
+  # should be produced with :
+  #    msi -T ${MSEED_DIR}/*.mseed > chan.txt
+  # nll_channel_hint: None
+  nll_channel_hint: !join [*DATA, "/", "chan.txt"]
+
+pick:
+  # pick uncertainty
+  P_uncertainty: 0.1
+  S_uncertainty: 0.25
+
+  # import only phase with proba >=phase_proba_threshold
+  phase_proba_threshold: 0.0
+
+# parameters for dbscan clustering
+cluster:
+  min_size: 4
+  min_station_count: 4
+  average_velocity: 6.0 # km/s
+  max_search_dist: 17.0
+
+catalog:
+  max_standard_error: 1.5
+  max_azimuthal_gap: 180
