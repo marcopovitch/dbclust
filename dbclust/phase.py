@@ -31,7 +31,8 @@ class Phase(object):
             return
 
         self.coord = {"latitude": None, "longitude": None, "elevation": None}
-        fdsnws_time_search = str(fdsnws_time_search)  # madatorry to use lru_cache
+        if fdsnws_time_search:
+            fdsnws_time_search = str(fdsnws_time_search)  # madatorry to use lru_cache
 
         if self.network and self.station:
             (
@@ -119,6 +120,7 @@ def import_phases(
         logger.error(e)
         return None
     phases = []
+    
     for i in range(len(df)):
         net, sta = df.iloc[i]["station_id"].split(".")[:2]
         phase_type = df.iloc[i]["phase_type"]
@@ -130,7 +132,8 @@ def import_phases(
         myphase = Phase(
             net=net,
             sta=sta,
-            fdsnws_time_search=phase_time,
+            #fdsnws_time_search=phase_time,  # query take
+            fdsnws_time_search=None,
             fdsnws_station_url=fdsnws_station_url,
         )
         myphase.set_phase_info(
@@ -140,6 +143,7 @@ def import_phases(
         )
         phases.append(myphase)
         myphase.show_all()
+    logger.info(Phase.get_station_info.cache_info())
     return phases
 
 
