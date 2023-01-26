@@ -3,8 +3,12 @@ import os
 import sys
 import logging
 from math import pow, sqrt
+import numpy as np
 from sklearn.cluster import DBSCAN
-
+from tqdm import tqdm
+import functools
+import dask.bag as db
+from dask.cache import Cache
 from obspy import Catalog
 from obspy.core.event import Event
 from obspy.core.event.base import WaveformStreamID
@@ -12,9 +16,9 @@ from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
 
 try:
-    from phase import import_phases
+    from phase import import_phases, import_eqt_phases
 except:
-    from dbclust.phase import import_phases
+    from dbclust.phase import import_phases, import_eqt_phases
 
 
 # default logger
@@ -23,10 +27,34 @@ logger = logging.getLogger("clusterize")
 logger.setLevel(logging.DEBUG)
 
 
+@functools.lru_cache(maxsize=None)
+def compute_tt(p1, p2, vmean):
+    # lru_cache doesn't work with multiprocessing/dask/etc.
+    distance, az, baz = gps2dist_azimuth(
+        p1.coord["latitude"],
+        p1.coord["longitude"],
+        p2.coord["latitude"],
+        p2.coord["longitude"],
+    )
+    # distance in meters, convert it to km
+    distance = distance / 1000.0
+    dd = distance / vmean
+    dt = p1.time - p2.time
+    tt = sqrt(pow(dt, 2) + pow(dd, 2))
+    return tt
+
+
 class Clusterize(object):
     def __init__(self, phases, max_search_dist, min_size, average_velocity):
         logger.debug("Computing TT matrix")
-        pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
+        
+        # sequential computation 
+        # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
+        
+        # // computation using dask bag 
+        pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
+        logger.info(compute_tt.cache_info())
+
         logger.debug("Clustering ...")
         self.clusters, self.noise = self.get_clusters(
             phases, pseudo_tt, max_search_dist, min_size
@@ -36,30 +64,32 @@ class Clusterize(object):
 
     @staticmethod
     def compute_tt_matrix(phases, vmean):
+        # optimization : matrix is symetric -> use lru_cache
         tt_matrix = []
-        for p1 in phases:
+        for p1 in tqdm(phases):
             line = []
             for p2 in phases:
-                distance, az, baz = gps2dist_azimuth(
-                    p1.coord["latitude"],
-                    p1.coord["longitude"],
-                    p2.coord["latitude"],
-                    p2.coord["longitude"],
-                )
-                # distance in meters, convert it to km
-                distance = distance / 1000.0
-                dd = distance / vmean
-                dt = p1.time - p2.time
-                tt = sqrt(pow(dt, 2) + pow(dd, 2))
-                line.append(tt)
+                # line.append(compute_tt(p1, p2, vmean))
+                line.append(compute_tt(*sorted((p1, p2)), vmean))
             tt_matrix.append(line)
+        return tt_matrix
+
+    @staticmethod
+    def dask_compute_tt_matrix(phases, vmean):
+        """Optimization to compute tt_matrix in //"""
+        #cache = Cache(1e9)
+        #with cache:
+        data = [sorted((p1, p2)) for p1 in phases for p2 in phases]
+        b = db.from_sequence(data)
+        tt_matrix_tmp = b.map(lambda x: compute_tt(*x, vmean)).compute()
+        tt_matrix = np.array(tt_matrix_tmp).reshape((len(phases), len(phases)))
         return tt_matrix
 
     @staticmethod
     def get_clusters(phases, pseudo_tt, max_search_dist, min_size):
         # metric is “precomputed” ==> X is assumed to be a distance matrix and must be square
         db = DBSCAN(
-            eps=max_search_dist, min_samples=min_size, metric="precomputed"
+            eps=max_search_dist, min_samples=min_size, metric="precomputed", n_jobs=-1
         ).fit(pseudo_tt)
         labels = db.labels_
 
@@ -132,13 +162,13 @@ class Clusterize(object):
                 % (len(self.clusters[i]), len(stations_list))
             )
             for p in sorted(cluster, key=lambda p: p.time):
-                p.oneline_show()
+                print(p)
             print("\n")
 
     def show_noise(self):
         print(f"Noise: {self.n_noise} picks")
         for i in self.noise:
-            i.oneline_show()
+            print(i)
         print("\n")
 
 
@@ -146,7 +176,13 @@ def _test():
     max_search_dist = 17.0
     min_size = 6
     average_velocity = 4.0  # km/s
-    phases = import_phases("../test/picks.csv")
+    # phases = import_phases("../test/picks.csv")
+
+    phases = import_eqt_phases(
+        fname="../test/EQT-2022-09-10.csv",
+        proba_threshold=0.8,
+    )
+    logger.info(f"Read {len(phases)}")
     Clusterize(phases, max_search_dist, min_size, average_velocity)
 
 
