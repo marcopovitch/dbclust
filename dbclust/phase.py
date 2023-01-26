@@ -45,6 +45,15 @@ class Phase(object):
                 fdsnws_station_url,
             )
 
+    def __repr__(self):
+        return (
+            f"{self.network}.{self.station} {self.phase} {self.time} {self.proba:.3f}"
+        )
+
+    # needed for lru_cache
+    def __lt__(self, obj):
+        return (self.time) < (obj.time)
+
     @staticmethod
     @functools.lru_cache(maxsize=None)
     def get_station_info(network, station, time_search, fdsnws_station_url):
@@ -92,11 +101,6 @@ class Phase(object):
             print(f"    phase={self.phase}, time={self.time} proba={self.proba:.3f}")
         else:
             print("No coordinates found !")
-
-    def oneline_show(self):
-        print(
-            f"{self.network}.{self.station} {self.phase} {self.time} {self.proba:.3f}"
-        )
 
 
 def import_phases(
@@ -175,7 +179,7 @@ def import_eqt_phases(fname=None, proba_threshold=0):
             )
             phases.append(myphase)
             myphase.show_all()
-        
+
         if s_proba and s_proba >= proba_threshold:
             phase_type = "S"
             phase_time = UTCDateTime(df.iloc[i]["s_arrival_time"])
@@ -197,12 +201,13 @@ def test_phasenet_import():
         fdsnws_station_url="http://10.0.1.36:8080",
         # fdsnws_station_url="http://ws.resif.fr",
     )
+
+
 def test_eqt_import():
     phases = import_eqt_phases(
         fname="../test/EQT-2022-09-10.csv",
         proba_threshold=0.8,
     )
-
 
 
 if __name__ == "__main__":
