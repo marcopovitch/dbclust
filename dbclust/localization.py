@@ -245,7 +245,7 @@ class NllLoc(object):
             try:
                 nll_obs = self.event_cluster_mapping[e.resource_id.id]
             except:
-               nll_obs = None 
+                nll_obs = None
 
             o = e.preferred_origin()
             print(
@@ -253,7 +253,7 @@ class NllLoc(object):
                     map(
                         str,
                         [
-                            nll_obs, 
+                            nll_obs,
                             o.time,
                             f"{o.latitude:.3f}",
                             f"{o.longitude:.3f}",
