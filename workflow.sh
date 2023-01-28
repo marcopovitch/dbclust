@@ -23,11 +23,11 @@ mkdir -p ${DATA_DIR}/picks || rm -f ${DATA_DIR}/picks/*
 #MSEED_FILE="${HOME}/github/event-fetcher/fr2022jyttas.mseed"
 #dataselect -A ${MSEED_DIR}/%n.%s.mseed $MSEED_FILE
 
-# check if each file has exactly 3 channels
+echo "Checking if each file has exactly 3 channels"
 error=0
 for i in $(ls -1 ${MSEED_DIR}/*.mseed); do 
-        nb=$(msi -T $i | wc -l); 
-        if [ "$nb" -ne "5" ]; then 
+        nb=$(msi -T $i | cut -f4 -d_ | cut -f1 -d' ' | tail -n +2 | head -n-1  | sort -u | wc -l); 
+        if [ "$nb" -ne "3" ]; then 
                 echo "Error($nb) with $i"; 
                 let error++
         fi; 
@@ -36,9 +36,12 @@ done
 if [ "$error" -ne "0" ]; then
         echo "Remove files above from processing."
         echo "phaseNet could have problems dealing with them !"
-        exit
+        
+        read -n 1 -s -r -p "Press enter to continue, or CTRL-C to take care of that"
 fi
 
+echo ""
+echo "Generating ${DATA_DIR}/chan.txt"
 
 # generate  network, station location, channel file
 # to be used to convert NonLinLoc localisation to full QuakeML
@@ -60,6 +63,7 @@ msi -T $MSEED_DIR/*  | \
 mkdir -p ${DATA_DIR}/csv
 echo fname > ${DATA_DIR}/csv/mseed.csv
 ls -1 ${MSEED_DIR} | grep -v "XX.GP" >> ${DATA_DIR}/csv/mseed.csv
+
 
 mkdir -p ${DATA_DIR}/picks
 python ${PHASENET_DIR}/phasenet/predict.py \
