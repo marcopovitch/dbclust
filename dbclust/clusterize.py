@@ -4,7 +4,8 @@ import sys
 import logging
 from math import pow, sqrt
 import numpy as np
-from sklearn.cluster import DBSCAN
+from itertools import product
+from sklearn.cluster import DBSCAN, OPTICS
 from tqdm import tqdm
 import functools
 import dask.bag as db
@@ -45,17 +46,24 @@ def compute_tt(p1, p2, vmean):
 
 
 class Clusterize(object):
-    def __init__(self, phases, max_search_dist, min_size, average_velocity):
-        logger.debug("Computing TT matrix")
+    def __init__(self, phases, max_search_dist, min_size, average_velocity, tt_maxtrix_fname="tt_matrix.npy", tt_matrix_load=True):
+        logger.info("Computing TT matrix.")
+
+        if tt_matrix_load and tt_maxtrix_fname:
+            logger.info(f"Loading tt_matrix {tt_maxtrix_fname}.")
+            pseudo_tt = np.load(tt_maxtrix_fname)
+        else:
+            # sequential computation 
+            # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
+            # // computation using dask bag 
+            pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
         
-        # sequential computation 
-        # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
-        
-        # // computation using dask bag 
-        pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
+        if tt_maxtrix_fname and not tt_matrix_load:
+            logger.info(f"Saving tt_matrix {tt_maxtrix_fname}.")
+            np.save(tt_maxtrix_fname, pseudo_tt)
         logger.info(compute_tt.cache_info())
 
-        logger.debug("Clustering ...")
+        logger.info("Starting Clustering.")
         self.clusters, self.noise = self.get_clusters(
             phases, pseudo_tt, max_search_dist, min_size
         )
@@ -77,9 +85,8 @@ class Clusterize(object):
     @staticmethod
     def dask_compute_tt_matrix(phases, vmean):
         """Optimization to compute tt_matrix in //"""
-        #cache = Cache(1e9)
-        #with cache:
-        data = [sorted((p1, p2)) for p1 in phases for p2 in phases]
+        #data = [sorted((p1, p2)) for p1 in phases for p2 in phases]
+        data = product(phases, repeat=2)
         b = db.from_sequence(data)
         tt_matrix_tmp = b.map(lambda x: compute_tt(*x, vmean)).compute()
         tt_matrix = np.array(tt_matrix_tmp).reshape((len(phases), len(phases)))
@@ -91,6 +98,12 @@ class Clusterize(object):
         db = DBSCAN(
             eps=max_search_dist, min_samples=min_size, metric="precomputed", n_jobs=-1
         ).fit(pseudo_tt)
+
+        # db = OPTICS(
+        #     min_cluster_size=6,
+        #     eps=max_search_dist, min_samples=min_size, metric="precomputed", n_jobs=-1
+        # ).fit(pseudo_tt)
+
         labels = db.labels_
 
         # Number of clusters in labels, ignoring noise if present.
@@ -126,7 +139,7 @@ class Clusterize(object):
             event = Event()
             stations_list = set([p.station for p in cluster])
             if len(stations_list) < min_station_count:
-                logger.info(
+                logger.debug(
                     f"Cluster {i} ignored ... not enough stations ({len(stations_list)})"
                 )
                 continue
