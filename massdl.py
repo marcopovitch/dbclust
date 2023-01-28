@@ -7,21 +7,31 @@ from obspy.clients.fdsn.mass_downloader import (
     MassDownloader,
 )
 
-origin_time = obspy.UTCDateTime(2022, 9, 10, 0, 0, 0)
 
 # Circular domain around the epicenter. This will download all data between
 # 70 and 90 degrees distance from the epicenter. This module also offers
 # rectangular and global domains. More complex domains can be defined by
 # inheriting from the Domain class.
+
+# origin_time = obspy.UTCDateTime(2022, 9, 10, 0, 0, 0)
+# end_time = obspy.UTCDateTime(2022, 9, 11, 0, 0, 0)
+# domain = CircularDomain(
+#     latitude=47.67, longitude=7.47, minradius=0, maxradius=2
+# )
+
+
+origin_time = obspy.UTCDateTime(2022, 7, 24, 0, 0, 0)
+end_time = obspy.UTCDateTime(2022, 7, 25, 0, 0, 0)
 domain = CircularDomain(
-    latitude=47.67, longitude=7.47, minradius=0, maxradius=130 / 111.0
+    latitude=45.58, longitude=2.89, minradius=0, maxradius=2
 )
+
 
 restrictions = Restrictions(
     # Get data from 5 minutes before the event to one hour after the
     # event. This defines the temporal bounds of the waveform data.
     starttime=origin_time - 5 * 60,
-    endtime=origin_time + 86400 + 5 * 60,
+    endtime=end_time + 5 * 60,
     # You might not want to deal with gaps in the data. If this setting is
     # True, any trace with a gap/overlap will be discarded.
     reject_channels_with_gaps=False,
@@ -33,15 +43,15 @@ restrictions = Restrictions(
     # useful to for example filter out stations that are part of different
     # networks but at the same physical station. Settings this option to
     # zero or None will disable that filtering.
-    minimum_interstation_distance_in_m=10e3,
+    minimum_interstation_distance_in_m=0,
     # Only HH or BH channels. If a station has HH channels, those will be
     # downloaded, otherwise the BH. Nothing will be downloaded if it has
     # neither. You can add more/less patterns if you like.
     # channel_priorities=["HH[ZNE]", "BH[ZNE]"],
-    channel_priorities=["HH[ZNE123]"],
     # Location codes are arbitrary and there is no rule as to which
     # location is best. Same logic as for the previous setting.
-    location_priorities=["", "00", "10"],
+    #location_priorities=["", "00", "10"],
+    network="*", station="*", location="*", channel="HH?",
 )
 
 # No specified providers will result in all known ones being queried.
@@ -66,5 +76,5 @@ mdl = MassDownloader(providers=[client])
 # The data will be downloaded to the ``./waveforms/`` and ``./stations/``
 # folders with automatically chosen file names.
 mdl.download(
-    domain, restrictions, threads_per_client=20, mseed_storage="waveforms", stationxml_storage="stations"
+    domain, restrictions, threads_per_client=10, mseed_storage="waveforms-chambon", stationxml_storage="stations"
 )
