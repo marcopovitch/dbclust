@@ -54,6 +54,14 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"Read failed for {f_in} ({e})")
             continue
+        st1 = st.select(channel="HH?")
+        st2 = st.select(channel="EH?")
+        st3 = st.select(channel="HN?")
+        st = st1 + st2 + st3
+
+        if not st:
+            continue
+
         # subsample channel to sample_rate Hz
         for tr in st:
             if tr.stats.sampling_rate > args.sample_rate:
