@@ -119,16 +119,24 @@ if __name__ == "__main__":
     )
     locs.show_localizations()
 
+    logger.info("Writing all.qml and all.sc3ml")
+    qml_fname = os.path.join(QML_PATH, "all.qml")
+    locs.catalog.write(qml_fname, format="QUAKEML")
+    sc3ml_fname = os.path.join(QML_PATH, "all.sc3ml")
+    locs.catalog.write(sc3ml_fname, format="SC3ML")
+
+    
     # to filter out poorly constrained events
     logger.info("\nFiltered catalog:")
     locs.catalog = locs.catalog.filter(
         f"standard_error < {max_standard_error}",
         f"azimuthal_gap < {max_azimuthal_gap}",
+        f"used_station_count >= {min_station_count}",
     )
     locs.show_localizations()
 
-    logger.info("Writing all.qml and all.sc3ml")
-    qml_fname = os.path.join(QML_PATH, "all.qml")
+    logger.info("Writing all-filtered.qml and all-filtered.sc3ml")
+    qml_fname = os.path.join(QML_PATH, "all-filtered.qml")
     locs.catalog.write(qml_fname, format="QUAKEML")
-    sc3ml_fname = os.path.join(QML_PATH, "all.sc3ml")
+    sc3ml_fname = os.path.join(QML_PATH, "all-filtered.sc3ml")
     locs.catalog.write(sc3ml_fname, format="SC3ML")
