@@ -74,6 +74,9 @@ class NllLoc(object):
                     o.evaluation_mode = "automatic"
                     o.method_id = "NonLinLoc"
                     o.earth_model_id = nlloc_template
+                    # count the stations used with weight > 0
+                    o.quality.used_station_count = len([a.time_weight for a in o.arrivals if a.time_weight])
+                    # o.quality.phase_station_count = 
 
                 logger.info(f"Writing {qmlfile}.xml")
                 cat.write(f"{qmlfile}.xml", format="QUAKEML")
