@@ -27,7 +27,7 @@ def yml_read_config(filename):
 
 
 if __name__ == "__main__":
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -106,9 +106,9 @@ if __name__ == "__main__":
     myclust = Clusterize(phases, max_search_dist, min_size, average_velocity)
     myclust.show_clusters()
     myclust.show_noise()
-    myclust.generate_nllobs(OBS_PATH, min_station_count, P_uncertainty, S_uncertainty)
 
     # localize each cluster
+    myclust.generate_nllobs(OBS_PATH, min_station_count, P_uncertainty, S_uncertainty)
     locs = NllLoc().get_catalog_from_nllobs_dir(
         OBS_PATH,
         QML_PATH,
