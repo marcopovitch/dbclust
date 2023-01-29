@@ -4,12 +4,13 @@ import logging
 import functools
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from obspy import UTCDateTime
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("phases")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 class Phase(object):
@@ -61,14 +62,16 @@ class Phase(object):
         logger.debug(f"Getting station info from {network}.{station}")
         if not time_search:
             time_search = UTCDateTime.now()
+
         time_search = str(time_search)[:10]
         url = (
             f"{fdsnws_station_url}/fdsnws/station/1/query?"
             + "network=%s&" % network
             + "station=%s&" % station
-            + "starttime=%sT00:00:00&" % time_search
             + "format=text"
         )
+        #   + "starttime=%sT00:00:00&" % time_search
+
         try:
             df = pd.read_csv(url, sep="|", skipinitialspace=True)
         except BaseException as e:
@@ -92,12 +95,12 @@ class Phase(object):
     def show_all(self):
         print(f"{self.network}.{self.station}:")
         if (
-            self.coord["latitude"]
-            and self.coord["longitude"]
-            and self.coord["elevation"]
+            self.coord["latitude"] is not None
+            and self.coord["longitude"] is not None
+            and self.coord["elevation"] is not None
         ):
             print(
-                f"    lat={self.coord['latitude']:.3f}, lon={self.coord['longitude']:.3f}, elev={self.coord['elevation']:.1f}"
+                f"    lat={self.coord['latitude']:.4f}, lon={self.coord['longitude']:.4f}, elev={self.coord['elevation']:.1f}"
             )
             print(f"    phase={self.phase}, time={self.time} proba={self.proba:.3f}")
         else:
@@ -120,8 +123,17 @@ def import_phases(
         logger.error(e)
         return None
     phases = []
-    
-    for i in range(len(df)):
+
+    if (
+        "station_id" not in df.columns
+        and "phase_type" not in df.columns
+        and "phase_score" not in df.columns
+        and "phase_time" not in df.columns
+    ):
+        logger.error("No phasenet header found")
+        return None
+
+    for i in tqdm(range(len(df))):
         net, sta = df.iloc[i]["station_id"].split(".")[:2]
         phase_type = df.iloc[i]["phase_type"]
         phase_time = UTCDateTime(df.iloc[i]["phase_time"])
@@ -132,7 +144,7 @@ def import_phases(
         myphase = Phase(
             net=net,
             sta=sta,
-            #fdsnws_time_search=phase_time,  # query take
+            # fdsnws_time_search=phase_time,  # query take
             fdsnws_time_search=None,
             fdsnws_station_url=fdsnws_station_url,
         )
@@ -142,7 +154,8 @@ def import_phases(
             proba,
         )
         phases.append(myphase)
-        myphase.show_all()
+        if logger.level == logging.DEBUG:
+            myphase.show_all()
     logger.info(Phase.get_station_info.cache_info())
     return phases
 
@@ -161,6 +174,19 @@ def import_eqt_phases(fname=None, proba_threshold=0):
         logger.error(e)
         return None
     phases = []
+
+    if (
+        "station_lat" not in df.columns
+        and "station_lon" not in df.columns
+        and "station_elv" not in df.columns
+        and "p_probability" not in df.columns
+        and "s_probability" not in df.columns
+        and "p_arrival_time" not in df.columns
+        and "s_arrival_time" not in df.columns
+    ):
+        logger.error("No EQT header found")
+        return None
+    
     for i in range(len(df)):
         net = df.iloc[i]["network"]
         sta = df.iloc[i]["station"]
@@ -200,7 +226,7 @@ def import_eqt_phases(fname=None, proba_threshold=0):
 
 def test_phasenet_import():
     phases = import_phases(
-        fname="../test/picks.csv",
+        fname="../test/picksSS.csv",
         proba_threshold=0.8,
         fdsnws_station_url="http://10.0.1.36:8080",
         # fdsnws_station_url="http://ws.resif.fr",
@@ -216,4 +242,4 @@ def test_eqt_import():
 
 if __name__ == "__main__":
     logger.setLevel(logging.DEBUG)
-    test_eqt_import()
+    test_phasenet_import()
