@@ -49,6 +49,7 @@ if __name__ == "__main__":
     os.makedirs(args.output_dir)
 
     for f_in in glob.glob(f"{args.input_dir}/*"):
+        logger.info(f"Read {f_in}")
         try:
             st = read(f_in)
         except Exception as e:
@@ -57,7 +58,8 @@ if __name__ == "__main__":
         st1 = st.select(channel="HH?")
         st2 = st.select(channel="EH?")
         st3 = st.select(channel="HN?")
-        st = st1 + st2 + st3
+        st4 = st.select(channel="DL?")
+        st = st1 + st2 + st3 + st4
 
         if not st:
             continue
