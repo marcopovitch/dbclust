@@ -7,6 +7,7 @@ import pathlib
 import subprocess
 import tempfile
 import pandas as pd
+from tqdm import tqdm
 from obspy import Catalog
 from obspy import read_events
 from jinja2 import Template
@@ -46,7 +47,7 @@ class NllLoc(object):
                   use Phase() to get them.
         """
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        for nll_obs_file in glob.glob(obs_files_pattern):
+        for nll_obs_file in tqdm(glob.glob(obs_files_pattern)):
             logger.debug(
                 f"Localization of {nll_obs_file} using {nlloc_template} nlloc template."
             )
@@ -55,9 +56,11 @@ class NllLoc(object):
                 QML_PATH, pathlib.PurePath(nll_obs_file_basename).stem
             )
 
+            # localization
             cat = self.nll_localisation(
                 nll_obs_file, nlloc_template, nllocbin=nllocbin, tmpdir=tmpdir
             )
+
             if cat:
                 if nll_channel_hint:
                     logger.debug(nll_channel_hint)
@@ -78,12 +81,12 @@ class NllLoc(object):
                     o.quality.used_station_count = len([a.time_weight for a in o.arrivals if a.time_weight])
                     # o.quality.phase_station_count = 
 
-                logger.info(f"Writing {qmlfile}.xml")
+                logger.debug(f"Writing {qmlfile}.xml")
                 cat.write(f"{qmlfile}.xml", format="QUAKEML")
                 cat.write(f"{qmlfile}.sc3ml", format="SC3ML")
                 self.event_cluster_mapping[e.resource_id.id] = nll_obs_file
             else:
-                logger.error(f"No loc obtained for {qmlfile}:/")
+                logger.debug(f"No loc obtained for {qmlfile}:/")
                 continue
             self.catalog += cat
 
