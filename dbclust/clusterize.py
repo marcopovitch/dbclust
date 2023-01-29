@@ -25,7 +25,7 @@ except:
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("clusterize")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 @functools.lru_cache(maxsize=None)
@@ -46,19 +46,33 @@ def compute_tt(p1, p2, vmean):
 
 
 class Clusterize(object):
-    def __init__(self, phases, max_search_dist, min_size, average_velocity, tt_maxtrix_fname="tt_matrix.npy", tt_matrix_load=True):
+    def __init__(
+        self,
+        phases,
+        max_search_dist,
+        min_size,
+        average_velocity,
+        tt_maxtrix_fname="tt_matrix.npy",
+        tt_matrix_load=False,
+        tt_matrix_save=True,
+    ):
         logger.info("Computing TT matrix.")
 
         if tt_matrix_load and tt_maxtrix_fname:
             logger.info(f"Loading tt_matrix {tt_maxtrix_fname}.")
-            pseudo_tt = np.load(tt_maxtrix_fname)
+            try:
+                pseudo_tt = np.load(tt_maxtrix_fname)
+            except Exception as e:
+                logger.error(e)
+                logger.error("Check your config file !")
+                sys.exit()
         else:
-            # sequential computation 
+            # sequential computation
             # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
-            # // computation using dask bag 
+            # // computation using dask bag
             pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
-        
-        if tt_maxtrix_fname and not tt_matrix_load:
+
+        if tt_maxtrix_fname and tt_matrix_save:
             logger.info(f"Saving tt_matrix {tt_maxtrix_fname}.")
             np.save(tt_maxtrix_fname, pseudo_tt)
         logger.info(compute_tt.cache_info())
@@ -85,7 +99,7 @@ class Clusterize(object):
     @staticmethod
     def dask_compute_tt_matrix(phases, vmean):
         """Optimization to compute tt_matrix in //"""
-        #data = [sorted((p1, p2)) for p1 in phases for p2 in phases]
+        # data = [sorted((p1, p2)) for p1 in phases for p2 in phases]
         data = product(phases, repeat=2)
         b = db.from_sequence(data)
         tt_matrix_tmp = b.map(lambda x: compute_tt(*x, vmean)).compute()
@@ -134,7 +148,7 @@ class Clusterize(object):
         export to obspy/NLL
         only 1 event/catalog (for NLL)
         """
-        for i, cluster in enumerate(self.clusters):
+        for i, cluster in tqdm(enumerate(self.clusters)):
             cat = Catalog()
             event = Event()
             stations_list = set([p.station for p in cluster])
