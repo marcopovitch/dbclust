@@ -4,8 +4,9 @@ import os
 import logging
 import argparse
 import yaml
+import pandas as pd
 
-from dbclust.phase import import_phases, import_eqt_phases 
+from dbclust.phase import import_phases, import_eqt_phases
 from dbclust.clusterize import Clusterize
 from dbclust.localization import NllLoc
 
@@ -64,7 +65,7 @@ if __name__ == "__main__":
 
     # import *phaseNet* or *eqt* csv picks file
     picks_type = file_cfg["picks_type"]
-    assert(picks_type in ["eqt", "phasenet"]) 
+    assert picks_type in ["eqt", "phasenet"]
     picks_file = file_cfg["picks_csv"]
 
     # NLLoc binary
@@ -94,49 +95,71 @@ if __name__ == "__main__":
 
     ########################################
 
-    # get phaseNet picks
-    if picks_type == "eqt":
-        phases = import_eqt_phases(picks_file, phase_proba_threshold)
-    else:
-        phases = import_phases(picks_file, phase_proba_threshold)
-    assert phases
-    logger.info(f"Read {len(phases)} phases.")
+    logger.info(f"Opening {picks_file} file.")
+    try:
+        df = pd.read_csv(picks_file, parse_dates=["phase_time"])
+    except Exception as e:
+        logger.error(e)
+        sys.exit()
+    logger.info(f"Read {len(df)} phases.")
 
-    # find clusters and generate nll obs files
-    myclust = Clusterize(phases, max_search_dist, min_size, average_velocity)
-    myclust.show_clusters()
-    myclust.show_noise()
+    # split time period to be clusterized
+    tmax = df["phase_time"].max()
+    tmin = df["phase_time"].min()
+    time_periods = pd.date_range(tmin, tmax, freq="30MIN").to_list()
+    logger.info(f"Splitting dataset in {len(time_periods)} chunks.")
 
-    # localize each cluster
-    myclust.generate_nllobs(OBS_PATH, min_station_count, P_uncertainty, S_uncertainty)
-    locs = NllLoc().get_catalog_from_nllobs_dir(
-        OBS_PATH,
-        QML_PATH,
-        nlloc_template,
-        nll_channel_hint,
-        nllocbin=nllocbin,
-        tmpdir=TMP_PATH,
-    )
-    locs.show_localizations()
+    for e, (from_time, to_time) in enumerate(zip(time_periods[:-2], time_periods[1:])):
+        logger.info("===============================")
+        logger.info(f"Extraction {e}/{len(time_periods)} picks from {from_time} to {to_time}.")
+        df_subset = df[(df["phase_time"] >= from_time) & (df["phase_time"] < to_time)]
+        logger.info(f"Clustering {len(df_subset)} phases.")
 
-    logger.info("Writing all.qml and all.sc3ml")
-    qml_fname = os.path.join(QML_PATH, "all.qml")
-    locs.catalog.write(qml_fname, format="QUAKEML")
-    sc3ml_fname = os.path.join(QML_PATH, "all.sc3ml")
-    locs.catalog.write(sc3ml_fname, format="SC3ML")
+        # get phaseNet picks from dataframe
+        if picks_type == "eqt":
+            phases = import_eqt_phases(df_subset, phase_proba_threshold)
+        else:
+            phases = import_phases(df_subset, phase_proba_threshold)
 
-    
-    # to filter out poorly constrained events
-    logger.info("\nFiltered catalog:")
-    locs.catalog = locs.catalog.filter(
-        f"standard_error < {max_standard_error}",
-        f"azimuthal_gap < {max_azimuthal_gap}",
-        f"used_station_count >= {min_station_count}",
-    )
-    locs.show_localizations()
+        # find clusters and generate nll obs files
+        myclust = Clusterize(phases, max_search_dist, min_size, average_velocity)
+        #myclust.show_clusters()
+        #myclust.show_noise()
 
-    logger.info("Writing all-filtered.qml and all-filtered.sc3ml")
-    qml_fname = os.path.join(QML_PATH, "all-filtered.qml")
-    locs.catalog.write(qml_fname, format="QUAKEML")
-    sc3ml_fname = os.path.join(QML_PATH, "all-filtered.sc3ml")
-    locs.catalog.write(sc3ml_fname, format="SC3ML")
+        # localize each cluster
+        my_obs_path = os.path.join(OBS_PATH, f"{e}")
+        myclust.generate_nllobs(
+            my_obs_path, min_station_count, P_uncertainty, S_uncertainty
+        )
+
+        my_qml_path = os.path.join(QML_PATH, f"{e}")
+        locs = NllLoc().get_catalog_from_nllobs_dir(
+            my_obs_path,
+            my_qml_path,
+            nlloc_template,
+            nll_channel_hint,
+            nllocbin=nllocbin,
+            tmpdir=TMP_PATH,
+        )
+        locs.show_localizations()
+
+        logger.info(f"Writing all-{e}.qml and all-{e}.sc3ml")
+        qml_fname = os.path.join(QML_PATH, f"all-{e}.qml")
+        locs.catalog.write(qml_fname, format="QUAKEML")
+        sc3ml_fname = os.path.join(QML_PATH, f"all-{e}.sc3ml")
+        locs.catalog.write(sc3ml_fname, format="SC3ML")
+
+        # to filter out poorly constrained events
+        logger.info("\nFiltered catalog:")
+        locs.catalog = locs.catalog.filter(
+            f"standard_error < {max_standard_error}",
+            f"azimuthal_gap < {max_azimuthal_gap}",
+            f"used_station_count >= {min_station_count}",
+        )
+        locs.show_localizations()
+
+        logger.info(f"Writing all-{e}-filtered.qml and all-{e}-filtered.sc3ml")
+        qml_fname = os.path.join(QML_PATH, f"all-{e}-filtered.qml")
+        locs.catalog.write(qml_fname, format="QUAKEML")
+        sc3ml_fname = os.path.join(QML_PATH, f"all-{e}-filtered.sc3ml")
+        locs.catalog.write(sc3ml_fname, format="SC3ML")
