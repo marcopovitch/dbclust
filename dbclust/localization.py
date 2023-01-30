@@ -47,11 +47,13 @@ class NllLoc(object):
                   use Phase() to get them.
         """
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
+        logger.info("Localization ...")
         for nll_obs_file in tqdm(glob.glob(obs_files_pattern)):
             logger.debug(
                 f"Localization of {nll_obs_file} using {nlloc_template} nlloc template."
             )
             nll_obs_file_basename = os.path.basename(nll_obs_file)
+            os.makedirs(QML_PATH, exist_ok=True) 
             qmlfile = os.path.join(
                 QML_PATH, pathlib.PurePath(nll_obs_file_basename).stem
             )
@@ -140,7 +142,7 @@ class NllLoc(object):
         try:
             cat = read_events(nll_output)
         except Exception as e:
-            logger.error(e)
+            logger.debug(e)
             cat = None
 
         return cat
