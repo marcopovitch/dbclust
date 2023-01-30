@@ -4,6 +4,8 @@ import sys
 import logging
 from math import pow, sqrt
 import numpy as np
+import pandas as pd
+#from numba import jit
 from itertools import product
 from sklearn.cluster import DBSCAN, OPTICS
 from tqdm import tqdm
@@ -26,7 +28,6 @@ except:
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("clusterize")
 logger.setLevel(logging.INFO)
-
 
 @functools.lru_cache(maxsize=None)
 def compute_tt(p1, p2, vmean):
@@ -54,7 +55,7 @@ class Clusterize(object):
         average_velocity,
         tt_maxtrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
-        tt_matrix_save=True,
+        tt_matrix_save=False,
     ):
         logger.info("Computing TT matrix.")
 
@@ -69,6 +70,7 @@ class Clusterize(object):
         else:
             # sequential computation
             # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
+            # pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
             # // computation using dask bag
             pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
 
@@ -94,6 +96,16 @@ class Clusterize(object):
                 # line.append(compute_tt(p1, p2, vmean))
                 line.append(compute_tt(*sorted((p1, p2)), vmean))
             tt_matrix.append(line)
+        return tt_matrix
+
+    @staticmethod
+    #@jit(nopython=True) 
+    def numpy_compute_tt_matrix(phases, vmean):
+        # optimization : matrix is symetric -> use lru_cache
+        tt_matrix = np.empty([len(phases), len(phases)], dtype=float)
+        for i, p1 in tqdm(enumerate(phases)):
+            for j, p2 in enumerate(phases):
+                tt_matrix[i,j] = compute_tt(*sorted((p1, p2)), vmean)
         return tt_matrix
 
     @staticmethod
@@ -172,6 +184,7 @@ class Clusterize(object):
                     pick.time_errors.uncertainty = S_uncertainty
                 event.picks.append(pick)
             cat.append(event)
+            os.makedirs(OBS_PATH, exist_ok=True)
             obs_file = os.path.join(OBS_PATH, f"cluster-{i}.obs")
             logger.debug(f"Writting {obs_file}")
             cat.write(obs_file, format="NLLOC_OBS")
@@ -205,8 +218,17 @@ def _test():
     average_velocity = 4.0  # km/s
     # phases = import_phases("../test/picks.csv")
 
+    picks_file = "../test/EQT-2022-09-10.csv"
+    logger.info(f"Opening {picks_file} file.")
+    try:
+        df = pd.read_csv(picks_file, parse_dates=["p_arrival_time", "s_arrival_time"])
+    except Exception as e:
+        logger.error(e)
+        sys.exit()
+
+
     phases = import_eqt_phases(
-        fname="../test/EQT-2022-09-10.csv",
+        df,
         proba_threshold=0.8,
     )
     logger.info(f"Read {len(phases)}")
