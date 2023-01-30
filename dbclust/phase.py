@@ -108,20 +108,12 @@ class Phase(object):
 
 
 def import_phases(
-    fname=None, proba_threshold=0, fdsnws_station_url="http://10.0.1.36:8080"
+    df=None, proba_threshold=0, fdsnws_station_url="http://10.0.1.36:8080"
 ):
     """
-    Read phaseNet csv picks file.
+    Read phaseNet dataframe picks.
     Returns a list of Phase objects.
     """
-    if not fname:
-        logger.error("No file name defined !")
-        return None
-    try:
-        df = pd.read_csv(fname)
-    except Exception as e:
-        logger.error(e)
-        return None
     phases = []
 
     if (
@@ -160,19 +152,11 @@ def import_phases(
     return phases
 
 
-def import_eqt_phases(fname=None, proba_threshold=0):
+def import_eqt_phases(df=None, proba_threshold=0):
     """
-    Read EQT csv picks file.
+    Read EQT dataframe picks.
     Returns a list of Phase objects.
     """
-    if not fname:
-        logger.error("No file name defined !")
-        return None
-    try:
-        df = pd.read_csv(fname)
-    except Exception as e:
-        logger.error(e)
-        return None
     phases = []
 
     if (
@@ -186,8 +170,8 @@ def import_eqt_phases(fname=None, proba_threshold=0):
     ):
         logger.error("No EQT header found")
         return None
-    
-    for i in range(len(df)):
+
+    for i in tqdm(range(len(df))):
         net = df.iloc[i]["network"]
         sta = df.iloc[i]["station"]
         coord = {
@@ -208,7 +192,8 @@ def import_eqt_phases(fname=None, proba_threshold=0):
                 p_proba,
             )
             phases.append(myphase)
-            myphase.show_all()
+            if logger.level == logging.DEBUG:
+                myphase.show_all()
 
         if s_proba and s_proba >= proba_threshold:
             phase_type = "S"
@@ -220,26 +205,48 @@ def import_eqt_phases(fname=None, proba_threshold=0):
                 s_proba,
             )
             phases.append(myphase)
-            myphase.show_all()
+            if logger.level == logging.DEBUG:
+                myphase.show_all()
     return phases
 
 
-def test_phasenet_import():
+def _test_phasenet_import():
+    picks_file = "../test/picksSS.csv"
+    logger.info(f"Opening {picks_file} file.")
+    try:
+        df = pd.read_csv(picks_file, parse_dates=["phase_time"])
+    except Exception as e:
+        logger.error(e)
+        sys.exit()
+
+    logger.info(f"Read {len(df)} phases.")
+
     phases = import_phases(
-        fname="../test/picksSS.csv",
+        df,
         proba_threshold=0.8,
         fdsnws_station_url="http://10.0.1.36:8080",
         # fdsnws_station_url="http://ws.resif.fr",
     )
 
 
-def test_eqt_import():
+def _test_eqt_import():
+    picks_file = "../test/EQT-2022-09-10.csv"
+    logger.info(f"Opening {picks_file} file.")
+    try:
+        df = pd.read_csv(picks_file, parse_dates=["p_arrival_time", "s_arrival_time"])
+    except Exception as e:
+        logger.error(e)
+        sys.exit()
+
+    logger.info(f"Read {len(df)} phases.")
+
     phases = import_eqt_phases(
-        fname="../test/EQT-2022-09-10.csv",
+        df,
         proba_threshold=0.8,
     )
 
 
 if __name__ == "__main__":
-    logger.setLevel(logging.DEBUG)
-    test_phasenet_import()
+    logger.setLevel(logging.INFO)
+    _test_phasenet_import()
+    _test_eqt_import()
