@@ -53,7 +53,7 @@ class NllLoc(object):
                 f"Localization of {nll_obs_file} using {nlloc_template} nlloc template."
             )
             nll_obs_file_basename = os.path.basename(nll_obs_file)
-            os.makedirs(QML_PATH, exist_ok=True) 
+            os.makedirs(QML_PATH, exist_ok=True)
             qmlfile = os.path.join(
                 QML_PATH, pathlib.PurePath(nll_obs_file_basename).stem
             )
@@ -80,8 +80,10 @@ class NllLoc(object):
                     o.method_id = "NonLinLoc"
                     o.earth_model_id = nlloc_template
                     # count the stations used with weight > 0
-                    o.quality.used_station_count = len([a.time_weight for a in o.arrivals if a.time_weight])
-                    # o.quality.phase_station_count = 
+                    o.quality.used_station_count = len(
+                        [a.time_weight for a in o.arrivals if a.time_weight]
+                    )
+                    # o.quality.phase_station_count =
 
                 logger.debug(f"Writing {qmlfile}.xml")
                 cat.write(f"{qmlfile}.xml", format="QUAKEML")
@@ -144,6 +146,16 @@ class NllLoc(object):
         except Exception as e:
             logger.debug(e)
             cat = None
+        else:
+            # check for nan value in uncertainty
+            e = cat.events[0]
+            o = e.preferred_origin()
+            if "nan" in [
+                str(o.latitude_errors.uncertainty),
+                str(o.longitude_errors.uncertainty),
+                str(o.depth_errors.uncertainty),
+            ]:
+                cat = None
 
         return cat
 
