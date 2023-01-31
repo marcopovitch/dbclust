@@ -6,6 +6,8 @@ import argparse
 import yaml
 import pandas as pd
 
+from obspy import Catalog
+
 from dbclust.phase import import_phases, import_eqt_phases
 from dbclust.clusterize import Clusterize
 from dbclust.localization import NllLoc
@@ -97,7 +99,12 @@ if __name__ == "__main__":
 
     logger.info(f"Opening {picks_file} file.")
     try:
-        df = pd.read_csv(picks_file, parse_dates=["phase_time"])
+        if picks_type == "eqt":
+            df = pd.read_csv(
+                picks_file, parse_dates=["p_arrival_time", "s_arrival_time"]
+            )
+        else:
+            df = pd.read_csv(picks_file, parse_dates=["phase_time"])
     except Exception as e:
         logger.error(e)
         sys.exit()
@@ -109,9 +116,12 @@ if __name__ == "__main__":
     time_periods = pd.date_range(tmin, tmax, freq="30MIN").to_list()
     logger.info(f"Splitting dataset in {len(time_periods)} chunks.")
 
+    my_catalog = Catalog()
     for e, (from_time, to_time) in enumerate(zip(time_periods[:-2], time_periods[1:])):
         logger.info("===============================")
-        logger.info(f"Extraction {e}/{len(time_periods)} picks from {from_time} to {to_time}.")
+        logger.info(
+            f"Extraction {e}/{len(time_periods)} picks from {from_time} to {to_time}."
+        )
         df_subset = df[(df["phase_time"] >= from_time) & (df["phase_time"] < to_time)]
         logger.info(f"Clustering {len(df_subset)} phases.")
 
@@ -123,8 +133,8 @@ if __name__ == "__main__":
 
         # find clusters and generate nll obs files
         myclust = Clusterize(phases, max_search_dist, min_size, average_velocity)
-        #myclust.show_clusters()
-        #myclust.show_noise()
+        # myclust.show_clusters()
+        # myclust.show_noise()
 
         # localize each cluster
         my_obs_path = os.path.join(OBS_PATH, f"{e}")
@@ -141,25 +151,29 @@ if __name__ == "__main__":
             nllocbin=nllocbin,
             tmpdir=TMP_PATH,
         )
-        locs.show_localizations()
+        if len(locs.catalog) > 0:
+            locs.show_localizations()
 
-        logger.info(f"Writing all-{e}.qml and all-{e}.sc3ml")
-        qml_fname = os.path.join(QML_PATH, f"all-{e}.qml")
-        locs.catalog.write(qml_fname, format="QUAKEML")
-        sc3ml_fname = os.path.join(QML_PATH, f"all-{e}.sc3ml")
-        locs.catalog.write(sc3ml_fname, format="SC3ML")
+        # concatenate individual catalogs
+        my_catalog += locs.catalog
 
-        # to filter out poorly constrained events
-        logger.info("\nFiltered catalog:")
-        locs.catalog = locs.catalog.filter(
-            f"standard_error < {max_standard_error}",
-            f"azimuthal_gap < {max_azimuthal_gap}",
-            f"used_station_count >= {min_station_count}",
-        )
-        locs.show_localizations()
+    # Write QUAKEML and SC3ML
+    logger.info(f"Writing {len(my_catalog)} all.qml and all.sc3ml")
+    qml_fname = os.path.join(QML_PATH, f"all.qml")
+    my_catalog.write(qml_fname, format="QUAKEML")
+    sc3ml_fname = os.path.join(QML_PATH, f"all.sc3ml")
+    my_catalog.write(sc3ml_fname, format="SC3ML")
 
-        logger.info(f"Writing all-{e}-filtered.qml and all-{e}-filtered.sc3ml")
-        qml_fname = os.path.join(QML_PATH, f"all-{e}-filtered.qml")
-        locs.catalog.write(qml_fname, format="QUAKEML")
-        sc3ml_fname = os.path.join(QML_PATH, f"all-{e}-filtered.sc3ml")
-        locs.catalog.write(sc3ml_fname, format="SC3ML")
+    # to filter out poorly constrained events
+    logger.info("\nFiltered catalog:")
+    my_catalog = my_catalog.filter(
+        f"standard_error < {max_standard_error}",
+        f"azimuthal_gap < {max_azimuthal_gap}",
+        f"used_station_count >= {min_station_count}",
+    )
+
+    logger.info(f"Writing {len(my_catalog)} all-filtered.qml and all-filtered.sc3ml")
+    qml_fname = os.path.join(QML_PATH, f"all-filtered.qml")
+    my_catalog.write(qml_fname, format="QUAKEML")
+    sc3ml_fname = os.path.join(QML_PATH, f"all-filtered.sc3ml")
+    my_catalog.write(sc3ml_fname, format="SC3ML")
