@@ -57,8 +57,12 @@ class Clusterize(object):
         tt_matrix_load=False,
         tt_matrix_save=False,
     ):
+        logger.info(f"Starting Clustering (nbphases={len(phases)}, min_size={min_size}).")
+        if len(phases) < min_size:
+            logger.info("Too few picks !")
+            return
+        
         logger.info("Computing TT matrix.")
-
         if tt_matrix_load and tt_maxtrix_fname:
             logger.info(f"Loading tt_matrix {tt_maxtrix_fname}.")
             try:
@@ -73,13 +77,12 @@ class Clusterize(object):
             # pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
             # // computation using dask bag
             pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
+            logger.info(compute_tt.cache_info())
 
         if tt_maxtrix_fname and tt_matrix_save:
             logger.info(f"Saving tt_matrix {tt_maxtrix_fname}.")
             np.save(tt_maxtrix_fname, pseudo_tt)
-        logger.info(compute_tt.cache_info())
 
-        logger.info("Starting Clustering.")
         self.clusters, self.noise = self.get_clusters(
             phases, pseudo_tt, max_search_dist, min_size
         )
