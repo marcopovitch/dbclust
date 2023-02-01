@@ -15,7 +15,7 @@ from dbclust.localization import NllLoc
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("dbclust")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 def ymljoin(loader, node):
@@ -30,7 +30,7 @@ def yml_read_config(filename):
 
 
 if __name__ == "__main__":
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -103,6 +103,8 @@ if __name__ == "__main__":
             df = pd.read_csv(
                 picks_file, parse_dates=["p_arrival_time", "s_arrival_time"]
             )
+            #
+            df["phase_time"] = df[["p_arrival_time", "s_arrival_time"]].min(axis=1)
         else:
             df = pd.read_csv(picks_file, parse_dates=["phase_time"])
     except Exception as e:
@@ -110,19 +112,36 @@ if __name__ == "__main__":
         sys.exit()
     logger.info(f"Read {len(df)} phases.")
 
-    # split time period to be clusterized
-    tmax = df["phase_time"].max()
     tmin = df["phase_time"].min()
-    time_periods = pd.date_range(tmin, tmax, freq="30MIN").to_list()
+    tmax = df["phase_time"].max()
+    time_periods = pd.date_range(tmin, tmax, freq="2H").to_list()
     logger.info(f"Splitting dataset in {len(time_periods)} chunks.")
 
     my_catalog = Catalog()
+
+    # configure locator
+    locator = NllLoc(
+        nllocbin,
+        nlloc_template,
+        nll_channel_hint=nll_channel_hint,
+        tmpdir=TMP_PATH,
+    )
+
+    # process independently each time period
+    # fixme: add overlapp between time period
     for e, (from_time, to_time) in enumerate(zip(time_periods[:-2], time_periods[1:])):
-        logger.info("===============================")
+        logger.info("")
+        logger.info("")
         logger.info(
             f"Extraction {e}/{len(time_periods)} picks from {from_time} to {to_time}."
         )
+
         df_subset = df[(df["phase_time"] >= from_time) & (df["phase_time"] < to_time)]
+
+        if not len(df_subset):
+            logger.info(f"Skipping clustering {len(df_subset)} phases.")
+            continue
+
         logger.info(f"Clustering {len(df_subset)} phases.")
 
         # get phaseNet picks from dataframe
@@ -131,29 +150,26 @@ if __name__ == "__main__":
         else:
             phases = import_phases(df_subset, phase_proba_threshold)
 
-        # find clusters and generate nll obs files
-        myclust = Clusterize(phases, max_search_dist, min_size, average_velocity)
-        if not myclust.n_clusters:
+        # find clusters
+        myclust = Clusterize(
+            phases,
+            max_search_dist,
+            min_size,
+            average_velocity,
+            min_station_count=min_station_count,
+            P_uncertainty=P_uncertainty,
+            S_uncertainty=S_uncertainty,
+        )
+        if myclust.n_clusters == 0:
             continue
 
-        # myclust.show_clusters()
-        # myclust.show_noise()
+        # write each cluster to nll obs files
+        my_obs_path = os.path.join(OBS_PATH, f"{e}")
+        myclust.generate_nllobs(my_obs_path)
 
         # localize each cluster
-        my_obs_path = os.path.join(OBS_PATH, f"{e}")
-        myclust.generate_nllobs(
-            my_obs_path, min_station_count, P_uncertainty, S_uncertainty
-        )
-
         my_qml_path = os.path.join(QML_PATH, f"{e}")
-        locs = NllLoc().get_catalog_from_nllobs_dir(
-            my_obs_path,
-            my_qml_path,
-            nlloc_template,
-            nll_channel_hint,
-            nllocbin=nllocbin,
-            tmpdir=TMP_PATH,
-        )
+        locs = locator.get_localisations_from_nllobs_dir(my_obs_path, my_qml_path)
         if len(locs.catalog) > 0:
             locs.show_localizations()
 
@@ -168,6 +184,7 @@ if __name__ == "__main__":
     my_catalog.write(sc3ml_fname, format="SC3ML")
 
     # to filter out poorly constrained events
+    # fixme: add to config file
     logger.info("\nFiltered catalog:")
     my_catalog = my_catalog.filter(
         f"standard_error < {max_standard_error}",
