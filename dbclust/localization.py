@@ -7,7 +7,8 @@ import pathlib
 import subprocess
 import tempfile
 import pandas as pd
-from tqdm import tqdm
+
+# from tqdm import tqdm
 from obspy import Catalog
 from obspy import read_events
 from jinja2 import Template
@@ -20,94 +21,41 @@ logger.setLevel(logging.INFO)
 
 class NllLoc(object):
     def __init__(
-        self, nll_obs_file=None, nlloc_template=None, nllocbin="NLLoc", tmpdir=None
-    ):
-
-        if nll_obs_file and nlloc_template:
-            self.catalog = self.nll_localisation(
-                nll_obs_file, nlloc_template, nllocbin, tmpdir
-            )
-        else:
-            self.catalog = Catalog()
-        self.nb_events = len(self.catalog)
-        self.event_cluster_mapping = {}
-
-    def get_catalog_from_nllobs_dir(
         self,
-        OBS_PATH,
-        QML_PATH,
+        nllocbin,
         nlloc_template,
+        nll_obs_file=None,
         nll_channel_hint=None,
-        nllocbin="NLLoc",
         tmpdir="/tmp",
     ):
-        """
-        nll localisation and export to quakeml
-        warning : network and channel are lost since they are not used by nll
-                  use Phase() to get them.
-        """
-        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        logger.info("Localization ...")
-        for nll_obs_file in tqdm(glob.glob(obs_files_pattern)):
-            logger.debug(
-                f"Localization of {nll_obs_file} using {nlloc_template} nlloc template."
-            )
-            nll_obs_file_basename = os.path.basename(nll_obs_file)
-            os.makedirs(QML_PATH, exist_ok=True)
-            qmlfile = os.path.join(
-                QML_PATH, pathlib.PurePath(nll_obs_file_basename).stem
-            )
 
-            # localization
-            cat = self.nll_localisation(
-                nll_obs_file, nlloc_template, nllocbin=nllocbin, tmpdir=tmpdir
-            )
+        # define locator
+        self.nllocbin = nllocbin
+        self.nlloc_template = nlloc_template
+        self.nll_channel_hint = nll_channel_hint
+        self.tmpdir = tmpdir
 
-            if cat:
-                if nll_channel_hint:
-                    logger.debug(nll_channel_hint)
-                    cat = self.fix_wfid(cat, nll_channel_hint)
-                else:
-                    logger.warning("No nll_channel_hint file provided !")
+        # obs file to localize
+        self.nll_obs_file = nll_obs_file
 
-                # override default values
-                for e in cat.events:
-                    e.creation_info.author = ""
-                    o = e.preferred_origin()
-                    o.creation_info.agency_id = "RENASS"
-                    o.creation_info.author = "DBClust"
-                    o.evaluation_mode = "automatic"
-                    o.method_id = "NonLinLoc"
-                    o.earth_model_id = nlloc_template
-                    # count the stations used with weight > 0
-                    o.quality.used_station_count = len(
-                        [a.time_weight for a in o.arrivals if a.time_weight]
-                    )
-                    # o.quality.phase_station_count =
+        # keep track of cluster affiliation 
+        self.event_cluster_mapping = {}
 
-                logger.debug(f"Writing {qmlfile}.xml")
-                cat.write(f"{qmlfile}.xml", format="QUAKEML")
-                cat.write(f"{qmlfile}.sc3ml", format="SC3ML")
-                self.event_cluster_mapping[e.resource_id.id] = nll_obs_file
-            else:
-                logger.debug(f"No loc obtained for {qmlfile}:/")
-                continue
-            self.catalog += cat
+        # localization
+        if self.nll_obs_file:
+            self.catalog = self.nll_localisation(nll_obs_file)
+        else:
+            self.catalog = Catalog()
 
-        # sort events by time
         self.nb_events = len(self.catalog)
-        if self.nb_events > 1:
-            self.catalog.events = sorted(
-                self.catalog.events, key=lambda e: e.preferred_origin().time
-            )
-        return self
 
-    def nll_localisation(self, nll_obs_file, nlloc_template, nllocbin, tmpdir):
+
+    def nll_localisation(self, nll_obs_file):
 
         nll_obs_file_basename = os.path.basename(nll_obs_file)
 
         # with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_path:
-        tmp_path = tempfile.mkdtemp(dir=tmpdir)
+        tmp_path = tempfile.mkdtemp(dir=self.tmpdir)
         conf_file = os.path.join(tmp_path, f"{nll_obs_file_basename}.conf")
 
         # path + root filename
@@ -121,13 +69,13 @@ class NllLoc(object):
 
         # Generate NLL configuration file
         try:
-            self.replace(nlloc_template, conf_file, tags)
+            self.replace(self.nlloc_template, conf_file, tags)
         except Exception as e:
             logger.error(e)
             return None
 
         # Localization
-        cmde = f"{nllocbin} {conf_file}"
+        cmde = f"{self.nllocbin} {conf_file}"
         logger.debug(cmde)
         try:
             res = subprocess.call(
@@ -158,6 +106,71 @@ class NllLoc(object):
                 cat = None
 
         return cat
+
+    def get_localisations_from_nllobs_dir(
+        self,
+        OBS_PATH,
+        QML_PATH,
+    ):
+        """
+        nll localisation and export to quakeml
+        warning : network and channel are lost since they are not used by nll
+                  use Phase() to get them.
+        """
+        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
+        logger.info(f"Localization of {obs_files_pattern} to {QML_PATH}")
+
+        for nll_obs_file in sorted(glob.glob(obs_files_pattern)):
+            logger.info(
+                f"Localization of {nll_obs_file} using {self.nlloc_template} nlloc template."
+            )
+            nll_obs_file_basename = os.path.basename(nll_obs_file)
+            os.makedirs(QML_PATH, exist_ok=True)
+            qmlfile = os.path.join(
+                QML_PATH, pathlib.PurePath(nll_obs_file_basename).stem
+            )
+
+            # localization
+            cat = self.nll_localisation(nll_obs_file)
+
+            if cat:
+                if self.nll_channel_hint:
+                    logger.debug(self.nll_channel_hint)
+                    cat = self.fix_wfid(cat, self.nll_channel_hint)
+                else:
+                    logger.warning("No nll_channel_hint file provided !")
+
+                # override default values
+                for e in cat.events:
+                    e.creation_info.author = ""
+                    o = e.preferred_origin()
+                    o.creation_info.agency_id = "RENASS"
+                    o.creation_info.author = "DBClust"
+                    o.evaluation_mode = "automatic"
+                    o.method_id = "NonLinLoc"
+                    o.earth_model_id = self.nlloc_template
+                    # count the stations used with weight > 0
+                    o.quality.used_station_count = len(
+                        [a.time_weight for a in o.arrivals if a.time_weight]
+                    )
+                    # o.quality.phase_station_count =
+
+                logger.debug(f"Writing {qmlfile}.xml")
+                cat.write(f"{qmlfile}.xml", format="QUAKEML")
+                cat.write(f"{qmlfile}.sc3ml", format="SC3ML")
+                self.event_cluster_mapping[e.resource_id.id] = nll_obs_file
+            else:
+                logger.debug(f"No loc obtained for {qmlfile}:/")
+                continue
+            self.catalog += cat
+
+        # sort events by time
+        self.nb_events = len(self.catalog)
+        if self.nb_events > 1:
+            self.catalog.events = sorted(
+                self.catalog.events, key=lambda e: e.preferred_origin().time
+            )
+        return self
 
     @staticmethod
     def replace(templatefile, outfilename, tags):
@@ -216,7 +229,7 @@ class NllLoc(object):
                 if p.waveform_id.network_code == "":
                     net = df[df["sta"] == sta]["net"].drop_duplicates()
                     if len(net) == 0:
-                        logger.error(
+                        logger.warning(
                             f"Network code not found for station {sta} (filtered ?)"
                         )
                         continue
@@ -234,7 +247,7 @@ class NllLoc(object):
                         "loc"
                     ].drop_duplicates()
                     if len(loc) == 0:
-                        logger.error("Location code not found for {net}.{sta}")
+                        logger.warning("Location code not found for {net}.{sta}")
                     if len(loc) != 1:
                         logger.warning(f"Duplicated location code for {net}.{sta}")
                         logger.warning(f"    using the first one {loc.iloc[0]}")
@@ -245,7 +258,7 @@ class NllLoc(object):
                     "chan"
                 ].drop_duplicates()
                 if len(chan) == 0:
-                    logger.error("Channel code not found for {net}.{sta}")
+                    logger.warning("Channel code not found for {net}.{sta}")
                 elif len(chan) != 1:
                     logger.warning(f"Duplicated channel code for {net}.{sta}.{loc}")
                     logger.warning(f"    using the first one {chan.iloc[0]}")
@@ -292,8 +305,9 @@ class NllLoc(object):
 def _simple_test():
     nll_obs_file = "../test/cluster-0.obs"
     nlloc_template = "../nll_template/nll_haslach_template.conf"
+    nllocbin="NLLoc" 
 
-    loc = NllLoc(nll_obs_file, nlloc_template, nllocbin="NLLoc", tmpdir="/tmp")
+    loc = NllLoc(nllocbin, nlloc_template, nll_obs_file=nll_obs_file, tmpdir="/tmp")
     print(loc.catalog)
     loc.show_localizations()
 
@@ -303,15 +317,10 @@ def _multiple_test():
     qml_path = "../test"
     nlloc_template = "../nll_template/nll_haslach_template.conf"
     nll_channel_hint = "../test/chan.txt"
+    nllocbin="NLLoc" 
 
-    loc = NllLoc().get_catalog_from_nllobs_dir(
-        obs_path,
-        qml_path,
-        nlloc_template,
-        nll_channel_hint,
-        nllocbin="NLLoc",
-        tmpdir="/tmp",
-    )
+    locator = NllLoc(nllocbin, nlloc_template, nll_channel_hint=nll_channel_hint, tmpdir="/tmp") 
+    loc = locator.get_localisations_from_nllobs_dir( obs_path, qml_path)
     print(loc.catalog)
     loc.show_localizations()
     # logger.info("Writing all.xml")
