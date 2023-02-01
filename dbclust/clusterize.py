@@ -58,17 +58,19 @@ class Clusterize(object):
         tt_matrix_save=False,
     ):
         # clusters is a list of cluster :
-        # ie. [ [phase, label], ... ]
+        # ie. [ [phases, label], ... ]
+        # noise is [ phases, -1]
         self.clusters = []
         self.n_clusters = 0
-        self.n_noise = 0
+        self.noise = [phases, -1]
+        self.n_noise = len(phases) 
 
         logger.info(f"Starting Clustering (nbphases={len(phases)}, min_size={min_size}).")
         if len(phases) < min_size:
             logger.info("Too few picks !")
             # add noise points 
-            cluster = [phases, -1]
-            self.clusters.append(cluster) 
+            self.clusters.append([]) 
+            self.noise = [phases, -1]
             self.n_noise = len(phases)
             return
         
@@ -174,6 +176,7 @@ class Clusterize(object):
         only 1 event/catalog (for NLL)
         """
         for i, cluster in tqdm(enumerate(self.clusters)):
+
             cat = Catalog()
             event = Event()
             stations_list = set([p.station for p in cluster])
