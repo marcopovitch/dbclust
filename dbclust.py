@@ -133,6 +133,9 @@ if __name__ == "__main__":
 
         # find clusters and generate nll obs files
         myclust = Clusterize(phases, max_search_dist, min_size, average_velocity)
+        if not myclust.n_clusters:
+            continue
+
         # myclust.show_clusters()
         # myclust.show_noise()
 
