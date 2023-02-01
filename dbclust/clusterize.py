@@ -27,7 +27,7 @@ except:
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("clusterize")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 @functools.lru_cache(maxsize=None)
 def compute_tt(p1, p2, vmean):
@@ -53,6 +53,9 @@ class Clusterize(object):
         max_search_dist,
         min_size,
         average_velocity,
+        min_station_count=None, 
+        P_uncertainty=0.1, 
+        S_uncertainty=0.2,
         tt_maxtrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
         tt_matrix_save=False,
@@ -62,14 +65,31 @@ class Clusterize(object):
         # noise is [ phases, -1]
         self.clusters = []
         self.n_clusters = 0
-        self.noise = [phases, -1]
-        self.n_noise = len(phases) 
+        self.noise = []
+        self.n_noise = 0 
+
+        # clustering parameters
+        self.max_search_dist = max_search_dist
+        self.min_size = min_size
+        self.average_velocity = average_velocity
+
+        # pick filtering parameters
+        self.min_station_count = min_station_count 
+        self.P_uncertainty = P_uncertainty 
+        self.S_uncertainty = S_uncertainty 
+
+        # tt_matrix load/save parameters
+        self.tt_maxtrix_fname = tt_maxtrix_fname
+        self.tt_matrix_load = tt_matrix_load
+        self.tt_matrix_save = tt_matrix_save
+
 
         logger.info(f"Starting Clustering (nbphases={len(phases)}, min_size={min_size}).")
         if len(phases) < min_size:
             logger.info("Too few picks !")
             # add noise points 
-            self.clusters.append([]) 
+            self.clusters = []
+            self.n_clusters = 0
             self.noise = [phases, -1]
             self.n_noise = len(phases)
             return
@@ -89,7 +109,7 @@ class Clusterize(object):
             # pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
             # // computation using dask bag
             pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
-            logger.info(compute_tt.cache_info())
+            logger.info(f"TT maxtrix: {compute_tt.cache_info()}")
 
         if tt_maxtrix_fname and tt_matrix_save:
             logger.info(f"Saving tt_matrix {tt_maxtrix_fname}.")
@@ -168,23 +188,24 @@ class Clusterize(object):
                 clusters.append(cluster)
         return clusters, noise
 
-    def generate_nllobs(
-        self, OBS_PATH, min_station_count, P_uncertainty=None, S_uncertainty=None
-    ):
+    def generate_nllobs( self, OBS_PATH):
         """
         export to obspy/NLL
         only 1 event/catalog (for NLL)
         """
-        for i, cluster in tqdm(enumerate(self.clusters)):
+        for i, cluster in enumerate(self.clusters):
 
             cat = Catalog()
             event = Event()
-            stations_list = set([p.station for p in cluster])
-            if len(stations_list) < min_station_count:
-                logger.debug(
-                    f"Cluster {i} ignored ... not enough stations ({len(stations_list)})"
-                )
-                continue
+
+            if self.min_station_count:
+                stations_list = set([p.station for p in cluster])
+                if len(stations_list) < self.min_station_count:
+                    logger.debug(
+                        f"Cluster {i} ignored ... not enough stations ({len(stations_list)})"
+                    )
+                    continue
+
             for p in cluster:
                 pick = Pick()
                 pick.evaluation_mode = "automatic"
@@ -194,10 +215,10 @@ class Clusterize(object):
                 )
                 pick.phase_hint = p.phase
                 pick.time = p.time
-                if "P" in p.phase and P_uncertainty:
-                    pick.time_errors.uncertainty = P_uncertainty
-                elif "S" in p.phase and S_uncertainty:
-                    pick.time_errors.uncertainty = S_uncertainty
+                if "P" in p.phase and self.P_uncertainty:
+                    pick.time_errors.uncertainty = self.P_uncertainty
+                elif "S" in p.phase and self.S_uncertainty:
+                    pick.time_errors.uncertainty = self.S_uncertainty
                 event.picks.append(pick)
             cat.append(event)
             os.makedirs(OBS_PATH, exist_ok=True)
@@ -248,7 +269,9 @@ def _test():
         proba_threshold=0.8,
     )
     logger.info(f"Read {len(phases)}")
-    Clusterize(phases, max_search_dist, min_size, average_velocity)
+    myclusters = Clusterize(phases, max_search_dist, min_size, average_velocity)
+    myclusters.generate_nllobs("../test/obs")
+    #myclusters.show_clusters() 
 
 
 if __name__ == "__main__":
