@@ -106,7 +106,18 @@ if __name__ == "__main__":
             #
             df["phase_time"] = df[["p_arrival_time", "s_arrival_time"]].min(axis=1)
         else:
-            df = pd.read_csv(picks_file, parse_dates=["phase_time"])
+            try:
+                # official PhaseNet
+                df = pd.read_csv(picks_file, parse_dates=["phase_time"])
+            except:
+                # PhaseNetSDS
+                df = pd.read_csv(picks_file, parse_dates=["time"])
+                df.rename(columns={ "seedid": "station_id",
+                                    "phasename": "phase_type",
+                                    "time": "phase_time",
+                                    "probability": "phase_score"},
+                          inplace=True,
+                )
     except Exception as e:
         logger.error(e)
         sys.exit()
@@ -114,7 +125,8 @@ if __name__ == "__main__":
 
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
-    time_periods = pd.date_range(tmin, tmax, freq="2H").to_list()
+    time_periods = pd.date_range(tmin, tmax, freq="30min").to_series().to_list()
+    time_periods +=  [pd.to_datetime(tmax)]
     logger.info(f"Splitting dataset in {len(time_periods)} chunks.")
 
     my_catalog = Catalog()
