@@ -10,7 +10,7 @@ from obspy import Catalog
 
 from dbclust.phase import import_phases, import_eqt_phases
 from dbclust.clusterize import Clusterize
-from dbclust.localization import NllLoc
+from dbclust.localization import NllLoc, show_event
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -112,12 +112,16 @@ if __name__ == "__main__":
             except:
                 # PhaseNetSDS
                 df = pd.read_csv(picks_file, parse_dates=["time"])
-                df.rename(columns={ "seedid": "station_id",
-                                    "phasename": "phase_type",
-                                    "time": "phase_time",
-                                    "probability": "phase_score"},
-                          inplace=True,
+                df.rename(
+                    columns={
+                        "seedid": "station_id",
+                        "phasename": "phase_type",
+                        "time": "phase_time",
+                        "probability": "phase_score",
+                    },
+                    inplace=True,
                 )
+            df.sort_values(by=["phase_time"], inplace=True)
     except Exception as e:
         logger.error(e)
         sys.exit()
@@ -126,10 +130,8 @@ if __name__ == "__main__":
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
     time_periods = pd.date_range(tmin, tmax, freq="30min").to_series().to_list()
-    time_periods +=  [pd.to_datetime(tmax)]
+    time_periods += [pd.to_datetime(tmax)]
     logger.info(f"Splitting dataset in {len(time_periods)} chunks.")
-
-    my_catalog = Catalog()
 
     # configure locator
     locator = NllLoc(
@@ -180,25 +182,28 @@ if __name__ == "__main__":
         myclust.generate_nllobs(my_obs_path)
 
         # localize each cluster
+        # all locs are automaticaly appended to the localtor
         my_qml_path = os.path.join(QML_PATH, f"{e}")
-        locs = locator.get_localisations_from_nllobs_dir(my_obs_path, my_qml_path)
-        if len(locs.catalog) > 0:
-            locs.show_localizations()
-
-        # concatenate individual catalogs
-        my_catalog += locs.catalog
+        clustcat = locator.get_localisations_from_nllobs_dir(
+            my_obs_path, my_qml_path, append=True
+        )
+        if len(clustcat) > 0:
+            for e in clustcat.events:
+                show_event(e, "****")
 
     # Write QUAKEML and SC3ML
-    logger.info(f"Writing {len(my_catalog)} all.qml and all.sc3ml")
+    logger.info("") 
+    logger.info("") 
+    logger.info(f"Writing {len(locator.catalog)} all.qml and all.sc3ml")
     qml_fname = os.path.join(QML_PATH, f"all.qml")
-    my_catalog.write(qml_fname, format="QUAKEML")
+    locator.catalog.write(qml_fname, format="QUAKEML")
     sc3ml_fname = os.path.join(QML_PATH, f"all.sc3ml")
-    my_catalog.write(sc3ml_fname, format="SC3ML")
+    locator.catalog.write(sc3ml_fname, format="SC3ML")
 
     # to filter out poorly constrained events
     # fixme: add to config file
     logger.info("\nFiltered catalog:")
-    my_catalog = my_catalog.filter(
+    my_catalog = locator.catalog.filter(
         f"standard_error < {max_standard_error}",
         f"azimuthal_gap < {max_azimuthal_gap}",
         f"used_station_count >= {min_station_count}",
