@@ -38,7 +38,7 @@ class NllLoc(object):
         # obs file to localize
         self.nll_obs_file = nll_obs_file
 
-        # keep track of cluster affiliation 
+        # keep track of cluster affiliation
         self.event_cluster_mapping = {}
 
         # localization
@@ -48,7 +48,6 @@ class NllLoc(object):
             self.catalog = Catalog()
 
         self.nb_events = len(self.catalog)
-
 
     def nll_localisation(self, nll_obs_file):
 
@@ -107,18 +106,19 @@ class NllLoc(object):
 
         return cat
 
-    def get_localisations_from_nllobs_dir(
-        self,
-        OBS_PATH,
-        QML_PATH,
-    ):
+    def get_localisations_from_nllobs_dir(self, OBS_PATH, QML_PATH, append=True):
         """
         nll localisation and export to quakeml
         warning : network and channel are lost since they are not used by nll
                   use Phase() to get them.
+        if append is True, the obtain catalog is appended to the NllLoc catalog
+
+        returns a catalog
         """
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
         logger.info(f"Localization of {obs_files_pattern} to {QML_PATH}")
+
+        mycatalog = Catalog()
 
         for nll_obs_file in sorted(glob.glob(obs_files_pattern)):
             logger.info(
@@ -159,10 +159,13 @@ class NllLoc(object):
                 cat.write(f"{qmlfile}.xml", format="QUAKEML")
                 cat.write(f"{qmlfile}.sc3ml", format="SC3ML")
                 self.event_cluster_mapping[e.resource_id.id] = nll_obs_file
+                mycatalog += cat
             else:
                 logger.debug(f"No loc obtained for {qmlfile}:/")
                 continue
-            self.catalog += cat
+
+        if append is True:
+            self.catalog += mycatalog
 
         # sort events by time
         self.nb_events = len(self.catalog)
@@ -170,7 +173,7 @@ class NllLoc(object):
             self.catalog.events = sorted(
                 self.catalog.events, key=lambda e: e.preferred_origin().time
             )
-        return self
+        return mycatalog
 
     @staticmethod
     def replace(templatefile, outfilename, tags):
@@ -273,39 +276,42 @@ class NllLoc(object):
 
     def show_localizations(self):
         print("%d events in catalog:" % len(self.catalog))
-        print("OBSfile, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2")
+        print("Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2")
         for e in self.catalog.events:
             try:
                 nll_obs = self.event_cluster_mapping[e.resource_id.id]
             except:
-                nll_obs = None
+                nll_obs = ""
+            show_event(e, nll_obs)
 
-            o = e.preferred_origin()
-            print(
-                ", ".join(
-                    map(
-                        str,
-                        [
-                            nll_obs,
-                            o.time,
-                            f"{o.latitude:.3f}",
-                            f"{o.longitude:.3f}",
-                            f"{o.depth:.1f}",
-                            o.quality.standard_error,
-                            o.quality.used_station_count,
-                            o.quality.used_phase_count,
-                            f"{o.quality.azimuthal_gap:.1f}",
-                            f"{o.quality.secondary_azimuthal_gap:.1f}",
-                        ],
-                    )
-                )
+
+def show_event(event, txt=""):
+    o = event.preferred_origin()
+    print(
+        ", ".join(
+            map(
+                str,
+                [
+                    txt,
+                    o.time,
+                    f"{o.latitude:.3f}",
+                    f"{o.longitude:.3f}",
+                    f"{o.depth:.1f}",
+                    o.quality.standard_error,
+                    o.quality.used_station_count,
+                    o.quality.used_phase_count,
+                    f"{o.quality.azimuthal_gap:.1f}",
+                    f"{o.quality.secondary_azimuthal_gap:.1f}",
+                ],
             )
+        )
+    )
 
 
 def _simple_test():
     nll_obs_file = "../test/cluster-0.obs"
     nlloc_template = "../nll_template/nll_haslach_template.conf"
-    nllocbin="NLLoc" 
+    nllocbin = "NLLoc"
 
     loc = NllLoc(nllocbin, nlloc_template, nll_obs_file=nll_obs_file, tmpdir="/tmp")
     print(loc.catalog)
@@ -317,10 +323,12 @@ def _multiple_test():
     qml_path = "../test"
     nlloc_template = "../nll_template/nll_haslach_template.conf"
     nll_channel_hint = "../test/chan.txt"
-    nllocbin="NLLoc" 
+    nllocbin = "NLLoc"
 
-    locator = NllLoc(nllocbin, nlloc_template, nll_channel_hint=nll_channel_hint, tmpdir="/tmp") 
-    loc = locator.get_localisations_from_nllobs_dir( obs_path, qml_path)
+    locator = NllLoc(
+        nllocbin, nlloc_template, nll_channel_hint=nll_channel_hint, tmpdir="/tmp"
+    )
+    loc = locator.get_localisations_from_nllobs_dir(obs_path, qml_path)
     print(loc.catalog)
     loc.show_localizations()
     # logger.info("Writing all.xml")
