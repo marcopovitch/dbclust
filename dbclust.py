@@ -192,8 +192,8 @@ if __name__ == "__main__":
                 show_event(e, "****")
 
     # Write QUAKEML and SC3ML
-    logger.info("") 
-    logger.info("") 
+    logger.info("")
+    logger.info("")
     logger.info(f"Writing {len(locator.catalog)} all.qml and all.sc3ml")
     qml_fname = os.path.join(QML_PATH, f"all.qml")
     locator.catalog.write(qml_fname, format="QUAKEML")
@@ -202,15 +202,15 @@ if __name__ == "__main__":
 
     # to filter out poorly constrained events
     # fixme: add to config file
-    logger.info("\nFiltered catalog:")
-    my_catalog = locator.catalog.filter(
-        f"standard_error < {max_standard_error}",
-        f"azimuthal_gap < {max_azimuthal_gap}",
-        f"used_station_count >= {min_station_count}",
-    )
+    # logger.info("\nFiltered catalog:")
+    # my_catalog = locator.catalog.filter(
+    #     f"standard_error < {max_standard_error}",
+    #     f"azimuthal_gap < {max_azimuthal_gap}",
+    #     f"used_station_count >= {min_station_count}",
+    # )
 
-    logger.info(f"Writing {len(my_catalog)} all-filtered.qml and all-filtered.sc3ml")
-    qml_fname = os.path.join(QML_PATH, f"all-filtered.qml")
-    my_catalog.write(qml_fname, format="QUAKEML")
-    sc3ml_fname = os.path.join(QML_PATH, f"all-filtered.sc3ml")
-    my_catalog.write(sc3ml_fname, format="SC3ML")
+    # logger.info(f"Writing {len(my_catalog)} all-filtered.qml and all-filtered.sc3ml")
+    # qml_fname = os.path.join(QML_PATH, f"all-filtered.qml")
+    # my_catalog.write(qml_fname, format="QUAKEML")
+    # sc3ml_fname = os.path.join(QML_PATH, f"all-filtered.sc3ml")
+    # my_catalog.write(sc3ml_fname, format="SC3ML")
