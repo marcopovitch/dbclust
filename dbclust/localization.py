@@ -92,17 +92,40 @@ class NllLoc(object):
             cat = read_events(nll_output)
         except Exception as e:
             logger.debug(e)
-            cat = None
+            return None
+
+        e = cat.events[0]
+        o = e.preferred_origin()
+
+        # check for nan value in uncertainty
+        if "nan" in [
+            str(o.latitude_errors.uncertainty),
+            str(o.longitude_errors.uncertainty),
+            str(o.depth_errors.uncertainty),
+        ]:
+            logger.debug("Found NaN value in uncertainty. Ignoring event !")
+            return None
+
+        if self.nll_channel_hint:
+            logger.debug(self.nll_channel_hint)
+            cat = self.fix_wfid(cat, self.nll_channel_hint)
         else:
-            # check for nan value in uncertainty
-            e = cat.events[0]
-            o = e.preferred_origin()
-            if "nan" in [
-                str(o.latitude_errors.uncertainty),
-                str(o.longitude_errors.uncertainty),
-                str(o.depth_errors.uncertainty),
-            ]:
-                cat = None
+            logger.warning("No nll_channel_hint file provided !")
+
+        # override default values
+        e.creation_info.author = ""
+        o = e.preferred_origin()
+        # o.resource_id = 'smi:local/origin/id'
+        o.creation_info.agency_id = "RENASS"
+        o.creation_info.author = "DBClust"
+        o.evaluation_mode = "automatic"
+        o.method_id = "NonLinLoc"
+        o.earth_model_id = self.nlloc_template
+        # count the stations used with weight > 0
+        o.quality.used_phase_count = len(
+            [a.time_weight for a in o.arrivals if a.time_weight]
+        )
+        o.quality.used_station_count = self.get_used_station_count(e)
 
         return cat
 
@@ -133,36 +156,10 @@ class NllLoc(object):
             # localization
             cat = self.nll_localisation(nll_obs_file)
 
-            if cat:
-                if self.nll_channel_hint:
-                    logger.debug(self.nll_channel_hint)
-                    cat = self.fix_wfid(cat, self.nll_channel_hint)
-                else:
-                    logger.warning("No nll_channel_hint file provided !")
-
-                # override default values
-                for e in cat.events:
-                    e.creation_info.author = ""
-                    o = e.preferred_origin()
-                    o.creation_info.agency_id = "RENASS"
-                    o.creation_info.author = "DBClust"
-                    o.evaluation_mode = "automatic"
-                    o.method_id = "NonLinLoc"
-                    o.earth_model_id = self.nlloc_template
-                    # count the stations used with weight > 0
-                    o.quality.used_station_count = len(
-                        [a.time_weight for a in o.arrivals if a.time_weight]
-                    )
-                    # o.quality.phase_station_count =
-
-                logger.debug(f"Writing {qmlfile}.xml")
-                cat.write(f"{qmlfile}.xml", format="QUAKEML")
-                cat.write(f"{qmlfile}.sc3ml", format="SC3ML")
-                self.event_cluster_mapping[e.resource_id.id] = nll_obs_file
-                mycatalog += cat
-            else:
+            if not cat:
                 logger.debug(f"No loc obtained for {qmlfile}:/")
                 continue
+            mycatalog += cat
 
         if append is True:
             self.catalog += mycatalog
@@ -174,6 +171,21 @@ class NllLoc(object):
                 self.catalog.events, key=lambda e: e.preferred_origin().time
             )
         return mycatalog
+
+    @staticmethod
+    def get_used_station_count(event):
+        station_list = []
+        origin = event.preferred_origin()
+        for arrival in origin.arrivals:
+            if arrival.time_weight:
+                pick = next(
+                    (p for p in event.picks if p.resource_id == arrival.pick_id), None
+                )
+                if pick:
+                    station_list.append(
+                        f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
+                    )
+        return len(set(station_list))
 
     @staticmethod
     def replace(templatefile, outfilename, tags):
@@ -312,8 +324,15 @@ def _simple_test():
     nll_obs_file = "../test/cluster-0.obs"
     nlloc_template = "../nll_template/nll_haslach_template.conf"
     nllocbin = "NLLoc"
+    nll_channel_hint = "../test/chan.txt"
 
-    loc = NllLoc(nllocbin, nlloc_template, nll_obs_file=nll_obs_file, tmpdir="/tmp")
+    loc = NllLoc(
+        nllocbin,
+        nlloc_template,
+        nll_channel_hint=nll_channel_hint,
+        nll_obs_file=nll_obs_file,
+        tmpdir="/tmp",
+    )
     print(loc.catalog)
     loc.show_localizations()
 
@@ -328,9 +347,9 @@ def _multiple_test():
     locator = NllLoc(
         nllocbin, nlloc_template, nll_channel_hint=nll_channel_hint, tmpdir="/tmp"
     )
-    loc = locator.get_localisations_from_nllobs_dir(obs_path, qml_path)
-    print(loc.catalog)
-    loc.show_localizations()
+    cat = locator.get_localisations_from_nllobs_dir(obs_path, qml_path)
+    print(cat)
+    locator.show_localizations()
     # logger.info("Writing all.xml")
     # catalog.write("all.xml", format="QUAKEML")
 
