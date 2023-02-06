@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import sys
+import io
 import os
 import logging
 import glob
@@ -28,7 +29,6 @@ class NllLoc(object):
         nll_channel_hint=None,
         tmpdir="/tmp",
     ):
-
         # define locator
         self.nllocbin = nllocbin
         self.nlloc_template = nlloc_template
@@ -50,7 +50,6 @@ class NllLoc(object):
         self.nb_events = len(self.catalog)
 
     def nll_localisation(self, nll_obs_file):
-
         nll_obs_file_basename = os.path.basename(nll_obs_file)
 
         # with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_path:
@@ -297,7 +296,9 @@ class NllLoc(object):
             show_event(e, nll_obs)
 
 
-def show_event(event, txt=""):
+def show_event(event, txt="", header=False):
+    if header:
+        print("Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2")
     o = event.preferred_origin()
     print(
         ", ".join(
@@ -313,7 +314,9 @@ def show_event(event, txt=""):
                     o.quality.used_station_count,
                     o.quality.used_phase_count,
                     f"{o.quality.azimuthal_gap:.1f}",
-                    f"{o.quality.secondary_azimuthal_gap:.1f}",
+                    f"{o.quality.secondary_azimuthal_gap:.1f}"
+                    if o.quality.secondary_azimuthal_gap
+                    else "-",
                 ],
             )
         )
@@ -353,41 +356,65 @@ def _multiple_test():
     # logger.info("Writing all.xml")
     # catalog.write("all.xml", format="QUAKEML")
 
-def _event_reloc_test(event_id):
+
+def _event_reloc_test(
+    event_id, force_uncertainty=True, P_uncertainty=0.1, S_uncertainty=0.2
+):
     import tempfile
     import urllib.request
 
     nlloc_template = "../nll_template/nll_haslach_template.conf"
-    nll_channel_hint = "../test/chan.txt"
     nllocbin = "NLLoc"
     link = f"https://api.franceseisme.fr/fdsnws/event/1/query?eventid={event_id}&includearrivals=true&includeallpicks=true"
 
     with urllib.request.urlopen(link) as f:
         cat = read_events(f.read())
-    print(cat)
+    for i, e in enumerate(cat):
+        show_event(e, i, header=True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         with tempfile.NamedTemporaryFile(dir=tmpdir) as obs:
             logger.debug(f"Writing nll_obs file to {obs.name} in {tmpdir} directory.")
+
+            # <waveformID networkCode="FR" stationCode="CMPS" locationCode="00" channelCode="HHZ"></waveformID>
+            channel_hint = io.StringIO()
+            for pick in cat.events[0].picks:
+                # keep channel info
+                wfid = pick.waveform_id
+                string = f"{wfid.network_code}_{wfid.station_code}_{wfid.location_code}_{wfid.channel_code}\n"
+                channel_hint.write(string)
+
+                if force_uncertainty:
+                    if "P" in pick.phase_hint or "p" in pick.phase_hint:
+                        pick.time_errors.uncertainty = P_uncertainty
+                    elif "S" in pick.phase_hint or "s" in pick.phase_hint:
+                        pick.time_errors.uncertainty = S_uncertainty
+
+            channel_hint.seek(0)
             cat.write(obs.name, format="NLLOC_OBS")
+
             loc = NllLoc(
                 nllocbin,
                 nlloc_template,
-                nll_channel_hint=nll_channel_hint,
+                nll_channel_hint=channel_hint,
                 nll_obs_file=obs.name,
                 tmpdir=tmpdir,
             )
-            print(loc.catalog)
             loc.show_localizations()
-    loc.catalog.write(f"{event_id}.qml", format="QUAKEML") 
-    loc.catalog.write(f"{event_id}.sc3ml", format="SC3ML") 
+            channel_hint.close()
+    loc.catalog.write(f"{event_id}.qml", format="QUAKEML")
+    loc.catalog.write(f"{event_id}.sc3ml", format="SC3ML")
 
 
 if __name__ == "__main__":
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
     event_id = "fr2023lahzgh"
-    _event_reloc_test(event_id) 
+    _event_reloc_test(
+        event_id,
+        force_uncertainty=True,
+        P_uncertainty=0.1, S_uncertainty=0.2
+    )
 
     sys.exit(0)
 
