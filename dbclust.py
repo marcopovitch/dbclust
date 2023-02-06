@@ -129,7 +129,7 @@ if __name__ == "__main__":
 
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
-    time_periods = pd.date_range(tmin, tmax, freq="30min").to_series().to_list()
+    time_periods = pd.date_range(tmin, tmax, freq="15min").to_series().to_list()
     time_periods += [pd.to_datetime(tmax)]
     logger.info(f"Splitting dataset in {len(time_periods)} chunks.")
 
@@ -187,6 +187,8 @@ if __name__ == "__main__":
         clustcat = locator.get_localisations_from_nllobs_dir(
             my_obs_path, my_qml_path, append=True
         )
+        locator.catalog.write("partialcat.qml", format="QUAKEML")
+
         if len(clustcat) > 0:
             for e in clustcat.events:
                 show_event(e, "****")
@@ -194,10 +196,11 @@ if __name__ == "__main__":
     # Write QUAKEML and SC3ML
     logger.info("")
     logger.info("")
-    logger.info(f"Writing {len(locator.catalog)} all.qml and all.sc3ml")
+
     qml_fname = os.path.join(QML_PATH, f"all.qml")
-    locator.catalog.write(qml_fname, format="QUAKEML")
     sc3ml_fname = os.path.join(QML_PATH, f"all.sc3ml")
+    logger.info(f"Writing {len(locator.catalog)} events in {qml_fname}/{sc3ml_fname}")
+    locator.catalog.write(qml_fname, format="QUAKEML")
     locator.catalog.write(sc3ml_fname, format="SC3ML")
 
     # to filter out poorly constrained events
