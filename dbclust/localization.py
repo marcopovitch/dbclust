@@ -9,7 +9,7 @@ import tempfile
 import pandas as pd
 
 # from tqdm import tqdm
-from obspy import Catalog
+from obspy import Catalog, read_events
 from obspy import read_events
 from jinja2 import Template
 
@@ -353,9 +353,44 @@ def _multiple_test():
     # logger.info("Writing all.xml")
     # catalog.write("all.xml", format="QUAKEML")
 
+def _event_reloc_test(event_id):
+    import tempfile
+    import urllib.request
+
+    nlloc_template = "../nll_template/nll_haslach_template.conf"
+    nll_channel_hint = "../test/chan.txt"
+    nllocbin = "NLLoc"
+    link = f"https://api.franceseisme.fr/fdsnws/event/1/query?eventid={event_id}&includearrivals=true&includeallpicks=true"
+
+    with urllib.request.urlopen(link) as f:
+        cat = read_events(f.read())
+    print(cat)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.NamedTemporaryFile(dir=tmpdir) as obs:
+            logger.debug(f"Writing nll_obs file to {obs.name} in {tmpdir} directory.")
+            cat.write(obs.name, format="NLLOC_OBS")
+            loc = NllLoc(
+                nllocbin,
+                nlloc_template,
+                nll_channel_hint=nll_channel_hint,
+                nll_obs_file=obs.name,
+                tmpdir=tmpdir,
+            )
+            print(loc.catalog)
+            loc.show_localizations()
+    loc.catalog.write(f"{event_id}.qml", format="QUAKEML") 
+    loc.catalog.write(f"{event_id}.sc3ml", format="SC3ML") 
+
 
 if __name__ == "__main__":
     logger.setLevel(logging.DEBUG)
+
+    event_id = "fr2023lahzgh"
+    _event_reloc_test(event_id) 
+
+    sys.exit(0)
+
     logger.info("++++++++++++++++Simple test")
     _simple_test()
     logger.info("")
