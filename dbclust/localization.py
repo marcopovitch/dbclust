@@ -8,6 +8,7 @@ import pathlib
 import subprocess
 import tempfile
 import pandas as pd
+import dask.bag as db
 
 # from tqdm import tqdm
 from obspy import Catalog, read_events
@@ -50,9 +51,12 @@ class NllLoc(object):
         self.nb_events = len(self.catalog)
 
     def nll_localisation(self, nll_obs_file):
+        logger.info(
+            f"Localization of {nll_obs_file} using {self.nlloc_template} nlloc template."
+        )
         nll_obs_file_basename = os.path.basename(nll_obs_file)
 
-        # with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_path:
+
         tmp_path = tempfile.mkdtemp(dir=self.tmpdir)
         conf_file = os.path.join(tmp_path, f"{nll_obs_file_basename}.conf")
 
@@ -70,7 +74,7 @@ class NllLoc(object):
             self.replace(self.nlloc_template, conf_file, tags)
         except Exception as e:
             logger.error(e)
-            return None
+            return Catalog()
 
         # Localization
         cmde = f"{self.nllocbin} {conf_file}"
@@ -81,7 +85,7 @@ class NllLoc(object):
             )
         except Exception as e:
             logger.error(e)
-            return None
+            return Catalog()
         else:
             logger.debug(f"res = {res}")
 
@@ -90,8 +94,9 @@ class NllLoc(object):
         try:
             cat = read_events(nll_output)
         except Exception as e:
+            # No localization
             logger.debug(e)
-            return None
+            return Catalog()
 
         e = cat.events[0]
         o = e.preferred_origin()
@@ -103,7 +108,7 @@ class NllLoc(object):
             str(o.depth_errors.uncertainty),
         ]:
             logger.debug("Found NaN value in uncertainty. Ignoring event !")
-            return None
+            return Catalog()
 
         if self.nll_channel_hint:
             logger.debug(self.nll_channel_hint)
@@ -128,7 +133,8 @@ class NllLoc(object):
 
         return cat
 
-    def get_localisations_from_nllobs_dir(self, OBS_PATH, QML_PATH, append=True):
+
+    def dask_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True): 
         """
         nll localisation and export to quakeml
         warning : network and channel are lost since they are not used by nll
@@ -138,25 +144,43 @@ class NllLoc(object):
         returns a catalog
         """
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        logger.info(f"Localization of {obs_files_pattern} to {QML_PATH}")
+        logger.info(f"Localization of {obs_files_pattern}")
+        b = db.from_sequence(glob.glob(obs_files_pattern))
+        cat_results = b.map(lambda x:  self.nll_localisation(x)).compute()
 
         mycatalog = Catalog()
+        for cat in cat_results:
+            mycatalog += cat
 
+        if append is True:
+            self.catalog += mycatalog
+
+        # sort events by time
+        self.nb_events = len(self.catalog)
+        if self.nb_events > 1:
+            self.catalog.events = sorted(
+                self.catalog.events, key=lambda e: e.preferred_origin().time
+            )
+        return mycatalog
+
+    def get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
+        """
+        nll localisation and export to quakeml
+        warning : network and channel are lost since they are not used by nll
+                  use Phase() to get them.
+        if append is True, the obtain catalog is appended to the NllLoc catalog
+
+        returns a catalog
+        """
+        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
+        logger.info(f"Localization of {obs_files_pattern}")
+
+        mycatalog = Catalog()
         for nll_obs_file in sorted(glob.glob(obs_files_pattern)):
-            logger.info(
-                f"Localization of {nll_obs_file} using {self.nlloc_template} nlloc template."
-            )
-            nll_obs_file_basename = os.path.basename(nll_obs_file)
-            os.makedirs(QML_PATH, exist_ok=True)
-            qmlfile = os.path.join(
-                QML_PATH, pathlib.PurePath(nll_obs_file_basename).stem
-            )
-
             # localization
             cat = self.nll_localisation(nll_obs_file)
-
             if not cat:
-                logger.debug(f"No loc obtained for {qmlfile}:/")
+                logger.debug(f"No loc obtained for {nll_obs_file}:/")
                 continue
             mycatalog += cat
 
