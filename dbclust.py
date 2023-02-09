@@ -94,8 +94,8 @@ if __name__ == "__main__":
 
     qml_filename = catalog_cfg["qml_filename"]
     sc3ml_filename = catalog_cfg["sc3ml_filename"]
-    #max_standard_error = catalog_cfg["max_standard_error"]
-    #max_azimuthal_gap = catalog_cfg["max_azimuthal_gap"]
+    # max_standard_error = catalog_cfg["max_standard_error"]
+    # max_azimuthal_gap = catalog_cfg["max_azimuthal_gap"]
 
     ########################################
 
@@ -185,21 +185,24 @@ if __name__ == "__main__":
 
         # localize each cluster
         # all locs are automaticaly appended to the localtor
-        my_qml_path = os.path.join(QML_PATH, f"{e}")
-        clustcat = locator.get_localisations_from_nllobs_dir(
-            my_obs_path, my_qml_path, append=True
-        )
-        locator.catalog.write("partialcat.qml", format="QUAKEML")
+        # clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
+        clustcat = locator.dask_get_localisations_from_nllobs_dir(my_obs_path, append=True)
 
         if len(clustcat) > 0:
             for e in clustcat.events:
                 show_event(e, "****")
 
+        # write partial qml file
+        partial_qml = os.path.join(QML_PATH, "partialcat.qml")
+        locator.catalog.write(partial_qml, format="QUAKEML")
+
     # Write QUAKEML and SC3ML
     logger.info("")
     logger.info("")
 
-    logger.info(f"Writing {len(locator.catalog)} events in {qml_filename} and {sc3ml_filename}")
+    logger.info(
+        f"Writing {len(locator.catalog)} events in {qml_filename} and {sc3ml_filename}"
+    )
     locator.catalog.write(qml_filename, format="QUAKEML")
     locator.catalog.write(sc3ml_filename, format="SC3ML")
 
