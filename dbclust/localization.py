@@ -409,6 +409,9 @@ def _event_reloc_test(
 if __name__ == "__main__":
     logger.setLevel(logging.INFO)
 
+
+    logger.info("")
+    logger.info("++++++++++++++++ Reloc test")
     event_id = "fr2023lahzgh"
     _event_reloc_test(
         event_id,
@@ -416,10 +419,11 @@ if __name__ == "__main__":
         P_uncertainty=0.1, S_uncertainty=0.2
     )
 
-    sys.exit(0)
-
-    logger.info("++++++++++++++++Simple test")
+    logger.info("++++++++++++++++ Simple test")
     _simple_test()
+
     logger.info("")
-    logger.info("++++++++++++++++Multiple test")
+    logger.info("++++++++++++++++ Multiple test")
     _multiple_test()
+
+
