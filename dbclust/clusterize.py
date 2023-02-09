@@ -5,13 +5,12 @@ import logging
 from math import pow, sqrt
 import numpy as np
 import pandas as pd
-#from numba import jit
 from itertools import product
-from sklearn.cluster import DBSCAN, OPTICS
+from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 import functools
 import dask.bag as db
-from dask.cache import Cache
+#from dask.cache import Cache
 from obspy import Catalog
 from obspy.core.event import Event
 from obspy.core.event.base import WaveformStreamID
@@ -28,6 +27,7 @@ except:
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("clusterize")
 logger.setLevel(logging.DEBUG)
+
 
 @functools.lru_cache(maxsize=None)
 def compute_tt(p1, p2, vmean):
@@ -106,9 +106,9 @@ class Clusterize(object):
         else:
             # sequential computation
             # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
-            # pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
+            pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
             # // computation using dask bag
-            pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
+            #pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
             logger.info(f"TT maxtrix: {compute_tt.cache_info()}")
 
         if tt_maxtrix_fname and tt_matrix_save:
@@ -118,6 +118,7 @@ class Clusterize(object):
         self.clusters, self.noise = self.get_clusters(
             phases, pseudo_tt, max_search_dist, min_size
         )
+        del pseudo_tt 
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
 
@@ -134,12 +135,14 @@ class Clusterize(object):
         return tt_matrix
 
     @staticmethod
-    #@jit(nopython=True) 
     def numpy_compute_tt_matrix(phases, vmean):
         # optimization : matrix is symetric -> use lru_cache
-        tt_matrix = np.empty([len(phases), len(phases)], dtype=float)
-        for i, p1 in tqdm(enumerate(phases)):
-            for j, p2 in enumerate(phases):
+        nb_phases = len(phases)
+        tt_matrix = np.empty([nb_phases, nb_phases], dtype=float)
+        for i in range(0, nb_phases):
+            p1 = phases[i]
+            for j in range(0, nb_phases):
+                p2 = phases[j]
                 tt_matrix[i,j] = compute_tt(*sorted((p1, p2)), vmean)
         return tt_matrix
 
@@ -177,6 +180,7 @@ class Clusterize(object):
         cluster_ids = set(labels)
 
         clusters = []
+        noise = []
         for c_id in cluster_ids:
             cluster = []
             for p, l in zip(phases, labels):
@@ -197,9 +201,9 @@ class Clusterize(object):
 
             cat = Catalog()
             event = Event()
+            stations_list = set([p.station for p in cluster])
 
             if self.min_station_count:
-                stations_list = set([p.station for p in cluster])
                 if len(stations_list) < self.min_station_count:
                     logger.debug(
                         f"Cluster {i} ignored ... not enough stations ({len(stations_list)})"
@@ -220,10 +224,11 @@ class Clusterize(object):
                 elif "S" in p.phase and self.S_uncertainty:
                     pick.time_errors.uncertainty = self.S_uncertainty
                 event.picks.append(pick)
+
             cat.append(event)
             os.makedirs(OBS_PATH, exist_ok=True)
             obs_file = os.path.join(OBS_PATH, f"cluster-{i}.obs")
-            logger.debug(f"Writting {obs_file}")
+            logger.debug(f"Writting {obs_file} ({len(stations_list)})")
             cat.write(obs_file, format="NLLOC_OBS")
 
     def split_cluster(self):
