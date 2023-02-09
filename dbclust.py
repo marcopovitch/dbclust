@@ -92,8 +92,10 @@ if __name__ == "__main__":
     # import only phase with proba >=phase_proba_threshold
     phase_proba_threshold = pick_cfg["phase_proba_threshold"]
 
-    max_standard_error = catalog_cfg["max_standard_error"]
-    max_azimuthal_gap = catalog_cfg["max_azimuthal_gap"]
+    qml_filename = catalog_cfg["qml_filename"]
+    sc3ml_filename = catalog_cfg["sc3ml_filename"]
+    #max_standard_error = catalog_cfg["max_standard_error"]
+    #max_azimuthal_gap = catalog_cfg["max_azimuthal_gap"]
 
     ########################################
 
@@ -129,7 +131,7 @@ if __name__ == "__main__":
 
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
-    time_periods = pd.date_range(tmin, tmax, freq="15min").to_series().to_list()
+    time_periods = pd.date_range(tmin, tmax, freq="7min").to_series().to_list()
     time_periods += [pd.to_datetime(tmax)]
     logger.info(f"Splitting dataset in {len(time_periods)} chunks.")
 
@@ -197,11 +199,9 @@ if __name__ == "__main__":
     logger.info("")
     logger.info("")
 
-    qml_fname = os.path.join(QML_PATH, f"all.qml")
-    sc3ml_fname = os.path.join(QML_PATH, f"all.sc3ml")
-    logger.info(f"Writing {len(locator.catalog)} events in {qml_fname}/{sc3ml_fname}")
-    locator.catalog.write(qml_fname, format="QUAKEML")
-    locator.catalog.write(sc3ml_fname, format="SC3ML")
+    logger.info(f"Writing {len(locator.catalog)} events in {qml_filename} and {sc3ml_filename}")
+    locator.catalog.write(qml_filename, format="QUAKEML")
+    locator.catalog.write(sc3ml_filename, format="SC3ML")
 
     # to filter out poorly constrained events
     # fixme: add to config file
