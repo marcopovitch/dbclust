@@ -110,6 +110,7 @@ class Clusterize(object):
             # // computation using dask bag
             #pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
             logger.info(f"TT maxtrix: {compute_tt.cache_info()}")
+            compute_tt.cache_clear()
 
         if tt_maxtrix_fname and tt_matrix_save:
             logger.info(f"Saving tt_matrix {tt_maxtrix_fname}.")
@@ -271,7 +272,8 @@ def _test():
 
     phases = import_eqt_phases(
         df,
-        proba_threshold=0.8,
+        P_proba_threshold=0.8,
+        S_proba_threshold=0.5,
     )
     logger.info(f"Read {len(phases)}")
     myclusters = Clusterize(phases, max_search_dist, min_size, average_velocity)

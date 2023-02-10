@@ -108,7 +108,7 @@ class Phase(object):
 
 
 def import_phases(
-    df=None, proba_threshold=0, fdsnws_station_url="http://10.0.1.36:8080"
+    df=None, P_proba_threshold=0, S_proba_threshold=0, fdsnws_station_url="http://10.0.1.36:8080"
 ):
     """
     Read phaseNet dataframe picks.
@@ -130,7 +130,9 @@ def import_phases(
         phase_type = df.iloc[i]["phase_type"]
         phase_time = UTCDateTime(df.iloc[i]["phase_time"])
         proba = df.iloc[i]["phase_score"]
-        if proba < proba_threshold:
+        if phase_type == 'P' and proba < P_proba_threshold:
+            continue
+        if phase_type == 'S' and proba < S_proba_threshold:
             continue
 
         myphase = Phase(
@@ -152,7 +154,7 @@ def import_phases(
     return phases
 
 
-def import_eqt_phases(df=None, proba_threshold=0):
+def import_eqt_phases(df=None, P_proba_threshold=0, S_proba_threshold=0):
     """
     Read EQT dataframe picks.
     Returns a list of Phase objects.
@@ -182,7 +184,7 @@ def import_eqt_phases(df=None, proba_threshold=0):
         p_proba = df.iloc[i]["p_probability"]
         s_proba = df.iloc[i]["s_probability"]
 
-        if p_proba and p_proba >= proba_threshold:
+        if p_proba and p_proba >= P_proba_threshold:
             phase_type = "P"
             phase_time = UTCDateTime(df.iloc[i]["p_arrival_time"])
             myphase = Phase(net=net, sta=sta, coord=coord)
@@ -195,7 +197,7 @@ def import_eqt_phases(df=None, proba_threshold=0):
             if logger.level == logging.DEBUG:
                 myphase.show_all()
 
-        if s_proba and s_proba >= proba_threshold:
+        if s_proba and s_proba >= S_proba_threshold:
             phase_type = "S"
             phase_time = UTCDateTime(df.iloc[i]["s_arrival_time"])
             myphase = Phase(net=net, sta=sta, coord=coord)
@@ -223,7 +225,8 @@ def _test_phasenet_import():
 
     phases = import_phases(
         df,
-        proba_threshold=0.8,
+        P_proba_threshold=0.8,
+        S_proba_threshold=0.5,
         fdsnws_station_url="http://10.0.1.36:8080",
         # fdsnws_station_url="http://ws.resif.fr",
     )
@@ -242,7 +245,8 @@ def _test_eqt_import():
 
     phases = import_eqt_phases(
         df,
-        proba_threshold=0.8,
+        P_proba_threshold=0.8,
+        S_proba_threshold=0.5,
     )
 
 
