@@ -90,7 +90,8 @@ if __name__ == "__main__":
     S_uncertainty = pick_cfg["S_uncertainty"]
 
     # import only phase with proba >=phase_proba_threshold
-    phase_proba_threshold = pick_cfg["phase_proba_threshold"]
+    P_proba_threshold = pick_cfg["P_proba_threshold"]
+    S_proba_threshold = pick_cfg["S_proba_threshold"]
 
     qml_filename = catalog_cfg["qml_filename"]
     sc3ml_filename = catalog_cfg["sc3ml_filename"]
@@ -162,9 +163,9 @@ if __name__ == "__main__":
 
         # get phaseNet picks from dataframe
         if picks_type == "eqt":
-            phases = import_eqt_phases(df_subset, phase_proba_threshold)
+            phases = import_eqt_phases(df_subset, P_proba_threshold, S_proba_threshold)
         else:
-            phases = import_phases(df_subset, phase_proba_threshold)
+            phases = import_phases(df_subset, P_proba_threshold, S_proba_threshold)
 
         # find clusters
         myclust = Clusterize(
