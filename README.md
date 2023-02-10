@@ -14,3 +14,5 @@ have to provide :
 - scikit-learn
 - dask
 - tqdm
+- jinja2
+- pandas
