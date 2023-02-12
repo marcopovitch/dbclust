@@ -9,8 +9,10 @@ from itertools import product
 from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 import functools
+from itertools import filterfalse
 import dask.bag as db
-#from dask.cache import Cache
+
+# from dask.cache import Cache
 from obspy import Catalog
 from obspy.core.event import Event
 from obspy.core.event.base import WaveformStreamID
@@ -26,7 +28,7 @@ except:
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("clusterize")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 @functools.lru_cache(maxsize=None)
@@ -46,6 +48,19 @@ def compute_tt(p1, p2, vmean):
     return tt
 
 
+def check_phase_take_over(p1, p2):
+    if p1.network == p2.network and p1.station == p2.station and p1.phase == p2.phase:
+        if p1.proba > p2.proba:
+            # print(f"TAKEOVER: {p1} {p2}")
+            return "takeover"
+        else:
+            # print(f"DROP: {p1} {p2}")
+            return "drop"
+    else:
+        # print(f"INSERT: {p1} {p2}")
+        return "insert"
+
+
 class Clusterize(object):
     def __init__(
         self,
@@ -53,8 +68,8 @@ class Clusterize(object):
         max_search_dist,
         min_size,
         average_velocity,
-        min_station_count=None, 
-        P_uncertainty=0.1, 
+        min_station_count=None,
+        P_uncertainty=0.1,
         S_uncertainty=0.2,
         tt_maxtrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
@@ -66,7 +81,7 @@ class Clusterize(object):
         self.clusters = []
         self.n_clusters = 0
         self.noise = []
-        self.n_noise = 0 
+        self.n_noise = 0
 
         # clustering parameters
         self.max_search_dist = max_search_dist
@@ -74,26 +89,27 @@ class Clusterize(object):
         self.average_velocity = average_velocity
 
         # pick filtering parameters
-        self.min_station_count = min_station_count 
-        self.P_uncertainty = P_uncertainty 
-        self.S_uncertainty = S_uncertainty 
+        self.min_station_count = min_station_count
+        self.P_uncertainty = P_uncertainty
+        self.S_uncertainty = S_uncertainty
 
         # tt_matrix load/save parameters
         self.tt_maxtrix_fname = tt_maxtrix_fname
         self.tt_matrix_load = tt_matrix_load
         self.tt_matrix_save = tt_matrix_save
 
-
-        logger.info(f"Starting Clustering (nbphases={len(phases)}, min_size={min_size}).")
+        logger.info(
+            f"Starting Clustering (nbphases={len(phases)}, min_size={min_size})."
+        )
         if len(phases) < min_size:
             logger.info("Too few picks !")
-            # add noise points 
+            # add noise points
             self.clusters = []
             self.n_clusters = 0
             self.noise = [phases, -1]
             self.n_noise = len(phases)
             return
-        
+
         logger.info("Computing TT matrix.")
         if tt_matrix_load and tt_maxtrix_fname:
             logger.info(f"Loading tt_matrix {tt_maxtrix_fname}.")
@@ -108,7 +124,7 @@ class Clusterize(object):
             # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
             pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
             # // computation using dask bag
-            #pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
+            # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
             logger.info(f"TT maxtrix: {compute_tt.cache_info()}")
             compute_tt.cache_clear()
 
@@ -119,7 +135,7 @@ class Clusterize(object):
         self.clusters, self.noise = self.get_clusters(
             phases, pseudo_tt, max_search_dist, min_size
         )
-        del pseudo_tt 
+        del pseudo_tt
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
 
@@ -144,7 +160,7 @@ class Clusterize(object):
             p1 = phases[i]
             for j in range(0, nb_phases):
                 p2 = phases[j]
-                tt_matrix[i,j] = compute_tt(*sorted((p1, p2)), vmean)
+                tt_matrix[i, j] = compute_tt(*sorted((p1, p2)), vmean)
         return tt_matrix
 
     @staticmethod
@@ -180,26 +196,55 @@ class Clusterize(object):
 
         cluster_ids = set(labels)
 
+        # feed picks to associated clusters.
+        # Take care of double picks ... keep only the one with the best probability
         clusters = []
         noise = []
         for c_id in cluster_ids:
             cluster = []
             for p, l in zip(phases, labels):
                 if c_id == l:
-                    cluster.append(p)
+                    # check for duplicated station/phase pick
+                    # keep only the one with highest proba
+                    if len(cluster) == 0:
+                        cluster.append(p)
+                        continue
+
+                    to_remove = None
+                    to_insert = None
+                    for pp in cluster:
+                        action = check_phase_take_over(p, pp)
+                        if action == "takeover":
+                            to_remove = pp
+                            to_insert = p
+                            break
+                        elif action == "drop":
+                            # do nothing
+                            to_remove = None
+                            to_insert = None
+                            break
+                        else:  # insert
+                            to_remove = None
+                            to_insert = p
+                            # should wait until the end of the picks in cluster
+
+                    if to_insert:
+                        cluster.append(p)
+                    if to_remove:
+                        cluster.remove(pp)
+
             if c_id == -1:
                 noise = cluster.copy()
             else:
                 clusters.append(cluster)
         return clusters, noise
 
-    def generate_nllobs( self, OBS_PATH):
+    def generate_nllobs(self, OBS_PATH):
         """
         export to obspy/NLL
         only 1 event/catalog (for NLL)
         """
         for i, cluster in enumerate(self.clusters):
-
             cat = Catalog()
             event = Event()
             stations_list = set([p.station for p in cluster])
@@ -269,7 +314,6 @@ def _test():
         logger.error(e)
         sys.exit()
 
-
     phases = import_eqt_phases(
         df,
         P_proba_threshold=0.8,
@@ -278,7 +322,7 @@ def _test():
     logger.info(f"Read {len(phases)}")
     myclusters = Clusterize(phases, max_search_dist, min_size, average_velocity)
     myclusters.generate_nllobs("../test/obs")
-    #myclusters.show_clusters() 
+    # myclusters.show_clusters()
 
 
 if __name__ == "__main__":
