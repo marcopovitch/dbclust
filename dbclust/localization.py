@@ -29,12 +29,20 @@ class NllLoc(object):
         nll_obs_file=None,
         nll_channel_hint=None,
         tmpdir="/tmp",
+        double_pass=False,
+        force_uncertainty=False, 
+        P_uncertainty=0.1, 
+        S_uncertainty=0.2
     ):
         # define locator
         self.nllocbin = nllocbin
         self.nlloc_template = nlloc_template
         self.nll_channel_hint = nll_channel_hint
         self.tmpdir = tmpdir
+        self.double_pass = double_pass
+        self.force_uncertainty = force_uncertainty
+        self.P_uncertainty = P_uncertainty
+        self.S_uncertainty = S_uncertainty
 
         # obs file to localize
         self.nll_obs_file = nll_obs_file
@@ -44,18 +52,19 @@ class NllLoc(object):
 
         # localization
         if self.nll_obs_file:
-            self.catalog = self.nll_localisation(nll_obs_file)
+            self.catalog = self.nll_localisation(
+                nll_obs_file, double_pass=self.double_pass
+            )
         else:
             self.catalog = Catalog()
-
         self.nb_events = len(self.catalog)
 
-    def nll_localisation(self, nll_obs_file):
-        logger.info(
-            f"Localization of {nll_obs_file} using {self.nlloc_template} nlloc template."
+    def nll_localisation(self, nll_obs_file, double_pass=False):
+        """Returns an obspy catalog"""
+        logger.debug(
+            f"Localization of {nll_obs_file} using {self.nlloc_template} template."
         )
         nll_obs_file_basename = os.path.basename(nll_obs_file)
-
 
         tmp_path = tempfile.mkdtemp(dir=self.tmpdir)
         conf_file = os.path.join(tmp_path, f"{nll_obs_file_basename}.conf")
@@ -87,7 +96,8 @@ class NllLoc(object):
             logger.error(e)
             return Catalog()
         else:
-            logger.debug(f"res = {res}")
+            # logger.debug(f"res = {res}")
+            pass
 
         # Read results
         nll_output = os.path.join(tmp_path, "last.hyp")
@@ -98,6 +108,7 @@ class NllLoc(object):
             logger.debug(e)
             return Catalog()
 
+        # there is always only one event in the catalog
         e = cat.events[0]
         o = e.preferred_origin()
 
@@ -117,24 +128,43 @@ class NllLoc(object):
             logger.warning("No nll_channel_hint file provided !")
 
         # override default values
-        e.creation_info.author = ""
+        # e.creation_info.author = ""
         o = e.preferred_origin()
-        # o.resource_id = 'smi:local/origin/id'
+        # o.resource_id = 'smi:dbclust/origin/id'
         o.creation_info.agency_id = "RENASS"
         o.creation_info.author = "DBClust"
         o.evaluation_mode = "automatic"
         o.method_id = "NonLinLoc"
         o.earth_model_id = self.nlloc_template
-        # count the stations used with weight > 0
-        o.quality.used_phase_count = len(
-            [a.time_weight for a in o.arrivals if a.time_weight]
-        )
-        o.quality.used_station_count = self.get_used_station_count(e)
+
+        if self.force_uncertainty:
+            for pick in e.picks:
+                if "P" in pick.phase_hint or "p" in pick.phase_hint:
+                    pick.time_errors.uncertainty = self.P_uncertainty
+                elif "S" in pick.phase_hint or "s" in pick.phase_hint:
+                    pick.time_errors.uncertainty = self.S_uncertainty
+
+        # try a relocation
+        if double_pass:
+            logger.debug("Starting double pass relocation.")
+            cat2 = cat.copy()
+            event2 = cat2.events[0]
+            event2 = self.cleanup_pick_phase(event2)
+            new_nll_obs_file = nll_obs_file + ".2nd_pass"
+            cat2.write(new_nll_obs_file, format="NLLOC_OBS")
+            cat2 = self.nll_localisation(new_nll_obs_file, double_pass=False)
+
+            if cat2:
+                event2 = cat2.events[0]
+                orig2 = event2.preferred_origin()
+                # add this new origin to catalog and set it as preferred
+                e.origins.append(orig2)
+                e.preferred_origin_id = orig2.resource_id
+                e.picks += event2.picks
 
         return cat
 
-
-    def dask_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True): 
+    def dask_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
         """
         nll localisation and export to quakeml
         warning : network and channel are lost since they are not used by nll
@@ -146,7 +176,9 @@ class NllLoc(object):
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
         logger.info(f"Localization of {obs_files_pattern}")
         b = db.from_sequence(glob.glob(obs_files_pattern))
-        cat_results = b.map(lambda x:  self.nll_localisation(x)).compute()
+        cat_results = b.map(
+            lambda x: self.nll_localisation(x, double_pass=self.double_pass)
+        ).compute()
 
         mycatalog = Catalog()
         for cat in cat_results:
@@ -178,7 +210,7 @@ class NllLoc(object):
         mycatalog = Catalog()
         for nll_obs_file in sorted(glob.glob(obs_files_pattern)):
             # localization
-            cat = self.nll_localisation(nll_obs_file)
+            cat = self.nll_localisation(nll_obs_file, double_pass=self.double_pass)
             if not cat:
                 logger.debug(f"No loc obtained for {nll_obs_file}:/")
                 continue
@@ -196,11 +228,43 @@ class NllLoc(object):
         return mycatalog
 
     @staticmethod
+    def cleanup_pick_phase(event, time_residual_threshold=1.0):
+        """Remove picks/arrivals with time weight set to 0"""
+        orig = event.preferred_origin()
+        pick_to_delete = []
+        arrival_to_delete = []
+        for arrival in orig.arrivals:
+            if (
+                not arrival.time_weight
+                or abs(arrival.time_residual) > time_residual_threshold
+            ):
+                pick = next(
+                    (p for p in event.picks if p.resource_id == arrival.pick_id), None
+                )
+                pick_to_delete.append(pick)
+                arrival_to_delete.append(arrival)
+        logger.debug(
+            f"cleanup: remove {len(arrival_to_delete)} phases and {len(pick_to_delete)} picks."
+        )
+        for a in arrival_to_delete:
+            orig.arrivals.remove(a)
+        for p in pick_to_delete:
+            event.picks.remove(p)
+
+        # update stations used with weight > 0
+        orig = event.preferred_origin()
+        orig.quality.used_phase_count = len(
+            [a.time_weight for a in orig.arrivals if a.time_weight]
+        )
+        orig.quality.used_station_count = NllLoc.get_used_station_count(event)
+        return event
+
+    @staticmethod
     def get_used_station_count(event):
         station_list = []
         origin = event.preferred_origin()
         for arrival in origin.arrivals:
-            if arrival.time_weight:
+            if arrival.time_weight and arrival.time_residual:
                 pick = next(
                     (p for p in event.picks if p.resource_id == arrival.pick_id), None
                 )
@@ -218,7 +282,7 @@ class NllLoc(object):
         with open(outfilename, "w") as out_fh:
             out_fh.write(t)
             logger.debug(
-                f"NLLoc template file {templatefile} rendered to {outfilename}"
+                f"Template {templatefile} rendered as {outfilename}"
             )
 
     @staticmethod
@@ -323,7 +387,15 @@ class NllLoc(object):
 def show_event(event, txt="", header=False):
     if header:
         print("Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2")
-    o = event.preferred_origin()
+    o_pref = event.preferred_origin()
+    show_origin(o_pref, "****")
+    for o in event.origins:
+        if o == o_pref:
+            continue
+        show_origin(o, " |__")
+
+
+def show_origin(o, txt):
     print(
         ", ".join(
             map(
@@ -430,17 +502,69 @@ def _event_reloc_test(
     loc.catalog.write(f"{event_id}.sc3ml", format="SC3ML")
 
 
+def _cat_reloc(filename, force_uncertainty=True, P_uncertainty=0.1, S_uncertainty=0.2):
+    import tempfile
+
+    nlloc_template = "../nll_template/nll_auvergne_template.conf"
+    nllocbin = "NLLoc"
+
+    try:
+        cat = read_events(filename)
+    except Exception as e:
+        logger.error(f"{filename}: {e}")
+        sys.exit(255)
+
+    for i, e in enumerate(cat):
+        show_event(e, i, header=True)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.NamedTemporaryFile(dir=tmpdir) as obs:
+            logger.debug(f"Writing nll_obs file to {obs.name}.")
+
+            # <waveformID networkCode="FR" stationCode="CMPS" locationCode="00" channelCode="HHZ"></waveformID>
+            channel_hint = io.StringIO()
+            for pick in cat.events[0].picks:
+                # keep channel info
+                wfid = pick.waveform_id
+                string = f"{wfid.network_code}_{wfid.station_code}_{wfid.location_code}_{wfid.channel_code}\n"
+                channel_hint.write(string)
+
+                if force_uncertainty:
+                    if "P" in pick.phase_hint or "p" in pick.phase_hint:
+                        pick.time_errors.uncertainty = P_uncertainty
+                    elif "S" in pick.phase_hint or "s" in pick.phase_hint:
+                        pick.time_errors.uncertainty = S_uncertainty
+
+            channel_hint.seek(0)
+            cat.write(obs.name, format="NLLOC_OBS")
+
+            loc = NllLoc(
+                nllocbin,
+                nlloc_template,
+                nll_channel_hint=channel_hint,
+                nll_obs_file=obs.name,
+                tmpdir=tmpdir,
+            )
+            loc.show_localizations()
+            channel_hint.close()
+    loc.catalog.write(f"{filename}-reloc.qml", format="QUAKEML")
+    loc.catalog.write(f"{filename}-reloc.sc3ml", format="SC3ML")
+
+
 if __name__ == "__main__":
     logger.setLevel(logging.INFO)
 
+    logger.info("")
+    logger.info("++++++++++++++++ Reloc test (catalog)")
+    _cat_reloc("../DataChambon/qml/chambon.qml", force_uncertainty=True)
+    #_cat_reloc("../test/chambon.qml")
+    sys.exit()
 
     logger.info("")
-    logger.info("++++++++++++++++ Reloc test")
+    logger.info("++++++++++++++++ Reloc test (fdsnws-event)")
     event_id = "fr2023lahzgh"
     _event_reloc_test(
-        event_id,
-        force_uncertainty=True,
-        P_uncertainty=0.1, S_uncertainty=0.2
+        event_id, force_uncertainty=True, P_uncertainty=0.1, S_uncertainty=0.2
     )
 
     logger.info("++++++++++++++++ Simple test")
@@ -449,5 +573,3 @@ if __name__ == "__main__":
     logger.info("")
     logger.info("++++++++++++++++ Multiple test")
     _multiple_test()
-
-
