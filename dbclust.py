@@ -131,12 +131,18 @@ if __name__ == "__main__":
         sys.exit()
     logger.info(f"Read {len(df)} phases.")
 
-    date_begin = pd.to_datetime("2022-07-24T21:12:30.000Z", utc=True)
-    date_end = pd.to_datetime("2022-07-24T21:13:30.000Z", utc=True)
-    # date_begin = pd.to_datetime("2022-08-06T06:53:00.000Z", utc=True)
-    # date_end = pd.to_datetime("2022-08-06T06:54:00.000Z", utc=True)
-    # date_begin = pd.to_datetime("2022-07-29T19:06:00.000Z", utc=True)
-    # date_end = pd.to_datetime("2022-07-29T19:08:00.000Z", utc=True)
+    date_begin = pd.to_datetime("2022-07-24T00:00:00.000Z", utc=True)
+    date_end = pd.to_datetime("2022-07-25T00:00:00.000Z", utc=True)
+
+    #date_begin = pd.to_datetime("2022-07-24T21:12:30.000Z", utc=True)
+    #date_end = pd.to_datetime("2022-07-24T21:13:30.000Z", utc=True)
+
+    #date_begin = pd.to_datetime("2022-08-06T06:53:00.000Z", utc=True)
+    #date_end = pd.to_datetime("2022-08-06T06:54:00.000Z", utc=True)
+
+    #date_begin = pd.to_datetime("2022-07-29T19:06:00.000Z", utc=True)
+    #date_end = pd.to_datetime("2022-07-29T19:08:00.000Z", utc=True)
+
     df = df[df["phase_time"] >= date_begin]
     df = df[df["phase_time"] <= date_end]
     print(df)
@@ -157,6 +163,7 @@ if __name__ == "__main__":
         nll_channel_hint=nll_channel_hint,
         tmpdir=TMP_PATH,
         double_pass=True,
+        time_residual_threshold=0.75
     )
 
     # process independently each time period
@@ -193,6 +200,7 @@ if __name__ == "__main__":
             min_station_count=min_station_count,
             P_uncertainty=P_uncertainty,
             S_uncertainty=S_uncertainty,
+            tt_matrix_save=False
         )
         if myclust.n_clusters == 0:
             continue
