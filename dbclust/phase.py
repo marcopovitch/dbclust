@@ -108,7 +108,10 @@ class Phase(object):
 
 
 def import_phases(
-    df=None, P_proba_threshold=0, S_proba_threshold=0, fdsnws_station_url="http://10.0.1.36:8080"
+    df=None,
+    P_proba_threshold=0,
+    S_proba_threshold=0,
+    fdsnws_station_url="http://10.0.1.36:8080",
 ):
     """
     Read phaseNet dataframe picks.
@@ -130,9 +133,9 @@ def import_phases(
         phase_type = df.iloc[i]["phase_type"]
         phase_time = UTCDateTime(df.iloc[i]["phase_time"])
         proba = df.iloc[i]["phase_score"]
-        if phase_type == 'P' and proba < P_proba_threshold:
+        if phase_type == "P" and proba < P_proba_threshold:
             continue
-        if phase_type == 'S' and proba < S_proba_threshold:
+        if phase_type == "S" and proba < S_proba_threshold:
             continue
 
         myphase = Phase(
