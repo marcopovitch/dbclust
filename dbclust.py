@@ -4,9 +4,9 @@ import os
 import logging
 import argparse
 import yaml
+import numpy as np
 import pandas as pd
-
-from obspy import Catalog
+from obspy import Catalog, UTCDateTime
 
 from dbclust.phase import import_phases, import_eqt_phases
 from dbclust.clusterize import Clusterize
@@ -124,17 +124,31 @@ if __name__ == "__main__":
                     },
                     inplace=True,
                 )
+            df["phase_time"] = pd.to_datetime(df["phase_time"], utc=True)
             df.sort_values(by=["phase_time"], inplace=True)
     except Exception as e:
         logger.error(e)
         sys.exit()
     logger.info(f"Read {len(df)} phases.")
 
+    date_begin = pd.to_datetime("2022-07-24T21:12:30.000Z", utc=True)
+    date_end = pd.to_datetime("2022-07-24T21:13:30.000Z", utc=True)
+    # date_begin = pd.to_datetime("2022-08-06T06:53:00.000Z", utc=True)
+    # date_end = pd.to_datetime("2022-08-06T06:54:00.000Z", utc=True)
+    # date_begin = pd.to_datetime("2022-07-29T19:06:00.000Z", utc=True)
+    # date_end = pd.to_datetime("2022-07-29T19:08:00.000Z", utc=True)
+    df = df[df["phase_time"] >= date_begin]
+    df = df[df["phase_time"] <= date_end]
+    print(df)
+
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
     time_periods = pd.date_range(tmin, tmax, freq="7min").to_series().to_list()
     time_periods += [pd.to_datetime(tmax)]
-    logger.info(f"Splitting dataset in {len(time_periods)} chunks.")
+    logger.info(f"Splitting dataset in {len(time_periods)-1} chunks.")
+
+    print(time_periods)
+    #print(time_periods[:-2], time_periods[1:])
 
     # configure locator
     locator = NllLoc(
@@ -142,15 +156,18 @@ if __name__ == "__main__":
         nlloc_template,
         nll_channel_hint=nll_channel_hint,
         tmpdir=TMP_PATH,
+        double_pass=True,
     )
 
     # process independently each time period
     # fixme: add overlapp between time period
-    for e, (from_time, to_time) in enumerate(zip(time_periods[:-2], time_periods[1:])):
+    for e, (from_time, to_time) in enumerate(
+        zip(time_periods[:-1], time_periods[1:]), start=1
+    ):
         logger.info("")
         logger.info("")
         logger.info(
-            f"Extraction {e}/{len(time_periods)} picks from {from_time} to {to_time}."
+            f"Time window extraction #{e}/{len(time_periods)-1} picks from {from_time} to {to_time}."
         )
 
         df_subset = df[(df["phase_time"] >= from_time) & (df["phase_time"] < to_time)]
@@ -185,9 +202,13 @@ if __name__ == "__main__":
         myclust.generate_nllobs(my_obs_path)
 
         # localize each cluster
-        # all locs are automaticaly appended to the localtor
-        # clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
-        clustcat = locator.dask_get_localisations_from_nllobs_dir(my_obs_path, append=True)
+        # all locs are automaticaly appended to the locator's catalog
+        # sequential version
+        #clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
+        # Dask // version
+        clustcat = locator.dask_get_localisations_from_nllobs_dir(
+            my_obs_path, append=True
+        )
 
         if len(clustcat) > 0:
             for e in clustcat.events:
