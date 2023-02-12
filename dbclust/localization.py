@@ -2,6 +2,7 @@
 import sys
 import io
 import os
+from math import isclose, fabs
 import logging
 import glob
 import pathlib
@@ -30,9 +31,10 @@ class NllLoc(object):
         nll_channel_hint=None,
         tmpdir="/tmp",
         double_pass=False,
-        force_uncertainty=False, 
-        P_uncertainty=0.1, 
-        S_uncertainty=0.2
+        force_uncertainty=False,
+        P_uncertainty=0.1,
+        S_uncertainty=0.2,
+        time_residual_threshold=None,
     ):
         # define locator
         self.nllocbin = nllocbin
@@ -43,6 +45,7 @@ class NllLoc(object):
         self.force_uncertainty = force_uncertainty
         self.P_uncertainty = P_uncertainty
         self.S_uncertainty = S_uncertainty
+        self.time_residual_threshold = time_residual_threshold
 
         # obs file to localize
         self.nll_obs_file = nll_obs_file
@@ -227,22 +230,25 @@ class NllLoc(object):
             )
         return mycatalog
 
-    @staticmethod
-    def cleanup_pick_phase(event, time_residual_threshold=1.0):
+    def cleanup_pick_phase(self, event):
         """Remove picks/arrivals with time weight set to 0"""
         orig = event.preferred_origin()
         pick_to_delete = []
         arrival_to_delete = []
         for arrival in orig.arrivals:
-            if (
-                not arrival.time_weight
-                or abs(arrival.time_residual) > time_residual_threshold
-            ):
+            bad_time_residual = (
+                False
+                if not self.time_residual_threshold
+                else (fabs(arrival.time_residual) > self.time_residual_threshold)
+            )
+
+            if isclose(arrival.time_weight, 0, abs_tol=0.001) or bad_time_residual:
                 pick = next(
                     (p for p in event.picks if p.resource_id == arrival.pick_id), None
                 )
                 pick_to_delete.append(pick)
                 arrival_to_delete.append(arrival)
+
         logger.debug(
             f"cleanup: remove {len(arrival_to_delete)} phases and {len(pick_to_delete)} picks."
         )
@@ -281,9 +287,7 @@ class NllLoc(object):
         t = template.render(tags)
         with open(outfilename, "w") as out_fh:
             out_fh.write(t)
-            logger.debug(
-                f"Template {templatefile} rendered as {outfilename}"
-            )
+            logger.debug(f"Template {templatefile} rendered as {outfilename}")
 
     @staticmethod
     def read_chan(fname):
@@ -557,7 +561,7 @@ if __name__ == "__main__":
     logger.info("")
     logger.info("++++++++++++++++ Reloc test (catalog)")
     _cat_reloc("../DataChambon/qml/chambon.qml", force_uncertainty=True)
-    #_cat_reloc("../test/chambon.qml")
+    # _cat_reloc("../test/chambon.qml")
     sys.exit()
 
     logger.info("")
