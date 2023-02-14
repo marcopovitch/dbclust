@@ -123,7 +123,7 @@ class Clusterize(object):
             # sequential computation
             # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
             pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
-            # // computation using dask bag
+            # // computation using dask bag: slower for small cluster
             # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
             logger.info(f"TT maxtrix: {compute_tt.cache_info()}")
             compute_tt.cache_clear()
@@ -204,34 +204,39 @@ class Clusterize(object):
             cluster = []
             for p, l in zip(phases, labels):
                 if c_id == l:
-                    # check for duplicated station/phase pick
-                    # keep only the one with highest proba
-                    if len(cluster) == 0:
-                        cluster.append(p)
-                        continue
+                    cluster.append(p)
 
-                    to_remove = None
-                    to_insert = None
-                    for pp in cluster:
-                        action = check_phase_take_over(p, pp)
-                        if action == "takeover":
-                            to_remove = pp
-                            to_insert = p
-                            break
-                        elif action == "drop":
-                            # do nothing
-                            to_remove = None
-                            to_insert = None
-                            break
-                        else:  # insert
-                            to_remove = None
-                            to_insert = p
-                            # should wait until the end of the picks in cluster
+                    # It is better to rely on NonLinLoc to keep the relevant picks
 
-                    if to_insert:
-                        cluster.append(p)
-                    if to_remove:
-                        cluster.remove(pp)
+                    # # check for duplicated station/phase pick
+                    # # keep only the one with highest proba
+                    # if len(cluster) == 0:
+                    #     cluster.append(p)
+                    #     continue
+
+                    # to_remove = None
+                    # to_insert = None
+
+                    # for pp in cluster:
+                    #     action = check_phase_take_over(p, pp)
+                    #     if action == "takeover":
+                    #         to_remove = pp
+                    #         to_insert = p
+                    #         break
+                    #     elif action == "drop":
+                    #         # do nothing
+                    #         to_remove = None
+                    #         to_insert = None
+                    #         break
+                    #     else:  # insert
+                    #         to_remove = None
+                    #         to_insert = p
+                    #         # should wait until the end of the picks in cluster
+
+                    # if to_insert:
+                    #     cluster.append(p)
+                    # if to_remove:
+                    #     cluster.remove(pp)
 
             if c_id == -1:
                 noise = cluster.copy()
