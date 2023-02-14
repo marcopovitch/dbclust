@@ -131,11 +131,14 @@ if __name__ == "__main__":
         sys.exit()
     logger.info(f"Read {len(df)} phases.")
 
-    date_begin = pd.to_datetime("2022-07-24T00:00:00.000Z", utc=True)
-    date_end = pd.to_datetime("2022-07-25T00:00:00.000Z", utc=True)
+    # date_begin = pd.to_datetime("2022-07-24T15:45:00.000Z", utc=True)
+    # date_end = pd.to_datetime("2022-07-24T15:47:00.000Z", utc=True)
 
-    #date_begin = pd.to_datetime("2022-07-24T21:12:30.000Z", utc=True)
-    #date_end = pd.to_datetime("2022-07-24T21:13:30.000Z", utc=True)
+    #date_begin = pd.to_datetime("2022-07-24T00:00:00.000Z", utc=True)
+    #date_end = pd.to_datetime("2022-07-25T00:00:00.000Z", utc=True)
+
+    #date_begin = pd.to_datetime("2022-07-17T19:08:00.000Z", utc=True)
+    #date_end = pd.to_datetime("2022-07-17T19:15:00.000Z", utc=True)
 
     #date_begin = pd.to_datetime("2022-08-06T06:53:00.000Z", utc=True)
     #date_end = pd.to_datetime("2022-08-06T06:54:00.000Z", utc=True)
@@ -143,9 +146,8 @@ if __name__ == "__main__":
     #date_begin = pd.to_datetime("2022-07-29T19:06:00.000Z", utc=True)
     #date_end = pd.to_datetime("2022-07-29T19:08:00.000Z", utc=True)
 
-    df = df[df["phase_time"] >= date_begin]
-    df = df[df["phase_time"] <= date_end]
-    print(df)
+    # df = df[df["phase_time"] >= date_begin]
+    # df = df[df["phase_time"] <= date_end]
 
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
@@ -153,7 +155,7 @@ if __name__ == "__main__":
     time_periods += [pd.to_datetime(tmax)]
     logger.info(f"Splitting dataset in {len(time_periods)-1} chunks.")
 
-    print(time_periods)
+    #print(time_periods)
     #print(time_periods[:-2], time_periods[1:])
 
     # configure locator
@@ -223,18 +225,21 @@ if __name__ == "__main__":
                 show_event(e, "****")
 
         # write partial qml file
-        partial_qml = os.path.join(QML_PATH, "partialcat.qml")
-        locator.catalog.write(partial_qml, format="QUAKEML")
+        #partial_qml = os.path.join(QML_PATH, "partialcat.qml")
+        #locator.catalog.write(partial_qml, format="QUAKEML")
+
+        del myclust
 
     # Write QUAKEML and SC3ML
     logger.info("")
     logger.info("")
 
     logger.info(
-        f"Writing {len(locator.catalog)} events in {qml_filename} and {sc3ml_filename}"
+        #f"Writing {len(locator.catalog)} events in {qml_filename} and {sc3ml_filename}"
+        f"Writing {len(locator.catalog)} events in {qml_filename}"
     )
     locator.catalog.write(qml_filename, format="QUAKEML")
-    locator.catalog.write(sc3ml_filename, format="SC3ML")
+    #locator.catalog.write(sc3ml_filename, format="SC3ML")
 
     # to filter out poorly constrained events
     # fixme: add to config file
