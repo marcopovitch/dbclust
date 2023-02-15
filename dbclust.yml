@@ -3,31 +3,40 @@ file:
   data_path: &DATA Data
 
   #temporary directory
-  tmp_path: !join [*DATA, "/", "tmp"]
+  tmp_path: !join [*DATA, "/", "tmp/nll"]
 
   # path definition to store nll obs and qml files
   obs_path: !join [*DATA, "/", "obs"]
-  qml_path: !join [*DATA, "/", "qml"]
+  qml_path: &QML_PATH !join [*DATA, "/", "qml"]
 
-  # phaseNet/EQT picks file
+  # path to phaseNet/EQT picks file
   picks_path: !join &PICK_PATH [*DATA, "/", "picks"]
-  #picks_type: phasenet
-  #picks_csv: !join [*PICK_PATH, "/", "picks.csv"]
-  picks_type: eqt
-  picks_csv: !join [*PICK_PATH, "/", "picks_eqt.csv"]
 
+  picks_type: phasenet
+  picks_csv: !join [*PICK_PATH, "/", "picks.csv"]
 
+  #picks_type: eqt
+  #picks_csv: !join [*PICK_PATH, "/", "EQT-2022-09-10.csv"]
+  #picks_csv: !join [*PICK_PATH, "/", "picks_eqt.csv"]
+
+  # use only picks in this time window
+  #date_begin: 2022-07-08T00:46:00.000Z
+  #date_end: 2022-07-08T00:49:00.000Z
 
 nll:
+  # NLLoc binary
   bin: /opt/nll/bin/NLLoc
+  # time grid files
+  nll_time_path: /Users/marc/Dockers/routine/nll/data/times
 
-  # nll configuration template directory
+  # location of nll configuration template directory
   nll_template_dir: &TEMPLATE_DIR nll_template
 
+  # Which template to use ?
   #template_conf: &TEMPLATE_CONF "nll_pyrenees_template.conf"
-  #template_conf: &TEMPLATE_CONF  "nll_auvergne_template.conf"
+  template_conf: &TEMPLATE_CONF "nll_auvergne_template.conf"
   #template_conf: &TEMPLATE_CONF  "nll_alpes_template.conf"
-  template_conf: &TEMPLATE_CONF "nll_haslach_template.conf"
+  #template_conf: &TEMPLATE_CONF "nll_haslach_template.conf"
   nll_template: !join [*TEMPLATE_DIR, "/", *TEMPLATE_CONF]
 
   # file to keep track of SCNL when exporting to NLL
@@ -39,18 +48,26 @@ nll:
 pick:
   # pick uncertainty
   P_uncertainty: 0.1
-  S_uncertainty: 0.25
+  S_uncertainty: 0.2
 
   # import only phase with proba >=phase_proba_threshold
-  phase_proba_threshold: 0.5
+  P_proba_threshold: 0.0
+  S_proba_threshold: 0.0
 
 # parameters for dbscan clustering
 cluster:
-  min_size: 4
-  min_station_count: 4
-  average_velocity: 6.0 # km/s
-  max_search_dist: 17.0
+  min_size: 12
+  min_station_count: 8 # count stations without duplicate
+  average_velocity: 5.0 # km/s
+  max_search_dist: 13
+
+  # WARNING : to be used only for a given picks_csv file ()
+  # Don't use it if you don't know what you are doing !
+  #pre_computed_tt_matrix: tt_matrix.npy
+  #pre_computed_tt_matrix: None
 
 catalog:
-  max_standard_error: 1.5
-  max_azimuthal_gap: 180
+  qml_filename: !join [ *QML_PATH , "/", "catalog.qml" ]
+  sc3ml_filename: !join [ *QML_PATH , "/", "catalog.sc3ml" ]
+  #max_standard_error: 2
+  #max_azimuthal_gap: 180
