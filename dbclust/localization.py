@@ -14,6 +14,7 @@ import dask.bag as db
 # from tqdm import tqdm
 from obspy import Catalog, read_events
 from obspy import read_events
+from obspy.core.event import ResourceIdentifier
 from jinja2 import Template
 
 # default logger
@@ -25,7 +26,8 @@ logger.setLevel(logging.INFO)
 class NllLoc(object):
     def __init__(
         self,
-        nllocbin,
+        nlloc_bin,
+        nlloc_times_path,
         nlloc_template,
         nll_obs_file=None,
         nll_channel_hint=None,
@@ -37,7 +39,8 @@ class NllLoc(object):
         time_residual_threshold=None,
     ):
         # define locator
-        self.nllocbin = nllocbin
+        self.nlloc_bin = nlloc_bin
+        self.nll_time_path = nlloc_times_path
         self.nlloc_template = nlloc_template
         self.nll_channel_hint = nll_channel_hint
         self.tmpdir = tmpdir
@@ -78,6 +81,7 @@ class NllLoc(object):
         # Values to be substitued in the template
         tags = {
             "OBSFILE": nll_obs_file,
+            "NLL_TIME_PATH": self.nll_time_path,
             "OUTPUT": output,
         }
 
@@ -89,7 +93,7 @@ class NllLoc(object):
             return Catalog()
 
         # Localization
-        cmde = f"{self.nllocbin} {conf_file}"
+        cmde = f"{self.nlloc_bin} {conf_file}"
         logger.debug(cmde)
         try:
             res = subprocess.call(
@@ -132,8 +136,18 @@ class NllLoc(object):
 
         # override default values
         # e.creation_info.author = ""
-        o = e.preferred_origin()
-        # o.resource_id = 'smi:dbclust/origin/id'
+
+        # Force ressouce id
+        # e.resource_id = ResourceIdentifier(referred_object=e, prefix='event')
+        # for p in e.picks:
+        #     p.resource_id = ResourceIdentifier(referred_object=p, prefix='pick')
+
+        # o.resource_id = ResourceIdentifier(referred_object=o, prefix='origin')  
+        
+        # for a in o.arrivals:
+        #     a.resource_id = ResourceIdentifier(referred_object=a, prefix='arrival')
+        #     print(a.resource_id)
+
         o.creation_info.agency_id = "RENASS"
         o.creation_info.author = "DBClust"
         o.evaluation_mode = "automatic"
@@ -164,6 +178,9 @@ class NllLoc(object):
                 e.origins.append(orig2)
                 e.preferred_origin_id = orig2.resource_id
                 e.picks += event2.picks
+            else:
+                # can't relocate: set it to "not existing"
+                e.event_type = "not existing"
 
         return cat
 
@@ -392,7 +409,11 @@ def show_event(event, txt="", header=False):
     if header:
         print("Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2")
     o_pref = event.preferred_origin()
-    show_origin(o_pref, "****")
+    if hasattr(event, 'event_type') and event.event_type == "not existing":
+        show_origin(o_pref, "FAKE")
+    else:
+        show_origin(o_pref, "****")
+
     for o in event.origins:
         if o == o_pref:
             continue
@@ -425,12 +446,14 @@ def show_origin(o, txt):
 
 def _simple_test():
     nll_obs_file = "../test/cluster-0.obs"
+    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times" 
     nlloc_template = "../nll_template/nll_haslach_template.conf"
-    nllocbin = "NLLoc"
+    nlloc_bin = "NLLoc"
     nll_channel_hint = "../test/chan.txt"
 
     loc = NllLoc(
-        nllocbin,
+        nlloc_bin,
+        nlloc_times_path,
         nlloc_template,
         nll_channel_hint=nll_channel_hint,
         nll_obs_file=nll_obs_file,
@@ -441,14 +464,16 @@ def _simple_test():
 
 
 def _multiple_test():
+    nlloc_bin = "NLLoc"
+    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times" 
+    nlloc_template = "../nll_template/nll_haslach_template.conf"
+
     obs_path = "../test"
     qml_path = "../test"
-    nlloc_template = "../nll_template/nll_haslach_template.conf"
     nll_channel_hint = "../test/chan.txt"
-    nllocbin = "NLLoc"
 
     locator = NllLoc(
-        nllocbin, nlloc_template, nll_channel_hint=nll_channel_hint, tmpdir="/tmp"
+        nlloc_bin, nlloc_times_path, nlloc_template, nll_channel_hint=nll_channel_hint, tmpdir="/tmp"
     )
     cat = locator.get_localisations_from_nllobs_dir(obs_path, qml_path)
     print(cat)
@@ -463,8 +488,10 @@ def _event_reloc_test(
     import tempfile
     import urllib.request
 
+    nlloc_bin = "NLLoc"
+    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times" 
     nlloc_template = "../nll_template/nll_haslach_template.conf"
-    nllocbin = "NLLoc"
+
     link = f"https://api.franceseisme.fr/fdsnws/event/1/query?eventid={event_id}&includearrivals=true&includeallpicks=true"
 
     with urllib.request.urlopen(link) as f:
@@ -494,7 +521,8 @@ def _event_reloc_test(
             cat.write(obs.name, format="NLLOC_OBS")
 
             loc = NllLoc(
-                nllocbin,
+                nlloc_bin,
+                nlloc_times_path,
                 nlloc_template,
                 nll_channel_hint=channel_hint,
                 nll_obs_file=obs.name,
@@ -509,8 +537,9 @@ def _event_reloc_test(
 def _cat_reloc(filename, force_uncertainty=True, P_uncertainty=0.1, S_uncertainty=0.2):
     import tempfile
 
+    nlloc_bin = "NLLoc"
+    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times" 
     nlloc_template = "../nll_template/nll_auvergne_template.conf"
-    nllocbin = "NLLoc"
 
     try:
         cat = read_events(filename)
@@ -543,7 +572,8 @@ def _cat_reloc(filename, force_uncertainty=True, P_uncertainty=0.1, S_uncertaint
             cat.write(obs.name, format="NLLOC_OBS")
 
             loc = NllLoc(
-                nllocbin,
+                nlloc_bin,
+                nlloc_times_path,
                 nlloc_template,
                 nll_channel_hint=channel_hint,
                 nll_obs_file=obs.name,
@@ -558,11 +588,11 @@ def _cat_reloc(filename, force_uncertainty=True, P_uncertainty=0.1, S_uncertaint
 if __name__ == "__main__":
     logger.setLevel(logging.INFO)
 
-    logger.info("")
-    logger.info("++++++++++++++++ Reloc test (catalog)")
-    _cat_reloc("../DataChambon/qml/chambon.qml", force_uncertainty=True)
+    #logger.info("")
+    #logger.info("++++++++++++++++ Reloc test (catalog)")
+    #_cat_reloc("../DataChambon/qml/chambon.qml", force_uncertainty=True)
     # _cat_reloc("../test/chambon.qml")
-    sys.exit()
+    #sys.exit()
 
     logger.info("")
     logger.info("++++++++++++++++ Reloc test (fdsnws-event)")
