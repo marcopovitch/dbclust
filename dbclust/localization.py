@@ -37,6 +37,7 @@ class NllLoc(object):
         P_uncertainty=0.1,
         S_uncertainty=0.2,
         time_residual_threshold=None,
+        verbose=False,
     ):
         # define locator
         self.nlloc_bin = nlloc_bin
@@ -49,6 +50,7 @@ class NllLoc(object):
         self.P_uncertainty = P_uncertainty
         self.S_uncertainty = S_uncertainty
         self.time_residual_threshold = time_residual_threshold
+        self.verbose = verbose
 
         # obs file to localize
         self.nll_obs_file = nll_obs_file
@@ -95,16 +97,22 @@ class NllLoc(object):
         # Localization
         cmde = f"{self.nlloc_bin} {conf_file}"
         logger.debug(cmde)
+
+        if self.verbose:
+            out = sys.stdout
+        else:
+            out = subprocess.DEVNULL
+
         try:
-            res = subprocess.call(
-                cmde, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT
-            )
+            res = subprocess.run(cmde, shell=True, stdout=out, stderr=subprocess.STDOUT)
         except Exception as e:
             logger.error(e)
             return Catalog()
         else:
-            # logger.debug(f"res = {res}")
-            pass
+            logger.debug(f"res = {res}")
+            if res.returncode:
+                logger.error(f"NLLoc return code error: {res.returncode}")
+                return Catalog()
 
         # Read results
         nll_output = os.path.join(tmp_path, "last.hyp")
@@ -142,8 +150,8 @@ class NllLoc(object):
         # for p in e.picks:
         #     p.resource_id = ResourceIdentifier(referred_object=p, prefix='pick')
 
-        # o.resource_id = ResourceIdentifier(referred_object=o, prefix='origin')  
-        
+        # o.resource_id = ResourceIdentifier(referred_object=o, prefix='origin')
+
         # for a in o.arrivals:
         #     a.resource_id = ResourceIdentifier(referred_object=a, prefix='arrival')
         #     print(a.resource_id)
@@ -245,6 +253,7 @@ class NllLoc(object):
             self.catalog.events = sorted(
                 self.catalog.events, key=lambda e: e.preferred_origin().time
             )
+
         return mycatalog
 
     def cleanup_pick_phase(self, event):
@@ -409,7 +418,7 @@ def show_event(event, txt="", header=False):
     if header:
         print("Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2")
     o_pref = event.preferred_origin()
-    if hasattr(event, 'event_type') and event.event_type == "not existing":
+    if hasattr(event, "event_type") and event.event_type == "not existing":
         show_origin(o_pref, "FAKE")
     else:
         show_origin(o_pref, "****")
@@ -446,7 +455,7 @@ def show_origin(o, txt):
 
 def _simple_test():
     nll_obs_file = "../test/cluster-0.obs"
-    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times" 
+    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
     nlloc_template = "../nll_template/nll_haslach_template.conf"
     nlloc_bin = "NLLoc"
     nll_channel_hint = "../test/chan.txt"
@@ -458,6 +467,7 @@ def _simple_test():
         nll_channel_hint=nll_channel_hint,
         nll_obs_file=nll_obs_file,
         tmpdir="/tmp",
+        verbose=False,
     )
     print(loc.catalog)
     loc.show_localizations()
@@ -465,19 +475,24 @@ def _simple_test():
 
 def _multiple_test():
     nlloc_bin = "NLLoc"
-    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times" 
+    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
     nlloc_template = "../nll_template/nll_haslach_template.conf"
 
     obs_path = "../test"
     qml_path = "../test"
     nll_channel_hint = "../test/chan.txt"
 
-    locator = NllLoc(
-        nlloc_bin, nlloc_times_path, nlloc_template, nll_channel_hint=nll_channel_hint, tmpdir="/tmp"
+    loc = NllLoc(
+        nlloc_bin,
+        nlloc_times_path,
+        nlloc_template,
+        nll_channel_hint=nll_channel_hint,
+        tmpdir="/tmp",
+        verbose=False,
     )
-    cat = locator.get_localisations_from_nllobs_dir(obs_path, qml_path)
+    cat = loc.get_localisations_from_nllobs_dir(obs_path)
     print(cat)
-    locator.show_localizations()
+    loc.show_localizations()
     # logger.info("Writing all.xml")
     # catalog.write("all.xml", format="QUAKEML")
 
@@ -489,7 +504,7 @@ def _event_reloc_test(
     import urllib.request
 
     nlloc_bin = "NLLoc"
-    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times" 
+    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
     nlloc_template = "../nll_template/nll_haslach_template.conf"
 
     link = f"https://api.franceseisme.fr/fdsnws/event/1/query?eventid={event_id}&includearrivals=true&includeallpicks=true"
@@ -538,7 +553,7 @@ def _cat_reloc(filename, force_uncertainty=True, P_uncertainty=0.1, S_uncertaint
     import tempfile
 
     nlloc_bin = "NLLoc"
-    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times" 
+    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
     nlloc_template = "../nll_template/nll_auvergne_template.conf"
 
     try:
@@ -586,13 +601,13 @@ def _cat_reloc(filename, force_uncertainty=True, P_uncertainty=0.1, S_uncertaint
 
 
 if __name__ == "__main__":
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
 
-    #logger.info("")
-    #logger.info("++++++++++++++++ Reloc test (catalog)")
-    #_cat_reloc("../DataChambon/qml/chambon.qml", force_uncertainty=True)
+    # logger.info("")
+    # logger.info("++++++++++++++++ Reloc test (catalog)")
+    # _cat_reloc("../DataChambon/qml/chambon.qml", force_uncertainty=True)
     # _cat_reloc("../test/chambon.qml")
-    #sys.exit()
+    # sys.exit()
 
     logger.info("")
     logger.info("++++++++++++++++ Reloc test (fdsnws-event)")
