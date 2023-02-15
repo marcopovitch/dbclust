@@ -70,11 +70,22 @@ if __name__ == "__main__":
     assert picks_type in ["eqt", "phasenet"]
     picks_file = file_cfg["picks_csv"]
 
+    if "date_begin" in file_cfg:
+        date_begin = file_cfg["date_begin"]
+    else:
+        date_begin = None
+
+    if "date_end" in file_cfg:
+        date_end = file_cfg["date_end"]
+    else:
+        date_end = None
+
     # NLLoc binary
     nllocbin = nll_cfg["bin"]
 
     # full path NLL template
     nlloc_template = nll_cfg["nll_template"]
+    nlloc_times_path = nll_cfg["nll_time_path"]
 
     # file to keep track of SCNL when exporting to NLL
     nll_channel_hint = nll_cfg["nll_channel_hint"]
@@ -131,23 +142,12 @@ if __name__ == "__main__":
         sys.exit()
     logger.info(f"Read {len(df)} phases.")
 
-    # date_begin = pd.to_datetime("2022-07-24T15:45:00.000Z", utc=True)
-    # date_end = pd.to_datetime("2022-07-24T15:47:00.000Z", utc=True)
-
-    #date_begin = pd.to_datetime("2022-07-24T00:00:00.000Z", utc=True)
-    #date_end = pd.to_datetime("2022-07-25T00:00:00.000Z", utc=True)
-
-    #date_begin = pd.to_datetime("2022-07-17T19:08:00.000Z", utc=True)
-    #date_end = pd.to_datetime("2022-07-17T19:15:00.000Z", utc=True)
-
-    #date_begin = pd.to_datetime("2022-08-06T06:53:00.000Z", utc=True)
-    #date_end = pd.to_datetime("2022-08-06T06:54:00.000Z", utc=True)
-
-    #date_begin = pd.to_datetime("2022-07-29T19:06:00.000Z", utc=True)
-    #date_end = pd.to_datetime("2022-07-29T19:08:00.000Z", utc=True)
-
-    # df = df[df["phase_time"] >= date_begin]
-    # df = df[df["phase_time"] <= date_end]
+    # Time filtering
+    if date_begin and date_end:
+        date_begin = pd.to_datetime(date_begin, utc=True)
+        date_end = pd.to_datetime(date_end, utc=True)
+        df = df[df["phase_time"] >= date_begin]
+        df = df[df["phase_time"] <= date_end]
 
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
@@ -155,17 +155,18 @@ if __name__ == "__main__":
     time_periods += [pd.to_datetime(tmax)]
     logger.info(f"Splitting dataset in {len(time_periods)-1} chunks.")
 
-    #print(time_periods)
-    #print(time_periods[:-2], time_periods[1:])
+    # print(time_periods)
+    # print(time_periods[:-2], time_periods[1:])
 
     # configure locator
     locator = NllLoc(
         nllocbin,
+        nlloc_times_path,
         nlloc_template,
         nll_channel_hint=nll_channel_hint,
         tmpdir=TMP_PATH,
         double_pass=True,
-        time_residual_threshold=0.75
+        time_residual_threshold=0.75,
     )
 
     # process independently each time period
@@ -202,7 +203,7 @@ if __name__ == "__main__":
             min_station_count=min_station_count,
             P_uncertainty=P_uncertainty,
             S_uncertainty=S_uncertainty,
-            tt_matrix_save=False
+            tt_matrix_save=False,
         )
         if myclust.n_clusters == 0:
             continue
@@ -214,7 +215,7 @@ if __name__ == "__main__":
         # localize each cluster
         # all locs are automaticaly appended to the locator's catalog
         # sequential version
-        #clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
+        # clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
         # Dask // version
         clustcat = locator.dask_get_localisations_from_nllobs_dir(
             my_obs_path, append=True
@@ -225,8 +226,8 @@ if __name__ == "__main__":
                 show_event(e, "****")
 
         # write partial qml file
-        #partial_qml = os.path.join(QML_PATH, "partialcat.qml")
-        #locator.catalog.write(partial_qml, format="QUAKEML")
+        # partial_qml = os.path.join(QML_PATH, "partialcat.qml")
+        # locator.catalog.write(partial_qml, format="QUAKEML")
 
         del myclust
 
@@ -235,11 +236,11 @@ if __name__ == "__main__":
     logger.info("")
 
     logger.info(
-        #f"Writing {len(locator.catalog)} events in {qml_filename} and {sc3ml_filename}"
+        # f"Writing {len(locator.catalog)} events in {qml_filename} and {sc3ml_filename}"
         f"Writing {len(locator.catalog)} events in {qml_filename}"
     )
     locator.catalog.write(qml_filename, format="QUAKEML")
-    #locator.catalog.write(sc3ml_filename, format="SC3ML")
+    # locator.catalog.write(sc3ml_filename, format="SC3ML")
 
     # to filter out poorly constrained events
     # fixme: add to config file
