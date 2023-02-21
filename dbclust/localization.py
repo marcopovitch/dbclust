@@ -37,6 +37,7 @@ class NllLoc(object):
         P_uncertainty=0.1,
         S_uncertainty=0.2,
         time_residual_threshold=None,
+        nll_min_phase=4,
         verbose=False,
     ):
         # define locator
@@ -50,6 +51,7 @@ class NllLoc(object):
         self.P_uncertainty = P_uncertainty
         self.S_uncertainty = S_uncertainty
         self.time_residual_threshold = time_residual_threshold
+        self.nll_min_phase = nll_min_phase
         self.verbose = verbose
 
         # obs file to localize
@@ -85,6 +87,7 @@ class NllLoc(object):
             "OBSFILE": nll_obs_file,
             "NLL_TIME_PATH": self.nll_time_path,
             "OUTPUT": output,
+            "NLL_MIN_PHASE": self.nll_min_phase,
         }
 
         # Generate NLL configuration file
