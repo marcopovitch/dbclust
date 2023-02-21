@@ -104,10 +104,8 @@ if __name__ == "__main__":
     P_proba_threshold = pick_cfg["P_proba_threshold"]
     S_proba_threshold = pick_cfg["S_proba_threshold"]
 
-    qml_filename = catalog_cfg["qml_filename"]
-    sc3ml_filename = catalog_cfg["sc3ml_filename"]
-    # max_standard_error = catalog_cfg["max_standard_error"]
-    # max_azimuthal_gap = catalog_cfg["max_azimuthal_gap"]
+    qml_base_filename = catalog_cfg["qml_base_filename"]
+    event_flush_count = catalog_cfg["event_flush_count"]
 
     ########################################
 
@@ -171,13 +169,17 @@ if __name__ == "__main__":
 
     # process independently each time period
     # fixme: add overlapp between time period
-    for e, (from_time, to_time) in enumerate(
+    part = 0
+    last_saved_event_count = 0
+    for i, (from_time, to_time) in enumerate(
         zip(time_periods[:-1], time_periods[1:]), start=1
     ):
+        # keep track when was the last catalog flush on file  
+
         logger.info("")
         logger.info("")
         logger.info(
-            f"Time window extraction #{e}/{len(time_periods)-1} picks from {from_time} to {to_time}."
+            f"Time window extraction #{i}/{len(time_periods)-1} picks from {from_time} to {to_time}."
         )
 
         df_subset = df[(df["phase_time"] >= from_time) & (df["phase_time"] < to_time)]
@@ -209,50 +211,36 @@ if __name__ == "__main__":
             continue
 
         # write each cluster to nll obs files
-        my_obs_path = os.path.join(OBS_PATH, f"{e}")
+        my_obs_path = os.path.join(OBS_PATH, f"{i}")
         myclust.generate_nllobs(my_obs_path)
 
         # localize each cluster
         # all locs are automaticaly appended to the locator's catalog
-        # sequential version
-        # clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
         # Dask // version
         clustcat = locator.dask_get_localisations_from_nllobs_dir(
             my_obs_path, append=True
         )
+        # sequential version
+        # clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
 
         if len(clustcat) > 0:
-            for e in clustcat.events:
-                show_event(e, "****")
+            for event in clustcat.events:
+                show_event(event, "****")
+        else:
+            continue
 
-        # write partial qml file
-        # partial_qml = os.path.join(QML_PATH, "partialcat.qml")
-        # locator.catalog.write(partial_qml, format="QUAKEML")
+        # write partial qml file and clean catalog from memory
+        if (last_saved_event_count) > event_flush_count:
+            partial_qml = os.path.join(QML_PATH, f"{qml_base_filename}-{part}.qml")
+            logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
+            locator.catalog.write(partial_qml, format="QUAKEML")
+            locator.catalog.clear()
+            last_saved_event_count = 0
+            part += 1
+        else:
+            last_saved_event_count += len(clustcat) 
 
-        del myclust
-
-    # Write QUAKEML and SC3ML
-    logger.info("")
-    logger.info("")
-
-    logger.info(
-        # f"Writing {len(locator.catalog)} events in {qml_filename} and {sc3ml_filename}"
-        f"Writing {len(locator.catalog)} events in {qml_filename}"
-    )
-    locator.catalog.write(qml_filename, format="QUAKEML")
-    # locator.catalog.write(sc3ml_filename, format="SC3ML")
-
-    # to filter out poorly constrained events
-    # fixme: add to config file
-    # logger.info("\nFiltered catalog:")
-    # my_catalog = locator.catalog.filter(
-    #     f"standard_error < {max_standard_error}",
-    #     f"azimuthal_gap < {max_azimuthal_gap}",
-    #     f"used_station_count >= {min_station_count}",
-    # )
-
-    # logger.info(f"Writing {len(my_catalog)} all-filtered.qml and all-filtered.sc3ml")
-    # qml_fname = os.path.join(QML_PATH, f"all-filtered.qml")
-    # my_catalog.write(qml_fname, format="QUAKEML")
-    # sc3ml_fname = os.path.join(QML_PATH, f"all-filtered.sc3ml")
-    # my_catalog.write(sc3ml_fname, format="SC3ML")
+    # Write last events
+    partial_qml = os.path.join(QML_PATH, f"{qml_base_filename}-{part}.qml")
+    logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
+    locator.catalog.write(partial_qml, format="QUAKEML")
