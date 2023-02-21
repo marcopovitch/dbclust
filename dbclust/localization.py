@@ -421,7 +421,7 @@ def show_event(event, txt="", header=False):
     if hasattr(event, "event_type") and event.event_type == "not existing":
         show_origin(o_pref, "FAKE")
     else:
-        show_origin(o_pref, "****")
+        show_origin(o_pref, txt)
 
     for o in event.origins:
         if o == o_pref:
