@@ -54,8 +54,9 @@ if __name__ == "__main__":
     file_cfg = cfg["file"]
     pick_cfg = cfg["pick"]
     cluster_cfg = cfg["cluster"]
-    catalog_cfg = cfg["catalog"]
     nll_cfg = cfg["nll"]
+    reloc_cfg = cfg["relocation"]
+    catalog_cfg = cfg["catalog"]
 
     # path definition
     OBS_PATH = file_cfg["obs_path"]
@@ -80,22 +81,9 @@ if __name__ == "__main__":
     else:
         date_end = None
 
-    # NLLoc binary
-    nllocbin = nll_cfg["bin"]
-
-    # full path NLL template
-    nlloc_template = nll_cfg["nll_template"]
-    nlloc_times_path = nll_cfg["nll_time_path"]
-
-    # file to keep track of SCNL when exporting to NLL
-    nll_channel_hint = nll_cfg["nll_channel_hint"]
-
-    # parameters for dbscan clustering
-    min_size = cluster_cfg["min_size"]
-    min_station_count = cluster_cfg["min_station_count"]
-    average_velocity = cluster_cfg["average_velocity"]
-    max_search_dist = cluster_cfg["max_search_dist"]
-
+    #
+    # Picks
+    #
     # pick uncertainty
     P_uncertainty = pick_cfg["P_uncertainty"]
     S_uncertainty = pick_cfg["S_uncertainty"]
@@ -104,6 +92,37 @@ if __name__ == "__main__":
     P_proba_threshold = pick_cfg["P_proba_threshold"]
     S_proba_threshold = pick_cfg["S_proba_threshold"]
 
+    #
+    # parameters for dbscan clustering
+    #
+    min_size = cluster_cfg["min_size"]
+    min_station_count = cluster_cfg["min_station_count"]
+    average_velocity = cluster_cfg["average_velocity"]
+    max_search_dist = cluster_cfg["max_search_dist"]
+
+    #
+    # NonLinLoc
+    #
+    # NLLoc binary
+    nllocbin = nll_cfg["bin"]
+
+    # full path NLL template
+    nlloc_template = nll_cfg["nll_template"]
+    nlloc_times_path = nll_cfg["nll_time_path"]
+    nll_min_phase = nll_cfg["nll_min_phase"]
+
+    # file to keep track of SCNL when exporting to NLL
+    nll_channel_hint = nll_cfg["nll_channel_hint"]
+
+    #
+    # Relocation
+    #
+    double_pass = reloc_cfg["double_pass"]
+    time_residual_threshold = reloc_cfg["time_residual_threshold"] 
+
+    #
+    # Catalog
+    #
     qml_base_filename = catalog_cfg["qml_base_filename"]
     event_flush_count = catalog_cfg["event_flush_count"]
 
@@ -163,8 +182,9 @@ if __name__ == "__main__":
         nlloc_template,
         nll_channel_hint=nll_channel_hint,
         tmpdir=TMP_PATH,
-        double_pass=True,
-        time_residual_threshold=0.75,
+        double_pass=double_pass,
+        time_residual_threshold=time_residual_threshold,
+        nll_min_phase=nll_min_phase
     )
 
     # process independently each time period
@@ -174,7 +194,7 @@ if __name__ == "__main__":
     for i, (from_time, to_time) in enumerate(
         zip(time_periods[:-1], time_periods[1:]), start=1
     ):
-        # keep track when was the last catalog flush on file  
+        # keep track when was the last catalog flush on file
 
         logger.info("")
         logger.info("")
@@ -238,7 +258,7 @@ if __name__ == "__main__":
             last_saved_event_count = 0
             part += 1
         else:
-            last_saved_event_count += len(clustcat) 
+            last_saved_event_count += len(clustcat)
 
     # Write last events
     partial_qml = os.path.join(QML_PATH, f"{qml_base_filename}-{part}.qml")
