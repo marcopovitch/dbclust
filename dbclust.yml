@@ -7,7 +7,7 @@ file:
 
   # path definition to store nll obs and qml files
   obs_path: !join [*DATA, "/", "obs"]
-  qml_path: &QML_PATH !join [*DATA, "/", "qml"]
+  qml_path: !join &QML_PATH [*DATA, "/", "qml"]
 
   # path to phaseNet/EQT picks file
   picks_path: !join &PICK_PATH [*DATA, "/", "picks"]
@@ -16,12 +16,32 @@ file:
   picks_csv: !join [*PICK_PATH, "/", "picks.csv"]
 
   #picks_type: eqt
-  #picks_csv: !join [*PICK_PATH, "/", "EQT-2022-09-10.csv"]
   #picks_csv: !join [*PICK_PATH, "/", "picks_eqt.csv"]
 
   # use only picks in this time window
-  # date_begin: 2022-07-25T20:26:00.230Z
-  # date_end:   2022-08-07T00:00:00.000Z
+  #date_begin: 2022-07-25T20:26:00.230Z
+  #date_end: 2022-08-07T00:00:00.000Z
+
+pick:
+  # pick uncertainty
+  P_uncertainty: 0.1
+  S_uncertainty: 0.2
+
+  # import only phase with proba >=phase_proba_threshold
+  P_proba_threshold: 0.5
+  S_proba_threshold: 0.5
+
+# parameters for dbscan clustering
+cluster:
+  min_size: &CLUSTER_MIN_SISE 8
+  min_station_count: &CLUSTER_MIN_STATION_COUNT 6 # count stations without duplicate
+  average_velocity: 5.0 # km/s
+  max_search_dist: 13
+
+  # WARNING : to be used only for a given picks_csv file ()
+  # Don't use it if you don't know what you are doing !
+  #pre_computed_tt_matrix: tt_matrix.npy
+  #pre_computed_tt_matrix: None
 
 nll:
   # NLLoc binary
@@ -45,26 +65,16 @@ nll:
   # nll_channel_hint: None
   nll_channel_hint: !join [*DATA, "/", "chan.txt"]
 
-pick:
-  # pick uncertainty
-  P_uncertainty: 0.1
-  S_uncertainty: 0.2
+  # NLL will discard any location with number of phase < nll_min_phase
+  # use -1 to not set a limit
+  nll_min_phase: *CLUSTER_MIN_STATION_COUNT
 
-  # import only phase with proba >=phase_proba_threshold
-  P_proba_threshold: 0.5
-  S_proba_threshold: 0.5
 
-# parameters for dbscan clustering
-cluster:
-  min_size: 8
-  min_station_count: 6 # count stations without duplicate
-  average_velocity: 5.0 # km/s
-  max_search_dist: 13
-
-  # WARNING : to be used only for a given picks_csv file ()
-  # Don't use it if you don't know what you are doing !
-  #pre_computed_tt_matrix: tt_matrix.npy
-  #pre_computed_tt_matrix: None
+# enable a nll relocation (ie. double pass) with pick filtering 
+# based on pick's time residual threshold
+relocation:
+  double_pass: True
+  time_residual_threshold: 0.75
 
 # Catalog will be saved more or less every event_flush_count
 # resulting file will be : "qml_base_filename-part-%d.qml"
