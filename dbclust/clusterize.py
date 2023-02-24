@@ -28,7 +28,7 @@ except:
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("clusterize")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 @functools.lru_cache(maxsize=None)
@@ -121,8 +121,8 @@ class Clusterize(object):
                 sys.exit()
         else:
             # sequential computation
-            pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
-            # pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
+            # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
+            pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
             # // computation using dask bag: slower for small cluster
             # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
             logger.info(f"TT maxtrix: {compute_tt.cache_info()}")
