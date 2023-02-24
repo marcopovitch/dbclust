@@ -184,7 +184,8 @@ if __name__ == "__main__":
         tmpdir=TMP_PATH,
         double_pass=double_pass,
         time_residual_threshold=time_residual_threshold,
-        nll_min_phase=nll_min_phase
+        nll_min_phase=nll_min_phase,
+        verbose=False,
     )
 
     # process independently each time period
