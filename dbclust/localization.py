@@ -7,6 +7,7 @@ import logging
 import glob
 import pathlib
 import subprocess
+import shlex
 import tempfile
 import pandas as pd
 import dask.bag as db
@@ -101,21 +102,23 @@ class NllLoc(object):
         cmde = f"{self.nlloc_bin} {conf_file}"
         logger.debug(cmde)
 
-        if self.verbose:
-            out = sys.stdout
-        else:
-            out = subprocess.DEVNULL
-
         try:
-            res = subprocess.run(cmde, shell=True, stdout=out, stderr=subprocess.STDOUT)
+            result = subprocess.run(shlex.split(cmde), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(e)
+            return Catalog()
         except Exception as e:
             logger.error(e)
             return Catalog()
-        else:
-            logger.debug(f"res = {res}")
-            if res.returncode:
-                logger.error(f"NLLoc return code error: {res.returncode}")
-                return Catalog()
+
+        # check from stdout if there is any missing station grid file 
+        # WARNING: cannot open grid buffer file: nll_times/auvergne-pyrocko2/auvergne.P.01x02.time.buf
+        for line in result.stdout.splitlines():
+            if "WARNING: cannot open grid buffer file" in line:
+                logger.error(line)
+
+        if self.verbose: 
+            print(result.stdout)
 
         # Read results
         nll_output = os.path.join(tmp_path, "last.hyp")
