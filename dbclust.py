@@ -118,7 +118,7 @@ if __name__ == "__main__":
     # Relocation
     #
     double_pass = reloc_cfg["double_pass"]
-    time_residual_threshold = reloc_cfg["time_residual_threshold"] 
+    time_residual_threshold = reloc_cfg["time_residual_threshold"]
 
     #
     # Catalog
