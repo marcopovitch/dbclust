@@ -103,7 +103,12 @@ class NllLoc(object):
         logger.debug(cmde)
 
         try:
-            result = subprocess.run(shlex.split(cmde), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            result = subprocess.run(
+                shlex.split(cmde),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
         except subprocess.CalledProcessError as e:
             logger.error(e)
             return Catalog()
@@ -111,13 +116,13 @@ class NllLoc(object):
             logger.error(e)
             return Catalog()
 
-        # check from stdout if there is any missing station grid file 
+        # check from stdout if there is any missing station grid file
         # WARNING: cannot open grid buffer file: nll_times/auvergne-pyrocko2/auvergne.P.01x02.time.buf
         for line in result.stdout.splitlines():
             if "WARNING: cannot open grid buffer file" in line:
                 logger.error(line)
 
-        if self.verbose: 
+        if self.verbose:
             print(result.stdout)
 
         # Read results
