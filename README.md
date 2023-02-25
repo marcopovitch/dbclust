@@ -1,6 +1,10 @@
 # dbclust
 
-Use DBSCAN pick clustering (scikit learn).
+Picks clusturing using algorithm such as :
+
+- HDBSCAN (https://github.com/scikit-learn-contrib/hdbscan)
+- OPTICS, 
+- DBSCAN pick clustering (scikit learn).
 
 The localization is done with NonLinLoc (). The user 
 have to provide :
@@ -12,6 +16,7 @@ have to provide :
 ### Requirement
 - obspy
 - scikit-learn
+- hdbscan
 - dask
 - tqdm
 - jinja2
