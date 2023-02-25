@@ -189,7 +189,7 @@ class Clusterize(object):
 
         db = hdbscan.HDBSCAN(
             #min_samples=5,
-            min_cluster_size=min_size,
+            min_cluster_size=6,
             allow_single_cluster=True,
             cluster_selection_epsilon=max_search_dist,
             metric="precomputed",
