@@ -99,6 +99,13 @@ if __name__ == "__main__":
     min_station_count = cluster_cfg["min_station_count"]
     average_velocity = cluster_cfg["average_velocity"]
     max_search_dist = cluster_cfg["max_search_dist"]
+    
+    if "pre_computed_tt_matrix" in cluster_cfg:
+        pre_computed_tt_matrix = cluster_cfg["pre_computed_tt_matrix"]
+        tt_matrix_save = True
+    else:
+        pre_computed_tt_matrix = None
+        tt_matrix_save = False
 
     #
     # NonLinLoc
@@ -226,7 +233,8 @@ if __name__ == "__main__":
             min_station_count=min_station_count,
             P_uncertainty=P_uncertainty,
             S_uncertainty=S_uncertainty,
-            tt_matrix_save=False,
+            tt_maxtrix_fname=pre_computed_tt_matrix,
+            tt_matrix_save=tt_matrix_save,
         )
         if myclust.n_clusters == 0:
             continue
