@@ -6,7 +6,7 @@ from math import pow, sqrt
 import numpy as np
 import pandas as pd
 from itertools import product
-from sklearn.cluster import DBSCAN
+#from sklearn.cluster import DBSCAN, OPTICS
 import hdbscan
 from tqdm import tqdm
 import functools
@@ -176,20 +176,24 @@ class Clusterize(object):
 
     @staticmethod
     def get_clusters(phases, pseudo_tt, max_search_dist, min_size):
+        # metric is “precomputed” ==> X is assumed to be a distance matrix and must be square
 
-        # metric is precomputed ==> X is assumed to be a distance matrix and must be square
-
-        #db = DBSCAN(
-        #    eps=max_search_dist, min_samples=min_size, metric="precomputed", n_jobs=-1
-        #).fit(pseudo_tt)
-        # db = OPTICS(
-        #     min_cluster_size=6,
+        # db = DBSCAN(
         #     eps=max_search_dist, min_samples=min_size, metric="precomputed", n_jobs=-1
         # ).fit(pseudo_tt)
 
+        # db = OPTICS(
+        #     min_samples=5,  # default value is 5 related to dbscan
+        #     eps=max_search_dist,
+        #     cluster_method="dbscan",
+        #     algorithm='brute',
+        #     metric="precomputed",
+        #     n_jobs=-1,
+        # ).fit(pseudo_tt)
+
         db = hdbscan.HDBSCAN(
-            #min_samples=5,
-            min_cluster_size=6,
+            min_samples=5,
+            min_cluster_size=6,     # should be min_station_count
             allow_single_cluster=True,
             cluster_selection_epsilon=max_search_dist,
             metric="precomputed",
