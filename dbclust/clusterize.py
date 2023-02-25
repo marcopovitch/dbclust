@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from itertools import product
 from sklearn.cluster import DBSCAN
+import hdbscan
 from tqdm import tqdm
 import functools
 from itertools import filterfalse
@@ -175,15 +176,25 @@ class Clusterize(object):
 
     @staticmethod
     def get_clusters(phases, pseudo_tt, max_search_dist, min_size):
-        # metric is “precomputed” ==> X is assumed to be a distance matrix and must be square
-        db = DBSCAN(
-            eps=max_search_dist, min_samples=min_size, metric="precomputed", n_jobs=-1
-        ).fit(pseudo_tt)
 
+        # metric is precomputed ==> X is assumed to be a distance matrix and must be square
+
+        #db = DBSCAN(
+        #    eps=max_search_dist, min_samples=min_size, metric="precomputed", n_jobs=-1
+        #).fit(pseudo_tt)
         # db = OPTICS(
         #     min_cluster_size=6,
         #     eps=max_search_dist, min_samples=min_size, metric="precomputed", n_jobs=-1
         # ).fit(pseudo_tt)
+
+        db = hdbscan.HDBSCAN(
+            #min_samples=5,
+            min_cluster_size=min_size,
+            allow_single_cluster=True,
+            cluster_selection_epsilon=max_search_dist,
+            metric="precomputed",
+            n_jobs=-1,
+        ).fit(pseudo_tt)
 
         labels = db.labels_
 
