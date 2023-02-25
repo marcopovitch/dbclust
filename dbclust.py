@@ -253,7 +253,7 @@ if __name__ == "__main__":
         # clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
 
         if len(clustcat) > 0:
-            for event in clustcat.events:
+            for event in sorted(clustcat.events, key=lambda e: e.preferred_origin().time):
                 show_event(event, "****")
         else:
             continue
