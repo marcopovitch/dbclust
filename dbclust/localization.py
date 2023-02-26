@@ -37,7 +37,8 @@ class NllLoc(object):
         force_uncertainty=False,
         P_uncertainty=0.1,
         S_uncertainty=0.2,
-        time_residual_threshold=None,
+        P_time_residual_threshold=None,
+        S_time_residual_threshold=None,
         nll_min_phase=4,
         verbose=False,
     ):
@@ -51,7 +52,8 @@ class NllLoc(object):
         self.force_uncertainty = force_uncertainty
         self.P_uncertainty = P_uncertainty
         self.S_uncertainty = S_uncertainty
-        self.time_residual_threshold = time_residual_threshold
+        self.P_time_residual_threshold = P_time_residual_threshold
+        self.S_time_residual_threshold = S_time_residual_threshold
         self.nll_min_phase = nll_min_phase
         self.verbose = verbose
 
@@ -273,10 +275,18 @@ class NllLoc(object):
         pick_to_delete = []
         arrival_to_delete = []
         for arrival in orig.arrivals:
+            if "P" in arrival.phase.upper():
+                time_residual_threshold = self.P_time_residual_threshold
+            elif "S" in arrival.phase.upper():
+                time_residual_threshold = self.S_time_residual_threshold
+            else:
+                logger.warning(f"cleanup_pick_phase: unknown phase {arrival.phase}")
+                time_residual_threshold = None
+
             bad_time_residual = (
                 False
-                if not self.time_residual_threshold
-                else (fabs(arrival.time_residual) > self.time_residual_threshold)
+                if not time_residual_threshold
+                else (fabs(arrival.time_residual) > time_residual_threshold)
             )
 
             if isclose(arrival.time_weight, 0, abs_tol=0.001) or bad_time_residual:

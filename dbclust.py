@@ -99,7 +99,7 @@ if __name__ == "__main__":
     min_station_count = cluster_cfg["min_station_count"]
     average_velocity = cluster_cfg["average_velocity"]
     max_search_dist = cluster_cfg["max_search_dist"]
-    
+
     if "pre_computed_tt_matrix" in cluster_cfg:
         pre_computed_tt_matrix = cluster_cfg["pre_computed_tt_matrix"]
         tt_matrix_save = True
@@ -125,7 +125,8 @@ if __name__ == "__main__":
     # Relocation
     #
     double_pass = reloc_cfg["double_pass"]
-    time_residual_threshold = reloc_cfg["time_residual_threshold"]
+    P_time_residual_threshold = reloc_cfg["P_time_residual_threshold"]
+    S_time_residual_threshold = reloc_cfg["S_time_residual_threshold"]
 
     #
     # Catalog
@@ -190,7 +191,8 @@ if __name__ == "__main__":
         nll_channel_hint=nll_channel_hint,
         tmpdir=TMP_PATH,
         double_pass=double_pass,
-        time_residual_threshold=time_residual_threshold,
+        P_time_residual_threshold=P_time_residual_threshold,
+        S_time_residual_threshold=S_time_residual_threshold,
         nll_min_phase=nll_min_phase,
         verbose=False,
     )
@@ -253,7 +255,9 @@ if __name__ == "__main__":
         # clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
 
         if len(clustcat) > 0:
-            for event in sorted(clustcat.events, key=lambda e: e.preferred_origin().time):
+            for event in sorted(
+                clustcat.events, key=lambda e: e.preferred_origin().time
+            ):
                 show_event(event, "****")
         else:
             continue
