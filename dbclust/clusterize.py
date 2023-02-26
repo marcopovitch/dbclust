@@ -6,7 +6,8 @@ from math import pow, sqrt
 import numpy as np
 import pandas as pd
 from itertools import product
-#from sklearn.cluster import DBSCAN, OPTICS
+
+# from sklearn.cluster import DBSCAN, OPTICS
 import hdbscan
 from tqdm import tqdm
 import functools
@@ -193,7 +194,7 @@ class Clusterize(object):
 
         db = hdbscan.HDBSCAN(
             min_samples=5,
-            min_cluster_size=6,     # should be min_station_count
+            min_cluster_size=6,  # should be min_station_count
             allow_single_cluster=True,
             cluster_selection_epsilon=max_search_dist,
             metric="precomputed",
