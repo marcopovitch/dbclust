@@ -52,6 +52,7 @@ if __name__ == "__main__":
     ################ CONFIG ################
 
     file_cfg = cfg["file"]
+    time_cfg = cfg["time"]
     pick_cfg = cfg["pick"]
     cluster_cfg = cfg["cluster"]
     nll_cfg = cfg["nll"]
@@ -71,15 +72,23 @@ if __name__ == "__main__":
     assert picks_type in ["eqt", "phasenet"]
     picks_file = file_cfg["picks_csv"]
 
-    if "date_begin" in file_cfg:
-        date_begin = file_cfg["date_begin"]
+    #
+    # Time
+    #
+    if "date_begin" in time_cfg:
+        date_begin = time_cfg["date_begin"]
     else:
         date_begin = None
 
-    if "date_end" in file_cfg:
-        date_end = file_cfg["date_end"]
+    if "date_end" in time_cfg:
+        date_end = time_cfg["date_end"]
     else:
         date_end = None
+
+    if "time_window" in time_cfg:
+        time_window = time_cfg["time_window"]
+    else:
+        time_window = 7  # min
 
     #
     # Picks
@@ -176,7 +185,7 @@ if __name__ == "__main__":
 
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
-    time_periods = pd.date_range(tmin, tmax, freq="7min").to_series().to_list()
+    time_periods = pd.date_range(tmin, tmax, freq=f"{time_window}min").to_series().to_list()
     time_periods += [pd.to_datetime(tmax)]
     logger.info(f"Splitting dataset in {len(time_periods)-1} chunks.")
 
