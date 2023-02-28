@@ -18,9 +18,14 @@ file:
   #picks_type: eqt
   #picks_csv: !join [*PICK_PATH, "/", "picks_eqt.csv"]
 
-  # use only picks in this time window
-  #date_begin: 2022-07-25T20:26:00.230Z
-  #date_end: 2022-08-07T00:00:00.000Z
+time:
+  # use (or comment) only picks 
+  # in this time window between [date_begin, date_end]
+  date_begin: 2022-07-27T00:00:00.000Z
+  date_end: 2022-07-28T00:00:00.000Z
+
+  # work on max time_window sec
+  time_window: 15  # minutes
 
 pick:
   # pick uncertainty
@@ -28,26 +33,26 @@ pick:
   S_uncertainty: 0.2
 
   # import only phase with proba >=phase_proba_threshold
-  P_proba_threshold: 0.5
+  P_proba_threshold: 0.3
   S_proba_threshold: 0.5
 
 # parameters for dbscan clustering
+# localization can alter this later
 cluster:
-  min_size: &CLUSTER_MIN_SISE 8
+  min_size: &CLUSTER_MIN_SISE 8 # used by dbscan as min_samples
   min_station_count: &CLUSTER_MIN_STATION_COUNT 6 # count stations without duplicate
-  average_velocity: 5.0 # km/s
+  average_velocity: 4 # km/s
   max_search_dist: 13
 
-  # WARNING : to be used only for a given picks_csv file ()
+  # WARNING : to be used only for a given event ()
   # Don't use it if you don't know what you are doing !
-  #pre_computed_tt_matrix: tt_matrix.npy
-  #pre_computed_tt_matrix: None
+  #pre_computed_tt_matrix: "tt_matrix-min_size5.npy"
 
 nll:
   # NLLoc binary
   bin: /opt/nll/bin/NLLoc
   # time grid files
-  nll_time_path: /Users/marc/nll/data/times
+  nll_time_path: /Users/marc/Dockers/routine/nll/data/times
 
   # location of nll configuration template directory
   nll_template_dir: &TEMPLATE_DIR nll_template
@@ -69,12 +74,12 @@ nll:
   # use -1 to not set a limit
   nll_min_phase: *CLUSTER_MIN_STATION_COUNT
 
-
-# enable a nll relocation (ie. double pass) with pick filtering 
+# enable a nll relocation (ie. double pass) with pick filtering
 # based on pick's time residual threshold
 relocation:
   double_pass: True
-  time_residual_threshold: 0.75
+  P_time_residual_threshold: 0.40
+  S_time_residual_threshold: 0.75
 
 # Catalog will be saved more or less every event_flush_count
 # resulting file will be : "qml_base_filename-part-%d.qml"
