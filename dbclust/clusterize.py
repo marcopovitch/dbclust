@@ -50,26 +50,45 @@ def compute_tt(p1, p2, vmean):
     return tt
 
 
-def check_phase_take_over(p1, p2):
-    if p1.network == p2.network and p1.station == p2.station and p1.phase == p2.phase:
-        if p1.proba > p2.proba:
-            # print(f"TAKEOVER: {p1} {p2}")
-            return "takeover"
-        else:
-            # print(f"DROP: {p1} {p2}")
-            return "drop"
-    else:
-        # print(f"INSERT: {p1} {p2}")
-        return "insert"
+def filter_out_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
+    """Clusters are just a list of list(Phases).
+    Phase must implement __eq__() to use set intersection
+    """
+    if clusters1.n_clusters == 0 or clusters2.n_clusters == 0:
+        logger.debug("filter_out_cluster_with_common_phases: nothing to do ")
+        return clusters1, clusters2, 0
+
+    nb_cluster_removed = 0
+    for c1, c2 in product(clusters1.clusters, clusters2.clusters):
+        intersection = set(c1).intersection(set(c2))
+        logger.debug(f"Clusters c1, c2 share {len(intersection)} phases.")
+        if len(intersection) >= min_com_phases:
+            nb_cluster_removed += 1
+            if len(c1) > len(c2):
+                idx = clusters2.clusters.index(c2)
+                cluster_removed = clusters2.clusters.pop(idx)
+                cluster_kept = c1
+            else:
+                idx = clusters1.clusters.index(c1)
+                cluster_removed = clusters1.clusters.pop(idx)
+                cluster_kept = c2
+
+            logger.info(
+                f"Keeping cluster with {len(cluster_kept)} phases with {cluster_kept[0]}"
+            )
+            logger.info(
+                f"Removing cluster with {len(cluster_removed)} phases with {cluster_removed[0]}"
+            )
+    return clusters1, clusters2, nb_cluster_removed
 
 
 class Clusterize(object):
     def __init__(
         self,
-        phases,
-        max_search_dist,
-        min_size,
-        average_velocity,
+        phases=None,
+        max_search_dist=None,
+        min_size=None,
+        average_velocity=None,
         min_station_count=None,
         P_uncertainty=0.1,
         S_uncertainty=0.2,
@@ -84,6 +103,10 @@ class Clusterize(object):
         self.n_clusters = 0
         self.noise = []
         self.n_noise = 0
+
+        if phases is None:
+            # Simple constructor
+            return
 
         # clustering parameters
         self.max_search_dist = max_search_dist
@@ -213,7 +236,6 @@ class Clusterize(object):
         cluster_ids = set(labels)
 
         # feed picks to associated clusters.
-        # Take care of double picks ... keep only the one with the best probability
         clusters = []
         noise = []
         for c_id in cluster_ids:
@@ -221,38 +243,8 @@ class Clusterize(object):
             for p, l in zip(phases, labels):
                 if c_id == l:
                     cluster.append(p)
-
-                    # It is better to rely on NonLinLoc to keep the relevant picks
-
-                    # # check for duplicated station/phase pick
-                    # # keep only the one with highest proba
-                    # if len(cluster) == 0:
-                    #     cluster.append(p)
-                    #     continue
-
-                    # to_remove = None
-                    # to_insert = None
-
-                    # for pp in cluster:
-                    #     action = check_phase_take_over(p, pp)
-                    #     if action == "takeover":
-                    #         to_remove = pp
-                    #         to_insert = p
-                    #         break
-                    #     elif action == "drop":
-                    #         # do nothing
-                    #         to_remove = None
-                    #         to_insert = None
-                    #         break
-                    #     else:  # insert
-                    #         to_remove = None
-                    #         to_insert = p
-                    #         # should wait until the end of the picks in cluster
-
-                    # if to_insert:
-                    #     cluster.append(p)
-                    # if to_remove:
-                    #     cluster.remove(pp)
+                    # if duplicated picks, rely on NonLinLoc
+                    # to keep the relevant picks at localisation level
 
             if c_id == -1:
                 noise = cluster.copy()
@@ -301,6 +293,12 @@ class Clusterize(object):
     def split_cluster(self):
         """split cluster for each duplicated phase"""
         pass
+
+    def merge(self, clusters2):
+        self.clusters += clusters2.clusters
+        self.n_clusters = len(self.clusters)
+        self.noise += clusters2.noise
+        self.n_noise = len(self.noise)
 
     def show_clusters(self):
         print(f"Clusters: {self.n_clusters}")
