@@ -9,7 +9,10 @@ import pandas as pd
 from obspy import Catalog, UTCDateTime
 
 from dbclust.phase import import_phases, import_eqt_phases
-from dbclust.clusterize import Clusterize
+from dbclust.clusterize import (
+    Clusterize,
+    filter_out_cluster_with_common_phases,
+)
 from dbclust.localization import NllLoc, show_event
 
 # default logger
@@ -185,7 +188,9 @@ if __name__ == "__main__":
 
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
-    time_periods = pd.date_range(tmin, tmax, freq=f"{time_window}min").to_series().to_list()
+    time_periods = (
+        pd.date_range(tmin, tmax, freq=f"{time_window}min").to_series().to_list()
+    )
     time_periods += [pd.to_datetime(tmax)]
     logger.info(f"Splitting dataset in {len(time_periods)-1} chunks.")
 
@@ -210,18 +215,22 @@ if __name__ == "__main__":
     # fixme: add overlapp between time period
     part = 0
     last_saved_event_count = 0
+    previous_myclust = Clusterize()
+
     for i, (from_time, to_time) in enumerate(
         zip(time_periods[:-1], time_periods[1:]), start=1
     ):
-        # keep track when was the last catalog flush on file
+        begin = from_time - np.timedelta64(1, "m")
+        end = to_time
+
+        df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
 
         logger.info("")
         logger.info("")
         logger.info(
-            f"Time window extraction #{i}/{len(time_periods)-1} picks from {from_time} to {to_time}."
+            # f"Time window extraction #{i}/{len(time_periods)-1} picks from {from_time} to {to_time}."
+            f"Time window extraction #{i}/{len(time_periods)-1} picks from {begin} to {end}."
         )
-
-        df_subset = df[(df["phase_time"] >= from_time) & (df["phase_time"] < to_time)]
 
         if not len(df_subset):
             logger.info(f"Skipping clustering {len(df_subset)} phases.")
@@ -248,11 +257,31 @@ if __name__ == "__main__":
             tt_matrix_save=tt_matrix_save,
         )
         if myclust.n_clusters == 0:
+            previous_myclust = Clusterize(
+                [], max_search_dist, min_size, average_velocity
+            )
             continue
 
+        # check if some clusters in this round share some phases
+        # with clusters from the previous round
+        # (as some phases come from the overlapped zone)
+        logger.info("Check cluster related to the same event.")
+        (
+            previous_myclust,
+            myclust,
+            nb_cluster_removed,
+        ) = filter_out_cluster_with_common_phases(previous_myclust, myclust, 6)
+
+        # This is the last round: merge previous_myclust and myclust
+        if i == len(time_periods) - 1:
+            logger.info("Last round, merging all remaining clusters.")
+            previous_myclust.merge(myclust)
+
+        # Now, process previous_myclust and wait next round to process myclust
         # write each cluster to nll obs files
         my_obs_path = os.path.join(OBS_PATH, f"{i}")
-        myclust.generate_nllobs(my_obs_path)
+        previous_myclust.generate_nllobs(my_obs_path)
+        previous_myclust = myclust
 
         # localize each cluster
         # all locs are automaticaly appended to the locator's catalog
