@@ -47,6 +47,17 @@ class Phase(object):
                 fdsnws_station_url,
             )
 
+    def __eq__(self, obj):
+        if self.__hash__() == obj.__hash__():
+            return True
+        else:
+            False
+
+    def __hash__(self):
+        return hash(
+            (self.network, self.station, self.phase, self.time.datetime, self.proba)
+        )
+
     def __repr__(self):
         return (
             f"{self.network}.{self.station} {self.phase} {self.time} {self.proba:.3f}"
