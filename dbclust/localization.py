@@ -112,7 +112,7 @@ class NllLoc(object):
         if not nll_obs_file:
             nll_obs_file = self.nll_obs_file
 
-        if not self.nll_obs_file:
+        if not nll_obs_file:
             logger.error("No NLL_OBS file given !")
             return Catalog()
 
