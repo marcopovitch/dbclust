@@ -104,9 +104,6 @@ class Clusterize(object):
         self.noise = []
         self.n_noise = 0
 
-        if phases is None:
-            # Simple constructor
-            return
 
         # clustering parameters
         self.max_search_dist = max_search_dist
@@ -122,6 +119,10 @@ class Clusterize(object):
         self.tt_maxtrix_fname = tt_maxtrix_fname
         self.tt_matrix_load = tt_matrix_load
         self.tt_matrix_save = tt_matrix_save
+
+        if phases is None:
+            # Simple constructor
+            return
 
         logger.info(
             f"Starting Clustering (nbphases={len(phases)}, min_size={min_size})."
@@ -295,7 +296,7 @@ class Clusterize(object):
         pass
 
     def merge(self, clusters2):
-        logger.info(f"Merging clusters list with {len(self.clusters)} clusters and {len(clusters2.clusters)}")
+        logger.info(f"Merging clusters list with {len(self.clusters)} and {len(clusters2.clusters)} clusters")
         self.clusters += clusters2.clusters
         self.n_clusters = len(self.clusters)
         self.noise += clusters2.noise
