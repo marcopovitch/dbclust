@@ -295,6 +295,7 @@ class Clusterize(object):
         pass
 
     def merge(self, clusters2):
+        logger.info(f"Merging clusters list with {len(self.clusters)} clusters and {len(clusters2.clusters)}")
         self.clusters += clusters2.clusters
         self.n_clusters = len(self.clusters)
         self.noise += clusters2.noise
