@@ -63,7 +63,7 @@ class NllLoc(object):
         # keep track of cluster affiliation
         self.event_cluster_mapping = {}
 
-        # localization
+        # localization only if is nll_obs_file provided at init level
         if self.nll_obs_file:
             self.catalog = self.nll_localisation(
                 nll_obs_file, double_pass=self.double_pass
@@ -72,8 +72,57 @@ class NllLoc(object):
             self.catalog = Catalog()
         self.nb_events = len(self.catalog)
 
-    def nll_localisation(self, nll_obs_file, double_pass=False):
-        """Returns an obspy catalog"""
+    def reloc_event(self, event):
+        """
+        Event relocalisation using a locator
+        Returns a Catalog()
+        """
+
+        show_event(event, "****", header=True)
+        orig = event.preferred_origin()
+        channel_hint = io.StringIO()
+        for arrival in orig.arrivals:
+            pick = next(
+                (p for p in event.picks if p.resource_id == arrival.pick_id), None
+            )
+            # keep channel info in channel_hint
+            wfid = pick.waveform_id
+            string = f"{wfid.network_code}_{wfid.station_code}_{wfid.location_code}_{wfid.channel_code}\n"
+            channel_hint.write(string)
+        channel_hint.seek(0)
+
+        self.nll_obs_file = os.path.join(self.tmpdir, "nll_obs.txt")
+        logger.debug(
+            f"Writing nll_obs file to {self.nll_obs_file} in {self.tmpdir} directory."
+        )
+        event.write(self.nll_obs_file, format="NLLOC_OBS")
+        self.nll_channel_hint = channel_hint
+        cat = self.nll_localisation()
+        return cat
+
+    def nll_localisation(self, nll_obs_file=None, double_pass=None):
+        """
+        Do the NLL stuff to localize event phases in nll_obs_file
+
+        When double_pass is True, the localization is computed twice
+        with picks/phases clean_up step.
+
+        Returns a multi-origin event in a Catalog()
+        """
+        if not nll_obs_file:
+            nll_obs_file = self.nll_obs_file
+
+        if not self.nll_obs_file:
+            logger.error("No NLL_OBS file given !")
+            return Catalog()
+
+        if double_pass != None:
+            # force double pass
+            self.double_pass = double_pass
+        else:
+            # use the value defined in locator
+            pass
+
         logger.debug(
             f"Localization of {nll_obs_file} using {self.nlloc_template} template."
         )
@@ -149,25 +198,17 @@ class NllLoc(object):
             logger.debug("Found NaN value in uncertainty. Ignoring event !")
             return Catalog()
 
+        # nll_channel_hint allows to keep track of net, sta, loc, chan values
+        # and could be None, a file or a StringIO
         if self.nll_channel_hint:
-            logger.debug(self.nll_channel_hint)
+            if isinstance(self.nll_channel_hint, io.StringIO):
+                self.nll_channel_hint.seek(0)
+                logger.debug("nll_channel_hint uses StringIO()")
+            else:
+                logger.debug(f"nll_channel_hint use {self.nll_channel_hint}")
             cat = self.fix_wfid(cat, self.nll_channel_hint)
         else:
             logger.warning("No nll_channel_hint file provided !")
-
-        # override default values
-        # e.creation_info.author = ""
-
-        # Force ressouce id
-        # e.resource_id = ResourceIdentifier(referred_object=e, prefix='event')
-        # for p in e.picks:
-        #     p.resource_id = ResourceIdentifier(referred_object=p, prefix='pick')
-
-        # o.resource_id = ResourceIdentifier(referred_object=o, prefix='origin')
-
-        # for a in o.arrivals:
-        #     a.resource_id = ResourceIdentifier(referred_object=a, prefix='arrival')
-        #     print(a.resource_id)
 
         o.creation_info.agency_id = "RENASS"
         o.creation_info.author = "DBClust"
@@ -183,7 +224,7 @@ class NllLoc(object):
                     pick.time_errors.uncertainty = self.S_uncertainty
 
         # try a relocation
-        if double_pass:
+        if self.double_pass:
             logger.debug("Starting double pass relocation.")
             cat2 = cat.copy()
             event2 = cat2.events[0]
@@ -426,7 +467,7 @@ class NllLoc(object):
 
     def show_localizations(self):
         print("%d events in catalog:" % len(self.catalog))
-        print("Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2")
+        print("Text, T0, lat, lon, depth(m), RMS, sta_count, phase_count, gap1, gap2")
         for e in self.catalog.events:
             try:
                 nll_obs = self.event_cluster_mapping[e.resource_id.id]
@@ -516,109 +557,6 @@ def _multiple_test():
     loc.show_localizations()
     # logger.info("Writing all.xml")
     # catalog.write("all.xml", format="QUAKEML")
-
-
-def _event_reloc_test(
-    event_id, force_uncertainty=True, P_uncertainty=0.1, S_uncertainty=0.2
-):
-    import tempfile
-    import urllib.request
-
-    nlloc_bin = "NLLoc"
-    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
-    nlloc_template = "../nll_template/nll_haslach_template.conf"
-
-    link = f"https://api.franceseisme.fr/fdsnws/event/1/query?eventid={event_id}&includearrivals=true&includeallpicks=true"
-
-    with urllib.request.urlopen(link) as f:
-        cat = read_events(f.read())
-    for i, e in enumerate(cat):
-        show_event(e, i, header=True)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with tempfile.NamedTemporaryFile(dir=tmpdir) as obs:
-            logger.debug(f"Writing nll_obs file to {obs.name} in {tmpdir} directory.")
-
-            # <waveformID networkCode="FR" stationCode="CMPS" locationCode="00" channelCode="HHZ"></waveformID>
-            channel_hint = io.StringIO()
-            for pick in cat.events[0].picks:
-                # keep channel info
-                wfid = pick.waveform_id
-                string = f"{wfid.network_code}_{wfid.station_code}_{wfid.location_code}_{wfid.channel_code}\n"
-                channel_hint.write(string)
-
-                if force_uncertainty:
-                    if "P" in pick.phase_hint or "p" in pick.phase_hint:
-                        pick.time_errors.uncertainty = P_uncertainty
-                    elif "S" in pick.phase_hint or "s" in pick.phase_hint:
-                        pick.time_errors.uncertainty = S_uncertainty
-
-            channel_hint.seek(0)
-            cat.write(obs.name, format="NLLOC_OBS")
-
-            loc = NllLoc(
-                nlloc_bin,
-                nlloc_times_path,
-                nlloc_template,
-                nll_channel_hint=channel_hint,
-                nll_obs_file=obs.name,
-                tmpdir=tmpdir,
-            )
-            loc.show_localizations()
-            channel_hint.close()
-    loc.catalog.write(f"{event_id}.qml", format="QUAKEML")
-    loc.catalog.write(f"{event_id}.sc3ml", format="SC3ML")
-
-
-def _cat_reloc(filename, force_uncertainty=True, P_uncertainty=0.1, S_uncertainty=0.2):
-    import tempfile
-
-    nlloc_bin = "NLLoc"
-    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
-    nlloc_template = "../nll_template/nll_auvergne_template.conf"
-
-    try:
-        cat = read_events(filename)
-    except Exception as e:
-        logger.error(f"{filename}: {e}")
-        sys.exit(255)
-
-    for i, e in enumerate(cat):
-        show_event(e, i, header=True)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with tempfile.NamedTemporaryFile(dir=tmpdir) as obs:
-            logger.debug(f"Writing nll_obs file to {obs.name}.")
-
-            # <waveformID networkCode="FR" stationCode="CMPS" locationCode="00" channelCode="HHZ"></waveformID>
-            channel_hint = io.StringIO()
-            for pick in cat.events[0].picks:
-                # keep channel info
-                wfid = pick.waveform_id
-                string = f"{wfid.network_code}_{wfid.station_code}_{wfid.location_code}_{wfid.channel_code}\n"
-                channel_hint.write(string)
-
-                if force_uncertainty:
-                    if "P" in pick.phase_hint or "p" in pick.phase_hint:
-                        pick.time_errors.uncertainty = P_uncertainty
-                    elif "S" in pick.phase_hint or "s" in pick.phase_hint:
-                        pick.time_errors.uncertainty = S_uncertainty
-
-            channel_hint.seek(0)
-            cat.write(obs.name, format="NLLOC_OBS")
-
-            loc = NllLoc(
-                nlloc_bin,
-                nlloc_times_path,
-                nlloc_template,
-                nll_channel_hint=channel_hint,
-                nll_obs_file=obs.name,
-                tmpdir=tmpdir,
-            )
-            loc.show_localizations()
-            channel_hint.close()
-    loc.catalog.write(f"{filename}-reloc.qml", format="QUAKEML")
-    loc.catalog.write(f"{filename}-reloc.sc3ml", format="SC3ML")
 
 
 if __name__ == "__main__":
