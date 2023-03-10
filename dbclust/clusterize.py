@@ -55,7 +55,7 @@ def filter_out_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
     Clusters are just a list of list(Phases).
 
     Phase must implement __eq__() to use set intersection.
-    if cluster_stability is available use it, if not use cluster size 
+    if cluster_stability is available use it, if not use cluster size
     to select the best cluster.
     """
     if clusters1.n_clusters == 0 or clusters2.n_clusters == 0:
@@ -63,43 +63,43 @@ def filter_out_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
         return clusters1, clusters2, 0
 
     nb_cluster_removed = 0
-    for c1, c2 in product(clusters1.clusters, clusters2.clusters):
-        intersection = set(c1).intersection(set(c2))
-        logger.debug(f"Clusters c1, c2 share {len(intersection)} phases.")
-        if len(intersection) >= min_com_phases:
-            nb_cluster_removed += 1
+    # for c1, c2 in product(clusters1.clusters, clusters2.clusters):
+    for idx1, c1 in enumerate(clusters1.clusters):
+        for idx2, c2 in enumerate(clusters2.clusters):
+            intersection = set(c1).intersection(set(c2))
+            logger.debug(f"Clusters c1, c2 share {len(intersection)} phases.")
+            if len(intersection) >= min_com_phases:
+                nb_cluster_removed += 1
 
-            idx1 = clusters1.clusters.index(c1)
-            idx2 = clusters2.clusters.index(c2) 
-            c1_stability = clusters1.clusters_stability[idx1] 
-            c2_stability = clusters2.clusters_stability[idx2] 
+                c1_stability = clusters1.clusters_stability[idx1]
+                c2_stability = clusters2.clusters_stability[idx2]
 
-            #if len(c1) > len(c2):
-            if c1_stability > c2_stability:
-                cluster_removed = clusters2.clusters.pop(idx2)
-                cluster_removed_stability = c2_stability
-                clusters2.clusters_stability = np.delete(
-                    clusters2.clusters_stability, idx2
+                # if len(c1) > len(c2):
+                if c1_stability > c2_stability:
+                    cluster_removed = clusters2.clusters.pop(idx2)
+                    cluster_removed_stability = c2_stability
+                    clusters2.clusters_stability = np.delete(
+                        clusters2.clusters_stability, idx2
+                    )
+                    #
+                    cluster_kept = c1
+                    cluster_kept_stability = clusters1.clusters_stability[idx1]
+                else:
+                    cluster_removed = clusters1.clusters.pop(idx1)
+                    cluster_removed_stability = c1_stability
+                    clusters1.clusters_stability = np.delete(
+                        clusters1.clusters_stability, idx1
+                    )
+                    #
+                    cluster_kept = c2
+                    cluster_kept_stability = clusters2.clusters_stability[idx2]
+
+                logger.info(
+                    f"Keeping cluster with phases:{len(cluster_kept)}, stability:{cluster_kept_stability:.4f}, with first pick {cluster_kept[0]}"
                 )
-                #
-                cluster_kept = c1
-                cluster_kept_stability = clusters1.clusters_stability[idx1]
-            else:
-                cluster_removed = clusters1.clusters.pop(idx1)
-                cluster_removed_stability = c1_stability
-                clusters1.clusters_stability = np.delete(
-                    clusters1.clusters_stability, idx1
+                logger.info(
+                    f"Removing cluster with phases:{len(cluster_removed)}, stability:{cluster_removed_stability:.4f}, with first pick {cluster_removed[0]}"
                 )
-                #
-                cluster_kept = c2
-                cluster_kept_stability = clusters2.clusters_stability[idx2]
-
-            logger.info(
-                f"Keeping cluster with phases:{len(cluster_kept)}, stability:{cluster_kept_stability:.4f}, with first pick {cluster_kept[0]}"
-            )
-            logger.info(
-                f"Removing cluster with phases:{len(cluster_removed)}, stability:{cluster_removed_stability:.4f}, with first pick {cluster_removed[0]}"
-            )
     return clusters1, clusters2, nb_cluster_removed
 
 
@@ -333,7 +333,7 @@ class Clusterize(object):
         self.n_clusters = len(self.clusters)
         self.noise += clusters2.noise
         self.n_noise = len(self.noise)
-        # clusters_stability are ndarray ... not a list 
+        # clusters_stability are ndarray ... not a list
         self.clusters_stability = np.concatenate(
             (self.clusters_stability, clusters2.clusters_stability), axis=0
         )
