@@ -91,7 +91,14 @@ if __name__ == "__main__":
     if "time_window" in time_cfg:
         time_window = time_cfg["time_window"]
     else:
+        # default value
         time_window = 7  # min
+
+    if "overlap_window" in time_cfg:
+        overlap_window = time_cfg["overlap_window"]
+    else:
+        # default value
+        overlap_window = 60  # seconds
 
     #
     # Picks
@@ -105,12 +112,16 @@ if __name__ == "__main__":
     S_proba_threshold = pick_cfg["S_proba_threshold"]
 
     #
-    # parameters for dbscan clustering
+    # parameters for hdbscan clustering
     #
-    min_size = cluster_cfg["min_size"]
+    min_cluster_size = cluster_cfg["min_cluster_size"]
     min_station_count = cluster_cfg["min_station_count"]
     average_velocity = cluster_cfg["average_velocity"]
-    max_search_dist = cluster_cfg["max_search_dist"]
+    if "max_search_dist" in cluster_cfg:
+        max_search_dist = cluster_cfg["max_search_dist"]
+    else:
+        max_search_dist = 0.0  # default for hdbscan
+
 
     if "pre_computed_tt_matrix" in cluster_cfg:
         pre_computed_tt_matrix = cluster_cfg["pre_computed_tt_matrix"]
@@ -220,7 +231,8 @@ if __name__ == "__main__":
     for i, (from_time, to_time) in enumerate(
         zip(time_periods[:-1], time_periods[1:]), start=1
     ):
-        begin = from_time - np.timedelta64(1, "m")
+        # keep an overlap 
+        begin = from_time - np.timedelta64(overlap_window, "s")
         end = to_time
 
         df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
@@ -246,21 +258,20 @@ if __name__ == "__main__":
 
         # find clusters
         myclust = Clusterize(
-            phases,
-            max_search_dist,
-            min_size,
-            average_velocity,
+            phases=phases,
+            min_cluster_size=min_cluster_size,
+            average_velocity=average_velocity,
             min_station_count=min_station_count,
+            max_search_dist=max_search_dist,
             P_uncertainty=P_uncertainty,
             S_uncertainty=S_uncertainty,
             tt_maxtrix_fname=pre_computed_tt_matrix,
             tt_matrix_save=tt_matrix_save,
         )
         if myclust.n_clusters == 0:
-            previous_myclust = Clusterize(
-                [], max_search_dist, min_size, average_velocity
-            )
+            previous_myclust = Clusterize()
             continue
+
 
         # check if some clusters in this round share some phases
         # with clusters from the previous round
