@@ -30,7 +30,7 @@ except:
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("clusterize")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 
 @functools.lru_cache(maxsize=None)
@@ -51,8 +51,12 @@ def compute_tt(p1, p2, vmean):
 
 
 def filter_out_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
-    """Clusters are just a list of list(Phases).
-    Phase must implement __eq__() to use set intersection
+    """
+    Clusters are just a list of list(Phases).
+
+    Phase must implement __eq__() to use set intersection.
+    if cluster_stability is available use it, if not use cluster size 
+    to select the best cluster.
     """
     if clusters1.n_clusters == 0 or clusters2.n_clusters == 0:
         logger.debug("filter_out_cluster_with_common_phases: nothing to do ")
@@ -64,20 +68,37 @@ def filter_out_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
         logger.debug(f"Clusters c1, c2 share {len(intersection)} phases.")
         if len(intersection) >= min_com_phases:
             nb_cluster_removed += 1
-            if len(c1) > len(c2):
-                idx = clusters2.clusters.index(c2)
-                cluster_removed = clusters2.clusters.pop(idx)
+
+            idx1 = clusters1.clusters.index(c1)
+            idx2 = clusters2.clusters.index(c2) 
+            c1_stability = clusters1.clusters_stability[idx1] 
+            c2_stability = clusters2.clusters_stability[idx2] 
+
+            #if len(c1) > len(c2):
+            if c1_stability > c2_stability:
+                cluster_removed = clusters2.clusters.pop(idx2)
+                cluster_removed_stability = c2_stability
+                clusters2.clusters_stability = np.delete(
+                    clusters2.clusters_stability, idx2
+                )
+                #
                 cluster_kept = c1
+                cluster_kept_stability = clusters1.clusters_stability[idx1]
             else:
-                idx = clusters1.clusters.index(c1)
-                cluster_removed = clusters1.clusters.pop(idx)
+                cluster_removed = clusters1.clusters.pop(idx1)
+                cluster_removed_stability = c1_stability
+                clusters1.clusters_stability = np.delete(
+                    clusters1.clusters_stability, idx1
+                )
+                #
                 cluster_kept = c2
+                cluster_kept_stability = clusters2.clusters_stability[idx2]
 
             logger.info(
-                f"Keeping cluster with {len(cluster_kept)} phases with {cluster_kept[0]}"
+                f"Keeping cluster with phases:{len(cluster_kept)}, stability:{cluster_kept_stability:.4f}, with first pick {cluster_kept[0]}"
             )
             logger.info(
-                f"Removing cluster with {len(cluster_removed)} phases with {cluster_removed[0]}"
+                f"Removing cluster with phases:{len(cluster_removed)}, stability:{cluster_removed_stability:.4f}, with first pick {cluster_removed[0]}"
             )
     return clusters1, clusters2, nb_cluster_removed
 
@@ -86,10 +107,10 @@ class Clusterize(object):
     def __init__(
         self,
         phases=None,
-        max_search_dist=None,
-        min_size=None,
-        average_velocity=None,
-        min_station_count=None,
+        min_cluster_size=5,  # hdbscan default
+        average_velocity=5,  # km/s
+        min_station_count=0,
+        max_search_dist=0,  # same as hdbscan cluster_selection_epsilon: default is 0.
         P_uncertainty=0.1,
         S_uncertainty=0.2,
         tt_maxtrix_fname="tt_matrix.npy",
@@ -100,14 +121,14 @@ class Clusterize(object):
         # ie. [ [phases, label], ... ]
         # noise is [ phases, -1]
         self.clusters = []
+        self.clusters_stability = []
         self.n_clusters = 0
         self.noise = []
         self.n_noise = 0
 
-
         # clustering parameters
         self.max_search_dist = max_search_dist
-        self.min_size = min_size
+        self.min_cluster_size = min_cluster_size
         self.average_velocity = average_velocity
 
         # pick filtering parameters
@@ -125,9 +146,9 @@ class Clusterize(object):
             return
 
         logger.info(
-            f"Starting Clustering (nbphases={len(phases)}, min_size={min_size})."
+            f"Starting Clustering (nbphases={len(phases)}, min_cluster_size={min_cluster_size})."
         )
-        if len(phases) < min_size:
+        if len(phases) < min_cluster_size:
             logger.info("Too few picks !")
             # add noise points
             self.clusters = []
@@ -158,8 +179,8 @@ class Clusterize(object):
             logger.info(f"Saving tt_matrix {tt_maxtrix_fname}.")
             np.save(tt_maxtrix_fname, pseudo_tt)
 
-        self.clusters, self.noise = self.get_clusters(
-            phases, pseudo_tt, max_search_dist, min_size
+        self.clusters, self.clusters_stability, self.noise = self.get_clusters(
+            phases, pseudo_tt, max_search_dist, min_cluster_size
         )
         del pseudo_tt
         self.n_clusters = len(self.clusters)
@@ -200,11 +221,11 @@ class Clusterize(object):
         return tt_matrix
 
     @staticmethod
-    def get_clusters(phases, pseudo_tt, max_search_dist, min_size):
+    def get_clusters(phases, pseudo_tt, max_search_dist, min_cluster_size):
         # metric is “precomputed” ==> X is assumed to be a distance matrix and must be square
 
         # db = DBSCAN(
-        #     eps=max_search_dist, min_samples=min_size, metric="precomputed", n_jobs=-1
+        #     eps=max_search_dist, min_samples=min_cluster_size, metric="precomputed", n_jobs=-1
         # ).fit(pseudo_tt)
 
         # db = OPTICS(
@@ -217,10 +238,10 @@ class Clusterize(object):
         # ).fit(pseudo_tt)
 
         db = hdbscan.HDBSCAN(
-            min_samples=5,
-            min_cluster_size=6,  # should be min_station_count
+            min_cluster_size=min_cluster_size,  # default 5
+            # min_samples=None                          # default None
             allow_single_cluster=True,
-            cluster_selection_epsilon=max_search_dist,
+            cluster_selection_epsilon=max_search_dist,  # default 0.0
             metric="precomputed",
             n_jobs=-1,
         ).fit(pseudo_tt)
@@ -235,6 +256,13 @@ class Clusterize(object):
         logger.info("Number of noise points: %d" % n_noise_)
 
         cluster_ids = set(labels)
+
+        # only for hdbscan
+        # kind of cluster stability measurement [0, 1]
+        if hasattr(db, "cluster_persistence_"):
+            clusters_stability = db.cluster_persistence_
+        else:
+            clusters_stability = [1] * n_clusters_
 
         # feed picks to associated clusters.
         clusters = []
@@ -251,7 +279,7 @@ class Clusterize(object):
                 noise = cluster.copy()
             else:
                 clusters.append(cluster)
-        return clusters, noise
+        return clusters, clusters_stability, noise
 
     def generate_nllobs(self, OBS_PATH):
         """
@@ -266,7 +294,7 @@ class Clusterize(object):
             if self.min_station_count:
                 if len(stations_list) < self.min_station_count:
                     logger.debug(
-                        f"Cluster {i} ignored ... not enough stations ({len(stations_list)})"
+                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... not enough stations ({len(stations_list)})"
                     )
                     continue
 
@@ -288,7 +316,9 @@ class Clusterize(object):
             cat.append(event)
             os.makedirs(OBS_PATH, exist_ok=True)
             obs_file = os.path.join(OBS_PATH, f"cluster-{i}.obs")
-            logger.debug(f"Writting {obs_file} ({len(stations_list)})")
+            logger.debug(
+                f"Cluster {i}, writting {obs_file}, stability:{self.clusters_stability[i]}, nstations:{len(stations_list)})"
+            )
             cat.write(obs_file, format="NLLOC_OBS")
 
     def split_cluster(self):
@@ -296,19 +326,29 @@ class Clusterize(object):
         pass
 
     def merge(self, clusters2):
-        logger.info(f"Merging clusters list with {len(self.clusters)} and {len(clusters2.clusters)} clusters")
+        logger.info(
+            f"Merging clusters list with {len(self.clusters)} and {len(clusters2.clusters)} clusters"
+        )
         self.clusters += clusters2.clusters
         self.n_clusters = len(self.clusters)
         self.noise += clusters2.noise
         self.n_noise = len(self.noise)
+        # clusters_stability are ndarray ... not a list 
+        self.clusters_stability = np.concatenate(
+            (self.clusters_stability, clusters2.clusters_stability), axis=0
+        )
 
     def show_clusters(self):
         print(f"Clusters: {self.n_clusters}")
         for i, cluster in enumerate(self.clusters):
             stations_list = set([p.station for p in cluster])
             print(
-                f"cluster {i}: %d picks / %d stations"
-                % (len(self.clusters[i]), len(stations_list))
+                f"cluster {i}: stability=%.2f, %d picks / %d stations"
+                % (
+                    self.clusters_stability[i],
+                    len(self.clusters[i]),
+                    len(stations_list),
+                )
             )
             for p in sorted(cluster, key=lambda p: p.time):
                 print(p)
@@ -323,7 +363,7 @@ class Clusterize(object):
 
 def _test():
     max_search_dist = 17.0
-    min_size = 6
+    min_cluster_size = 6
     average_velocity = 4.0  # km/s
     # phases = import_phases("../test/picks.csv")
 
@@ -341,9 +381,17 @@ def _test():
         S_proba_threshold=0.5,
     )
     logger.info(f"Read {len(phases)}")
-    myclusters = Clusterize(phases, max_search_dist, min_size, average_velocity)
+    # myclusters = Clusterize(phases, min_cluster_size, average_velocity, max_search_dist)
+    myclusters = Clusterize(
+        phases=phases,
+        # max_search_dist=max_search_dist,
+        max_search_dist=0,
+        # min_cluster_size=min_cluster_size,
+        min_cluster_size=5,
+        average_velocity=average_velocity,
+    )
     myclusters.generate_nllobs("../test/obs")
-    # myclusters.show_clusters()
+    myclusters.show_clusters()
 
 
 if __name__ == "__main__":
