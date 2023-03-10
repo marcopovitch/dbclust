@@ -30,7 +30,7 @@ except:
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("clusterize")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 @functools.lru_cache(maxsize=None)
