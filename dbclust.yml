@@ -16,16 +16,21 @@ file:
   picks_csv: !join [*PICK_PATH, "/", "picks.csv"]
 
   #picks_type: eqt
+  #picks_csv: !join [*PICK_PATH, "/", "EQT-2022-09-10.csv"]
   #picks_csv: !join [*PICK_PATH, "/", "picks_eqt.csv"]
 
 time:
-  # use (or comment) only picks 
-  # in this time window between [date_begin, date_end]
-  date_begin: 2022-07-27T00:00:00.000Z
-  date_end: 2022-07-28T00:00:00.000Z
+  # filter picks between [date_begin, date_end]
+  #date_begin: 2022-06-30T00:00:00.000Z
+  #date_end: 2022-08-08T00:00:00.000Z
+  #date_begin: 2022-07-24T21:59:00.000Z
+  #date_end:   2022-07-24T22:02:00.000Z
 
-  # work on max time_window sec
-  time_window: 15  # minutes
+  # work on max time_window (mind the units !)
+  # computation time increase a lot with time_window
+  time_window: 15 # minutes
+  # time window for data overlaping (mind the units !)
+  overlap_window: 60 # seconds
 
 pick:
   # pick uncertainty
@@ -33,18 +38,22 @@ pick:
   S_uncertainty: 0.2
 
   # import only phase with proba >=phase_proba_threshold
-  P_proba_threshold: 0.3
+  P_proba_threshold: 0.2
   S_proba_threshold: 0.5
 
-# parameters for dbscan clustering
-# localization can alter this later
+# parameters for clustering
 cluster:
-  min_size: &CLUSTER_MIN_SISE 8 # used by dbscan as min_samples
-  min_station_count: &CLUSTER_MIN_STATION_COUNT 6 # count stations without duplicate
-  average_velocity: 4 # km/s
-  max_search_dist: 13
+  # used by hdbscan
+  min_cluster_size: &MIN_CLUSTER_SISE 8
+  # discard cluster with stations count (without duplicate) below this value
+  min_station_count: &CLUSTER_MIN_STATION_COUNT 6
+  # km/s
+  average_velocity: 5
+  # no more usefull with hdbscan 
+  # but can be forced (called epsilon or eps)
+  # max_search_dist: 4
 
-  # WARNING : to be used only for a given event ()
+  # WARNING : to be used only for a unique event !
   # Don't use it if you don't know what you are doing !
   #pre_computed_tt_matrix: "tt_matrix-min_size5.npy"
 
