@@ -12,6 +12,7 @@ from dbclust.phase import import_phases, import_eqt_phases
 from dbclust.clusterize import (
     Clusterize,
     filter_out_cluster_with_common_phases,
+    manage_cluster_with_common_phases,
 )
 from dbclust.localization import NllLoc, show_event
 
@@ -281,7 +282,8 @@ if __name__ == "__main__":
             previous_myclust,
             myclust,
             nb_cluster_removed,
-        ) = filter_out_cluster_with_common_phases(previous_myclust, myclust, 6)
+        ) = manage_cluster_with_common_phases(previous_myclust, myclust, 6)
+        #) = filter_out_cluster_with_common_phases(previous_myclust, myclust, 6)
 
         # This is the last round: merge previous_myclust and myclust
         if i == len(time_periods) - 1:
