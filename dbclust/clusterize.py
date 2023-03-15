@@ -50,6 +50,53 @@ def compute_tt(p1, p2, vmean):
     return tt
 
 
+def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
+    """
+    Clusters are just a list of list(Phases).
+
+    Phase must implement __eq__() to use set intersection.
+    """
+    if clusters1.n_clusters == 0 or clusters2.n_clusters == 0:
+        logger.debug("filter_out_cluster_with_common_phases: nothing to do ")
+        return clusters1, clusters2, 0
+
+    merge_count = 0
+    for idx1, c1 in enumerate(clusters1.clusters):
+        for idx2, c2 in enumerate(clusters2.clusters):
+            intersection = set(c1).intersection(set(c2))
+            if len(intersection) < min_com_phases:
+                continue
+
+            logger.info(
+                f"Merging clusters c1, c2  with {len(intersection)} shared phases."
+            )
+            merge_count += 1
+
+
+            # merge 2 clusters and remove duplicated picks
+            set_c1 = set(clusters1.clusters[idx1])
+            set_c1.update(set(clusters2.clusters[idx2]))
+            clusters1.clusters[idx1] = list(set_c1)
+
+            # keep cluster stability
+            c1_stab = clusters1.clusters_stability[idx1]
+            c2_stab = clusters2.clusters_stability[idx2]
+
+            # remove this cluster since it has been merged
+            clusters2.clusters.pop(idx2)
+            clusters2.clusters_stability = np.delete(clusters2.clusters_stability, idx2)
+
+            # keep the best stability
+            clusters1.clusters_stability[idx1] = max(c1_stab, c2_stab)
+
+            logger.info(
+                f"Merging cluster(len:{len(c1)}, stability:{c1_stab:.4f}) "
+                f"with cluster(len:{len(c2)}, stability:{c2_stab:.4f}) "
+                f"--> cluster(len:{len(clusters1.clusters[idx1])}, stability:{clusters1.clusters_stability[idx1]:.4f})"
+            )
+    return clusters1, clusters2, merge_count
+
+
 def filter_out_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
     """
     Clusters are just a list of list(Phases).
@@ -67,7 +114,7 @@ def filter_out_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
     for idx1, c1 in enumerate(clusters1.clusters):
         for idx2, c2 in enumerate(clusters2.clusters):
             intersection = set(c1).intersection(set(c2))
-            logger.debug(f"Clusters c1, c2 share {len(intersection)} phases.")
+            logger.info(f"Clusters c1, c2 share {len(intersection)} phases.")
             if len(intersection) >= min_com_phases:
                 nb_cluster_removed += 1
 
@@ -139,7 +186,6 @@ class Clusterize(object):
         # tt_matrix load/save parameters
         self.tt_maxtrix_fname = tt_maxtrix_fname
         self.tt_matrix_load = tt_matrix_load
-        self.tt_matrix_save = tt_matrix_save
 
         if phases is None:
             # Simple constructor
@@ -327,7 +373,7 @@ class Clusterize(object):
 
     def merge(self, clusters2):
         logger.info(
-            f"Merging clusters list with {len(self.clusters)} and {len(clusters2.clusters)} clusters"
+            f"Merging clusters list: {len(self.clusters)} clusters from list1 and {len(clusters2.clusters)} from list2"
         )
         self.clusters += clusters2.clusters
         self.n_clusters = len(self.clusters)
@@ -337,6 +383,7 @@ class Clusterize(object):
         self.clusters_stability = np.concatenate(
             (self.clusters_stability, clusters2.clusters_stability), axis=0
         )
+        # self.show_clusters()
 
     def show_clusters(self):
         print(f"Clusters: {self.n_clusters}")
