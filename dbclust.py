@@ -11,15 +11,9 @@ from obspy import Catalog, UTCDateTime
 from dbclust.phase import import_phases, import_eqt_phases
 from dbclust.clusterize import (
     Clusterize,
-    filter_out_cluster_with_common_phases,
     manage_cluster_with_common_phases,
 )
 from dbclust.localization import NllLoc, show_event
-
-# default logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger("dbclust")
-logger.setLevel(logging.INFO)
 
 
 def ymljoin(loader, node):
@@ -34,7 +28,10 @@ def yml_read_config(filename):
 
 
 if __name__ == "__main__":
-    logger.setLevel(logging.DEBUG)
+    # default logger
+    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+    logger = logging.getLogger("dbclust")
+    logger.setLevel(logging.INFO)
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -122,7 +119,6 @@ if __name__ == "__main__":
         max_search_dist = cluster_cfg["max_search_dist"]
     else:
         max_search_dist = 0.0  # default for hdbscan
-
 
     if "pre_computed_tt_matrix" in cluster_cfg:
         pre_computed_tt_matrix = cluster_cfg["pre_computed_tt_matrix"]
@@ -220,19 +216,20 @@ if __name__ == "__main__":
         P_time_residual_threshold=P_time_residual_threshold,
         S_time_residual_threshold=S_time_residual_threshold,
         nll_min_phase=nll_min_phase,
-        verbose=False,
+        nll_verbose=False,
+        log_level=logger.level,
     )
 
     # process independently each time period
     # fixme: add overlapp between time period
     part = 0
     last_saved_event_count = 0
-    previous_myclust = Clusterize()
+    previous_myclust = Clusterize(log_level=logger.level)
 
     for i, (from_time, to_time) in enumerate(
         zip(time_periods[:-1], time_periods[1:]), start=1
     ):
-        # keep an overlap 
+        # keep an overlap
         begin = from_time - np.timedelta64(overlap_window, "s")
         end = to_time
 
@@ -268,11 +265,8 @@ if __name__ == "__main__":
             S_uncertainty=S_uncertainty,
             tt_maxtrix_fname=pre_computed_tt_matrix,
             tt_matrix_save=tt_matrix_save,
+            log_level=logger.level,
         )
-        if myclust.n_clusters == 0:
-            previous_myclust = Clusterize()
-            continue
-
 
         # check if some clusters in this round share some phases
         # with clusters from the previous round
@@ -283,10 +277,10 @@ if __name__ == "__main__":
             myclust,
             nb_cluster_removed,
         ) = manage_cluster_with_common_phases(previous_myclust, myclust, 6)
-        #) = filter_out_cluster_with_common_phases(previous_myclust, myclust, 6)
+        # ) = filter_out_cluster_with_common_phases(previous_myclust, myclust, 6)
 
         # This is the last round: merge previous_myclust and myclust
-        if i == len(time_periods) - 1:
+        if i == (len(time_periods) - 1):
             logger.info("Last round, merging all remaining clusters.")
             previous_myclust.merge(myclust)
 
