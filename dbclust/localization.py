@@ -43,8 +43,11 @@ class NllLoc(object):
         P_time_residual_threshold=None,
         S_time_residual_threshold=None,
         nll_min_phase=4,
-        verbose=False,
+        log_level=logging.INFO,
+        nll_verbose=False,
     ):
+        logger.setLevel(log_level)
+
         # define locator
         self.nlloc_bin = nlloc_bin
         self.nll_time_path = nlloc_times_path
@@ -58,7 +61,7 @@ class NllLoc(object):
         self.P_time_residual_threshold = P_time_residual_threshold
         self.S_time_residual_threshold = S_time_residual_threshold
         self.nll_min_phase = nll_min_phase
-        self.verbose = verbose
+        self.nll_verbose = nll_verbose
 
         # obs file to localize
         self.nll_obs_file = nll_obs_file
@@ -176,7 +179,7 @@ class NllLoc(object):
             if "WARNING: cannot open grid buffer file" in line:
                 logger.error(line)
 
-        if self.verbose:
+        if self.nll_verbose:
             print(result.stdout)
 
         # Read results
@@ -261,10 +264,9 @@ class NllLoc(object):
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
         logger.info(f"Localization of {obs_files_pattern}")
 
-        # cluster = LocalCluster(silence_logs=logging.ERROR)
+        #cluster = LocalCluster(silence_logs=logging.ERROR)
         # # n_workers=workers, hreads_per_worker=1, silence_logs=logging.ERROR, interface="lan",
-        # with Client(cluster) as client: 
-
+        #with Client(cluster) as client: 
         b = db.from_sequence(glob.glob(obs_files_pattern), npartitions=multiprocessing.cpu_count())
         cat_results = b.map(
             lambda x: self.nll_localisation(x, double_pass=self.double_pass)
@@ -581,7 +583,7 @@ def _simple_test():
         nll_channel_hint=nll_channel_hint,
         nll_obs_file=nll_obs_file,
         tmpdir="/tmp",
-        verbose=False,
+        nll_verbose=False,
     )
     print(loc.catalog)
     loc.show_localizations()
@@ -602,7 +604,7 @@ def _multiple_test():
         nlloc_template,
         nll_channel_hint=nll_channel_hint,
         tmpdir="/tmp",
-        verbose=False,
+        nll_verbose=False,
     )
     cat = loc.get_localisations_from_nllobs_dir(obs_path)
     print(cat)
