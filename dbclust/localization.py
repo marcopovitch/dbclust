@@ -10,7 +10,10 @@ import subprocess
 import shlex
 import tempfile
 import pandas as pd
+import multiprocessing
+from dask.distributed import Client, LocalCluster
 import dask.bag as db
+from itertools import product, combinations
 
 # from tqdm import tqdm
 from obspy import Catalog, read_events
@@ -21,7 +24,7 @@ from jinja2 import Template
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("localization")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.ERROR)
 
 
 class NllLoc(object):
@@ -100,7 +103,7 @@ class NllLoc(object):
         cat = self.nll_localisation()
         return cat
 
-    def nll_localisation(self, nll_obs_file=None, double_pass=None):
+    def nll_localisation(self, nll_obs_file=None, double_pass=None, pass_count=0):
         """
         Do the NLL stuff to localize event phases in nll_obs_file
 
@@ -224,14 +227,14 @@ class NllLoc(object):
                     pick.time_errors.uncertainty = self.S_uncertainty
 
         # try a relocation
-        if self.double_pass:
+        if self.double_pass and pass_count == 0:
             logger.debug("Starting double pass relocation.")
             cat2 = cat.copy()
             event2 = cat2.events[0]
             event2 = self.cleanup_pick_phase(event2)
             new_nll_obs_file = nll_obs_file + ".2nd_pass"
             cat2.write(new_nll_obs_file, format="NLLOC_OBS")
-            cat2 = self.nll_localisation(new_nll_obs_file, double_pass=False)
+            cat2 = self.nll_localisation(new_nll_obs_file, double_pass=self.double_pass, pass_count=1)
 
             if cat2:
                 event2 = cat2.events[0]
@@ -257,10 +260,15 @@ class NllLoc(object):
         """
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
         logger.info(f"Localization of {obs_files_pattern}")
-        b = db.from_sequence(glob.glob(obs_files_pattern))
-        cat_results = b.map(
-            lambda x: self.nll_localisation(x, double_pass=self.double_pass)
-        ).compute()
+
+        cluster = LocalCluster(silence_logs=logging.ERROR)
+        # n_workers=workers, hreads_per_worker=1, silence_logs=logging.ERROR, interface="lan",
+
+        with Client(cluster) as client: 
+            b = db.from_sequence(glob.glob(obs_files_pattern), npartitions=multiprocessing.cpu_count())
+            cat_results = b.map(
+                lambda x: self.nll_localisation(x, double_pass=self.double_pass)
+            ).compute()
 
         mycatalog = Catalog()
         for cat in cat_results:
@@ -311,7 +319,12 @@ class NllLoc(object):
         return mycatalog
 
     def cleanup_pick_phase(self, event):
-        """Remove picks/arrivals with time weight set to 0"""
+        """
+        Remove picks/arrivals with:
+            - time weight set to 0
+            - bad residual
+            - duplicated phases (remove the one with highest residual)
+        """
         orig = event.preferred_origin()
         pick_to_delete = []
         arrival_to_delete = []
@@ -345,7 +358,39 @@ class NllLoc(object):
         for p in pick_to_delete:
             event.picks.remove(p)
 
-        # update stations used with weight > 0
+        # check duplicated picks
+        pick_to_delete = []
+        arrival_to_delete = []
+        comb = combinations(orig.arrivals, 2)
+        for a1, a2 in comb:
+            p1 = get_pick_from_arrival(event, a1)
+            p2 = get_pick_from_arrival(event, a2)
+            if p1 == p2:
+                continue
+
+            if (
+                a1.phase == a2.phase
+                and p1.waveform_id.network_code == p2.waveform_id.network_code
+                and p1.waveform_id.station_code == p2.waveform_id.station_code
+            ):
+                if a1.time_residual < a2.time_residual:
+                    # remove a2 and p2
+                    p = p2
+                    a = a2
+                else:
+                    # remove a1 and p1
+                    p = p1
+                    a = a1
+                logger.info(f"Duplicated pick detected [{p.waveform_id.get_seed_string()}, {a.phase}]... removing the one with highest residual")
+                pick_to_delete.append(p1)
+                arrival_to_delete.append(a1)
+
+        for a in arrival_to_delete:
+            orig.arrivals.remove(a)
+        for p in pick_to_delete:
+            event.picks.remove(p)
+
+        # update "stations used" with weight > 0
         orig = event.preferred_origin()
         orig.quality.used_phase_count = len(
             [a.time_weight for a in orig.arrivals if a.time_weight]
@@ -474,6 +519,11 @@ class NllLoc(object):
             except:
                 nll_obs = ""
             show_event(e, nll_obs)
+
+
+def get_pick_from_arrival(event, arrival):
+    pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
+    return pick
 
 
 def show_event(event, txt="", header=False):
