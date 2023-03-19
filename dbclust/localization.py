@@ -24,7 +24,7 @@ from jinja2 import Template
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("localization")
-logger.setLevel(logging.ERROR)
+logger.setLevel(logging.INFO)
 
 
 class NllLoc(object):
@@ -261,14 +261,14 @@ class NllLoc(object):
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
         logger.info(f"Localization of {obs_files_pattern}")
 
-        cluster = LocalCluster(silence_logs=logging.ERROR)
-        # n_workers=workers, hreads_per_worker=1, silence_logs=logging.ERROR, interface="lan",
+        # cluster = LocalCluster(silence_logs=logging.ERROR)
+        # # n_workers=workers, hreads_per_worker=1, silence_logs=logging.ERROR, interface="lan",
+        # with Client(cluster) as client: 
 
-        with Client(cluster) as client: 
-            b = db.from_sequence(glob.glob(obs_files_pattern), npartitions=multiprocessing.cpu_count())
-            cat_results = b.map(
-                lambda x: self.nll_localisation(x, double_pass=self.double_pass)
-            ).compute()
+        b = db.from_sequence(glob.glob(obs_files_pattern), npartitions=multiprocessing.cpu_count())
+        cat_results = b.map(
+            lambda x: self.nll_localisation(x, double_pass=self.double_pass)
+        ).compute()
 
         mycatalog = Catalog()
         for cat in cat_results:
@@ -381,9 +381,11 @@ class NllLoc(object):
                     # remove a1 and p1
                     p = p1
                     a = a1
-                logger.info(f"Duplicated pick detected [{p.waveform_id.get_seed_string()}, {a.phase}]... removing the one with highest residual")
-                pick_to_delete.append(p1)
-                arrival_to_delete.append(a1)
+                logger.info(f"Duplicated pick detected [{p.waveform_id.get_seed_string()}, {a.phase}, {p.time}]... removing the one with highest residual")
+                if p not in pick_to_delete:
+                    pick_to_delete.append(p)
+                if a not in arrival_to_delete:
+                    arrival_to_delete.append(a)
 
         for a in arrival_to_delete:
             orig.arrivals.remove(a)
