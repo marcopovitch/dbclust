@@ -30,7 +30,7 @@ except:
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("clusterize")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 
 @functools.lru_cache(maxsize=None)
@@ -163,7 +163,10 @@ class Clusterize(object):
         tt_maxtrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
         tt_matrix_save=False,
+        log_level=logging.DEBUG
     ):
+        logger.setLevel(log_level)
+
         # clusters is a list of cluster :
         # ie. [ [phases, label], ... ]
         # noise is [ phases, -1]
