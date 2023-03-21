@@ -1,0 +1,10 @@
+--- nll/NLLocLib.c	2022-08-09 12:00:26
++++ nll/NLLocLib.c	2023-03-20 18:04:28
+@@ -1404,7 +1404,9 @@
+
+     // 20180907 AJL - added phypo to recover location information (e.g. magntiude) from observation file
+     // 20180907 AJL while ((istat = GetNextObs(fp_obs, arrival + nobs, ftype_obs, ntry++ == 0)) != EOF) {
+-    while ((istat = GetNextObs(phypo, fp_obs, arrival + nobs, ftype_obs, ntry++ == 0)) != EOF) {
++    //while ((istat = GetNextObs(phypo, fp_obs, arrival + nobs, ftype_obs, ntry++ == 0)) != EOF) {
++    while ((istat = GetNextObs(phypo, fp_obs, arrival + nobs, ftype_obs, ntry++ == 0)) >= 0 ) {
++
