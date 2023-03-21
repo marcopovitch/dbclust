@@ -1,0 +1,8 @@
+pyyaml
+pandas
+visidata
+obspy
+hdbscan
+dask
+distributed
+tqdm
