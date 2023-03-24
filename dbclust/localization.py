@@ -11,7 +11,7 @@ import shlex
 import tempfile
 import pandas as pd
 import multiprocessing
-from dask.distributed import Client, LocalCluster
+from distributed import Client
 import dask.bag as db
 from itertools import product, combinations
 
@@ -237,7 +237,9 @@ class NllLoc(object):
             event2 = self.cleanup_pick_phase(event2)
             new_nll_obs_file = nll_obs_file + ".2nd_pass"
             cat2.write(new_nll_obs_file, format="NLLOC_OBS")
-            cat2 = self.nll_localisation(new_nll_obs_file, double_pass=self.double_pass, pass_count=1)
+            cat2 = self.nll_localisation(
+                new_nll_obs_file, double_pass=self.double_pass, pass_count=1
+            )
 
             if cat2:
                 event2 = cat2.events[0]
@@ -264,10 +266,9 @@ class NllLoc(object):
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
         logger.info(f"Localization of {obs_files_pattern}")
 
-        #cluster = LocalCluster(silence_logs=logging.ERROR)
-        # # n_workers=workers, hreads_per_worker=1, silence_logs=logging.ERROR, interface="lan",
-        #with Client(cluster) as client: 
-        b = db.from_sequence(glob.glob(obs_files_pattern), npartitions=multiprocessing.cpu_count())
+        b = db.from_sequence(
+            glob.glob(obs_files_pattern), partition_size=multiprocessing.cpu_count()
+        )
         cat_results = b.map(
             lambda x: self.nll_localisation(x, double_pass=self.double_pass)
         ).compute()
@@ -383,7 +384,9 @@ class NllLoc(object):
                     # remove a1 and p1
                     p = p1
                     a = a1
-                logger.info(f"Duplicated pick detected [{p.waveform_id.get_seed_string()}, {a.phase}, {p.time}]... removing the one with highest residual")
+                logger.info(
+                    f"Duplicated pick detected [{p.waveform_id.get_seed_string()}, {a.phase}, {p.time}]... removing the one with highest residual"
+                )
                 if p not in pick_to_delete:
                     pick_to_delete.append(p)
                 if a not in arrival_to_delete:
