@@ -235,11 +235,14 @@ class NllLoc(object):
             cat2 = cat.copy()
             event2 = cat2.events[0]
             event2 = self.cleanup_pick_phase(event2)
-            new_nll_obs_file = nll_obs_file + ".2nd_pass"
-            cat2.write(new_nll_obs_file, format="NLLOC_OBS")
-            cat2 = self.nll_localisation(
-                new_nll_obs_file, double_pass=self.double_pass, pass_count=1
-            )
+            if len(event2.picks):
+                new_nll_obs_file = nll_obs_file + ".2nd_pass"
+                cat2.write(new_nll_obs_file, format="NLLOC_OBS")
+                cat2 = self.nll_localisation(
+                    new_nll_obs_file, double_pass=self.double_pass, pass_count=1
+                )
+            else:
+                cat2 = None
 
             if cat2:
                 event2 = cat2.events[0]
