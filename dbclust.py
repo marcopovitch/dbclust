@@ -7,6 +7,7 @@ import yaml
 import numpy as np
 import pandas as pd
 from obspy import Catalog, UTCDateTime
+from datetime import datetime
 
 from dbclust.phase import import_phases, import_eqt_phases
 from dbclust.clusterize import (
@@ -188,10 +189,14 @@ if __name__ == "__main__":
     logger.info(f"Read {len(df)} phases.")
 
     # Time filtering
-    if date_begin and date_end:
+    if date_begin:
+        logger.info(f"Using picks >= {date_begin}")
         date_begin = pd.to_datetime(date_begin, utc=True)
-        date_end = pd.to_datetime(date_end, utc=True)
         df = df[df["phase_time"] >= date_begin]
+
+    if date_end:
+        logger.info(f"Using picks <= {date_end}")
+        date_end = pd.to_datetime(date_end, utc=True)
         df = df[df["phase_time"] <= date_end]
 
     tmin = df["phase_time"].min()
@@ -293,11 +298,11 @@ if __name__ == "__main__":
         # localize each cluster
         # all locs are automaticaly appended to the locator's catalog
         # Dask // version
-        clustcat = locator.dask_get_localisations_from_nllobs_dir(
-            my_obs_path, append=True
-        )
+        #clustcat = locator.dask_get_localisations_from_nllobs_dir(
+        #    my_obs_path, append=True
+        #)
         # sequential version
-        # clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
+        clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
 
         if len(clustcat) > 0:
             for event in sorted(
