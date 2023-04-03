@@ -14,6 +14,8 @@ import multiprocessing
 from distributed import Client
 import dask.bag as db
 from itertools import product, combinations
+import urllib.request
+import urllib.parse
 
 # from tqdm import tqdm
 from obspy import Catalog, read_events
@@ -95,6 +97,13 @@ class NllLoc(object):
             wfid = pick.waveform_id
             string = f"{wfid.network_code}_{wfid.station_code}_{wfid.location_code}_{wfid.channel_code}\n"
             channel_hint.write(string)
+
+            if self.force_uncertainty:
+                if "P" in pick.phase_hint or "p" in pick.phase_hint:
+                    pick.time_errors.uncertainty = self.P_uncertainty
+                elif "S" in pick.phase_hint or "s" in pick.phase_hint:
+                    pick.time_errors.uncertainty = self.S_uncertainty
+
         channel_hint.seek(0)
 
         self.nll_obs_file = os.path.join(self.tmpdir, "nll_obs.txt")
@@ -575,69 +584,77 @@ def show_origin(o, txt):
     )
 
 
-def _simple_test():
-    nll_obs_file = "../test/cluster-0.obs"
-    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
-    nlloc_template = "../nll_template/nll_haslach_template.conf"
-    nlloc_bin = "NLLoc"
-    nll_channel_hint = "../test/chan.txt"
+def reloc_fdsn_event(locator, eventid, fdsnws):
+    link = f"{fdsnws}/query?eventid={urllib.parse.quote(eventid, safe='')}&includearrivals=true"
 
-    loc = NllLoc(
-        nlloc_bin,
-        nlloc_times_path,
-        nlloc_template,
-        nll_channel_hint=nll_channel_hint,
-        nll_obs_file=nll_obs_file,
-        tmpdir="/tmp",
-        nll_verbose=False,
-    )
-    print(loc.catalog)
-    loc.show_localizations()
+    with urllib.request.urlopen(link) as f:
+        cat = read_events(f.read())
 
-
-def _multiple_test():
-    nlloc_bin = "NLLoc"
-    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
-    nlloc_template = "../nll_template/nll_haslach_template.conf"
-
-    obs_path = "../test"
-    qml_path = "../test"
-    nll_channel_hint = "../test/chan.txt"
-
-    loc = NllLoc(
-        nlloc_bin,
-        nlloc_times_path,
-        nlloc_template,
-        nll_channel_hint=nll_channel_hint,
-        tmpdir="/tmp",
-        nll_verbose=False,
-    )
-    cat = loc.get_localisations_from_nllobs_dir(obs_path)
-    print(cat)
-    loc.show_localizations()
-    # logger.info("Writing all.xml")
-    # catalog.write("all.xml", format="QUAKEML")
+    event = cat[0]
+    cat = locator.reloc_event(event)
+    return cat
 
 
 if __name__ == "__main__":
     logger.setLevel(logging.DEBUG)
 
-    # logger.info("")
-    # logger.info("++++++++++++++++ Reloc test (catalog)")
-    # _cat_reloc("../DataChambon/qml/chambon.qml", force_uncertainty=True)
-    # _cat_reloc("../test/chambon.qml")
-    # sys.exit()
+    nlloc_bin = "NLLoc"
+    nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
+    nlloc_template = "../nll_template/nll_haslach_template.conf"
 
-    logger.info("")
-    logger.info("++++++++++++++++ Reloc test (fdsnws-event)")
-    event_id = "fr2023lahzgh"
-    _event_reloc_test(
-        event_id, force_uncertainty=True, P_uncertainty=0.1, S_uncertainty=0.2
+    # eventid = "smi:local/437618f7-9cfe-4616-8e23-fdf32f7155db"
+    # fdsnws = "http://localhost:10003/fdsnws/event/1"
+    # nlloc_template = "../nll_template/nll_auvergne_template.conf"
+
+    fdsnws = "https://api.franceseisme.fr/fdsnws/event/1"
+    eventid = "fr2023lfhbcx"
+
+    force_uncertainty = True
+    P_uncertainty = 0.05
+    S_uncertainty = 0.1
+
+    # nlloc_bin,
+    # nlloc_times_path,
+    # nlloc_template,
+    # nll_obs_file=None,
+    # nll_channel_hint=None,
+    # tmpdir="/tmp",
+    # double_pass=False,
+    # force_uncertainty=False,
+    # P_uncertainty=0.1,
+    # S_uncertainty=0.2,
+    # P_time_residual_threshold=None,
+    # S_time_residual_threshold=None,
+    # nll_min_phase=4,
+    # verbose=False,
+
+    tmpdir = tempfile.TemporaryDirectory()
+
+    locator = NllLoc(
+        nlloc_bin,
+        nlloc_times_path,
+        nlloc_template,
+        #
+        # nll_channel_hint=channel_hint,
+        # nll_obs_file=obs.name,
+        tmpdir=tmpdir.name,
+        #
+        force_uncertainty=force_uncertainty,
+        P_uncertainty=P_uncertainty,
+        S_uncertainty=S_uncertainty,
+        #
+        double_pass=True,
+        # P_time_residual_threshold=0.45,
+        # S_time_residual_threshold=0.75,
+        #
+        nll_verbose=False,
     )
 
-    logger.info("++++++++++++++++ Simple test")
-    _simple_test()
+    cat = reloc_fdsn_event(locator, eventid, fdsnws)
+    tmpdir.cleanup()
 
-    logger.info("")
-    logger.info("++++++++++++++++ Multiple test")
-    _multiple_test()
+    for e in cat:
+        show_event(e, "****", header=True)
+
+    # cat.write(f"{urllib.parse.quote(eventid, safe='')}.qml", format="QUAKEML")
+    # cat.write(f"{urllib.parse.quote(eventid, safe='')}.sc3ml", format="SC3ML")
