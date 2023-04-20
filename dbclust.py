@@ -199,6 +199,10 @@ if __name__ == "__main__":
         date_end = pd.to_datetime(date_end, utc=True)
         df = df[df["phase_time"] <= date_end]
 
+    if df.empty:
+        logger.warning(f"No data in time range [{date_begin}, {date_end}].")
+        sys.exit()
+
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
     time_periods = (
