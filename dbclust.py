@@ -302,9 +302,9 @@ if __name__ == "__main__":
         # localize each cluster
         # all locs are automaticaly appended to the locator's catalog
         # Dask // version
-        #clustcat = locator.dask_get_localisations_from_nllobs_dir(
+        # clustcat = locator.dask_get_localisations_from_nllobs_dir(
         #    my_obs_path, append=True
-        #)
+        # )
         # sequential version
         clustcat = locator.get_localisations_from_nllobs_dir(my_obs_path, append=True)
 
