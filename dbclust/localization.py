@@ -131,6 +131,7 @@ class NllLoc(object):
 
         When double_pass is True, the localization is computed twice
         with picks/phases clean_up step.
+        pass_count keeps track how many time relocation was done (do not modify this).
 
         Returns a multi-origin event in a Catalog()
         """
