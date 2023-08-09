@@ -16,6 +16,7 @@ import dask.bag as db
 from itertools import product, combinations
 import urllib.request
 import urllib.parse
+import copy
 
 # from tqdm import tqdm
 from obspy import Catalog, read_events
@@ -80,18 +81,20 @@ class NllLoc(object):
             self.catalog = Catalog()
         self.nb_events = len(self.catalog)
 
-    def reloc_event(self, event):
+    def reloc_event(self, event, dist_km_cutoff=None):
         """
         Event relocalisation using a locator
         Returns a Catalog()
         """
 
-        show_event(event, "****", header=True)
-        orig = event.preferred_origin()
+        myevent = copy.deepcopy(event)
+
+        show_event(myevent, "****", header=True)
+        orig = myevent.preferred_origin()
         channel_hint = io.StringIO()
         for arrival in orig.arrivals:
             pick = next(
-                (p for p in event.picks if p.resource_id == arrival.pick_id), None
+                (p for p in myevent.picks if p.resource_id == arrival.pick_id), None
             )
             # keep channel info in channel_hint
             wfid = pick.waveform_id
@@ -103,6 +106,12 @@ class NllLoc(object):
                     pick.time_errors.uncertainty = self.P_uncertainty
                 elif "S" in pick.phase_hint or "s" in pick.phase_hint:
                     pick.time_errors.uncertainty = self.S_uncertainty
+            
+            # do not use pick with desactivated arrival
+            if arrival.time_weight == 0 :
+                myevent.picks.remove(pick) 
+            elif dist_km_cutoff and arrival.distance > dist_km_cutoff / 111.0 :
+                myevent.picks.remove(pick) 
 
         channel_hint.seek(0)
 
@@ -110,9 +119,10 @@ class NllLoc(object):
         logger.debug(
             f"Writing nll_obs file to {self.nll_obs_file} in {self.tmpdir} directory."
         )
-        event.write(self.nll_obs_file, format="NLLOC_OBS")
+        myevent.write(self.nll_obs_file, format="NLLOC_OBS")
         self.nll_channel_hint = channel_hint
         cat = self.nll_localisation()
+        # Fixme: add previously removed picks
         return cat
 
     def nll_localisation(self, nll_obs_file=None, double_pass=None, pass_count=0):
@@ -561,6 +571,12 @@ def show_event(event, txt="", header=False):
 
 
 def show_origin(o, txt):
+    if o.quality.azimuthal_gap:
+        azimuthal_gap = f"{o.quality.azimuthal_gap:.1f}"
+    else:
+        logger.warning("No azimuthal_gap defined !")
+        azimuthal_gap = '-'
+
     print(
         ", ".join(
             map(
@@ -574,7 +590,7 @@ def show_origin(o, txt):
                     o.quality.standard_error,
                     o.quality.used_station_count,
                     o.quality.used_phase_count,
-                    f"{o.quality.azimuthal_gap:.1f}",
+                    azimuthal_gap,
                     f"{o.quality.secondary_azimuthal_gap:.1f}"
                     if o.quality.secondary_azimuthal_gap
                     else "-",
