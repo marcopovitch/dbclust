@@ -1,0 +1,61 @@
+verbose: False
+tmpdir: /tmp
+
+nll:
+  bin: NLLoc
+  times_path: /Users/marc/Dockers/routine/nll/data/times
+  template_path: /Users/marc/github/dbclust/nll_template
+  min_phase: 4
+  verbose: False
+
+parameters:
+  double_pass: True
+  force_uncertainty: True
+  P_uncertainty: 0.05
+  S_uncertainty: 0.1
+  # P_time_residual_threshold: 0.45
+  # S_time_residual_threshold: 0.75
+  P_time_residual_threshold: null
+  S_time_residual_threshold: null
+  cutoff_dist_km: null
+  use_deactivated_arrivals: False
+
+fdsnws:
+  # event: https://api.franceseisme.fr/fdsnws/event/1
+  # event = http://localhost:10003/fdsnws/event/1
+  event: http://10.0.1.36:8080/fdsnws/event/1
+  station: http://10.0.1.36:8080/fdsnws/station/1
+  dataselect: http://10.0.1.36:8080/fdsnws/dataselect/1
+
+default_profile: haslach
+
+profile:
+  - name: alpes
+    template: nll_alpes_template.conf
+
+  - name: auvergne
+    template: nll_auvergne_template.conf
+
+  - name: haslach
+    template: nll_haslach_template.conf
+
+  - name: pyrenees
+    template: nll_pyrenees_template.conf
+
+  - name: rittershoffen
+    template: nll_rittershoffen_template.conf
+
+  - name: vendenheim
+    template: nll_vendenheim_template.conf
+
+quakeml:
+  agency_id: RENASS
+  author: marc.grunberg
+  #evaluation_mode: automatic
+  evaluation_mode: manual
+  method_id: NonLinLoc
+  #model_id: will be set to the profile name used
+
+output:
+  format: SC3ML
+  keep_scat: False
