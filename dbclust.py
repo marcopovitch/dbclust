@@ -183,6 +183,9 @@ if __name__ == "__main__":
                 )
             df["phase_time"] = pd.to_datetime(df["phase_time"], utc=True)
             df.sort_values(by=["phase_time"], inplace=True)
+            if "phase_index" in df.columns:
+                # seems to be fake picks
+                df = df[df["phase_index"] != 1]
     except Exception as e:
         logger.error(e)
         sys.exit()
