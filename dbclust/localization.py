@@ -33,11 +33,13 @@ logger.setLevel(logging.INFO)
 class NllLoc(object):
     def __init__(
         self,
-        nlloc_bin,
-        nlloc_times_path,
-        nlloc_template,
+        nll_bin,
+        nll_times_path,
+        nll_template,
         nll_obs_file=None,
         nll_channel_hint=None,
+        nll_min_phase=4,
+        nll_verbose=False,
         tmpdir="/tmp",
         double_pass=False,
         force_uncertainty=False,
@@ -45,17 +47,19 @@ class NllLoc(object):
         S_uncertainty=0.2,
         P_time_residual_threshold=None,
         S_time_residual_threshold=None,
-        nll_min_phase=4,
+        quakeml_settings=None,
         log_level=logging.INFO,
-        nll_verbose=False,
     ):
         logger.setLevel(log_level)
 
         # define locator
-        self.nlloc_bin = nlloc_bin
-        self.nll_time_path = nlloc_times_path
-        self.nlloc_template = nlloc_template
+        self.nll_bin = nll_bin
+        self.nll_time_path = nll_times_path
+        self.nll_template = nll_template
+        self.nll_obs_file = nll_obs_file  # obs file to localize
         self.nll_channel_hint = nll_channel_hint
+        self.nll_min_phase = nll_min_phase
+        self.nll_verbose = nll_verbose
         self.tmpdir = tmpdir
         self.double_pass = double_pass
         self.force_uncertainty = force_uncertainty
@@ -63,11 +67,7 @@ class NllLoc(object):
         self.S_uncertainty = S_uncertainty
         self.P_time_residual_threshold = P_time_residual_threshold
         self.S_time_residual_threshold = S_time_residual_threshold
-        self.nll_min_phase = nll_min_phase
-        self.nll_verbose = nll_verbose
-
-        # obs file to localize
-        self.nll_obs_file = nll_obs_file
+        self.quakeml_settings = quakeml_settings
 
         # keep track of cluster affiliation
         self.event_cluster_mapping = {}
@@ -106,12 +106,12 @@ class NllLoc(object):
                     pick.time_errors.uncertainty = self.P_uncertainty
                 elif "S" in pick.phase_hint or "s" in pick.phase_hint:
                     pick.time_errors.uncertainty = self.S_uncertainty
-            
+
             # do not use pick with desactivated arrival
-            if arrival.time_weight == 0 :
-                myevent.picks.remove(pick) 
-            elif dist_km_cutoff and arrival.distance > dist_km_cutoff / 111.0 :
-                myevent.picks.remove(pick) 
+            if arrival.time_weight == 0:
+                myevent.picks.remove(pick)
+            elif dist_km_cutoff and arrival.distance > dist_km_cutoff / 111.0:
+                myevent.picks.remove(pick)
 
         channel_hint.seek(0)
 
@@ -150,7 +150,7 @@ class NllLoc(object):
             pass
 
         logger.debug(
-            f"Localization of {nll_obs_file} using {self.nlloc_template} template."
+            f"Localization of {nll_obs_file} using {self.nll_template} template."
         )
         nll_obs_file_basename = os.path.basename(nll_obs_file)
 
@@ -170,13 +170,13 @@ class NllLoc(object):
 
         # Generate NLL configuration file
         try:
-            self.replace(self.nlloc_template, conf_file, tags)
+            self.replace(self.nll_template, conf_file, tags)
         except Exception as e:
             logger.error(e)
             return Catalog()
 
         # Localization
-        cmde = f"{self.nlloc_bin} {conf_file}"
+        cmde = f"{self.nll_bin} {conf_file}"
         logger.debug(cmde)
 
         try:
@@ -212,6 +212,7 @@ class NllLoc(object):
             return Catalog()
 
         # there is always only one event in the catalog
+        # fixme: use resource_id to forge *better* eventid and originid
         e = cat.events[0]
         o = e.preferred_origin()
 
@@ -236,11 +237,18 @@ class NllLoc(object):
         else:
             logger.warning("No nll_channel_hint file provided !")
 
-        o.creation_info.agency_id = "RENASS"
-        o.creation_info.author = "DBClust"
-        o.evaluation_mode = "automatic"
-        o.method_id = "NonLinLoc"
-        o.earth_model_id = self.nlloc_template
+        if not self.quakeml_settings:
+            o.creation_info.agency_id = "RENASS"
+            o.creation_info.author = "DBClust"
+            o.evaluation_mode = "automatic"
+            o.method_id = "NonLinLoc"
+            o.earth_model_id = self.nll_template
+        else:
+            o.creation_info.agency_id = self.quakeml_settings["agency_id"]
+            o.creation_info.author = self.quakeml_settings["author"]
+            o.evaluation_mode = self.quakeml_settings["evaluation_mode"]
+            o.method_id = self.quakeml_settings["method_id"]
+            o.earth_model_id = self.quakeml_settings["model_id"]
 
         if self.force_uncertainty:
             for pick in e.picks:
@@ -576,7 +584,7 @@ def show_origin(o, txt):
         azimuthal_gap = f"{o.quality.azimuthal_gap:.1f}"
     else:
         logger.warning("No azimuthal_gap defined !")
-        azimuthal_gap = '-'
+        azimuthal_gap = "-"
 
     print(
         ", ".join(
