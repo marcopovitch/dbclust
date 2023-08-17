@@ -45,6 +45,7 @@ class NllLoc(object):
         force_uncertainty=False,
         P_uncertainty=0.1,
         S_uncertainty=0.2,
+        dist_km_cutoff=None,
         P_time_residual_threshold=None,
         S_time_residual_threshold=None,
         quakeml_settings=None,
@@ -65,6 +66,7 @@ class NllLoc(object):
         self.force_uncertainty = force_uncertainty
         self.P_uncertainty = P_uncertainty
         self.S_uncertainty = S_uncertainty
+        self.dist_km_cutoff = dist_km_cutoff
         self.P_time_residual_threshold = P_time_residual_threshold
         self.S_time_residual_threshold = S_time_residual_threshold
         self.quakeml_settings = quakeml_settings
@@ -81,7 +83,7 @@ class NllLoc(object):
             self.catalog = Catalog()
         self.nb_events = len(self.catalog)
 
-    def reloc_event(self, event, dist_km_cutoff=None):
+    def reloc_event(self, event):
         """
         Event relocalisation using a locator
         Returns a Catalog()
@@ -110,7 +112,9 @@ class NllLoc(object):
             # do not use pick with desactivated arrival
             if arrival.time_weight == 0:
                 myevent.picks.remove(pick)
-            elif dist_km_cutoff and arrival.distance > dist_km_cutoff / 111.0:
+            elif (self.dist_km_cutoff is not None) and (
+                arrival.distance > self.dist_km_cutoff / 111.0
+            ):
                 myevent.picks.remove(pick)
 
         channel_hint.seek(0)
@@ -377,7 +381,11 @@ class NllLoc(object):
                 else (fabs(arrival.time_residual) > time_residual_threshold)
             )
 
-            if isclose(arrival.time_weight, 0, abs_tol=0.001) or bad_time_residual:
+            if (
+                isclose(arrival.time_weight, 0, abs_tol=0.001)
+                or bad_time_residual
+                or (self.dist_km_cutoff is not None and arrival.distance > self.dist_km_cutoff/ 111.0)
+            ):
                 pick = next(
                     (p for p in event.picks if p.resource_id == arrival.pick_id), None
                 )
@@ -612,8 +620,12 @@ def show_origin(o, txt):
 def reloc_fdsn_event(locator, eventid, fdsnws):
     link = f"{fdsnws}/query?eventid={urllib.parse.quote(eventid, safe='')}&includearrivals=true"
 
-    with urllib.request.urlopen(link) as f:
-        cat = read_events(f.read())
+    try:
+        with urllib.request.urlopen(link) as f:
+            cat = read_events(f.read())
+    except Exception as e:
+        logger.error("Error getting/reading eventid %s", eventid)
+        sys.exit()
 
     event = cat[0]
     cat = locator.reloc_event(event)
@@ -648,6 +660,7 @@ if __name__ == "__main__":
     # force_uncertainty=False,
     # P_uncertainty=0.1,
     # S_uncertainty=0.2,
+    # dist_km_cutoff = None,
     # P_time_residual_threshold=None,
     # S_time_residual_threshold=None,
     # nll_min_phase=4,
@@ -667,6 +680,7 @@ if __name__ == "__main__":
         force_uncertainty=force_uncertainty,
         P_uncertainty=P_uncertainty,
         S_uncertainty=S_uncertainty,
+        # dist_km_cutoff=None,  # KM
         #
         double_pass=True,
         # P_time_residual_threshold=0.45,
