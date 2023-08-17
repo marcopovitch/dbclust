@@ -43,10 +43,25 @@ if __name__ == "__main__":
         help="yaml configuration file.",
         type=str,
     )
+    parser.add_argument(
+        "-l",
+        "--loglevel",
+        default="INFO",
+        dest="loglevel",
+        help="loglevel (debug,warning,info,error)",
+        type=str,
+    )
     args = parser.parse_args()
     if not args.configfile:
         parser.print_help()
         sys.exit(255)
+
+    numeric_level = getattr(logging, args.loglevel.upper(), None)
+    if not numeric_level:
+        logger.error("Invalid loglevel '%s' !", args.loglevel.upper())
+        logger.error("loglevel should be: debug,warning,info,error.")
+        sys.exit(255)
+    logger.setLevel(numeric_level)
 
     yaml.add_constructor("!join", ymljoin)
     cfg = yml_read_config(args.configfile)
