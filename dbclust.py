@@ -157,6 +157,9 @@ if __name__ == "__main__":
     # file to keep track of SCNL when exporting to NLL
     nll_channel_hint = nll_cfg["nll_channel_hint"]
 
+    # station distance cut off in km
+    dist_km_cutoff = nll_cfg["dist_km_cutoff"]
+
     #
     # Relocation
     #
@@ -232,6 +235,9 @@ if __name__ == "__main__":
     # print(time_periods)
     # print(time_periods[:-2], time_periods[1:])
 
+
+    print(dist_km_cutoff)
+
     # configure locator
     locator = NllLoc(
         nllocbin,
@@ -242,6 +248,7 @@ if __name__ == "__main__":
         double_pass=double_pass,
         P_time_residual_threshold=P_time_residual_threshold,
         S_time_residual_threshold=S_time_residual_threshold,
+        dist_km_cutoff=dist_km_cutoff,
         nll_min_phase=nll_min_phase,
         nll_verbose=False,
         log_level=logger.level,
