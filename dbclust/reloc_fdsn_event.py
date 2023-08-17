@@ -83,7 +83,7 @@ if __name__ == "__main__":
     S_uncertainty = parameters_conf["S_uncertainty"]
     P_time_residual_threshold = parameters_conf["P_time_residual_threshold"]
     S_time_residual_threshold = parameters_conf["S_time_residual_threshold"]
-    # cutoff_dist_km = parameters_conf["cutoff_dist_km"]
+    dist_km_cutoff  = parameters_conf["dist_km_cutoff"]
     # use_deactivated_arrivals = parameters_conf["use_deactivated_arrivals"]
 
     # NonLinLoc
@@ -129,6 +129,7 @@ if __name__ == "__main__":
         #
         double_pass=double_pass,
         #
+        dist_km_cutoff=dist_km_cutoff,
         P_time_residual_threshold=P_time_residual_threshold,
         S_time_residual_threshold=S_time_residual_threshold,
         #
