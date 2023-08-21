@@ -619,12 +619,17 @@ def show_origin(o, txt):
 
 def reloc_fdsn_event(locator, eventid, fdsnws):
     link = f"{fdsnws}/query?eventid={urllib.parse.quote(eventid, safe='')}&includearrivals=true"
+    logger.debug(link)
 
     try:
         with urllib.request.urlopen(link) as f:
             cat = read_events(f.read())
     except Exception as e:
         logger.error("Error getting/reading eventid %s", eventid)
+        sys.exit()
+
+    if not cat:
+        logger.error("[%s] no such eventid or no origin !", eventid)
         sys.exit()
 
     event = cat[0]
