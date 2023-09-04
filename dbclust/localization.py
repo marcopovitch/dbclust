@@ -242,17 +242,23 @@ class NllLoc(object):
             logger.warning("No nll_channel_hint file provided !")
 
         if not self.quakeml_settings:
-            o.creation_info.agency_id = "RENASS"
+            o.creation_info.agency_id = "MyAgencyId"
             o.creation_info.author = "DBClust"
             o.evaluation_mode = "automatic"
             o.method_id = "NonLinLoc"
-            o.earth_model_id = self.nll_template
+            o.earth_model_id = os.path.basename(self.nll_template)
         else:
             o.creation_info.agency_id = self.quakeml_settings["agency_id"]
             o.creation_info.author = self.quakeml_settings["author"]
             o.evaluation_mode = self.quakeml_settings["evaluation_mode"]
             o.method_id = self.quakeml_settings["method_id"]
-            o.earth_model_id = self.quakeml_settings["model_id"]
+            if (
+                "model_id" in self.quakeml_settings
+                and self.quakeml_settings["model_id"]
+            ):
+                o.earth_model_id = self.quakeml_settings["model_id"]
+            else:
+                o.earth_model_id = os.path.basename(self.nll_template)
 
         if self.force_uncertainty:
             for pick in e.picks:
@@ -384,7 +390,10 @@ class NllLoc(object):
             if (
                 isclose(arrival.time_weight, 0, abs_tol=0.001)
                 or bad_time_residual
-                or (self.dist_km_cutoff is not None and arrival.distance > self.dist_km_cutoff/ 111.0)
+                or (
+                    self.dist_km_cutoff is not None
+                    and arrival.distance > self.dist_km_cutoff / 111.0
+                )
             ):
                 pick = next(
                     (p for p in event.picks if p.resource_id == arrival.pick_id), None
