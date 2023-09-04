@@ -44,6 +44,14 @@ if __name__ == "__main__":
         type=str,
     )
     parser.add_argument(
+        "-p",
+        "--profile",
+        default=None,
+        dest="velocity_profile_name",
+        help="velocity profile name to use",
+        type=str,
+    )
+    parser.add_argument(
         "-l",
         "--loglevel",
         default="INFO",
@@ -74,6 +82,10 @@ if __name__ == "__main__":
     cluster_cfg = cfg["cluster"]
     nll_cfg = cfg["nll"]
     reloc_cfg = cfg["relocation"]
+    if "quakeml" in cfg:
+        quakeml_cfg = cfg["quakeml"]
+    else:
+        quakeml_cfg = None
     catalog_cfg = cfg["catalog"]
 
     # path definition
@@ -149,16 +161,37 @@ if __name__ == "__main__":
     # NLLoc binary
     nllocbin = nll_cfg["bin"]
 
-    # full path NLL template
-    nlloc_template = nll_cfg["nll_template"]
+    # get nll velocity template
+    nlloc_template_path = nll_cfg["nll_template_path"]
     nlloc_times_path = nll_cfg["nll_time_path"]
     nll_min_phase = nll_cfg["nll_min_phase"]
+
+    # get velocity profile
+    velocity_profile_conf = nll_cfg["velocity_profile"]
+    if hasattr(args, "velocity_profile_name") and args.velocity_profile_name:
+        default_velocity_profile = args.velocity_profile_name
+    else:
+        default_velocity_profile = nll_cfg["default_velocity_profile"]
+    logger.info(f"Using {default_velocity_profile} profile")
+
+    template = None
+    for p in velocity_profile_conf:
+        if p["name"] == default_velocity_profile:
+            template = p["template"]
+    if not template:
+        logger.error(f"profile {default_velocity_profile} does not exist !")
+        logger.error(f"Available velocity models are:")
+        for p in velocity_profile_conf:
+            logger.error(f'\t{p["name"]}')
+        sys.exit()
+    nlloc_template = os.path.join(nlloc_template_path, template)
+    logger.info(f"using {nlloc_template} as nll template")
 
     # file to keep track of SCNL when exporting to NLL
     nll_channel_hint = nll_cfg["nll_channel_hint"]
 
     # station distance cut off in km
-    dist_km_cutoff = nll_cfg["dist_km_cutoff"]
+    dist_km_cutoff = reloc_cfg["dist_km_cutoff"]
 
     #
     # Relocation
@@ -235,7 +268,6 @@ if __name__ == "__main__":
     # print(time_periods)
     # print(time_periods[:-2], time_periods[1:])
 
-
     print(dist_km_cutoff)
 
     # configure locator
@@ -250,6 +282,7 @@ if __name__ == "__main__":
         S_time_residual_threshold=S_time_residual_threshold,
         dist_km_cutoff=dist_km_cutoff,
         nll_min_phase=nll_min_phase,
+        quakeml_settings=quakeml_cfg,
         nll_verbose=False,
         log_level=logger.level,
     )
