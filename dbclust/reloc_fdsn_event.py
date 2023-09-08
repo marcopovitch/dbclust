@@ -60,6 +60,7 @@ if __name__ == "__main__":
         help="cut off distance in km",
         type=float,
     )
+    parser.add_argument("-s", "--scat", help="get xyz scat file", action="store_true")
     parser.add_argument(
         "-e",
         "--eventid",
@@ -94,7 +95,6 @@ if __name__ == "__main__":
     if not conf:
         sys.exit()
 
-    
     nll_conf = conf["nll"]
     parameters_conf = conf["parameters"]
     fdsnws_conf = conf["fdsnws"]
@@ -131,9 +131,9 @@ if __name__ == "__main__":
     P_time_residual_threshold = parameters_conf["P_time_residual_threshold"]
     S_time_residual_threshold = parameters_conf["S_time_residual_threshold"]
     if not args.dist_km_cutoff:
-        dist_km_cutoff  = parameters_conf["dist_km_cutoff"]
+        dist_km_cutoff = parameters_conf["dist_km_cutoff"]
     else:
-        dist_km_cutoff  = args.dist_km_cutoff
+        dist_km_cutoff = args.dist_km_cutoff
     # use_deactivated_arrivals = parameters_conf["use_deactivated_arrivals"]
 
     # NonLinLoc
@@ -185,7 +185,7 @@ if __name__ == "__main__":
         #
         quakeml_settings=quakeml_settings,
         nll_verbose=nlloc_verbose,
-        keep_scat=True,
+        keep_scat=args.scat,
         #
         log_level=numeric_level,
     )
@@ -204,7 +204,8 @@ if __name__ == "__main__":
     )
     if locator.scat_file:
         try:
-            copyfile(locator.scat_file, f"{urllib.parse.quote(args.event_id, safe='')}.scat")
+            copyfile(
+                locator.scat_file, f"{urllib.parse.quote(args.event_id, safe='')}.scat"
+            )
         except Exception as e:
             logger.error("Can't get nll scat file (%s)", e)
-
