@@ -160,6 +160,7 @@ if __name__ == "__main__":
     #
     # NLLoc binary
     nllocbin = nll_cfg["bin"]
+    scat2latlon_bin = nll_cfg["scat2latlon_bin"]
 
     # get nll velocity template
     nlloc_template_path = nll_cfg["nll_template_path"]
@@ -273,6 +274,7 @@ if __name__ == "__main__":
     # configure locator
     locator = NllLoc(
         nllocbin,
+        scat2latlon_bin,
         nlloc_times_path,
         nlloc_template,
         nll_channel_hint=nll_channel_hint,
@@ -284,6 +286,7 @@ if __name__ == "__main__":
         nll_min_phase=nll_min_phase,
         quakeml_settings=quakeml_cfg,
         nll_verbose=False,
+        keep_scat=False,
         log_level=logger.level,
     )
 
