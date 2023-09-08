@@ -6,12 +6,11 @@ Picks clusturing using algorithm such as :
 - OPTICS, 
 - DBSCAN pick clustering (scikit learn).
 
-The localization is done with NonLinLoc (). The user 
-have to provide :
+The localization is done with NonLinLoc (). The user must provide :
 
-- NLLoc binary file (https://github.com/alomax/NonLinLoc)
+- NLLoc  and scat2latlon binary files (https://github.com/alomax/NonLinLoc)
 - the NonLinLoc configuration template file 
-- the time files  
+- the time grid files  
 
 ### Requirement
 - obspy
