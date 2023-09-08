@@ -8,6 +8,7 @@ from obspy import read_events
 from localization import reloc_fdsn_event, NllLoc, show_event
 import argparse
 import yaml
+from shutil import copyfile
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -137,6 +138,7 @@ if __name__ == "__main__":
 
     # NonLinLoc
     nlloc_bin = nll_conf["bin"]
+    scat2latlon_bin = nll_conf["scat2latlon_bin"]
     nlloc_times_path = nll_conf["times_path"]
     nlloc_template_path = nll_conf["template_path"]
     template = None
@@ -164,6 +166,7 @@ if __name__ == "__main__":
 
     locator = NllLoc(
         nlloc_bin,
+        scat2latlon_bin,
         nlloc_times_path,
         nlloc_template,
         nll_min_phase=nlloc_min_phase,
@@ -182,6 +185,7 @@ if __name__ == "__main__":
         #
         quakeml_settings=quakeml_settings,
         nll_verbose=nlloc_verbose,
+        keep_scat=True,
         #
         log_level=numeric_level,
     )
@@ -198,3 +202,9 @@ if __name__ == "__main__":
         f"{urllib.parse.quote(args.event_id, safe='')}.{file_extension}",
         format=output_format,
     )
+    if locator.scat_file:
+        try:
+            copyfile(locator.scat_file, f"{urllib.parse.quote(args.event_id, safe='')}.scat")
+        except Exception as e:
+            logger.error("Can't get nll scat file (%s)", e)
+

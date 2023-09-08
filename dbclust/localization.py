@@ -34,6 +34,7 @@ class NllLoc(object):
     def __init__(
         self,
         nll_bin,
+        scat2latlon_bin,
         nll_times_path,
         nll_template,
         nll_obs_file=None,
@@ -49,12 +50,15 @@ class NllLoc(object):
         P_time_residual_threshold=None,
         S_time_residual_threshold=None,
         quakeml_settings=None,
+        keep_scat=False,
+        scat_file=None,
         log_level=logging.INFO,
     ):
         logger.setLevel(log_level)
 
         # define locator
         self.nll_bin = nll_bin
+        self.scat2latlon_bin = scat2latlon_bin
         self.nll_time_path = nll_times_path
         self.nll_template = nll_template
         self.nll_obs_file = nll_obs_file  # obs file to localize
@@ -70,6 +74,8 @@ class NllLoc(object):
         self.P_time_residual_threshold = P_time_residual_threshold
         self.S_time_residual_threshold = S_time_residual_threshold
         self.quakeml_settings = quakeml_settings
+        self.keep_scat = keep_scat
+        self.scat_file = scat_file
 
         # keep track of cluster affiliation
         self.event_cluster_mapping = {}
@@ -196,12 +202,19 @@ class NllLoc(object):
         except Exception as e:
             logger.error(e)
             return Catalog()
+        
+        # check if location was rejected
+
 
         # check from stdout if there is any missing station grid file
         # WARNING: cannot open grid buffer file: nll_times/auvergne-pyrocko2/auvergne.P.01x02.time.buf
         for line in result.stdout.splitlines():
             if "WARNING: cannot open grid buffer file" in line:
                 logger.error(line)
+            elif "REJECTED" in line:
+                why = " ".join(line.split()[3:]).replace("\"", "")
+                logger.info(f"Localization was REJECTED: {why}")
+                return Catalog()
 
         if self.nll_verbose:
             print(result.stdout)
@@ -214,6 +227,27 @@ class NllLoc(object):
             # No localization
             logger.debug(e)
             return Catalog()
+
+        # scat file
+        if self.keep_scat:
+            # scat2latlon <decim_factor> <output_dir> <hyp_file_list>
+            decim_factor = 10
+            cmde = f"{self.scat2latlon_bin} {decim_factor} {tmp_path} {tmp_path}/last"
+            logger.debug(cmde)
+            try:
+                result = subprocess.run(
+                    shlex.split(cmde),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as e:
+                logger.error(e)
+            except Exception as e:
+                logger.error(e)
+
+            self.scat_file = os.path.join(tmp_path, "last.hyp.scat.xyz")
+            logger.debug("nll scat file is %s", self.scat_file)
 
         # there is always only one event in the catalog
         # fixme: use resource_id to forge *better* eventid and originid
@@ -650,6 +684,7 @@ if __name__ == "__main__":
     logger.setLevel(logging.DEBUG)
 
     nlloc_bin = "NLLoc"
+    scat2latlon_bin = "scat2latlon"
     nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
     nlloc_template = "../nll_template/nll_haslach_template.conf"
 
@@ -684,6 +719,7 @@ if __name__ == "__main__":
 
     locator = NllLoc(
         nlloc_bin,
+        scat2latlon_bin,
         nlloc_times_path,
         nlloc_template,
         #

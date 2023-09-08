@@ -3,6 +3,7 @@ tmpdir: /tmp
 
 nll:
   bin: NLLoc
+  scat2latlon_bin: scat2latlon
   times_path: /Users/marc/Dockers/routine/nll/data/times
   template_path: /Users/marc/github/dbclust/nll_template
   min_phase: 4
