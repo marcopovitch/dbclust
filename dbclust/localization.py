@@ -133,6 +133,14 @@ class NllLoc(object):
         self.nll_channel_hint = channel_hint
         cat = self.nll_localisation()
         # Fixme: add previously removed picks
+
+        # add previous origin back to this event
+        if cat:
+            cat.events[0].origins.append(orig)
+        else:
+            logger.warning("relocaton failed")
+            logger.warning("fix me: should returns original location")
+
         return cat
 
     def nll_localisation(self, nll_obs_file=None, double_pass=None, pass_count=0):
@@ -202,9 +210,8 @@ class NllLoc(object):
         except Exception as e:
             logger.error(e)
             return Catalog()
-        
-        # check if location was rejected
 
+        # check if location was rejected
 
         # check from stdout if there is any missing station grid file
         # WARNING: cannot open grid buffer file: nll_times/auvergne-pyrocko2/auvergne.P.01x02.time.buf
@@ -212,7 +219,7 @@ class NllLoc(object):
             if "WARNING: cannot open grid buffer file" in line:
                 logger.error(line)
             elif "REJECTED" in line:
-                why = " ".join(line.split()[3:]).replace("\"", "")
+                why = " ".join(line.split()[3:]).replace('"', "")
                 logger.info(f"Localization was REJECTED: {why}")
                 return Catalog()
 
@@ -562,7 +569,9 @@ class NllLoc(object):
                         )
                         continue
                     elif len(net) != 1:
-                        logger.warning(f"Duplicated network code for station {sta}")
+                        logger.warning(
+                            f"[wfid_hint] Duplicated network code for station {sta}"
+                        )
                         logger.warning(f"    using the first one {net.iloc[0]}")
                     net = net.iloc[0]
                     p.waveform_id.network_code = net
@@ -577,7 +586,9 @@ class NllLoc(object):
                     if len(loc) == 0:
                         logger.warning("Location code not found for {net}.{sta}")
                     if len(loc) != 1:
-                        logger.warning(f"Duplicated location code for {net}.{sta}")
+                        logger.warning(
+                            f"[wfid_hint] Duplicated location code for {net}.{sta}"
+                        )
                         logger.warning(f"    using the first one {loc.iloc[0]}")
                     loc = loc.iloc[0]
                     p.waveform_id.location_code = loc
@@ -588,7 +599,9 @@ class NllLoc(object):
                 if len(chan) == 0:
                     logger.warning("Channel code not found for {net}.{sta}")
                 elif len(chan) != 1:
-                    logger.warning(f"Duplicated channel code for {net}.{sta}.{loc}")
+                    logger.warning(
+                        f"[wfid_hint] Duplicated channel code for {net}.{sta}.{loc}"
+                    )
                     logger.warning(f"    using the first one {chan.iloc[0]}")
                 chan = chan.iloc[0]
 
@@ -617,7 +630,9 @@ def get_pick_from_arrival(event, arrival):
 
 def show_event(event, txt="", header=False):
     if header:
-        print("Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2")
+        print(
+            "Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2, model, locator"
+        )
     o_pref = event.preferred_origin()
     if hasattr(event, "event_type") and event.event_type == "not existing":
         show_origin(o_pref, "FAKE")
@@ -654,6 +669,8 @@ def show_origin(o, txt):
                     f"{o.quality.secondary_azimuthal_gap:.1f}"
                     if o.quality.secondary_azimuthal_gap
                     else "-",
+                    o.earth_model_id.id.split("/")[-1],
+                    o.method_id.id.split("/")[-1],
                 ],
             )
         )
