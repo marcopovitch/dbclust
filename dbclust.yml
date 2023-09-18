@@ -19,6 +19,16 @@ file:
   #picks_csv: !join [*PICK_PATH, "/", "EQT-2022-09-10.csv"]
   #picks_csv: !join [*PICK_PATH, "/", "picks_eqt.csv"]
 
+station:
+  # must be [inventory, fdsnws]
+  use: fdsnws
+  # inventory is a list of file to import
+  inventory:
+    - inventory/file2.xml
+    - inventory/file2.xml
+  # base url for fdsnws station
+  fdsnws: http://10.0.1.36:8080
+
 time:
   # filter picks between [date_begin, date_end]
   #date_begin: 2022-06-30T00:00:00.000Z
@@ -65,8 +75,9 @@ cluster:
   #  !join [*DATA, "/", "tt_matrix-min_size", *MIN_CLUSTER_SISE, ".npy"]
 
 nll:
-  # NLLoc binary
+  # NLLoc binaries
   bin: /opt/nll/bin/NLLoc
+  scat2latlon_bin: scat2latlon
 
   # time grid files
   nll_time_path: /Users/marc/Dockers/routine/nll/data/times
@@ -119,9 +130,9 @@ relocation:
 # force these attributes in quakeml file
 quakeml:
   agency_id: RENASS
-  author: marc.grunberg
-  #evaluation_mode: automatic
-  evaluation_mode: manual
+  author: marc
+  evaluation_mode: automatic
+  #evaluation_mode: manual
   method_id: NonLinLoc
   #model_id: will be set to the profile name used
 
