@@ -5,7 +5,7 @@ import functools
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from obspy import UTCDateTime
+from obspy import UTCDateTime, Inventory
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -19,8 +19,8 @@ class Phase(object):
         net=None,
         sta=None,
         coord=None,
-        fdsnws_time_search=None,
-        fdsnws_station_url="http://10.0.1.36:8080",
+        time_search=None,
+        info_sta=None,
     ):
         self.network = net
         self.station = sta
@@ -32,19 +32,24 @@ class Phase(object):
             return
 
         self.coord = {"latitude": None, "longitude": None, "elevation": None}
-        if fdsnws_time_search:
-            fdsnws_time_search = str(fdsnws_time_search)  # madatorry to use lru_cache
+        if time_search:
+            time_search = str(time_search)  # madatorry to use lru_cache
+
+        if type(info_sta) == Inventory:
+            get_station_info = self.get_station_info_from_inventory
+        else:
+            get_station_info = self.get_station_info_from_fdsnws
 
         if self.network and self.station:
             (
                 self.coord["latitude"],
                 self.coord["longitude"],
                 self.coord["elevation"],
-            ) = self.get_station_info(
+            ) = get_station_info(
                 self.network,
                 self.station,
-                fdsnws_time_search,
-                fdsnws_station_url,
+                time_search,
+                info_sta,
             )
 
     def __eq__(self, obj):
@@ -68,8 +73,27 @@ class Phase(object):
         return (self.time) < (obj.time)
 
     @staticmethod
+    #@functools.lru_cache(maxsize=None)
+    def get_station_info_from_inventory(network, station, time_search, inventory):
+        inv = inventory.select(
+            network=network,
+            station=station,
+            starttime=UTCDateTime(str(time_search)[:10]),
+        )
+        channels = inv.get_contents()["channels"]
+        if len(channels) == 0:
+            logger.error(
+                f"Can't find coordinates for {network}.{station} at {time_search}"
+            )
+            return None, None, None
+
+        coords = inv.get_coordinates(channels[0])
+        # elevation is in meters
+        return coords["latitude"], coords["longitude"], coords["elevation"]
+
+    @staticmethod
     @functools.lru_cache(maxsize=None)
-    def get_station_info(network, station, time_search, fdsnws_station_url):
+    def get_station_info_from_fdsnws(network, station, time_search, fdsnws_station_url):
         logger.debug(f"Getting station info from {network}.{station}")
         if not time_search:
             time_search = UTCDateTime.now()
@@ -122,7 +146,7 @@ def import_phases(
     df=None,
     P_proba_threshold=0,
     S_proba_threshold=0,
-    fdsnws_station_url="http://10.0.1.36:8080",
+    info_sta=None,
 ):
     """
     Read phaseNet dataframe picks.
@@ -152,9 +176,8 @@ def import_phases(
         myphase = Phase(
             net=net,
             sta=sta,
-            # fdsnws_time_search=phase_time,  # query take
-            fdsnws_time_search=None,
-            fdsnws_station_url=fdsnws_station_url,
+            time_search=phase_time,
+            info_sta=info_sta,
         )
         myphase.set_phase_info(
             phase_type,
@@ -164,7 +187,8 @@ def import_phases(
         phases.append(myphase)
         if logger.level == logging.DEBUG:
             myphase.show_all()
-    logger.info(Phase.get_station_info.cache_info())
+    if type(info_sta) == str:
+        logger.info(Phase.get_station_info.cache_info())
     return phases
 
 
@@ -241,8 +265,8 @@ def _test_phasenet_import():
         df,
         P_proba_threshold=0.8,
         S_proba_threshold=0.5,
-        fdsnws_station_url="http://10.0.1.36:8080",
-        # fdsnws_station_url="http://ws.resif.fr",
+        info_sta="http://10.0.1.36:8080",
+        # info_sta="http://ws.resif.fr",
     )
 
 
