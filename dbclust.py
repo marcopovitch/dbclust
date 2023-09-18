@@ -6,8 +6,10 @@ import argparse
 import yaml
 import numpy as np
 import pandas as pd
-from obspy import Catalog, UTCDateTime
-from datetime import datetime
+from obspy import Inventory, read_inventory
+
+# from obspy import Catalog, UTCDateTime, read_inventory
+# from datetime import datetime
 
 from dbclust.phase import import_phases, import_eqt_phases
 from dbclust.clusterize import (
@@ -77,6 +79,7 @@ if __name__ == "__main__":
     ################ CONFIG ################
 
     file_cfg = cfg["file"]
+    station_cfg = cfg["station"]
     time_cfg = cfg["time"]
     pick_cfg = cfg["pick"]
     cluster_cfg = cfg["cluster"]
@@ -95,6 +98,17 @@ if __name__ == "__main__":
 
     for dir in [OBS_PATH, QML_PATH, TMP_PATH]:
         os.makedirs(dir, exist_ok=True)
+
+    # how to get station coordinates
+    info_sta_method = station_cfg["use"]
+    if info_sta_method == "inventory":
+        info_sta = Inventory()
+        for i in station_cfg[info_sta_method]:
+            logger.info(f"Reading inventory file {i}")
+            info_sta.extend(read_inventory(i))
+    else:
+        info_sta = station_cfg[info_sta_method]
+        logger.info(f"Using fdsnws {info_sta} to get station coordinates")
 
     # import *phaseNet* or *eqt* csv picks file
     picks_type = file_cfg["picks_type"]
@@ -320,9 +334,18 @@ if __name__ == "__main__":
 
         # get phaseNet picks from dataframe
         if picks_type == "eqt":
-            phases = import_eqt_phases(df_subset, P_proba_threshold, S_proba_threshold)
+            phases = import_eqt_phases(
+                df_subset,
+                P_proba_threshold,
+                S_proba_threshold,
+            )
         else:
-            phases = import_phases(df_subset, P_proba_threshold, S_proba_threshold)
+            phases = import_phases(
+                df_subset,
+                P_proba_threshold,
+                S_proba_threshold,
+                info_sta,
+            )
 
         # find clusters
         myclust = Clusterize(
