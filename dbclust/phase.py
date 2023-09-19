@@ -201,7 +201,7 @@ def import_phases(
         if logger.level == logging.DEBUG:
             myphase.show_all()
     if type(info_sta) == str:
-        logger.info(Phase.get_station_info.cache_info())
+        logger.info(Phase.get_station_info_from_fdsnws.cache_info())
     return phases
 
 
