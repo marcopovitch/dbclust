@@ -30,8 +30,12 @@ class Phase(object):
         if coord:
             self.coord = coord
             return
+        else:
+            self.coord = {"latitude": None, "longitude": None, "elevation": None}
 
-        self.coord = {"latitude": None, "longitude": None, "elevation": None}
+        if not self.network or not self.station:
+            return
+
         if time_search:
             time_search = str(time_search)  # madatorry to use lru_cache
 
@@ -40,17 +44,21 @@ class Phase(object):
         else:
             get_station_info = self.get_station_info_from_fdsnws
 
-        if self.network and self.station:
-            (
-                self.coord["latitude"],
-                self.coord["longitude"],
-                self.coord["elevation"],
-            ) = get_station_info(
-                self.network,
-                self.station,
-                time_search,
-                info_sta,
-            )
+        (lat, lon, elev) = get_station_info(
+            self.network,
+            self.station,
+            time_search,
+            info_sta,
+        )
+
+        if lat == None or lon == None:
+            raise Exception(f"Can't find coordinates for {net}.{sta}")
+
+        (
+            self.coord["latitude"],
+            self.coord["longitude"],
+            self.coord["elevation"],
+        ) = (lat, lon, elev)
 
     def __eq__(self, obj):
         if self.__hash__() == obj.__hash__():
@@ -73,7 +81,7 @@ class Phase(object):
         return (self.time) < (obj.time)
 
     @staticmethod
-    #@functools.lru_cache(maxsize=None)
+    # @functools.lru_cache(maxsize=None)
     def get_station_info_from_inventory(network, station, time_search, inventory):
         inv = inventory.select(
             network=network,
@@ -82,7 +90,7 @@ class Phase(object):
         )
         channels = inv.get_contents()["channels"]
         if len(channels) == 0:
-            logger.error(
+            logger.debug(
                 f"Can't find coordinates for {network}.{station} at {time_search}"
             )
             return None, None, None
@@ -173,12 +181,17 @@ def import_phases(
         if phase_type == "S" and proba < S_proba_threshold:
             continue
 
-        myphase = Phase(
-            net=net,
-            sta=sta,
-            time_search=phase_time,
-            info_sta=info_sta,
-        )
+        try:
+            myphase = Phase(
+                net=net,
+                sta=sta,
+                time_search=phase_time,
+                info_sta=info_sta,
+            )
+        except Exception as e:
+            logger.warning(e)
+            continue
+
         myphase.set_phase_info(
             phase_type,
             phase_time,
