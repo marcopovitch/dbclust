@@ -62,6 +62,13 @@ if __name__ == "__main__":
     )
     parser.add_argument("-s", "--scat", help="get xyz scat file", action="store_true")
     parser.add_argument(
+        "--single-pass",
+        default=False,
+        dest="single_pass",
+        help="Nonlinloc single or double pass",
+        action="store_true",
+    )
+    parser.add_argument(
         "-e",
         "--eventid",
         default=None,
@@ -124,7 +131,10 @@ if __name__ == "__main__":
     output_format = conf["output"]["format"]
 
     # parameters
-    double_pass = parameters_conf["double_pass"]
+    if args.single_pass:
+        double_pass = False
+    else:
+        double_pass = parameters_conf["double_pass"]
     force_uncertainty = parameters_conf["force_uncertainty"]
     P_uncertainty = parameters_conf["P_uncertainty"]
     S_uncertainty = parameters_conf["S_uncertainty"]
