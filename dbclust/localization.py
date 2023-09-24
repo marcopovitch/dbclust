@@ -101,6 +101,8 @@ class NllLoc(object):
         orig = myevent.preferred_origin()
         channel_hint = io.StringIO()
         for arrival in orig.arrivals:
+            res_id = ResourceIdentifier(prefix="smi:local")
+            arrival.resource_id = res_id
             pick = next(
                 (p for p in myevent.picks if p.resource_id == arrival.pick_id), None
             )
@@ -172,75 +174,32 @@ class NllLoc(object):
         )
         nll_obs_file_basename = os.path.basename(nll_obs_file)
 
-        tmp_path = tempfile.mkdtemp(dir=self.tmpdir)
-        conf_file = os.path.join(tmp_path, f"{nll_obs_file_basename}.conf")
+        #tmp_path = tempfile.mkdtemp(dir=self.tmpdir)
+        with tempfile.TemporaryDirectory() as tmp_path:
+            conf_file = os.path.join(tmp_path, f"{nll_obs_file_basename}.conf")
 
-        # path + root filename
-        output = os.path.join(tmp_path, nll_obs_file_basename)
+            # path + root filename
+            output = os.path.join(tmp_path, nll_obs_file_basename)
 
-        # Values to be substitued in the template
-        tags = {
-            "OBSFILE": nll_obs_file,
-            "NLL_TIME_PATH": self.nll_time_path,
-            "OUTPUT": output,
-            "NLL_MIN_PHASE": self.nll_min_phase,
-        }
+            # Values to be substitued in the template
+            tags = {
+                "OBSFILE": nll_obs_file,
+                "NLL_TIME_PATH": self.nll_time_path,
+                "OUTPUT": output,
+                "NLL_MIN_PHASE": self.nll_min_phase,
+            }
 
-        # Generate NLL configuration file
-        try:
-            self.replace(self.nll_template, conf_file, tags)
-        except Exception as e:
-            logger.error(e)
-            return Catalog()
-
-        # Localization
-        cmde = f"{self.nll_bin} {conf_file}"
-        logger.debug(cmde)
-
-        try:
-            result = subprocess.run(
-                shlex.split(cmde),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            logger.error(e)
-            return Catalog()
-        except Exception as e:
-            logger.error(e)
-            return Catalog()
-
-        # check if location was rejected
-
-        # check from stdout if there is any missing station grid file
-        # WARNING: cannot open grid buffer file: nll_times/auvergne-pyrocko2/auvergne.P.01x02.time.buf
-        for line in result.stdout.splitlines():
-            if "WARNING: cannot open grid buffer file" in line:
-                logger.error(line)
-            elif "REJECTED" in line:
-                why = " ".join(line.split()[3:]).replace('"', "")
-                logger.info(f"Localization was REJECTED: {why}")
+            # Generate NLL configuration file
+            try:
+                self.replace(self.nll_template, conf_file, tags)
+            except Exception as e:
+                logger.error(e)
                 return Catalog()
 
-        if self.nll_verbose:
-            print(result.stdout)
-
-        # Read results
-        nll_output = os.path.join(tmp_path, "last.hyp")
-        try:
-            cat = read_events(nll_output)
-        except Exception as e:
-            # No localization
-            logger.debug(e)
-            return Catalog()
-
-        # scat file
-        if self.keep_scat:
-            # scat2latlon <decim_factor> <output_dir> <hyp_file_list>
-            decim_factor = 10
-            cmde = f"{self.scat2latlon_bin} {decim_factor} {tmp_path} {tmp_path}/last"
+            # Localization
+            cmde = f"{self.nll_bin} {conf_file}"
             logger.debug(cmde)
+
             try:
                 result = subprocess.run(
                     shlex.split(cmde),
@@ -250,91 +209,135 @@ class NllLoc(object):
                 )
             except subprocess.CalledProcessError as e:
                 logger.error(e)
+                return Catalog()
             except Exception as e:
                 logger.error(e)
+                return Catalog()
 
-            self.scat_file = os.path.join(tmp_path, "last.hyp.scat.xyz")
-            logger.debug("nll scat file is %s", self.scat_file)
+            # check if location was rejected
 
-        # there is always only one event in the catalog
-        # fixme: use resource_id to forge *better* eventid and originid
-        e = cat.events[0]
-        o = e.preferred_origin()
+            # check from stdout if there is any missing station grid file
+            # WARNING: cannot open grid buffer file: nll_times/auvergne-pyrocko2/auvergne.P.01x02.time.buf
+            for line in result.stdout.splitlines():
+                if "WARNING: cannot open grid buffer file" in line:
+                    logger.error(line)
+                elif "REJECTED" in line:
+                    why = " ".join(line.split()[3:]).replace('"', "")
+                    logger.info(f"Localization was REJECTED: {why}")
+                    return Catalog()
 
-        # check for nan value in uncertainty
-        if "nan" in [
-            str(o.latitude_errors.uncertainty),
-            str(o.longitude_errors.uncertainty),
-            str(o.depth_errors.uncertainty),
-        ]:
-            logger.debug("Found NaN value in uncertainty. Ignoring event !")
-            return Catalog()
+            if self.nll_verbose:
+                print(result.stdout)
 
-        # nll_channel_hint allows to keep track of net, sta, loc, chan values
-        # and could be None, a file or a StringIO
-        if self.nll_channel_hint:
-            if isinstance(self.nll_channel_hint, io.StringIO):
-                self.nll_channel_hint.seek(0)
-                logger.debug("nll_channel_hint uses StringIO()")
+            # Read results
+            nll_output = os.path.join(tmp_path, "last.hyp")
+            try:
+                cat = read_events(nll_output)
+            except Exception as e:
+                # No localization
+                logger.debug(e)
+                return Catalog()
+
+            # scat file
+            if self.keep_scat:
+                # scat2latlon <decim_factor> <output_dir> <hyp_file_list>
+                decim_factor = 10
+                cmde = f"{self.scat2latlon_bin} {decim_factor} {tmp_path} {tmp_path}/last"
+                logger.debug(cmde)
+                try:
+                    result = subprocess.run(
+                        shlex.split(cmde),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                except subprocess.CalledProcessError as e:
+                    logger.error(e)
+                except Exception as e:
+                    logger.error(e)
+
+                self.scat_file = os.path.join(tmp_path, "last.hyp.scat.xyz")
+                logger.debug("nll scat file is %s", self.scat_file)
+
+            # there is always only one event in the catalog
+            # fixme: use resource_id to forge *better* eventid and originid
+            e = cat.events[0]
+            o = e.preferred_origin()
+
+            # check for nan value in uncertainty
+            if "nan" in [
+                str(o.latitude_errors.uncertainty),
+                str(o.longitude_errors.uncertainty),
+                str(o.depth_errors.uncertainty),
+            ]:
+                logger.debug("Found NaN value in uncertainty. Ignoring event !")
+                return Catalog()
+
+            # nll_channel_hint allows to keep track of net, sta, loc, chan values
+            # and could be None, a file or a StringIO
+            if self.nll_channel_hint:
+                if isinstance(self.nll_channel_hint, io.StringIO):
+                    self.nll_channel_hint.seek(0)
+                    logger.debug("nll_channel_hint uses StringIO()")
+                else:
+                    logger.debug(f"nll_channel_hint use {self.nll_channel_hint}")
+                cat = self.fix_wfid(cat, self.nll_channel_hint)
             else:
-                logger.debug(f"nll_channel_hint use {self.nll_channel_hint}")
-            cat = self.fix_wfid(cat, self.nll_channel_hint)
-        else:
-            logger.warning("No nll_channel_hint file provided !")
+                logger.warning("No nll_channel_hint file provided !")
 
-        if not self.quakeml_settings:
-            o.creation_info.agency_id = "MyAgencyId"
-            o.creation_info.author = "DBClust"
-            o.evaluation_mode = "automatic"
-            o.method_id = "NonLinLoc"
-            o.earth_model_id = os.path.basename(self.nll_template)
-        else:
-            o.creation_info.agency_id = self.quakeml_settings["agency_id"]
-            o.creation_info.author = self.quakeml_settings["author"]
-            o.evaluation_mode = self.quakeml_settings["evaluation_mode"]
-            o.method_id = self.quakeml_settings["method_id"]
-            if (
-                "model_id" in self.quakeml_settings
-                and self.quakeml_settings["model_id"]
-            ):
-                o.earth_model_id = self.quakeml_settings["model_id"]
-            else:
+            if not self.quakeml_settings:
+                o.creation_info.agency_id = "MyAgencyId"
+                o.creation_info.author = "DBClust"
+                o.evaluation_mode = "automatic"
+                o.method_id = "NonLinLoc"
                 o.earth_model_id = os.path.basename(self.nll_template)
-
-        if self.force_uncertainty:
-            for pick in e.picks:
-                if "P" in pick.phase_hint or "p" in pick.phase_hint:
-                    pick.time_errors.uncertainty = self.P_uncertainty
-                elif "S" in pick.phase_hint or "s" in pick.phase_hint:
-                    pick.time_errors.uncertainty = self.S_uncertainty
-
-        # try a relocation
-        if self.double_pass and pass_count == 0:
-            logger.debug("Starting double pass relocation.")
-            cat2 = cat.copy()
-            event2 = cat2.events[0]
-            event2 = self.cleanup_pick_phase(event2)
-            if len(event2.picks):
-                new_nll_obs_file = nll_obs_file + ".2nd_pass"
-                cat2.write(new_nll_obs_file, format="NLLOC_OBS")
-                cat2 = self.nll_localisation(
-                    new_nll_obs_file, double_pass=self.double_pass, pass_count=1
-                )
             else:
-                cat2 = None
+                o.creation_info.agency_id = self.quakeml_settings["agency_id"]
+                o.creation_info.author = self.quakeml_settings["author"]
+                o.evaluation_mode = self.quakeml_settings["evaluation_mode"]
+                o.method_id = self.quakeml_settings["method_id"]
+                if (
+                    "model_id" in self.quakeml_settings
+                    and self.quakeml_settings["model_id"]
+                ):
+                    o.earth_model_id = self.quakeml_settings["model_id"]
+                else:
+                    o.earth_model_id = os.path.basename(self.nll_template)
 
-            if cat2:
+            if self.force_uncertainty:
+                for pick in e.picks:
+                    if "P" in pick.phase_hint or "p" in pick.phase_hint:
+                        pick.time_errors.uncertainty = self.P_uncertainty
+                    elif "S" in pick.phase_hint or "s" in pick.phase_hint:
+                        pick.time_errors.uncertainty = self.S_uncertainty
+
+            # try a relocation
+            if self.double_pass and pass_count == 0:
+                logger.debug("Starting double pass relocation.")
+                cat2 = cat.copy()
                 event2 = cat2.events[0]
-                orig2 = event2.preferred_origin()
-                # add this new origin to catalog and set it as preferred
-                e.origins.append(orig2)
-                e.preferred_origin_id = orig2.resource_id
-                e.picks += event2.picks
-            else:
-                # can't relocate: set it to "not existing"
-                e.event_type = "not existing"
+                event2 = self.cleanup_pick_phase(event2)
+                if len(event2.picks):
+                    new_nll_obs_file = nll_obs_file + ".2nd_pass"
+                    cat2.write(new_nll_obs_file, format="NLLOC_OBS")
+                    cat2 = self.nll_localisation(
+                        new_nll_obs_file, double_pass=self.double_pass, pass_count=1
+                    )
+                else:
+                    cat2 = None
 
-        return cat
+                if cat2:
+                    event2 = cat2.events[0]
+                    orig2 = event2.preferred_origin()
+                    # add this new origin to catalog and set it as preferred
+                    e.origins.append(orig2)
+                    e.preferred_origin_id = orig2.resource_id
+                    e.picks += event2.picks
+                else:
+                    # can't relocate: set it to "not existing"
+                    e.event_type = "not existing"
+
+            return cat
 
     def dask_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
         """
@@ -357,7 +360,20 @@ class NllLoc(object):
 
         mycatalog = Catalog()
         for cat in cat_results:
-            mycatalog += cat
+            if not cat:
+                continue
+            # there is always only one event in the catalog
+            e = cat.events[0]
+            o = e.preferred_origin()
+            logger.debug(o)
+            nb_station_used = o.quality.used_station_count
+            if nb_station_used >= self.nll_min_phase:
+                mycatalog += cat
+            else:
+                logger.debug(
+                    f"Not enough stations ({nb_station_used}/{self.nll_min_phase}) for event"
+                    f" ... ignoring it !"
+                )
 
         if append is True:
             self.catalog += mycatalog
@@ -389,7 +405,18 @@ class NllLoc(object):
             if not cat:
                 logger.debug(f"No loc obtained for {nll_obs_file}:/")
                 continue
-            mycatalog += cat
+
+            # there is always only one event in the catalog
+            e = cat.events[0]
+            o = e.preferred_origin()
+            nb_station_used = o.quality.used_station_count
+            if nb_station_used >= self.nll_min_phase:
+                mycatalog += cat
+            else:
+                logger.debug(
+                    f"Not enough stations ({nb_station_used}/{self.nll_min_phase}) for event"
+                    f" ... ignoring it !"
+                )
 
         if append is True:
             self.catalog += mycatalog
