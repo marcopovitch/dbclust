@@ -171,51 +171,48 @@ if __name__ == "__main__":
         "model_id": default_velocity_profile,
     }
 
-    if tmpdir is None:
-        tmpdir = tempfile.TemporaryDirectory()
+    with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_path:
+        locator = NllLoc(
+            nlloc_bin,
+            scat2latlon_bin,
+            nlloc_times_path,
+            nlloc_template,
+            nll_min_phase=nlloc_min_phase,
+            #
+            tmpdir=tmp_path,
+            #
+            force_uncertainty=force_uncertainty,
+            P_uncertainty=P_uncertainty,
+            S_uncertainty=S_uncertainty,
+            #
+            double_pass=double_pass,
+            #
+            dist_km_cutoff=dist_km_cutoff,
+            P_time_residual_threshold=P_time_residual_threshold,
+            S_time_residual_threshold=S_time_residual_threshold,
+            #
+            quakeml_settings=quakeml_settings,
+            nll_verbose=nlloc_verbose,
+            keep_scat=args.scat,
+            #
+            log_level=numeric_level,
+        )
 
-    locator = NllLoc(
-        nlloc_bin,
-        scat2latlon_bin,
-        nlloc_times_path,
-        nlloc_template,
-        nll_min_phase=nlloc_min_phase,
-        #
-        tmpdir=tmpdir,
-        #
-        force_uncertainty=force_uncertainty,
-        P_uncertainty=P_uncertainty,
-        S_uncertainty=S_uncertainty,
-        #
-        double_pass=double_pass,
-        #
-        dist_km_cutoff=dist_km_cutoff,
-        P_time_residual_threshold=P_time_residual_threshold,
-        S_time_residual_threshold=S_time_residual_threshold,
-        #
-        quakeml_settings=quakeml_settings,
-        nll_verbose=nlloc_verbose,
-        keep_scat=args.scat,
-        #
-        log_level=numeric_level,
-    )
+        cat = reloc_fdsn_event(locator, args.event_id, ws_event_url)
 
-    cat = reloc_fdsn_event(locator, args.event_id, ws_event_url)
-    if tmpdir is None:
-        tmpdir.cleanup()
+        for e in cat:
+            show_event(e, "****", header=True)
 
-    for e in cat:
-        show_event(e, "****", header=True)
-
-    file_extension = output_format.lower()
-    cat.write(
-        f"{urllib.parse.quote(args.event_id, safe='')}.{file_extension}",
-        format=output_format,
-    )
-    if locator.scat_file:
-        try:
-            copyfile(
-                locator.scat_file, f"{urllib.parse.quote(args.event_id, safe='')}.scat"
-            )
-        except Exception as e:
-            logger.error("Can't get nll scat file (%s)", e)
+        file_extension = output_format.lower()
+        cat.write(
+            f"{urllib.parse.quote(args.event_id, safe='')}.{file_extension}",
+            format=output_format,
+        )
+        if locator.scat_file:
+            try:
+                copyfile(
+                    locator.scat_file,
+                    f"{urllib.parse.quote(args.event_id, safe='')}.scat",
+                )
+            except Exception as e:
+                logger.error("Can't get nll scat file (%s)", e)
