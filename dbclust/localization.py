@@ -9,6 +9,7 @@ import pathlib
 import subprocess
 import shlex
 import tempfile
+import numpy as np
 import pandas as pd
 import multiprocessing
 from distributed import Client
@@ -42,11 +43,13 @@ class NllLoc(object):
         nll_min_phase=4,
         nll_verbose=False,
         tmpdir="/tmp",
+        min_station_with_P_and_S=0,
         double_pass=False,
         force_uncertainty=False,
         P_uncertainty=0.1,
         S_uncertainty=0.2,
         dist_km_cutoff=None,
+        use_deactivated_arrivals=False,
         P_time_residual_threshold=None,
         S_time_residual_threshold=None,
         quakeml_settings=None,
@@ -66,11 +69,13 @@ class NllLoc(object):
         self.nll_min_phase = nll_min_phase
         self.nll_verbose = nll_verbose
         self.tmpdir = tmpdir
+        self.min_station_with_P_and_S = min_station_with_P_and_S
         self.double_pass = double_pass
         self.force_uncertainty = force_uncertainty
         self.P_uncertainty = P_uncertainty
         self.S_uncertainty = S_uncertainty
         self.dist_km_cutoff = dist_km_cutoff
+        self.use_deactivated_arrivals = use_deactivated_arrivals
         self.P_time_residual_threshold = P_time_residual_threshold
         self.S_time_residual_threshold = S_time_residual_threshold
         self.quakeml_settings = quakeml_settings
@@ -88,6 +93,35 @@ class NllLoc(object):
         else:
             self.catalog = Catalog()
         self.nb_events = len(self.catalog)
+
+    @staticmethod
+    def check_stations_with_P_and_S(event, origin, min_count):
+        """
+        Ensures that the number of stations with both P and S phases (count)
+        is greater than or equal to the threshold (min_count).
+
+        Returns count
+        """
+        count = {}
+        for arrival in origin.arrivals:
+            if hasattr(arrival, "time_weight") and arrival.time_weight == 0:
+                continue
+            pick = next(
+                (p for p in event.picks if p.resource_id == arrival.pick_id), None
+            )
+            if not pick:
+                continue
+            wfid = pick.waveform_id
+            station_name = f"{wfid.network_code}.{wfid.station_code}"
+            phase_name = pick.phase_hint
+
+            if station_name in count.keys():
+                count[station_name].append(phase_name)
+            else:
+                count[station_name] = [phase_name]
+
+        count = [len(count[k]) for k in count.keys()]
+        return np.array([np.count_nonzero(x >= min_count) for x in count]).sum()
 
     def reloc_event(self, event):
         """
@@ -118,7 +152,7 @@ class NllLoc(object):
                     pick.time_errors.uncertainty = self.S_uncertainty
 
             # do not use pick with desactivated arrival
-            if arrival.time_weight == 0:
+            if self.use_deactivated_arrivals == False and arrival.time_weight == 0:
                 myevent.picks.remove(pick)
             elif (self.dist_km_cutoff is not None) and (
                 arrival.distance > self.dist_km_cutoff / 111.0
@@ -348,7 +382,7 @@ class NllLoc(object):
         returns a catalog
         """
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        logger.info(f"Localization of {obs_files_pattern}")
+        logger.debug(f"Localization of {obs_files_pattern}")
 
         b = db.from_sequence(
             glob.glob(obs_files_pattern), partition_size=multiprocessing.cpu_count()
@@ -364,10 +398,16 @@ class NllLoc(object):
             # there is always only one event in the catalog
             e = cat.events[0]
             o = e.preferred_origin()
-            logger.debug(o)
             nb_station_used = o.quality.used_station_count
             if nb_station_used >= self.nll_min_phase:
-                mycatalog += cat
+                count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
+                if count >= self.min_station_with_P_and_S:
+                    logger.info(f"{count} stations with both P and S")
+                    mycatalog += cat
+                else:
+                    logger.debug(
+                        f"Not enough stations with both P and S ... ignoring it !"
+                    )
             else:
                 logger.debug(
                     f"Not enough stations ({nb_station_used}/{self.nll_min_phase}) for event"
@@ -395,7 +435,7 @@ class NllLoc(object):
         returns a catalog
         """
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        logger.info(f"Localization of {obs_files_pattern}")
+        logger.debug(f"Localization of {obs_files_pattern}")
 
         mycatalog = Catalog()
         for nll_obs_file in sorted(glob.glob(obs_files_pattern)):
@@ -410,7 +450,14 @@ class NllLoc(object):
             o = e.preferred_origin()
             nb_station_used = o.quality.used_station_count
             if nb_station_used >= self.nll_min_phase:
-                mycatalog += cat
+                count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
+                if count >= self.min_station_with_P_and_S:
+                    logger.info(f"{count} stations with both P and S")
+                    mycatalog += cat
+                else:
+                    logger.debug(
+                        f"Not enough stations with both P and S ... ignoring it !"
+                    )
             else:
                 logger.debug(
                     f"Not enough stations ({nb_station_used}/{self.nll_min_phase}) for event"
@@ -566,8 +613,6 @@ class NllLoc(object):
         msi_cmd = str(
             "wfid_hint is a file with (net, sta, loc, chan) information\n"
             "to be used as a hint to populate quakeml from nll obs file.\n"
-            "Use the command below to get it from the seed files you got the picks from :\n"
-            "> msi -T ${MSEED_DIR}/*  | tail -n +2 | head -n-1 | cut -f1 -d' ' | sort -u > chan.txt\n"
         )
 
         try:
