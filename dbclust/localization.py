@@ -174,7 +174,7 @@ class NllLoc(object):
         if cat:
             cat.events[0].origins.append(orig)
         else:
-            logger.warning("relocaton failed")
+            logger.warning("relocation failed")
             logger.warning("fix me: should returns original location")
 
         return cat
