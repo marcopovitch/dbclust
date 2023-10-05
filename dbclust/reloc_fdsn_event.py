@@ -60,6 +60,20 @@ if __name__ == "__main__":
         help="cut off distance in km",
         type=float,
     )
+    parser.add_argument(
+        "--use-deactivated-arrivals",
+        default=False,
+        dest="use_deactivated_arrivals",
+        help="force deactivated arrivals use",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--force-uncertainty",
+        default=False,
+        dest="force_uncertainty",
+        help="force phase uncertainty (see conf.yml file)",
+        action="store_true",
+    )
     parser.add_argument("-s", "--scat", help="get xyz scat file", action="store_true")
     parser.add_argument(
         "--single-pass",
@@ -135,16 +149,26 @@ if __name__ == "__main__":
         double_pass = False
     else:
         double_pass = parameters_conf["double_pass"]
-    force_uncertainty = parameters_conf["force_uncertainty"]
+    
+    if args.force_uncertainty:
+        force_uncertainty = args.force_uncertainty
+    else:
+        force_uncertainty = parameters_conf["force_uncertainty"]
+
     P_uncertainty = parameters_conf["P_uncertainty"]
     S_uncertainty = parameters_conf["S_uncertainty"]
     P_time_residual_threshold = parameters_conf["P_time_residual_threshold"]
     S_time_residual_threshold = parameters_conf["S_time_residual_threshold"]
+
     if not args.dist_km_cutoff:
         dist_km_cutoff = parameters_conf["dist_km_cutoff"]
     else:
         dist_km_cutoff = args.dist_km_cutoff
-    # use_deactivated_arrivals = parameters_conf["use_deactivated_arrivals"]
+
+    if not args.use_deactivated_arrivals:
+        use_deactivated_arrivals = parameters_conf["use_deactivated_arrivals"]
+    else:
+        use_deactivated_arrivals = args.use_deactivated_arrivals
 
     # NonLinLoc
     nlloc_bin = nll_conf["bin"]
@@ -188,6 +212,8 @@ if __name__ == "__main__":
             double_pass=double_pass,
             #
             dist_km_cutoff=dist_km_cutoff,
+            use_deactivated_arrivals=use_deactivated_arrivals,
+            
             P_time_residual_threshold=P_time_residual_threshold,
             S_time_residual_threshold=S_time_residual_threshold,
             #
