@@ -60,18 +60,31 @@ def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
         logger.debug("filter_out_cluster_with_common_phases: nothing to do ")
         return clusters1, clusters2, 0
 
+    logger.info(f"Clusters c1 contain {len(clusters1.clusters)} clusters")
+    logger.info(f"Clusters c2 contain {len(clusters2.clusters)} clusters")
+
+    c1_used = set()
+    c2_used = set()
+
     merge_count = 0
     for idx1, c1 in enumerate(clusters1.clusters):
+        if idx1 in c1_used:
+            continue
         for idx2, c2 in enumerate(clusters2.clusters):
+            if idx2 in c2_used or idx1 in c1_used:
+                continue
+
             intersection = set(c1).intersection(set(c2))
             if len(intersection) < min_com_phases:
+                logger.debug(
+                    f"[{idx1},{idx2}] clusters c1, c2  with only {len(intersection)} shared phases (merge require {min_com_phases})."
+                )
                 continue
 
             logger.info(
-                f"Merging clusters c1, c2  with {len(intersection)} shared phases."
+                f"[{idx1},{idx2}] merging clusters c1, c2  with {len(intersection)} shared phases."
             )
             merge_count += 1
-
 
             # merge 2 clusters and remove duplicated picks
             set_c1 = set(clusters1.clusters[idx1])
@@ -82,18 +95,27 @@ def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
             c1_stab = clusters1.clusters_stability[idx1]
             c2_stab = clusters2.clusters_stability[idx2]
 
-            # remove this cluster since it has been merged
-            clusters2.clusters.pop(idx2)
-            clusters2.clusters_stability = np.delete(clusters2.clusters_stability, idx2)
+            # remove/clean this cluster since it has been merged with an other one
+            # clusters2.clusters.pop(idx2)
+            # clusters2.clusters_stability = np.delete(clusters2.clusters_stability, idx2)
+            # clusters2.clusters[idx2] = []
+            c1_used.add(idx1)
+            c2_used.add(idx2)
 
             # keep the best stability
             clusters1.clusters_stability[idx1] = max(c1_stab, c2_stab)
 
             logger.info(
-                f"Merging cluster(len:{len(c1)}, stability:{c1_stab:.4f}) "
+                f"[{idx1},{idx2}] merging cluster(len:{len(c1)}, stability:{c1_stab:.4f}) "
                 f"with cluster(len:{len(c2)}, stability:{c2_stab:.4f}) "
                 f"--> cluster(len:{len(clusters1.clusters[idx1])}, stability:{clusters1.clusters_stability[idx1]:.4f})"
             )
+
+    # Do the real cleanup
+    for idx2 in sorted(c2_used, reverse=True):
+        clusters2.clusters.pop(idx2)
+        clusters2.clusters_stability = np.delete(clusters2.clusters_stability, idx2)
+
     return clusters1, clusters2, merge_count
 
 
@@ -157,13 +179,14 @@ class Clusterize(object):
         min_cluster_size=5,  # hdbscan default
         average_velocity=5,  # km/s
         min_station_count=0,
+        min_station_with_P_and_S=2,
         max_search_dist=0,  # same as hdbscan cluster_selection_epsilon: default is 0.
         P_uncertainty=0.1,
         S_uncertainty=0.2,
         tt_maxtrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
         tt_matrix_save=False,
-        log_level=logging.DEBUG
+        log_level=logging.DEBUG,
     ):
         logger.setLevel(log_level)
 
@@ -181,8 +204,11 @@ class Clusterize(object):
         self.min_cluster_size = min_cluster_size
         self.average_velocity = average_velocity
 
-        # pick filtering parameters
+        # stations filtering parameters
         self.min_station_count = min_station_count
+        self.min_station_with_P_and_S = min_station_with_P_and_S
+
+        # pick filtering parameters
         self.P_uncertainty = P_uncertainty
         self.S_uncertainty = S_uncertainty
 
@@ -195,7 +221,9 @@ class Clusterize(object):
             return
 
         logger.info(
-            f"Starting Clustering (nbphases={len(phases)}, min_cluster_size={min_cluster_size})."
+            f"Starting Clustering (nbphases={len(phases)}, "
+            f"min_cluster_size={min_cluster_size}, "
+            f"min_station_with_P_and_S={min_station_with_P_and_S})."
         )
         if len(phases) < min_cluster_size:
             logger.info("Too few picks !")
@@ -338,12 +366,28 @@ class Clusterize(object):
         for i, cluster in enumerate(self.clusters):
             cat = Catalog()
             event = Event()
-            stations_list = set([p.station for p in cluster])
 
+            # count the number of stations
+            stations_list = set([p.station for p in cluster])
             if self.min_station_count:
                 if len(stations_list) < self.min_station_count:
                     logger.debug(
-                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... not enough stations ({len(stations_list)})"
+                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
+                        f"not enough stations ({len(stations_list)})"
+                    )
+                    continue
+
+            # count the number of station that have both P and S
+            if self.min_station_with_P_and_S:
+                stations_with_P_and_S_count = 0
+                for s in stations_list:
+                    phase_list = set([p.phase for p in cluster if p.station == s])
+                    if len(phase_list) == 2:
+                        stations_with_P_and_S_count += 1
+                if stations_with_P_and_S_count < self.min_station_with_P_and_S:
+                    logger.debug(
+                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
+                        f"not enough stations with both P and S (conf count set to {stations_with_P_and_S_count})"
                     )
                     continue
 
@@ -431,7 +475,6 @@ def _test():
         S_proba_threshold=0.5,
     )
     logger.info(f"Read {len(phases)}")
-    # myclusters = Clusterize(phases, min_cluster_size, average_velocity, max_search_dist)
     myclusters = Clusterize(
         phases=phases,
         # max_search_dist=max_search_dist,
