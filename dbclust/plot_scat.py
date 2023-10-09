@@ -7,6 +7,7 @@ from obspy import read_events
 from obspy.geodetics import locations2degrees
 import pygmt
 import logging
+import urllib.parse
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -27,7 +28,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "-v",
         "--verbose",
-        action='store_true',
+        action="store_true",
         dest="verbose",
         help="verbose output",
     )
@@ -36,12 +37,12 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(255)
 
-    #variant = "World_Imagery"
+    # variant = "World_Imagery"
     variant = "World_Street_Map"
     tiles_server = (
         # "https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png"
-        "https://server.arcgisonline.com/ArcGIS/rest/services/%s/MapServer/tile/{z}/{y}/{x}" % variant
-
+        "https://server.arcgisonline.com/ArcGIS/rest/services/%s/MapServer/tile/{z}/{y}/{x}"
+        % variant
     )
     # tiles_server = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
 
@@ -117,7 +118,7 @@ if __name__ == "__main__":
 
     # Adapt region to the dataset
     df["distance_deg"] = df[["latitude", "longitude"]].apply(
-        lambda row: locations2degrees(row[0], row[1], max_latitude, max_longitude),
+        lambda row: locations2degrees(row.iloc[0], row.iloc[1], max_latitude, max_longitude),
         axis=1,
     )
     offset = df["distance_deg"].max() * 2  # Deg
@@ -138,14 +139,13 @@ if __name__ == "__main__":
     if args.verbose:
         pygmt.config(GMT_VERBOSE="d")
 
-
     with fig.subplot(
-        nrows=2,
+        nrows=3,
         ncols=2,
-        figsize=("18c", "18c"),
+        figsize=("21c", "29.7c"),
         frame=["afg"],
         margins=["0.6c", "0.2c"],
-        title=f"{args.event_id}: lat: {max_latitude:.3f}, lon: {max_longitude:.3f}, depth: {max_depth:.1f} km, vmodel: {o.earth_model_id.id.split('/')[-1]}, evaluation: {o.evaluation_mode}",
+        title=f"{urllib.parse.unquote(args.event_id)}: lat: {max_latitude:.3f}, lon: {max_longitude:.3f}, depth: {max_depth:.1f} km,\nvmodel: {o.earth_model_id.id.split('/')[-1]}, evaluation: {o.evaluation_mode}",
     ):
         ############
         # lat, lon #
@@ -361,5 +361,5 @@ if __name__ == "__main__":
             )
 
     fig.savefig(
-        f"{scat_file}.png", transparent=False, anti_alias=True, crop=True, show=True
+        f"{urllib.parse.quote(scat_file, safe='')}.png", transparent=False, anti_alias=True, crop=True, show=True
     )
