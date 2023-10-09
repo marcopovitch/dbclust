@@ -296,6 +296,7 @@ class NllLoc(object):
         # fixme: use resource_id to forge *better* eventid and originid
         e = cat.events[0]
         o = e.preferred_origin()
+        o.quality.used_station_count = self.get_used_station_count(e, o)
 
         # check for nan value in uncertainty
         if "nan" in [
@@ -398,6 +399,8 @@ class NllLoc(object):
             # there is always only one event in the catalog
             e = cat.events[0]
             o = e.preferred_origin()
+            # nb_station_used = o.quality.used_station_count
+            o.quality.used_station_count = self.get_used_station_count(e, o)
             nb_station_used = o.quality.used_station_count
             if nb_station_used >= self.nll_min_phase:
                 count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
@@ -448,6 +451,7 @@ class NllLoc(object):
             # there is always only one event in the catalog
             e = cat.events[0]
             o = e.preferred_origin()
+            o.quality.used_station_count = self.get_used_station_count(e, o)
             nb_station_used = o.quality.used_station_count
             if nb_station_used >= self.nll_min_phase:
                 count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
@@ -564,13 +568,13 @@ class NllLoc(object):
         orig.quality.used_phase_count = len(
             [a.time_weight for a in orig.arrivals if a.time_weight]
         )
-        orig.quality.used_station_count = NllLoc.get_used_station_count(event)
+        orig.quality.used_station_count = NllLoc.get_used_station_count(event, orig)
         return event
 
     @staticmethod
-    def get_used_station_count(event):
+    def get_used_station_count(event, origin):
         station_list = []
-        origin = event.preferred_origin()
+        #origin = event.preferred_origin()
         for arrival in origin.arrivals:
             if arrival.time_weight and arrival.time_residual:
                 pick = next(
