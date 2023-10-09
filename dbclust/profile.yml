@@ -11,7 +11,7 @@ nll:
 
 parameters:
   double_pass: True
-  force_uncertainty: True
+  force_uncertainty: False
   P_uncertainty: 0.05
   S_uncertainty: 0.1
   # P_time_residual_threshold: 0.45
@@ -56,6 +56,12 @@ velocity_profile:
 
   - name: auvergne
     template: nll_auvergne_template.conf
+
+  - name: corinthe 
+    template: nll_corinthe_template.conf
+
+  - name: haslach-0.2
+    template: nll_haslach-0.2_template.conf
 
   - name: haslach
     template: nll_haslach_template.conf
