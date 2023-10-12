@@ -43,6 +43,8 @@ class Phase(object):
             get_station_info = self.get_station_info_from_inventory
         else:
             get_station_info = self.get_station_info_from_fdsnws
+            # hack to get benefit from lru_cache
+            time_search=None 
 
         (lat, lon, elev) = get_station_info(
             self.network,
