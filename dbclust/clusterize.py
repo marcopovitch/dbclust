@@ -373,7 +373,7 @@ class Clusterize(object):
                 if len(stations_list) < self.min_station_count:
                     logger.debug(
                         f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
-                        f"not enough stations ({len(stations_list)})"
+                        f"not enough stations ({len(stations_list)}/{self.min_station_count})"
                     )
                     continue
 
@@ -387,7 +387,7 @@ class Clusterize(object):
                 if stations_with_P_and_S_count < self.min_station_with_P_and_S:
                     logger.debug(
                         f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
-                        f"not enough stations with both P and S (conf count set to {stations_with_P_and_S_count})"
+                        f"not enough stations with both P and S ({stations_with_P_and_S_count}/{self.min_station_with_P_and_S})"
                     )
                     continue
 
@@ -480,6 +480,7 @@ def _test():
         # max_search_dist=max_search_dist,
         max_search_dist=0,
         # min_cluster_size=min_cluster_size,
+        # min_station_with_P_and_S=2,
         min_cluster_size=5,
         average_velocity=average_velocity,
     )
