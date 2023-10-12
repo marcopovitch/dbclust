@@ -324,7 +324,18 @@ if __name__ == "__main__":
     part = 0
     last_saved_event_count = 0
     last_round = False
-    previous_myclust = Clusterize(log_level=logger.level)
+    previous_myclust = Clusterize(
+        phases=None,  # empty cluster / constructor only
+        average_velocity=average_velocity,
+        min_station_count=min_station_count,
+        min_station_with_P_and_S=min_station_with_P_and_S,
+        max_search_dist=max_search_dist,
+        P_uncertainty=P_uncertainty,
+        S_uncertainty=S_uncertainty,
+        tt_maxtrix_fname=pre_computed_tt_matrix,
+        tt_matrix_save=tt_matrix_save,
+        log_level=logger.level,
+    )
 
     for i, (from_time, to_time) in enumerate(
         zip(time_periods[:-1], time_periods[1:]), start=1
@@ -369,7 +380,7 @@ if __name__ == "__main__":
             min_cluster_size=min_cluster_size,
             average_velocity=average_velocity,
             min_station_count=min_station_count,
-            min_station_with_P_and_S=2,
+            min_station_with_P_and_S=min_station_with_P_and_S,
             max_search_dist=max_search_dist,
             P_uncertainty=P_uncertainty,
             S_uncertainty=S_uncertainty,
