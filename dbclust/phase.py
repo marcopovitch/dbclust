@@ -132,13 +132,17 @@ class Phase(object):
 
         return df.iloc[0]["Latitude"], df.iloc[0]["Longitude"], df.iloc[0]["Elevation"]
 
-    def set_phase_info(self, phase, time, proba):
+    def set_phase_info(self, phase, time, proba, eventid=None):
         self.phase = phase
         self.time = time
         self.proba = proba
+        self.eventid = eventid
 
     def show_all(self):
-        print(f"{self.network}.{self.station}:")
+        if self.eventid:
+            print(f"{self.network}.{self.station}: from {self.eventid}")
+        else:
+            print(f"{self.network}.{self.station}:")
         if (
             self.coord["latitude"] is not None
             and self.coord["longitude"] is not None
@@ -178,6 +182,10 @@ def import_phases(
         phase_type = df.iloc[i]["phase_type"]
         phase_time = UTCDateTime(df.iloc[i]["phase_time"])
         proba = df.iloc[i]["phase_score"]
+        if "eventid" in df.columns:
+            eventid = df.iloc[i]["eventid"]
+        else:
+            eventid = None
         if phase_type == "P" and proba < P_proba_threshold:
             continue
         if phase_type == "S" and proba < S_proba_threshold:
@@ -198,6 +206,7 @@ def import_phases(
             phase_type,
             phase_time,
             proba,
+            eventid=eventid
         )
         phases.append(myphase)
         if logger.level == logging.DEBUG:
