@@ -405,7 +405,7 @@ class NllLoc(object):
             if nb_station_used >= self.nll_min_phase:
                 count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
                 if count >= self.min_station_with_P_and_S:
-                    logger.info(f"{count} stations with both P and S")
+                    logger.info(f"{count} stations with {self.min_station_with_P_and_S} P and S (both).")
                     mycatalog += cat
                 else:
                     logger.debug(
@@ -456,7 +456,7 @@ class NllLoc(object):
             if nb_station_used >= self.nll_min_phase:
                 count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
                 if count >= self.min_station_with_P_and_S:
-                    logger.info(f"{count} stations with both P and S")
+                    logger.info(f"{count} stations with {self.min_station_with_P_and_S} P and S (both).")
                     mycatalog += cat
                 else:
                     logger.debug(
@@ -518,6 +518,8 @@ class NllLoc(object):
                 )
                 pick_to_delete.append(pick)
                 arrival_to_delete.append(arrival)
+                #logger.info(pick)
+                #logger.info(arrival)
 
         logger.debug(
             f"cleanup: remove {len(arrival_to_delete)} phases and {len(pick_to_delete)} picks."
