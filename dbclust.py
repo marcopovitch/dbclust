@@ -373,6 +373,9 @@ if __name__ == "__main__":
                 S_proba_threshold,
                 info_sta,
             )
+            if logger.level == logging.DEBUG:
+                for p in phases:
+                    p.show_all()
 
         # find clusters
         myclust = Clusterize(
@@ -392,7 +395,7 @@ if __name__ == "__main__":
         # check if some clusters in this round share some phases
         # with clusters from the previous round
         # (as some phases come from the overlapped zone)
-        logger.info("Check cluster related to the same event.")
+        logger.info("Check clusters related to the same event (overlapped zone).")
         (
             previous_myclust,
             myclust,
