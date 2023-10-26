@@ -5,13 +5,13 @@ import logging
 from math import pow, sqrt
 import numpy as np
 import pandas as pd
-from itertools import product
+from itertools import product, chain
 
 # from sklearn.cluster import DBSCAN, OPTICS
 import hdbscan
 from tqdm import tqdm
 import functools
-from itertools import filterfalse
+from itertools import combinations
 import dask.bag as db
 
 # from dask.cache import Cache
@@ -103,7 +103,13 @@ def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
             c2_used.add(idx2)
 
             # keep the best stability
-            clusters1.clusters_stability[idx1] = max(c1_stab, c2_stab)
+            try:
+                clusters1.clusters_stability[idx1] = max(c1_stab, c2_stab)
+            except Exception as e:
+                logger.error(e)
+                print("c1_stab", c1_stab)
+                print("c1_stab", c2_stab)
+                sys.exit(255)
 
             logger.info(
                 f"[{idx1},{idx2}] merging cluster(len:{len(c1)}, stability:{c1_stab:.4f}) "
@@ -194,7 +200,7 @@ class Clusterize(object):
         # ie. [ [phases, label], ... ]
         # noise is [ phases, -1]
         self.clusters = []
-        self.clusters_stability = []
+        self.clusters_stability = np.array([])
         self.n_clusters = 0
         self.noise = []
         self.n_noise = 0
@@ -259,6 +265,8 @@ class Clusterize(object):
         self.clusters, self.clusters_stability, self.noise = self.get_clusters(
             phases, pseudo_tt, max_search_dist, min_cluster_size
         )
+        self.cluster_merge_based_on_eventid()
+
         del pseudo_tt
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
@@ -351,12 +359,105 @@ class Clusterize(object):
                     cluster.append(p)
                     # if duplicated picks, rely on NonLinLoc
                     # to keep the relevant picks at localisation level
+                    # or use the pick probability
 
             if c_id == -1:
                 noise = cluster.copy()
             else:
                 clusters.append(cluster)
+                logger.debug(f"cluster[{c_id}]: {len(cluster)} phases")
+
         return clusters, clusters_stability, noise
+
+    def cluster_merge_based_on_eventid(self):
+        """Merge clusters containing picks from the same eventid (if provided)"""
+        if len(self.clusters) == 1:
+            return
+
+        cluster_evtid_list = []
+        for i, c in enumerate(self.clusters):
+            evt_ids = set([p.eventid for p in c if p.eventid])
+            cluster_evtid_list.append(evt_ids)
+            logger.debug(f"cluster[{i}] contains eventid: %s" % str(evt_ids))
+
+        merged_cluster_list = []
+        merged_stability_list = []
+        merged_evtid_clustster_list = []
+        while len(cluster_evtid_list):
+            evtid_list = cluster_evtid_list.pop(0)
+            current_merged_evtid_cluster_list = [evtid_list]
+            current_merged_cluster_list = [self.clusters.pop(0)]
+
+            # clusters_stability are ndarray ... not a list
+            stability = self.clusters_stability[0]
+            self.clusters_stability = self.clusters_stability[1:]
+            current_merged_stability_list = [stability]
+
+            #print("Working on:", evtid_list)
+            #print(f"len(cluster_evtid_list) = {len(cluster_evtid_list)}")
+            if len(cluster_evtid_list) == 0:
+                # handle the last cluster without intersection
+                merged_evtid_clustster_list.append(current_merged_evtid_cluster_list)
+                merged_cluster_list.append(current_merged_cluster_list)
+                merged_stability_list.append(current_merged_stability_list)
+                break
+
+            nbiter = 0
+            while nbiter < len(cluster_evtid_list):
+                evtid_list_to_be_removed = []
+                cluster_to_be_removed = []
+                stability_to_be_removed = []
+                for i, tmp_evtid_list in enumerate(cluster_evtid_list):
+                    if evtid_list.intersection(tmp_evtid_list):
+                        #print("intersection")
+                        current_merged_evtid_cluster_list.append(tmp_evtid_list)
+                        evtid_list_to_be_removed.append(tmp_evtid_list)
+                        #
+                        current_merged_cluster_list.append(self.clusters[i])
+                        cluster_to_be_removed.append(self.clusters[i])
+                        #
+                        if self.clusters_stability[i] > stability:
+                            stability = self.clusters_stability[i]
+                        current_merged_stability_list.append(self.clusters_stability[i])
+                        stability_to_be_removed.append(self.clusters_stability[i])
+
+                nbiter += 1
+
+                merged_evtid_clustster_list.append(current_merged_evtid_cluster_list)
+                merged_cluster_list.append(current_merged_cluster_list)
+                merged_stability_list.append(current_merged_stability_list)
+
+                for e in evtid_list_to_be_removed:
+                    cluster_evtid_list.remove(e)
+                for c in cluster_to_be_removed:
+                    self.clusters.remove(c)
+                for s in stability_to_be_removed:
+                    self.clusters_stability = np.delete(
+                        self.clusters_stability, np.where(self.clusters_stability == s)
+                    )
+
+        # Sanity check self.clusters should be empty
+        assert not len(self.clusters)
+
+        self.clusters = []
+        #print(merged_stability_list)
+        if not merged_stability_list:
+            self.clusters_stability = [] 
+        else:
+            try:
+                self.clusters_stability = np.array(*merged_stability_list)
+            except:
+                self.clusters_stability = np.array(list(chain(*merged_stability_list)))
+
+        for i, clusters in enumerate(merged_cluster_list):
+            self.clusters.append(list(chain(*clusters)))
+            self.n_clusters += 1
+            logger.debug(f"cluster[{i}]: %s" % str(self.clusters[i]))
+
+        logger.info(f"Merged clusters with common eventid: get {self.n_clusters} clusters.")
+
+        #for i, stab in enumerate(merged_stability_list):
+        #    logger.debug(f"stab[{i}]: %s" % str(self.clusters_stability[i]))
 
     def generate_nllobs(self, OBS_PATH):
         """
@@ -382,6 +483,12 @@ class Clusterize(object):
                 stations_with_P_and_S_count = 0
                 for s in stations_list:
                     phase_list = set([p.phase for p in cluster if p.station == s])
+                    # Pn, Pg count as P,
+                    # Sn, Sg count as S
+                    phase_list = set(
+                        ["P" for i in phase_list if "P" in i]
+                        + ["S" for i in phase_list if "S" in i]
+                    )
                     if len(phase_list) == 2:
                         stations_with_P_and_S_count += 1
                 if stations_with_P_and_S_count < self.min_station_with_P_and_S:
@@ -422,13 +529,18 @@ class Clusterize(object):
         logger.info(
             f"Merging clusters list: {len(self.clusters)} clusters from list1 and {len(clusters2.clusters)} from list2"
         )
+
         self.clusters += clusters2.clusters
         self.n_clusters = len(self.clusters)
         self.noise += clusters2.noise
         self.n_noise = len(self.noise)
         # clusters_stability are ndarray ... not a list
-        self.clusters_stability = np.concatenate(
-            (self.clusters_stability, clusters2.clusters_stability), axis=0
+
+        #print(self.clusters_stability)
+        print(clusters2.clusters_stability)
+
+        self.clusters_stability = np.array(
+            self.clusters_stability.tolist() + clusters2.clusters_stability.tolist()
         )
         # self.show_clusters()
 
