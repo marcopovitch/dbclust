@@ -74,6 +74,9 @@ def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
             if idx2 in c2_used or idx1 in c1_used:
                 continue
 
+            logger.debug("Intersection c1,c1:")
+            logger.debug("c1 = %s" % c1)
+            logger.debug("c2 = %s" % c2)
             intersection = set(c1).intersection(set(c2))
             if len(intersection) < min_com_phases:
                 logger.debug(
@@ -369,95 +372,54 @@ class Clusterize(object):
 
         return clusters, clusters_stability, noise
 
+    @staticmethod
+    def cluster_share_eventid(c1, c2):
+        c1_evtids = set([p.eventid for p in c1 if p.eventid])
+        logger.debug(c1_evtids)
+        c2_evtids = set([p.eventid for p in c2 if p.eventid])
+        logger.debug(c2_evtids)
+        if c1_evtids.intersection(c2_evtids):
+            return True
+        else:
+            return False
+
     def cluster_merge_based_on_eventid(self):
-        """Merge clusters containing picks from the same eventid (if provided)"""
+        """Merge clusters containing picks from the same eventid (if provided)."""
         if len(self.clusters) == 1:
             return
 
-        cluster_evtid_list = []
-        for i, c in enumerate(self.clusters):
-            evt_ids = set([p.eventid for p in c if p.eventid])
-            cluster_evtid_list.append(evt_ids)
-            logger.debug(f"cluster[{i}] contains eventid: %s" % str(evt_ids))
+        logger.info("Merging clusters sharing same EventId.")
+        logger.info(f"Working on {self.n_clusters}.")
 
-        merged_cluster_list = []
-        merged_stability_list = []
-        merged_evtid_clustster_list = []
-        while len(cluster_evtid_list):
-            evtid_list = cluster_evtid_list.pop(0)
-            current_merged_evtid_cluster_list = [evtid_list]
-            current_merged_cluster_list = [self.clusters.pop(0)]
+        final_cluster_list = []
+        while self.clusters:
+            clusters_to_merge = []
+            c1 = self.clusters.pop()
+            clusters_to_merge.append(c1)
+            cluster_to_remove = []
+            logger.debug("Working on cluster %s" % c1)
+            for i, c2 in enumerate(self.clusters):
+                if self.cluster_share_eventid(c1, c2):
+                    #logger.debug("Eventid shared.")
+                    cluster_to_remove.append(c2)
+                    clusters_to_merge.append(c2)
+                #else:
+                    #logger.debug("No eventid shared.")
 
-            # clusters_stability are ndarray ... not a list
-            stability = self.clusters_stability[0]
-            self.clusters_stability = self.clusters_stability[1:]
-            current_merged_stability_list = [stability]
+            # cleanup
+            for c in cluster_to_remove:
+                self.clusters.remove(c)
 
-            #print("Working on:", evtid_list)
-            #print(f"len(cluster_evtid_list) = {len(cluster_evtid_list)}")
-            if len(cluster_evtid_list) == 0:
-                # handle the last cluster without intersection
-                merged_evtid_clustster_list.append(current_merged_evtid_cluster_list)
-                merged_cluster_list.append(current_merged_cluster_list)
-                merged_stability_list.append(current_merged_stability_list)
-                break
+            # merge clusters
+            new_cluster = list(chain(*clusters_to_merge))
+            final_cluster_list.append(new_cluster)
 
-            nbiter = 0
-            while nbiter < len(cluster_evtid_list):
-                evtid_list_to_be_removed = []
-                cluster_to_be_removed = []
-                stability_to_be_removed = []
-                for i, tmp_evtid_list in enumerate(cluster_evtid_list):
-                    if evtid_list.intersection(tmp_evtid_list):
-                        #print("intersection")
-                        current_merged_evtid_cluster_list.append(tmp_evtid_list)
-                        evtid_list_to_be_removed.append(tmp_evtid_list)
-                        #
-                        current_merged_cluster_list.append(self.clusters[i])
-                        cluster_to_be_removed.append(self.clusters[i])
-                        #
-                        if self.clusters_stability[i] > stability:
-                            stability = self.clusters_stability[i]
-                        current_merged_stability_list.append(self.clusters_stability[i])
-                        stability_to_be_removed.append(self.clusters_stability[i])
-
-                nbiter += 1
-
-                merged_evtid_clustster_list.append(current_merged_evtid_cluster_list)
-                merged_cluster_list.append(current_merged_cluster_list)
-                merged_stability_list.append(current_merged_stability_list)
-
-                for e in evtid_list_to_be_removed:
-                    cluster_evtid_list.remove(e)
-                for c in cluster_to_be_removed:
-                    self.clusters.remove(c)
-                for s in stability_to_be_removed:
-                    self.clusters_stability = np.delete(
-                        self.clusters_stability, np.where(self.clusters_stability == s)
-                    )
-
-        # Sanity check self.clusters should be empty
+        # Sanity check: self.clusters should be empty
         assert not len(self.clusters)
-
-        self.clusters = []
-        #print(merged_stability_list)
-        if not merged_stability_list:
-            self.clusters_stability = [] 
-        else:
-            try:
-                self.clusters_stability = np.array(*merged_stability_list)
-            except:
-                self.clusters_stability = np.array(list(chain(*merged_stability_list)))
-
-        for i, clusters in enumerate(merged_cluster_list):
-            self.clusters.append(list(chain(*clusters)))
-            self.n_clusters += 1
-            logger.debug(f"cluster[{i}]: %s" % str(self.clusters[i]))
-
-        logger.info(f"Merged clusters with common eventid: get {self.n_clusters} clusters.")
-
-        #for i, stab in enumerate(merged_stability_list):
-        #    logger.debug(f"stab[{i}]: %s" % str(self.clusters_stability[i]))
+        self.clusters = final_cluster_list
+        self.n_clusters = len(self.clusters)
+        self.clusters_stability = np.full(len(self.clusters), 1.0)
+        logger.info(f"EventId merge leads to {self.n_clusters} clusters.")
 
     def generate_nllobs(self, OBS_PATH):
         """
@@ -534,11 +496,11 @@ class Clusterize(object):
         self.n_clusters = len(self.clusters)
         self.noise += clusters2.noise
         self.n_noise = len(self.noise)
-        # clusters_stability are ndarray ... not a list
 
-        #print(self.clusters_stability)
-        print(clusters2.clusters_stability)
+        # print(self.clusters_stability)
+        # print(clusters2.clusters_stability)
 
+        # clusters_stability are ndarray ... not a list : should be fixed !
         self.clusters_stability = np.array(
             self.clusters_stability.tolist() + clusters2.clusters_stability.tolist()
         )
