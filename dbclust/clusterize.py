@@ -2,7 +2,7 @@
 import os
 import sys
 import logging
-from math import pow, sqrt
+from math import pow, sqrt, isnan
 import numpy as np
 import pandas as pd
 from itertools import product, chain
@@ -50,6 +50,17 @@ def compute_tt(p1, p2, vmean):
     return tt
 
 
+def cluster_share_eventid(c1, c2):
+    c1_evtids = set([p.eventid for p in c1 if p.eventid])
+    logger.debug("cluster1 eventid: %s" % c1_evtids)
+    c2_evtids = set([p.eventid for p in c2 if p.eventid])
+    logger.debug("cluster2 eventid: %s" % c2_evtids)
+    if c1_evtids.intersection(c2_evtids):
+        return True
+    else:
+        return False
+
+
 def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
     """
     Clusters are just a list of list(Phases).
@@ -74,38 +85,40 @@ def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
             if idx2 in c2_used or idx1 in c1_used:
                 continue
 
-            logger.debug("Intersection c1,c1:")
-            logger.debug("c1 = %s" % c1)
-            logger.debug("c2 = %s" % c2)
-            intersection = set(c1).intersection(set(c2))
-            if len(intersection) < min_com_phases:
+            logger.debug("Intersection c1, c2:")
+            logger.debug("c1[%d] = %s" % (idx1, c1))
+            logger.debug("c2[%d] = %s" % (idx2, c2))
+
+            nb_intersection = set(c1).intersection(set(c2))
+            eventid_shared = cluster_share_eventid(c1, c2)
+
+            if not eventid_shared and len(nb_intersection) < min_com_phases:
                 logger.debug(
-                    f"[{idx1},{idx2}] clusters c1, c2  with only {len(intersection)} shared phases (merge require {min_com_phases})."
+                    f"Clusters c1[{idx1}], c2[{idx2}] have only {len(nb_intersection)} shared phases (merge require {min_com_phases})."
+                    f"They share no picks with an EventId in common."
                 )
                 continue
 
             logger.info(
-                f"[{idx1},{idx2}] merging clusters c1, c2  with {len(intersection)} shared phases."
+                f"Merging clusters c1[{idx1}], c2[{idx2}]: "
+                f"{len(nb_intersection)} shared phases, picks with an EventId in common is {eventid_shared}"
             )
+
             merge_count += 1
+            c1_used.add(idx1)
+            c2_used.add(idx2)
 
             # merge 2 clusters and remove duplicated picks
             set_c1 = set(clusters1.clusters[idx1])
             set_c1.update(set(clusters2.clusters[idx2]))
             clusters1.clusters[idx1] = list(set_c1)
+            clusters1.n_clusters = len(clusters1.clusters)
 
             # keep cluster stability
             c1_stab = clusters1.clusters_stability[idx1]
             c2_stab = clusters2.clusters_stability[idx2]
 
-            # remove/clean this cluster since it has been merged with an other one
-            # clusters2.clusters.pop(idx2)
-            # clusters2.clusters_stability = np.delete(clusters2.clusters_stability, idx2)
-            # clusters2.clusters[idx2] = []
-            c1_used.add(idx1)
-            c2_used.add(idx2)
-
-            # keep the best stability
+            # keep the best stability for c1
             try:
                 clusters1.clusters_stability[idx1] = max(c1_stab, c2_stab)
             except Exception as e:
@@ -120,10 +133,11 @@ def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
                 f"--> cluster(len:{len(clusters1.clusters[idx1])}, stability:{clusters1.clusters_stability[idx1]:.4f})"
             )
 
-    # Do the real cleanup
+    # Do the real cleanup of c2
     for idx2 in sorted(c2_used, reverse=True):
         clusters2.clusters.pop(idx2)
         clusters2.clusters_stability = np.delete(clusters2.clusters_stability, idx2)
+    clusters2.n_clusters = len(clusters2.clusters) 
 
     return clusters1, clusters2, merge_count
 
@@ -268,11 +282,11 @@ class Clusterize(object):
         self.clusters, self.clusters_stability, self.noise = self.get_clusters(
             phases, pseudo_tt, max_search_dist, min_cluster_size
         )
-        self.cluster_merge_based_on_eventid()
-
-        del pseudo_tt
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
+        del pseudo_tt
+        self.cluster_merge_based_on_eventid()
+
 
     @staticmethod
     def compute_tt_matrix(phases, vmean):
@@ -372,39 +386,32 @@ class Clusterize(object):
 
         return clusters, clusters_stability, noise
 
-    @staticmethod
-    def cluster_share_eventid(c1, c2):
-        c1_evtids = set([p.eventid for p in c1 if p.eventid])
-        logger.debug(c1_evtids)
-        c2_evtids = set([p.eventid for p in c2 if p.eventid])
-        logger.debug(c2_evtids)
-        if c1_evtids.intersection(c2_evtids):
-            return True
-        else:
-            return False
-
     def cluster_merge_based_on_eventid(self):
         """Merge clusters containing picks from the same eventid (if provided)."""
-        if len(self.clusters) == 1:
+
+        # logger.error(f"n_clusters={self.n_clusters}, lens(clusters) = {len(self.clusters)}") 
+        # assert self.n_clusters == len(self.clusters)
+
+        if self.n_clusters <= 1:
             return
 
         logger.info("Merging clusters sharing same EventId.")
-        logger.info(f"Working on {self.n_clusters}.")
+        logger.info(f"Working on {self.n_clusters} clusters.")
 
         final_cluster_list = []
         while self.clusters:
             clusters_to_merge = []
-            c1 = self.clusters.pop()
+            c1 = self.clusters.pop(0)
             clusters_to_merge.append(c1)
             cluster_to_remove = []
-            logger.debug("Working on cluster %s" % c1)
+            logger.debug("Working on cluster %s with %d phases" % (c1, len(c1)))
             for i, c2 in enumerate(self.clusters):
-                if self.cluster_share_eventid(c1, c2):
-                    #logger.debug("Eventid shared.")
+                if cluster_share_eventid(c1, c2):
+                    # logger.debug("Eventid shared.")
                     cluster_to_remove.append(c2)
                     clusters_to_merge.append(c2)
-                #else:
-                    #logger.debug("No eventid shared.")
+                # else:
+                # logger.debug("No eventid shared.")
 
             # cleanup
             for c in cluster_to_remove:
@@ -418,7 +425,7 @@ class Clusterize(object):
         assert not len(self.clusters)
         self.clusters = final_cluster_list
         self.n_clusters = len(self.clusters)
-        self.clusters_stability = np.full(len(self.clusters), 1.0)
+        self.clusters_stability = np.full(self.n_clusters, 1.0)
         logger.info(f"EventId merge leads to {self.n_clusters} clusters.")
 
     def generate_nllobs(self, OBS_PATH):
