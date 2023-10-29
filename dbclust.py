@@ -243,17 +243,21 @@ if __name__ == "__main__":
     try:
         if picks_type == "eqt":
             df = pd.read_csv(
-                picks_file, parse_dates=["p_arrival_time", "s_arrival_time"]
+                picks_file,
+                parse_dates=["p_arrival_time", "s_arrival_time"],
+                low_memory=False,
             )
             #
             df["phase_time"] = df[["p_arrival_time", "s_arrival_time"]].min(axis=1)
         else:
             try:
                 # official PhaseNet
-                df = pd.read_csv(picks_file, parse_dates=["phase_time"])
+                df = pd.read_csv(
+                    picks_file, parse_dates=["phase_time"], low_memory=False
+                )
             except:
                 # PhaseNetSDS
-                df = pd.read_csv(picks_file, parse_dates=["time"])
+                df = pd.read_csv(picks_file, parse_dates=["time"], low_memory=False)
                 df.rename(
                     columns={
                         "seedid": "station_id",
@@ -272,6 +276,10 @@ if __name__ == "__main__":
         logger.error(e)
         sys.exit()
     logger.info(f"Read {len(df)} phases.")
+
+    # get rid off nan value when importing phases without eventid
+    # FIXME
+    df = df.replace({np.nan: None})
 
     # Time filtering
     if date_begin:
