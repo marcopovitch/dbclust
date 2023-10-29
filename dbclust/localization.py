@@ -297,6 +297,7 @@ class NllLoc(object):
         e = cat.events[0]
         o = e.preferred_origin()
         o.quality.used_station_count = self.get_used_station_count(e, o)
+        o.quality.used_phase_count = self.get_used_phase_count(e, o)
 
         # check for nan value in uncertainty
         if "nan" in [
@@ -401,11 +402,13 @@ class NllLoc(object):
             o = e.preferred_origin()
             # nb_station_used = o.quality.used_station_count
             o.quality.used_station_count = self.get_used_station_count(e, o)
-            nb_station_used = o.quality.used_station_count
-            if nb_station_used >= self.nll_min_phase:
+            #nb_station_used = o.quality.used_station_count
+            nb_phase_used = o.quality.used_phase_count
+            #if nb_station_used >= self.nll_min_phase:
+            if nb_phase_used >= self.nll_min_phase:
                 count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
                 if count >= self.min_station_with_P_and_S:
-                    logger.info(f"{count} stations with {self.min_station_with_P_and_S} P and S (both).")
+                    logger.info(f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both).")
                     mycatalog += cat
                 else:
                     logger.debug(
@@ -413,7 +416,7 @@ class NllLoc(object):
                     )
             else:
                 logger.debug(
-                    f"Not enough stations ({nb_station_used}/{self.nll_min_phase}) for event"
+                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
                     f" ... ignoring it !"
                 )
 
@@ -452,11 +455,13 @@ class NllLoc(object):
             e = cat.events[0]
             o = e.preferred_origin()
             o.quality.used_station_count = self.get_used_station_count(e, o)
-            nb_station_used = o.quality.used_station_count
-            if nb_station_used >= self.nll_min_phase:
+            #nb_station_used = o.quality.used_station_count
+            nb_phase_used = o.quality.used_phase_count
+            #if nb_station_used >= self.nll_min_phase:
+            if nb_phase_used >= self.nll_min_phase:
                 count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
                 if count >= self.min_station_with_P_and_S:
-                    logger.info(f"{count} stations with {self.min_station_with_P_and_S} P and S (both).")
+                    logger.info(f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both).")
                     mycatalog += cat
                 else:
                     logger.debug(
@@ -464,7 +469,7 @@ class NllLoc(object):
                     )
             else:
                 logger.debug(
-                    f"Not enough stations ({nb_station_used}/{self.nll_min_phase}) for event"
+                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
                     f" ... ignoring it !"
                 )
 
@@ -587,6 +592,18 @@ class NllLoc(object):
                         f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
                     )
         return len(set(station_list))
+
+    @staticmethod
+    def get_used_phase_count(event, origin):
+        nb_phase_used = 0
+        for arrival in origin.arrivals:
+            if arrival.time_weight and arrival.time_residual:
+                pick = next(
+                    (p for p in event.picks if p.resource_id == arrival.pick_id), None
+                )
+                if pick:
+                    nb_phase_used += 1
+        return nb_phase_used
 
     @staticmethod
     def replace(templatefile, outfilename, tags):
