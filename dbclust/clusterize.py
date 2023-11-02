@@ -20,6 +20,7 @@ from obspy.core.event import Event
 from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
+from joblib import parallel_config
 
 try:
     from phase import import_phases, import_eqt_phases
@@ -61,18 +62,52 @@ def cluster_share_eventid(c1, c2):
         return False
 
 
+def get_picks_from_event(event, origin, time):
+    # station_id,phase_type,phase_time
+    # 1K.OFAS0.00.EH.D,P,2023-02-13T18:30:58.558999Z
+    lines = []
+    for arrival in origin.arrivals:
+        if arrival.time_weight and arrival.time_residual:
+            pick = next(
+                (p for p in event.picks if p.resource_id == arrival.pick_id), None
+            )
+            if pick:
+                if time and pick.time >= time:
+                    line = [
+                        pick.waveform_id.get_seed_string(),
+                        pick.phase_hint,
+                        pick.time,
+                    ]
+                else:
+                    line = [
+                        pick.waveform_id.get_seed_string(),
+                        pick.phase_hint,
+                        pick.time,
+                    ]
+                lines.append(line)
+    return sorted(lines, key=lambda l: l[2])
+
+
 def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
     """
-    Clusters are just a list of list(Phases).
+    Merge into clusters1 all clusters with common phases or shared event_id
 
+    Clusters are just a list of list(Phases).
     Phase must implement __eq__() to use set intersection.
+
+    Returns merged clusters1, remaining unmerged clusters in clusters2,
+    and the number of merge realized.
     """
     if clusters1.n_clusters == 0 or clusters2.n_clusters == 0:
-        logger.debug("filter_out_cluster_with_common_phases: nothing to do ")
+        logger.debug("manage_cluster_with_common_phases: nothing to do ")
         return clusters1, clusters2, 0
 
-    logger.info(f"Clusters c1 contain {len(clusters1.clusters)} clusters")
-    logger.info(f"Clusters c2 contain {len(clusters2.clusters)} clusters")
+    logger.info(
+        f"manage_cluster_with_common_phases(): clusters c1 contains {clusters1.n_clusters} clusters"
+    )
+    logger.info(
+        f"manage_cluster_with_common_phases(): clusters c2 contains {clusters2.n_clusters} clusters"
+    )
 
     c1_used = set()
     c2_used = set()
@@ -82,7 +117,7 @@ def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
         if idx1 in c1_used:
             continue
         for idx2, c2 in enumerate(clusters2.clusters):
-            if idx2 in c2_used or idx1 in c1_used:
+            if idx2 in c2_used:
                 continue
 
             logger.debug("Intersection c1, c2:")
@@ -135,9 +170,10 @@ def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
 
     # Do the real cleanup of c2
     for idx2 in sorted(c2_used, reverse=True):
-        clusters2.clusters.pop(idx2)
+        c2 = clusters2.clusters.pop(idx2)
+        logger.debug("Removed cluster c2: %s" % c2)
         clusters2.clusters_stability = np.delete(clusters2.clusters_stability, idx2)
-    clusters2.n_clusters = len(clusters2.clusters) 
+    clusters2.n_clusters = len(clusters2.clusters)
 
     return clusters1, clusters2, merge_count
 
@@ -287,7 +323,6 @@ class Clusterize(object):
         del pseudo_tt
         self.cluster_merge_based_on_eventid()
 
-
     @staticmethod
     def compute_tt_matrix(phases, vmean):
         # optimization : matrix is symetric -> use lru_cache
@@ -339,14 +374,15 @@ class Clusterize(object):
         #     n_jobs=-1,
         # ).fit(pseudo_tt)
 
-        db = hdbscan.HDBSCAN(
-            min_cluster_size=min_cluster_size,  # default 5
-            # min_samples=None                          # default None
-            allow_single_cluster=True,
-            cluster_selection_epsilon=max_search_dist,  # default 0.0
-            metric="precomputed",
-            n_jobs=-1,
-        ).fit(pseudo_tt)
+        with parallel_config(backend="threading", n_jobs=-1):
+            db = hdbscan.HDBSCAN(
+                min_cluster_size=min_cluster_size,  # default 5
+                # min_samples=None                          # default None
+                allow_single_cluster=True,
+                cluster_selection_epsilon=max_search_dist,  # default 0.0
+                metric="precomputed",
+                n_jobs=-1,
+            ).fit(pseudo_tt)
 
         labels = db.labels_
 
@@ -389,13 +425,15 @@ class Clusterize(object):
     def cluster_merge_based_on_eventid(self):
         """Merge clusters containing picks from the same eventid (if provided)."""
 
-        # logger.error(f"n_clusters={self.n_clusters}, lens(clusters) = {len(self.clusters)}") 
+        # logger.error(f"n_clusters={self.n_clusters}, lens(clusters) = {len(self.clusters)}")
         # assert self.n_clusters == len(self.clusters)
 
         if self.n_clusters <= 1:
             return
 
-        logger.info("Merging clusters sharing same EventId.")
+        logger.info(
+            "cluster_merge_based_on_eventid(): merging clusters sharing same EventId."
+        )
         logger.info(f"Working on {self.n_clusters} clusters.")
 
         final_cluster_list = []
@@ -517,12 +555,14 @@ class Clusterize(object):
         print(f"Clusters: {self.n_clusters}")
         for i, cluster in enumerate(self.clusters):
             stations_list = set([p.station for p in cluster])
+            evtids = set([p.eventid for p in cluster if p.eventid])
             print(
-                f"cluster {i}: stability=%.2f, %d picks / %d stations"
+                f"cluster {i}: stability=%.2f, %d picks / %d stations, eventids: %s"
                 % (
                     self.clusters_stability[i],
                     len(self.clusters[i]),
                     len(stations_list),
+                    evtids,
                 )
             )
             for p in sorted(cluster, key=lambda p: p.time):
