@@ -15,6 +15,7 @@ from obspy import Inventory, read_inventory
 from dbclust.phase import import_phases, import_eqt_phases
 from dbclust.clusterize import (
     Clusterize,
+    get_picks_from_event,
     manage_cluster_with_common_phases,
 )
 from dbclust.localization import NllLoc, show_event
@@ -29,6 +30,25 @@ def yml_read_config(filename):
     with open(filename, "r") as ymlfile:
         cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
     return cfg
+
+
+def unload_picks_list(df1, picks):
+    # format picks comming from events like the ones used as input for dbclust
+    df2 = pd.DataFrame(picks, columns=["station_id", "phase_type", "phase_time"])
+    df2["station_id"] = df2["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
+    df2["phase_time"] = pd.to_datetime(df2["phase_time"].map(lambda x: str(x)))
+    df2["unload"] = True
+    # df1.to_csv("df1.csv")
+    # df2.to_csv("df2.csv")
+    results = pd.merge(
+        df1, df2, how="left", on=["station_id", "phase_type", "phase_time"]
+    )
+    # results.to_csv("merge.csv")
+    keep = results[results["unload"] != True]
+    keep = keep.drop(columns=["unload"])
+    # print(keep[["station_id", "phase_time"]].to_string())
+    # keep.to_csv("keep.csv")
+    return keep
 
 
 if __name__ == "__main__":
@@ -280,6 +300,8 @@ if __name__ == "__main__":
     # get rid off nan value when importing phases without eventid
     # FIXME
     df = df.replace({np.nan: None})
+    # keeps only network.station
+    df["station_id"] = df["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
 
     # Time filtering
     if date_begin:
@@ -345,29 +367,37 @@ if __name__ == "__main__":
         log_level=logger.level,
     )
 
+    picks_to_remove = []
     for i, (from_time, to_time) in enumerate(
         zip(time_periods[:-1], time_periods[1:]), start=1
     ):
+        logger.debug("================================================")
+        logger.debug("")
+        logger.debug("")
+
         # keep an overlap
         begin = from_time - np.timedelta64(overlap_window, "s")
         end = to_time
-
-        df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
-
-        logger.info("")
-        logger.info("")
         logger.info(
             # f"Time window extraction #{i}/{len(time_periods)-1} picks from {from_time} to {to_time}."
             f"Time window extraction #{i}/{len(time_periods)-1} picks from {begin} to {end}."
         )
 
+        # Extract picks on this time period
+        df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
         if not len(df_subset):
             logger.info(f"Skipping clustering {len(df_subset)} phases.")
             continue
-
         logger.info(f"Clustering {len(df_subset)} phases.")
 
-        # get phaseNet picks from dataframe
+        # to prevents extra event, remove from current picks list,
+        # picks previously associated with events on the previous iteration
+        logger.debug(f"test len(df_subset) before = {len(df_subset)}")
+        if len(picks_to_remove):
+            df_subset = unload_picks_list(df_subset, picks_to_remove)
+        # print(df_subset[["station_id", "phase_time"]].to_string())
+
+        # Import picks from dataframe
         if picks_type == "eqt":
             phases = import_eqt_phases(
                 df_subset,
@@ -385,6 +415,9 @@ if __name__ == "__main__":
                 for p in phases:
                     p.show_all()
 
+        # logger.info("previous_myclust:")
+        # previous_myclust.show_clusters()
+
         # find clusters
         myclust = Clusterize(
             phases=phases,
@@ -400,18 +433,27 @@ if __name__ == "__main__":
             log_level=logger.level,
         )
 
+        # logger.info("myclust:")
+        # myclust.show_clusters()
+
         # check if some clusters in this round share some phases
         # with clusters from the previous round
         # (as some phases come from the overlapped zone)
         logger.info("Check clusters related to the same event (overlapped zone).")
-        (
-            previous_myclust,
-            myclust,
-            nb_cluster_removed,
-        ) = manage_cluster_with_common_phases(
-            previous_myclust, myclust, min_picks_common
-        )
-        # ) = filter_out_cluster_with_common_phases(previous_myclust, myclust, 6)
+
+        while True:
+            logger.debug(
+                "Starting merging previous_myclust and myclust until they are all disjoints."
+            )
+            (
+                previous_myclust,
+                myclust,
+                nb_cluster_removed,
+            ) = manage_cluster_with_common_phases(
+                previous_myclust, myclust, min_picks_common
+            )
+            if nb_cluster_removed == 0:
+                break
 
         # This is the last round: merge previous_myclust and myclust
         if i == (len(time_periods) - 1):
@@ -445,28 +487,55 @@ if __name__ == "__main__":
                 )
 
         if len(clustcat) > 0:
-            event_ids_to_be_removed = []
+            picks_to_remove = []
             for event in sorted(
                 clustcat.events, key=lambda e: e.preferred_origin().time
             ):
-                if (
-                    not last_round
-                    and event.preferred_origin().time
-                    >= to_time - np.timedelta64(overlap_window, "s")
-                ):
-                    # event is in overlapped zone, wait next time period to include it
-                    show_event(event, "!!!!")
-                    event_ids_to_be_removed.append(event.resource_id.id)
+                next_begin = time_periods[i - 1]
+
+                origin = event.preferred_origin()
+                first_station, first_phase, first_pick_time = get_picks_from_event(
+                    event, origin, None
+                ).pop(0)
+                last_station, last_phase, last_pick_time = get_picks_from_event(
+                    event, origin, None
+                ).pop(-1)
+
+                logger.info(
+                    "First pick is: %s, last pick is: %s, ovelapped zone starts: %s, next ovelapped zone starts: %s"
+                    % (first_pick_time, last_pick_time, begin, next_begin)
+                )
+
+                if not last_round and first_pick_time >= next_begin:
+                    # Event first pick is in overlapped zone,
+                    # remove this event and wait the next iteration
+                    # as this event will be recreated.
+                    show_event(event, "***D")
                     logger.debug(
                         f"Select event in overlapped zone to be removed ({event.resource_id.id})"
                     )
                     locator.catalog.events.remove(event)
                     locator.nb_events = len(locator.catalog)
                     clustcat = locator.catalog
+                elif (
+                    # event.event_type != "no existing" and
+                    not last_round
+                    and first_pick_time < next_begin
+                    and last_pick_time >= next_begin
+                ):
+                    # First pick time is before overlapped zone
+                    # but some others picks are inside it.
+                    # Assuming the overlapped zone is large enough
+                    # to have a complete event, remove those picks,
+                    # so they can't make a new event on the next iteration.
+                    # if event.event_type != "not existing":
+                    for origin in event.origins:
+                        picks_to_remove += get_picks_from_event(
+                            event, origin, next_begin
+                        )
+                    show_event(event, "***P")
                 else:
                     show_event(event, "****")
-        else:
-            continue
 
         # write partial qml file and clean catalog from memory
         if (last_saved_event_count) > event_flush_count:
