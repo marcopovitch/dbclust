@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import tempfile
 from obspy import Inventory, read_inventory
+import time
 
 # from obspy import Catalog, UTCDateTime, read_inventory
 # from datetime import datetime
@@ -17,6 +18,7 @@ from dbclust.clusterize import (
     Clusterize,
     get_picks_from_event,
     manage_cluster_with_common_phases,
+    merge_cluster_with_common_phases,
 )
 from dbclust.localization import NllLoc, show_event
 
@@ -33,7 +35,7 @@ def yml_read_config(filename):
 
 
 def unload_picks_list(df1, picks):
-    # format picks comming from events like the ones used as input for dbclust
+    # format picks coming from events like the ones used as input for dbclust
     df2 = pd.DataFrame(picks, columns=["station_id", "phase_type", "phase_time"])
     df2["station_id"] = df2["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
     df2["phase_time"] = pd.to_datetime(df2["phase_time"].map(lambda x: str(x)))
@@ -362,7 +364,7 @@ if __name__ == "__main__":
         max_search_dist=max_search_dist,
         P_uncertainty=P_uncertainty,
         S_uncertainty=S_uncertainty,
-        tt_maxtrix_fname=pre_computed_tt_matrix,
+        tt_matrix_fname=pre_computed_tt_matrix,
         tt_matrix_save=tt_matrix_save,
         log_level=logger.level,
     )
@@ -415,8 +417,9 @@ if __name__ == "__main__":
                 for p in phases:
                     p.show_all()
 
-        # logger.info("previous_myclust:")
-        # previous_myclust.show_clusters()
+        if logger.level == logging.DEBUG:
+            logger.info("previous_myclust:")
+            previous_myclust.show_clusters()
 
         # find clusters
         myclust = Clusterize(
@@ -428,13 +431,14 @@ if __name__ == "__main__":
             max_search_dist=max_search_dist,
             P_uncertainty=P_uncertainty,
             S_uncertainty=S_uncertainty,
-            tt_maxtrix_fname=pre_computed_tt_matrix,
+            tt_matrix_fname=pre_computed_tt_matrix,
             tt_matrix_save=tt_matrix_save,
             log_level=logger.level,
         )
 
-        # logger.info("myclust:")
-        # myclust.show_clusters()
+        if logger.level == logging.DEBUG:
+            logger.info("myclust:")
+            myclust.show_clusters()
 
         # check if some clusters in this round share some phases
         # with clusters from the previous round
@@ -449,11 +453,13 @@ if __name__ == "__main__":
                 previous_myclust,
                 myclust,
                 nb_cluster_removed,
-            ) = manage_cluster_with_common_phases(
+                # ) = manage_cluster_with_common_phases(
+            ) = merge_cluster_with_common_phases(
                 previous_myclust, myclust, min_picks_common
             )
-            if nb_cluster_removed == 0:
-                break
+            # if nb_cluster_removed == 0:
+            #    break
+            break
 
         # This is the last round: merge previous_myclust and myclust
         if i == (len(time_periods) - 1):
@@ -478,20 +484,32 @@ if __name__ == "__main__":
 
                 # Dask // version
                 # clustcat = locator.dask_get_localisations_from_nllobs_dir(
-                #    my_obs_path, append=True
+                #     my_obs_path, append=True
                 # )
 
-                # sequential version
-                clustcat = locator.get_localisations_from_nllobs_dir(
+                # thread // version
+                clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
                     my_obs_path, append=True
                 )
+                
+                # clustcat = locator.processes_get_localisations_from_nllobs_dir(
+                #     my_obs_path, append=True
+                # )
+                
+                # sequential version
+                # clustcat = locator.get_localisations_from_nllobs_dir(
+                #     my_obs_path, append=True
+                # )
+                
+                
+                print("processes:", t2-t1)
 
         if len(clustcat) > 0:
             picks_to_remove = []
             for event in sorted(
                 clustcat.events, key=lambda e: e.preferred_origin().time
             ):
-                next_begin = time_periods[i - 1]
+                next_begin = end - np.timedelta64(overlap_window, "s")
 
                 origin = event.preferred_origin()
                 first_station, first_phase, first_pick_time = get_picks_from_event(
@@ -501,7 +519,7 @@ if __name__ == "__main__":
                     event, origin, None
                 ).pop(-1)
 
-                logger.info(
+                logger.debug(
                     "First pick is: %s, last pick is: %s, ovelapped zone starts: %s, next ovelapped zone starts: %s"
                     % (first_pick_time, last_pick_time, begin, next_begin)
                 )
