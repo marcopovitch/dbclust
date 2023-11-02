@@ -488,18 +488,18 @@ if __name__ == "__main__":
                 # )
 
                 # thread // version
-                clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
-                    my_obs_path, append=True
-                )
+                # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
+                #     my_obs_path, append=True
+                # )
                 
                 # clustcat = locator.processes_get_localisations_from_nllobs_dir(
                 #     my_obs_path, append=True
                 # )
                 
                 # sequential version
-                # clustcat = locator.get_localisations_from_nllobs_dir(
-                #     my_obs_path, append=True
-                # )
+                clustcat = locator.get_localisations_from_nllobs_dir(
+                    my_obs_path, append=True
+                )
                 
                 
                 print("processes:", t2-t1)
