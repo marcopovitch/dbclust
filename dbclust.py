@@ -491,18 +491,15 @@ if __name__ == "__main__":
                 # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
                 #     my_obs_path, append=True
                 # )
-                
+
                 # clustcat = locator.processes_get_localisations_from_nllobs_dir(
                 #     my_obs_path, append=True
                 # )
-                
+
                 # sequential version
                 clustcat = locator.get_localisations_from_nllobs_dir(
                     my_obs_path, append=True
                 )
-                
-                
-                print("processes:", t2-t1)
 
         if len(clustcat) > 0:
             picks_to_remove = []
