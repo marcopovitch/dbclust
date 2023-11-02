@@ -5,7 +5,7 @@ import logging
 from math import pow, sqrt, isnan
 import numpy as np
 import pandas as pd
-from itertools import product, chain
+from itertools import product, chain, combinations
 from collections import Counter
 import time
 
@@ -13,9 +13,8 @@ import time
 import hdbscan
 from tqdm import tqdm
 import functools
-from itertools import combinations
 import dask.bag as db
-import multiprocessing
+from joblib import parallel_config
 
 
 # from dask.cache import Cache
@@ -24,7 +23,6 @@ from obspy.core.event import Event
 from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
-from joblib import parallel_config
 
 try:
     from phase import import_phases, import_eqt_phases
@@ -94,27 +92,21 @@ def get_picks_from_event(event, origin, time):
 def merge_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
     new_cluster2 = []
     merge_count = 0
-    print(len(clusters2.clusters))
-    print(len(clusters1.clusters))
+    logger.debug("merge_cluster_with_common_phases: clusters1 contains %d clusters." % len(clusters1.clusters))
+    logger.debug("merge_cluster_with_common_phases: clusters2 contains %d clusters." % len(clusters2.clusters))
     
     for c2 in clusters2.clusters:
-        print("x")
-        #print("c2 : %s" % c2)
         merged_flag = False 
         for c1 in clusters1.clusters:
-            #print("c1 : %s" % c1)
-            print(".", end='')
             common_elements = (Counter(c1) & Counter(c2)).values()
             common_count = sum(common_elements)
             
             if common_count >= min_com_phases:
-                #print("merge c1 c2")
                 c1.extend(c2)
                 c1 = list(set(c1))
                 merge_count += 1
                 merged_flag = True
                 break
-        print()    
         if not merged_flag:
             new_cluster2.append(c2)
     
@@ -123,7 +115,7 @@ def merge_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
     clusters2.clusters_stability = np.full(clusters2.n_clusters, 1.0)
     clusters1.clusters_stability = np.full(clusters1.n_clusters, 1.0) 
     
-    print("merge_count %d" % merge_count)
+    logger.debug("merge_cluster_with_common_phases: merge_count %d" % merge_count)
     
     return clusters1, clusters2, merge_count
             
