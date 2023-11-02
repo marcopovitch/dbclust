@@ -11,13 +11,19 @@ import shlex
 import tempfile
 import numpy as np
 import pandas as pd
+
+import concurrent.futures
+from functools import partial
 import multiprocessing
+
 from distributed import Client
 import dask.bag as db
+
 from itertools import product, combinations
 import urllib.request
 import urllib.parse
 import copy
+
 
 # from tqdm import tqdm
 from obspy import Catalog, read_events
@@ -374,11 +380,176 @@ class NllLoc(object):
 
         return cat
 
+    def processes_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
+        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
+        logger.debug(f"Localization of {obs_files_pattern}")
+
+        my_loc_proc = partial(self.nll_localisation, double_pass=self.double_pass)
+        processes = []
+
+        for f in glob.glob(obs_files_pattern):
+            process = multiprocessing.Process(target=my_loc_proc, args=(f,))
+            processes.append(process)
+            process.start()
+
+        for process in processes:
+            process.join()
+
+        cat_results = [process.exitcode for process in processes]
+        
+        mycatalog = Catalog()
+        for cat in cat_results:
+            if not cat:
+                continue
+            # there is always only one event in the catalog
+            e = cat.events[0]
+            o = e.preferred_origin()
+            # nb_station_used = o.quality.used_station_count
+            o.quality.used_station_count = self.get_used_station_count(e, o)
+            # nb_station_used = o.quality.used_station_count
+            nb_phase_used = o.quality.used_phase_count
+            # if nb_station_used >= self.nll_min_phase:
+            if nb_phase_used >= self.nll_min_phase:
+                count = self.check_stations_with_P_and_S(
+                    e, o, self.min_station_with_P_and_S
+                )
+                if count >= self.min_station_with_P_and_S:
+                    logger.info(
+                        f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                    )
+                    mycatalog += cat
+                else:
+                    logger.debug(
+                        f"Not enough stations with both P and S ... ignoring it !"
+                    )
+            else:
+                logger.debug(
+                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
+                    f" ... ignoring it !"
+                )
+
+        if append is True:
+            self.catalog += mycatalog
+
+        # sort events by time
+        self.nb_events = len(self.catalog)
+        if self.nb_events > 1:
+            self.catalog.events = sorted(
+                self.catalog.events, key=lambda e: e.preferred_origin().time
+            )
+        return mycatalog
+
+    def multiproc_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
+        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
+        logger.debug(f"Localization of {obs_files_pattern}")
+
+        max_workers = multiprocessing.cpu_count()
+        pool = multiprocessing.Pool(processes=max_workers)
+
+        my_loc_proc = partial(self.nll_localisation, double_pass=self.double_pass)
+        cat_results = pool.map(my_loc_proc, glob.glob(obs_files_pattern))
+
+        pool.close()
+        pool.join()
+
+        mycatalog = Catalog()
+        for cat in cat_results:
+            if not cat:
+                continue
+            # there is always only one event in the catalog
+            e = cat.events[0]
+            o = e.preferred_origin()
+            # nb_station_used = o.quality.used_station_count
+            o.quality.used_station_count = self.get_used_station_count(e, o)
+            # nb_station_used = o.quality.used_station_count
+            nb_phase_used = o.quality.used_phase_count
+            # if nb_station_used >= self.nll_min_phase:
+            if nb_phase_used >= self.nll_min_phase:
+                count = self.check_stations_with_P_and_S(
+                    e, o, self.min_station_with_P_and_S
+                )
+                if count >= self.min_station_with_P_and_S:
+                    logger.info(
+                        f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                    )
+                    mycatalog += cat
+                else:
+                    logger.debug(
+                        f"Not enough stations with both P and S ... ignoring it !"
+                    )
+            else:
+                logger.debug(
+                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
+                    f" ... ignoring it !"
+                )
+
+        if append is True:
+            self.catalog += mycatalog
+
+        # sort events by time
+        self.nb_events = len(self.catalog)
+        if self.nb_events > 1:
+            self.catalog.events = sorted(
+                self.catalog.events, key=lambda e: e.preferred_origin().time
+            )
+        return mycatalog
+
+    def thread_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
+        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
+        logger.debug(f"Localization of {obs_files_pattern}")
+
+        max_workers = multiprocessing.cpu_count()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            my_loc_proc = partial(self.nll_localisation, double_pass=self.double_pass)
+            cat_results = list(executor.map(my_loc_proc, glob.glob(obs_files_pattern)))
+
+        mycatalog = Catalog()
+        for cat in cat_results:
+            if not cat:
+                continue
+            # there is always only one event in the catalog
+            e = cat.events[0]
+            o = e.preferred_origin()
+            # nb_station_used = o.quality.used_station_count
+            o.quality.used_station_count = self.get_used_station_count(e, o)
+            # nb_station_used = o.quality.used_station_count
+            nb_phase_used = o.quality.used_phase_count
+            # if nb_station_used >= self.nll_min_phase:
+            if nb_phase_used >= self.nll_min_phase:
+                count = self.check_stations_with_P_and_S(
+                    e, o, self.min_station_with_P_and_S
+                )
+                if count >= self.min_station_with_P_and_S:
+                    logger.info(
+                        f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                    )
+                    mycatalog += cat
+                else:
+                    logger.debug(
+                        f"Not enough stations with both P and S ... ignoring it !"
+                    )
+            else:
+                logger.debug(
+                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
+                    f" ... ignoring it !"
+                )
+
+        if append is True:
+            self.catalog += mycatalog
+
+        # sort events by time
+        self.nb_events = len(self.catalog)
+        if self.nb_events > 1:
+            self.catalog.events = sorted(
+                self.catalog.events, key=lambda e: e.preferred_origin().time
+            )
+        return mycatalog
+
     def dask_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
         """
         nll localisation and export to quakeml
         warning : network and channel are lost since they are not used by nll
-                  use Phase() to get them.
+        use Phase() to get them.
         if append is True, the obtain catalog is appended to the NllLoc catalog
 
         returns a catalog
@@ -402,13 +573,17 @@ class NllLoc(object):
             o = e.preferred_origin()
             # nb_station_used = o.quality.used_station_count
             o.quality.used_station_count = self.get_used_station_count(e, o)
-            #nb_station_used = o.quality.used_station_count
+            # nb_station_used = o.quality.used_station_count
             nb_phase_used = o.quality.used_phase_count
-            #if nb_station_used >= self.nll_min_phase:
+            # if nb_station_used >= self.nll_min_phase:
             if nb_phase_used >= self.nll_min_phase:
-                count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
+                count = self.check_stations_with_P_and_S(
+                    e, o, self.min_station_with_P_and_S
+                )
                 if count >= self.min_station_with_P_and_S:
-                    logger.info(f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both).")
+                    logger.info(
+                        f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                    )
                     mycatalog += cat
                 else:
                     logger.debug(
@@ -435,7 +610,7 @@ class NllLoc(object):
         """
         nll localisation and export to quakeml
         warning : network and channel are lost since they are not used by nll
-                  use Phase() to get them.
+        use Phase() to get them.
         if append is True, the obtain catalog is appended to the NllLoc catalog
 
         returns a catalog
@@ -455,13 +630,17 @@ class NllLoc(object):
             e = cat.events[0]
             o = e.preferred_origin()
             o.quality.used_station_count = self.get_used_station_count(e, o)
-            #nb_station_used = o.quality.used_station_count
+            # nb_station_used = o.quality.used_station_count
             nb_phase_used = o.quality.used_phase_count
-            #if nb_station_used >= self.nll_min_phase:
+            # if nb_station_used >= self.nll_min_phase:
             if nb_phase_used >= self.nll_min_phase:
-                count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
+                count = self.check_stations_with_P_and_S(
+                    e, o, self.min_station_with_P_and_S
+                )
                 if count >= self.min_station_with_P_and_S:
-                    logger.info(f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both).")
+                    logger.info(
+                        f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                    )
                     mycatalog += cat
                 else:
                     logger.debug(
@@ -523,8 +702,8 @@ class NllLoc(object):
                 )
                 pick_to_delete.append(pick)
                 arrival_to_delete.append(arrival)
-                #logger.info(pick)
-                #logger.info(arrival)
+                # logger.info(pick)
+                # logger.info(arrival)
 
         logger.debug(
             f"cleanup: remove {len(arrival_to_delete)} phases and {len(pick_to_delete)} picks."
@@ -581,7 +760,7 @@ class NllLoc(object):
     @staticmethod
     def get_used_station_count(event, origin):
         station_list = []
-        #origin = event.preferred_origin()
+        # origin = event.preferred_origin()
         for arrival in origin.arrivals:
             if arrival.time_weight and arrival.time_residual:
                 pick = next(
@@ -663,10 +842,11 @@ class NllLoc(object):
                         )
                         continue
                     elif len(net) != 1:
-                        logger.warning(
-                            f"[wfid_hint] Duplicated network code for station {sta}"
-                        )
-                        logger.warning(f"    using the first one {net.iloc[0]}")
+                        if logger.level == logging.DEBUG:
+                            logger.warning(
+                                f"[wfid_hint] Duplicated network code for station {sta}"
+                            )
+                            logger.warning(f"    using the first one {net.iloc[0]}")
                     net = net.iloc[0]
                     p.waveform_id.network_code = net
 
@@ -680,10 +860,11 @@ class NllLoc(object):
                     if len(loc) == 0:
                         logger.warning("Location code not found for {net}.{sta}")
                     if len(loc) != 1:
-                        logger.warning(
-                            f"[wfid_hint] Duplicated location code for {net}.{sta}"
-                        )
-                        logger.warning(f"    using the first one {loc.iloc[0]}")
+                        if logger.level == logging.DEBUG:
+                            logger.warning(
+                                f"[wfid_hint] Duplicated location code for {net}.{sta}"
+                            )
+                            logger.warning(f"    using the first one {loc.iloc[0]}")
                     loc = loc.iloc[0]
                     p.waveform_id.location_code = loc
 
@@ -693,10 +874,11 @@ class NllLoc(object):
                 if len(chan) == 0:
                     logger.warning("Channel code not found for {net}.{sta}")
                 elif len(chan) != 1:
-                    logger.warning(
-                        f"[wfid_hint] Duplicated channel code for {net}.{sta}.{loc}"
-                    )
-                    logger.warning(f"    using the first one {chan.iloc[0]}")
+                    if logger.level == logging.DEBUG:
+                        logger.warning(
+                            f"[wfid_hint] Duplicated channel code for {net}.{sta}.{loc}"
+                        )
+                        logger.warning(f"    using the first one {chan.iloc[0]}")
                 chan = chan.iloc[0]
 
                 if "P" in p.phase_hint or "p" in p.phase_hint:
