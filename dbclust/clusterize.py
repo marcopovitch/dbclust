@@ -6,6 +6,8 @@ from math import pow, sqrt, isnan
 import numpy as np
 import pandas as pd
 from itertools import product, chain
+from collections import Counter
+import time
 
 # from sklearn.cluster import DBSCAN, OPTICS
 import hdbscan
@@ -13,6 +15,8 @@ from tqdm import tqdm
 import functools
 from itertools import combinations
 import dask.bag as db
+import multiprocessing
+
 
 # from dask.cache import Cache
 from obspy import Catalog
@@ -34,7 +38,7 @@ logger = logging.getLogger("clusterize")
 logger.setLevel(logging.INFO)
 
 
-@functools.lru_cache(maxsize=None)
+#@functools.lru_cache(maxsize=None)
 def compute_tt(p1, p2, vmean):
     # lru_cache doesn't work with multiprocessing/dask/etc.
     distance, az, baz = gps2dist_azimuth(
@@ -86,6 +90,43 @@ def get_picks_from_event(event, origin, time):
                     ]
                 lines.append(line)
     return sorted(lines, key=lambda l: l[2])
+
+def merge_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
+    new_cluster2 = []
+    merge_count = 0
+    print(len(clusters2.clusters))
+    print(len(clusters1.clusters))
+    
+    for c2 in clusters2.clusters:
+        print("x")
+        #print("c2 : %s" % c2)
+        merged_flag = False 
+        for c1 in clusters1.clusters:
+            #print("c1 : %s" % c1)
+            print(".", end='')
+            common_elements = (Counter(c1) & Counter(c2)).values()
+            common_count = sum(common_elements)
+            
+            if common_count >= min_com_phases:
+                #print("merge c1 c2")
+                c1.extend(c2)
+                c1 = list(set(c1))
+                merge_count += 1
+                merged_flag = True
+                break
+        print()    
+        if not merged_flag:
+            new_cluster2.append(c2)
+    
+    clusters2.clusters = new_cluster2 
+    clusters2.n_clusters = len(clusters2.clusters)
+    clusters2.clusters_stability = np.full(clusters2.n_clusters, 1.0)
+    clusters1.clusters_stability = np.full(clusters1.n_clusters, 1.0) 
+    
+    print("merge_count %d" % merge_count)
+    
+    return clusters1, clusters2, merge_count
+            
 
 
 def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
@@ -242,7 +283,7 @@ class Clusterize(object):
         max_search_dist=0,  # same as hdbscan cluster_selection_epsilon: default is 0.
         P_uncertainty=0.1,
         S_uncertainty=0.2,
-        tt_maxtrix_fname="tt_matrix.npy",
+        tt_matrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
         tt_matrix_save=False,
         log_level=logging.DEBUG,
@@ -272,7 +313,7 @@ class Clusterize(object):
         self.S_uncertainty = S_uncertainty
 
         # tt_matrix load/save parameters
-        self.tt_maxtrix_fname = tt_maxtrix_fname
+        self.tt_matrix_fname = tt_matrix_fname
         self.tt_matrix_load = tt_matrix_load
 
         if phases is None:
@@ -280,7 +321,7 @@ class Clusterize(object):
             return
 
         logger.info(
-            f"Starting Clustering (nbphases={len(phases)}, "
+            f"Starting Clustering (nb phases={len(phases)}, "
             f"min_cluster_size={min_cluster_size}, "
             f"min_station_with_P_and_S={min_station_with_P_and_S})."
         )
@@ -294,26 +335,35 @@ class Clusterize(object):
             return
 
         logger.info("Computing TT matrix.")
-        if tt_matrix_load and tt_maxtrix_fname:
-            logger.info(f"Loading tt_matrix {tt_maxtrix_fname}.")
+        if tt_matrix_load and tt_matrix_fname:
+            logger.info(f"Loading tt_matrix {tt_matrix_fname}.")
             try:
-                pseudo_tt = np.load(tt_maxtrix_fname)
+                pseudo_tt = np.load(tt_matrix_fname)
             except Exception as e:
                 logger.error(e)
                 logger.error("Check your config file !")
                 sys.exit()
         else:
             # sequential computation
+            # don't forget to activate lru_cache for compute_tt()
             # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
+            # pseudo_tt = self.numpy_compute_tt_matrix_seq(phases, average_velocity)
+            
+            # use the fact that the matrix is diagonal and symmetrical 
+            # running time is quite similar to sequential computation + lru_cache
             pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
+            
             # // computation using dask bag: slower for small cluster
             # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
-            logger.info(f"TT maxtrix: {compute_tt.cache_info()}")
-            compute_tt.cache_clear()
+            try: 
+                logger.info(f"TT matrix: {compute_tt.cache_info()}")
+                compute_tt.cache_clear()
+            except:
+                pass
 
-        if tt_maxtrix_fname and tt_matrix_save:
-            logger.info(f"Saving tt_matrix {tt_maxtrix_fname}.")
-            np.save(tt_maxtrix_fname, pseudo_tt)
+        if tt_matrix_fname and tt_matrix_save:
+            logger.info(f"Saving tt_matrix {tt_matrix_fname}.")
+            np.save(tt_matrix_fname, pseudo_tt)
 
         self.clusters, self.clusters_stability, self.noise = self.get_clusters(
             phases, pseudo_tt, max_search_dist, min_cluster_size
@@ -325,7 +375,7 @@ class Clusterize(object):
 
     @staticmethod
     def compute_tt_matrix(phases, vmean):
-        # optimization : matrix is symetric -> use lru_cache
+        # optimization : matrix is symmetrical -> use lru_cache
         tt_matrix = []
         for p1 in tqdm(phases):
             line = []
@@ -336,8 +386,8 @@ class Clusterize(object):
         return tt_matrix
 
     @staticmethod
-    def numpy_compute_tt_matrix(phases, vmean):
-        # optimization : matrix is symetric -> use lru_cache
+    def numpy_compute_tt_matrix_seq(phases, vmean):
+        # optimization : matrix is symmetrical -> use lru_cache
         nb_phases = len(phases)
         tt_matrix = np.empty([nb_phases, nb_phases], dtype=float)
         for i in range(0, nb_phases):
@@ -345,6 +395,26 @@ class Clusterize(object):
             for j in range(0, nb_phases):
                 p2 = phases[j]
                 tt_matrix[i, j] = compute_tt(*sorted((p1, p2)), vmean)
+        return tt_matrix
+
+    @staticmethod
+    def numpy_compute_tt_matrix(phases, vmean):
+        # optimization : matrix is diagonal and symmetrical 
+        nb_phases = len(phases)
+        elements = []
+        for i in range(0, nb_phases):
+            p1 = phases[i]
+            for j in range(i, nb_phases):
+                p2 = phases[j]
+                elements.append(compute_tt(*sorted((p1, p2)), vmean))
+
+        matrix_upper1 = np.zeros((nb_phases, nb_phases))
+        row, col = np.triu_indices(nb_phases)
+        matrix_upper1[row, col] = elements
+
+        matrix_upper2 = np.copy(matrix_upper1)
+        np.fill_diagonal(matrix_upper2, 0)
+        tt_matrix = matrix_upper1 + matrix_upper2.T
         return tt_matrix
 
     @staticmethod
@@ -411,7 +481,7 @@ class Clusterize(object):
                 if c_id == l:
                     cluster.append(p)
                     # if duplicated picks, rely on NonLinLoc
-                    # to keep the relevant picks at localisation level
+                    # to keep the relevant picks at localization level
                     # or use the pick probability
 
             if c_id == -1:
@@ -524,7 +594,7 @@ class Clusterize(object):
             os.makedirs(OBS_PATH, exist_ok=True)
             obs_file = os.path.join(OBS_PATH, f"cluster-{i}.obs")
             logger.debug(
-                f"Cluster {i}, writting {obs_file}, stability:{self.clusters_stability[i]}, nstations:{len(stations_list)})"
+                f"Cluster {i}, writing {obs_file}, stability:{self.clusters_stability[i]}, n_stations:{len(stations_list)})"
             )
             cat.write(obs_file, format="NLLOC_OBS")
 
