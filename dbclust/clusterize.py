@@ -36,7 +36,7 @@ logger = logging.getLogger("clusterize")
 logger.setLevel(logging.INFO)
 
 
-#@functools.lru_cache(maxsize=None)
+# @functools.lru_cache(maxsize=None)
 def compute_tt(p1, p2, vmean):
     # lru_cache doesn't work with multiprocessing/dask/etc.
     distance, az, baz = gps2dist_azimuth(
@@ -89,18 +89,34 @@ def get_picks_from_event(event, origin, time):
                 lines.append(line)
     return sorted(lines, key=lambda l: l[2])
 
+
 def merge_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
+    """
+    Merge into clusters1 all clusters with common phases.
+
+    Clusters are just a list of list(Phases).
+    Phase must implement __eq__() to use set intersection.
+
+    Returns merged clusters1, remaining unmerged clusters in clusters2,
+    and the number of merge realized.
+    """
     new_cluster2 = []
     merge_count = 0
-    logger.debug("merge_cluster_with_common_phases: clusters1 contains %d clusters." % len(clusters1.clusters))
-    logger.debug("merge_cluster_with_common_phases: clusters2 contains %d clusters." % len(clusters2.clusters))
-    
+    logger.debug(
+        "merge_cluster_with_common_phases: clusters1 contains %d clusters."
+        % len(clusters1.clusters)
+    )
+    logger.debug(
+        "merge_cluster_with_common_phases: clusters2 contains %d clusters."
+        % len(clusters2.clusters)
+    )
+
     for c2 in clusters2.clusters:
-        merged_flag = False 
+        merged_flag = False
         for c1 in clusters1.clusters:
             common_elements = (Counter(c1) & Counter(c2)).values()
             common_count = sum(common_elements)
-            
+
             if common_count >= min_com_phases:
                 c1.extend(c2)
                 c1 = list(set(c1))
@@ -109,159 +125,16 @@ def merge_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
                 break
         if not merged_flag:
             new_cluster2.append(c2)
-    
-    clusters2.clusters = new_cluster2 
+
+    clusters2.clusters = new_cluster2
     clusters2.n_clusters = len(clusters2.clusters)
+    # generate "articifial" cluster stability information (but not used !)
     clusters2.clusters_stability = np.full(clusters2.n_clusters, 1.0)
-    clusters1.clusters_stability = np.full(clusters1.n_clusters, 1.0) 
-    
+    clusters1.clusters_stability = np.full(clusters1.n_clusters, 1.0)
+
     logger.debug("merge_cluster_with_common_phases: merge_count %d" % merge_count)
-    
-    return clusters1, clusters2, merge_count
-            
-
-
-def manage_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
-    """
-    Merge into clusters1 all clusters with common phases or shared event_id
-
-    Clusters are just a list of list(Phases).
-    Phase must implement __eq__() to use set intersection.
-
-    Returns merged clusters1, remaining unmerged clusters in clusters2,
-    and the number of merge realized.
-    """
-    if clusters1.n_clusters == 0 or clusters2.n_clusters == 0:
-        logger.debug("manage_cluster_with_common_phases: nothing to do ")
-        return clusters1, clusters2, 0
-
-    logger.info(
-        f"manage_cluster_with_common_phases(): clusters c1 contains {clusters1.n_clusters} clusters"
-    )
-    logger.info(
-        f"manage_cluster_with_common_phases(): clusters c2 contains {clusters2.n_clusters} clusters"
-    )
-
-    c1_used = set()
-    c2_used = set()
-
-    merge_count = 0
-    for idx1, c1 in enumerate(clusters1.clusters):
-        if idx1 in c1_used:
-            continue
-        for idx2, c2 in enumerate(clusters2.clusters):
-            if idx2 in c2_used:
-                continue
-
-            logger.debug("Intersection c1, c2:")
-            logger.debug("c1[%d] = %s" % (idx1, c1))
-            logger.debug("c2[%d] = %s" % (idx2, c2))
-
-            nb_intersection = set(c1).intersection(set(c2))
-            eventid_shared = cluster_share_eventid(c1, c2)
-
-            if not eventid_shared and len(nb_intersection) < min_com_phases:
-                logger.debug(
-                    f"Clusters c1[{idx1}], c2[{idx2}] have only {len(nb_intersection)} shared phases (merge require {min_com_phases})."
-                    f"They share no picks with an EventId in common."
-                )
-                continue
-
-            logger.info(
-                f"Merging clusters c1[{idx1}], c2[{idx2}]: "
-                f"{len(nb_intersection)} shared phases, picks with an EventId in common is {eventid_shared}"
-            )
-
-            merge_count += 1
-            c1_used.add(idx1)
-            c2_used.add(idx2)
-
-            # merge 2 clusters and remove duplicated picks
-            set_c1 = set(clusters1.clusters[idx1])
-            set_c1.update(set(clusters2.clusters[idx2]))
-            clusters1.clusters[idx1] = list(set_c1)
-            clusters1.n_clusters = len(clusters1.clusters)
-
-            # keep cluster stability
-            c1_stab = clusters1.clusters_stability[idx1]
-            c2_stab = clusters2.clusters_stability[idx2]
-
-            # keep the best stability for c1
-            try:
-                clusters1.clusters_stability[idx1] = max(c1_stab, c2_stab)
-            except Exception as e:
-                logger.error(e)
-                print("c1_stab", c1_stab)
-                print("c1_stab", c2_stab)
-                sys.exit(255)
-
-            logger.info(
-                f"[{idx1},{idx2}] merging cluster(len:{len(c1)}, stability:{c1_stab:.4f}) "
-                f"with cluster(len:{len(c2)}, stability:{c2_stab:.4f}) "
-                f"--> cluster(len:{len(clusters1.clusters[idx1])}, stability:{clusters1.clusters_stability[idx1]:.4f})"
-            )
-
-    # Do the real cleanup of c2
-    for idx2 in sorted(c2_used, reverse=True):
-        c2 = clusters2.clusters.pop(idx2)
-        logger.debug("Removed cluster c2: %s" % c2)
-        clusters2.clusters_stability = np.delete(clusters2.clusters_stability, idx2)
-    clusters2.n_clusters = len(clusters2.clusters)
 
     return clusters1, clusters2, merge_count
-
-
-def filter_out_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
-    """
-    Clusters are just a list of list(Phases).
-
-    Phase must implement __eq__() to use set intersection.
-    if cluster_stability is available use it, if not use cluster size
-    to select the best cluster.
-    """
-    if clusters1.n_clusters == 0 or clusters2.n_clusters == 0:
-        logger.debug("filter_out_cluster_with_common_phases: nothing to do ")
-        return clusters1, clusters2, 0
-
-    nb_cluster_removed = 0
-    # for c1, c2 in product(clusters1.clusters, clusters2.clusters):
-    for idx1, c1 in enumerate(clusters1.clusters):
-        for idx2, c2 in enumerate(clusters2.clusters):
-            intersection = set(c1).intersection(set(c2))
-            logger.info(f"Clusters c1, c2 share {len(intersection)} phases.")
-            if len(intersection) >= min_com_phases:
-                nb_cluster_removed += 1
-
-                c1_stability = clusters1.clusters_stability[idx1]
-                c2_stability = clusters2.clusters_stability[idx2]
-
-                # if len(c1) > len(c2):
-                if c1_stability > c2_stability:
-                    cluster_removed = clusters2.clusters.pop(idx2)
-                    cluster_removed_stability = c2_stability
-                    clusters2.clusters_stability = np.delete(
-                        clusters2.clusters_stability, idx2
-                    )
-                    #
-                    cluster_kept = c1
-                    cluster_kept_stability = clusters1.clusters_stability[idx1]
-                else:
-                    cluster_removed = clusters1.clusters.pop(idx1)
-                    cluster_removed_stability = c1_stability
-                    clusters1.clusters_stability = np.delete(
-                        clusters1.clusters_stability, idx1
-                    )
-                    #
-                    cluster_kept = c2
-                    cluster_kept_stability = clusters2.clusters_stability[idx2]
-
-                logger.info(
-                    f"Keeping cluster with phases:{len(cluster_kept)}, stability:{cluster_kept_stability:.4f}, with first pick {cluster_kept[0]}"
-                )
-                logger.info(
-                    f"Removing cluster with phases:{len(cluster_removed)}, stability:{cluster_removed_stability:.4f}, with first pick {cluster_removed[0]}"
-                )
-    return clusters1, clusters2, nb_cluster_removed
 
 
 class Clusterize(object):
@@ -340,14 +213,14 @@ class Clusterize(object):
             # don't forget to activate lru_cache for compute_tt()
             # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
             # pseudo_tt = self.numpy_compute_tt_matrix_seq(phases, average_velocity)
-            
-            # use the fact that the matrix is diagonal and symmetrical 
+
+            # use the fact that the matrix is diagonal and symmetrical
             # running time is quite similar to sequential computation + lru_cache
             pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
-            
+
             # // computation using dask bag: slower for small cluster
             # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
-            try: 
+            try:
                 logger.info(f"TT matrix: {compute_tt.cache_info()}")
                 compute_tt.cache_clear()
             except:
@@ -391,7 +264,7 @@ class Clusterize(object):
 
     @staticmethod
     def numpy_compute_tt_matrix(phases, vmean):
-        # optimization : matrix is diagonal and symmetrical 
+        # optimization : matrix is diagonal and symmetrical
         nb_phases = len(phases)
         elements = []
         for i in range(0, nb_phases):
@@ -423,28 +296,14 @@ class Clusterize(object):
     def get_clusters(phases, pseudo_tt, max_search_dist, min_cluster_size):
         # metric is “precomputed” ==> X is assumed to be a distance matrix and must be square
 
-        # db = DBSCAN(
-        #     eps=max_search_dist, min_samples=min_cluster_size, metric="precomputed", n_jobs=-1
-        # ).fit(pseudo_tt)
-
-        # db = OPTICS(
-        #     min_samples=5,  # default value is 5 related to dbscan
-        #     eps=max_search_dist,
-        #     cluster_method="dbscan",
-        #     algorithm='brute',
-        #     metric="precomputed",
-        #     n_jobs=-1,
-        # ).fit(pseudo_tt)
-
-        with parallel_config(backend="threading", n_jobs=-1):
-            db = hdbscan.HDBSCAN(
-                min_cluster_size=min_cluster_size,  # default 5
-                # min_samples=None                          # default None
-                allow_single_cluster=True,
-                cluster_selection_epsilon=max_search_dist,  # default 0.0
-                metric="precomputed",
-                n_jobs=-1,
-            ).fit(pseudo_tt)
+        db = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size,  # default 5
+            # min_samples=None                          # default None
+            allow_single_cluster=True,
+            cluster_selection_epsilon=max_search_dist,  # default 0.0
+            metric="precomputed",
+            n_jobs=-1,
+        ).fit(pseudo_tt)
 
         labels = db.labels_
 
@@ -589,10 +448,6 @@ class Clusterize(object):
                 f"Cluster {i}, writing {obs_file}, stability:{self.clusters_stability[i]}, n_stations:{len(stations_list)})"
             )
             cat.write(obs_file, format="NLLOC_OBS")
-
-    def split_cluster(self):
-        """split cluster for each duplicated phase"""
-        pass
 
     def merge(self, clusters2):
         logger.info(
