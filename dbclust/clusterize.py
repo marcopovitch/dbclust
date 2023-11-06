@@ -92,7 +92,8 @@ def get_picks_from_event(event, origin, time):
 
 def merge_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
     """
-    Merge into clusters1 all clusters with common phases.
+    Merge into clusters1 all clusters from clusters2 with common phases
+    or shared event id.
 
     Clusters are just a list of list(Phases).
     Phase must implement __eq__() to use set intersection.
@@ -111,13 +112,18 @@ def merge_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
         % len(clusters2.clusters)
     )
 
-    for c2 in clusters2.clusters:
+    for idx2, c2 in enumerate(clusters2.clusters):
         merged_flag = False
-        for c1 in clusters1.clusters:
+        for idx1, c1 in enumerate(clusters1.clusters):
             common_elements = (Counter(c1) & Counter(c2)).values()
             common_count = sum(common_elements)
 
-            if common_count >= min_com_phases:
+            eventid_shared = cluster_share_eventid(c1, c2)
+            if common_count >= min_com_phases or eventid_shared:
+                logger.debug(
+                    f"merging c2[{idx2}] (myclust) into c1[{idx1}] (previous_myclust): "
+                    f"picks shared: {common_count}, eventid shares: {eventid_shared}"
+                )
                 c1.extend(c2)
                 c1 = list(set(c1))
                 merge_count += 1
@@ -353,7 +359,7 @@ class Clusterize(object):
             return
 
         logger.info(
-            "cluster_merge_based_on_eventid(): merging clusters sharing same EventId."
+            "cluster_merge_based_on_eventid(): merging clusters (myclust) sharing same EventId."
         )
         logger.info(f"Working on {self.n_clusters} clusters.")
 
