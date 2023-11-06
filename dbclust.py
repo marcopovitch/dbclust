@@ -13,12 +13,10 @@ import time
 # from obspy import Catalog, UTCDateTime, read_inventory
 # from datetime import datetime
 
-from dbclust.pick_preproc import unload_too_close_picks
 from dbclust.phase import import_phases, import_eqt_phases
 from dbclust.clusterize import (
     Clusterize,
     get_picks_from_event,
-    manage_cluster_with_common_phases,
     merge_cluster_with_common_phases,
 )
 from dbclust.localization import NllLoc, show_event
