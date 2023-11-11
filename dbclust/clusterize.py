@@ -5,21 +5,23 @@ import logging
 from math import pow, sqrt, isnan
 import numpy as np
 import pandas as pd
-from itertools import product, chain, combinations
+from itertools import product, chain
 from collections import Counter
-import time
+import json
 
 # from sklearn.cluster import DBSCAN, OPTICS
 import hdbscan
 from tqdm import tqdm
-import functools
+
+# import functools
 import dask.bag as db
-from joblib import parallel_config
+
+# from joblib import parallel_config
 
 
 # from dask.cache import Cache
 from obspy import Catalog
-from obspy.core.event import Event
+from obspy.core.event import Event, Comment
 from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
@@ -88,6 +90,25 @@ def get_picks_from_event(event, origin, time):
                     ]
                 lines.append(line)
     return sorted(lines, key=lambda l: l[2])
+
+
+def feed_picks_probabilities(cat, clusters):
+    for event in cat:
+        for pick in event.picks:
+            for p in chain(*clusters):
+                if pick.time == p.time and pick.phase_hint == p.phase:
+                    pick.comments.append(
+                        Comment(
+                            text='{"probability": {"name": "phasenet", "value": %.2f}}'
+                            % p.proba
+                        )
+                    )
+
+
+def feed_picks_event_ids(cat, clusters):
+    event_ids = list(set([p.eventid for p in chain(*clusters) if p.eventid]))
+    for event in cat:
+        event.comments.append(Comment(text="{event_ids: %s}" % json.dumps(event_ids)))
 
 
 def merge_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
