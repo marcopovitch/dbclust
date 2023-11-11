@@ -18,6 +18,8 @@ from dbclust.clusterize import (
     Clusterize,
     get_picks_from_event,
     merge_cluster_with_common_phases,
+    feed_picks_probabilities,
+    feed_picks_event_ids,
 )
 from dbclust.localization import NllLoc, show_event
 
@@ -464,7 +466,6 @@ if __name__ == "__main__":
         with tempfile.TemporaryDirectory(dir=OBS_PATH) as TMP_OBS_PATH:
             my_obs_path = os.path.join(TMP_OBS_PATH, f"{i}")
             previous_myclust.generate_nllobs(my_obs_path)
-            previous_myclust = myclust
 
             # localize each cluster
             # all locs are automaticaly appended to the locator's catalog
@@ -544,6 +545,13 @@ if __name__ == "__main__":
                     show_event(event, "***P")
                 else:
                     show_event(event, "****")
+
+        # write into qml picks probabilities and event_ids where picks are coming from
+        feed_picks_probabilities(clustcat, previous_myclust.clusters)
+        feed_picks_event_ids(clustcat, previous_myclust.clusters)
+
+        # prepare next round
+        previous_myclust = myclust
 
         # write partial qml file and clean catalog from memory
         if (last_saved_event_count) > event_flush_count:
