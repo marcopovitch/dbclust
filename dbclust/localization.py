@@ -11,6 +11,7 @@ import shlex
 import tempfile
 import numpy as np
 import pandas as pd
+import json
 
 import concurrent.futures
 from functools import partial
@@ -220,7 +221,7 @@ class NllLoc(object):
         # path + root filename
         output = os.path.join(tmp_path, nll_obs_file_basename)
 
-        # Values to be substitued in the template
+        # Values to be substituted in the template
         tags = {
             "OBSFILE": nll_obs_file,
             "NLL_TIME_PATH": self.nll_time_path,
@@ -260,9 +261,9 @@ class NllLoc(object):
         for line in result.stdout.splitlines():
             if "WARNING: cannot open grid buffer file" in line:
                 logger.error(line)
-            elif "REJECTED" in line:
+            elif any(k in line for k in ("ABORTED", "IGNORED", "REJECTED")):
                 why = " ".join(line.split()[3:]).replace('"', "")
-                logger.info(f"Localization was REJECTED: {why}")
+                logger.info(f"Localization was ABORTED|IGNORED|REJECTED: {why}")
                 return Catalog()
 
         if self.nll_verbose:
@@ -396,7 +397,7 @@ class NllLoc(object):
             process.join()
 
         cat_results = [process.exitcode for process in processes]
-        
+
         mycatalog = Catalog()
         for cat in cat_results:
             if not cat:
