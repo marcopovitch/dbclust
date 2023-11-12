@@ -108,7 +108,7 @@ def feed_picks_probabilities(cat, clusters):
 def feed_picks_event_ids(cat, clusters):
     event_ids = list(set([p.eventid for p in chain(*clusters) if p.eventid]))
     for event in cat:
-        event.comments.append(Comment(text="{event_ids: %s}" % json.dumps(event_ids)))
+        event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
 
 
 def merge_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
