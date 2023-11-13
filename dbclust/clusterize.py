@@ -106,8 +106,33 @@ def feed_picks_probabilities(cat, clusters):
 
 
 def feed_picks_event_ids(cat, clusters):
-    event_ids = list(set([p.eventid for p in chain(*clusters) if p.eventid]))
     for event in cat:
+        o = event.preferred_origin()
+        cluster_found = False
+        event_ids = [] 
+        for a in o.arrivals:
+            if cluster_found == True:
+                break
+            if a.time_weight and a.time_residual:
+                pick = next((p for p in event.picks if p.resource_id == a.pick_id), None)
+                if pick is None:
+                    continue
+                for c in clusters:
+                    for cluster_pick in c:
+                        if (
+                            pick.time == cluster_pick.time
+                            and pick.phase_hint == cluster_pick.phase
+                        ):
+                            # cluster found
+                            event_ids = list(
+                                set([p.eventid for p in c if p.eventid])
+                            )
+                            cluster_found = True
+                            break
+                    if cluster_found == True:
+                        break
+
+        # event_ids = list(set([p.eventid for p in chain(*clusters) if p.eventid]))
         event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
 
 
