@@ -134,6 +134,11 @@ if __name__ == "__main__":
         info_sta = station_cfg[info_sta_method]
         logger.info(f"Using fdsnws {info_sta} to get station coordinates")
 
+    if "blacklist" in station_cfg:
+        black_listed_stations = station_cfg["blacklist"]
+    else:
+        black_listed_stations = []
+
     # import *phaseNet* or *eqt* csv picks file
     picks_type = file_cfg["picks_type"]
     assert picks_type in ["eqt", "phasenet"]
@@ -322,6 +327,12 @@ if __name__ == "__main__":
     if df.empty:
         logger.warning(f"No data in time range [{date_begin}, {date_end}].")
         sys.exit()
+
+    logger.info("Removing black listed stations:")
+    for sta in black_listed_stations:
+        count_before_filter = len(df)
+        df = df[~df["station_id"].str.contains(sta)]
+        logger.info(f"\t- removed {count_before_filter-len(df)} {sta} picks")
 
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
