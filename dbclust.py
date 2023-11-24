@@ -136,6 +136,8 @@ if __name__ == "__main__":
 
     if "blacklist" in station_cfg:
         black_listed_stations = station_cfg["blacklist"]
+        if not black_listed_stations:
+            black_listed_stations = []
     else:
         black_listed_stations = []
 
