@@ -120,8 +120,8 @@ class Phase(object):
         try:
             df = pd.read_csv(url, sep="|", skipinitialspace=True)
         except BaseException as e:
-            logger.error("The exception: {}".format(e))
-            logger.debug(url)
+            #logger.error("The exception: {}".format(e))
+            #logger.debug(url)
             return None, None, None
 
         df.columns = df.columns.str.replace("#", "")
@@ -177,7 +177,8 @@ def import_phases(
         logger.error("No phasenet header found")
         return None
 
-    for i in tqdm(range(len(df))):
+    #for i in tqdm(range(len(df))):
+    for i in range(len(df)):
         net, sta = df.iloc[i]["station_id"].split(".")[:2]
         phase_type = df.iloc[i]["phase_type"]
         phase_time = UTCDateTime(df.iloc[i]["phase_time"])
