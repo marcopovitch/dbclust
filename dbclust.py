@@ -41,8 +41,10 @@ def unload_picks_list(df1, picks):
     df2["station_id"] = df2["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
     df2["phase_time"] = pd.to_datetime(df2["phase_time"].map(lambda x: str(x)))
     df2["unload"] = True
-    # df1.to_csv("df1.csv")
-    # df2.to_csv("df2.csv")
+    # remove duplicate pick as they came from same event but from multiple origins
+    df2.drop_duplicates(inplace=True) 
+    #df1.to_csv("df1.csv")
+    #df2.to_csv("df2.csv")
     results = pd.merge(
         df1, df2, how="left", on=["station_id", "phase_type", "phase_time"]
     )
@@ -50,7 +52,7 @@ def unload_picks_list(df1, picks):
     keep = results[results["unload"] != True]
     keep = keep.drop(columns=["unload"])
     # print(keep[["station_id", "phase_time"]].to_string())
-    # keep.to_csv("keep.csv")
+    #keep.to_csv("keep.csv")
     return keep
 
 
@@ -298,6 +300,8 @@ if __name__ == "__main__":
                     inplace=True,
                 )
             df["phase_time"] = pd.to_datetime(df["phase_time"], utc=True)
+            # limits to 10^-4 seconds same as NLL (needed to unload some picks)
+            df['phase_time'] = df['phase_time'].dt.round('0.0001S')
             df.sort_values(by=["phase_time"], inplace=True)
             if "phase_index" in df.columns:
                 # seems to be fake picks
@@ -412,7 +416,13 @@ if __name__ == "__main__":
         # picks previously associated with events on the previous iteration
         logger.debug(f"test len(df_subset) before = {len(df_subset)}")
         if len(picks_to_remove):
+            logger.info(f"before unload picks: pick length is {len(df_subset)}")
+            #print(df_subset.to_string())
             df_subset = unload_picks_list(df_subset, picks_to_remove)
+            logger.info(f"after unload picks: pick length is {len(df_subset)}")
+            #print(df_subset.to_string())
+            picks_to_remove = []
+
         # print(df_subset[["station_id", "phase_time"]].to_string())
 
         # Import picks from dataframe
@@ -509,7 +519,6 @@ if __name__ == "__main__":
                 )
 
         if len(clustcat) > 0:
-            picks_to_remove = []
             for event in sorted(
                 clustcat.events, key=lambda e: e.preferred_origin().time
             ):
@@ -534,13 +543,13 @@ if __name__ == "__main__":
                     # as this event will be recreated.
                     show_event(event, "***D")
                     logger.debug(
-                        f"Select event in overlapped zone to be removed ({event.resource_id.id})"
+                        f"Select event in overlapped zone to be (D)eleted ({event.resource_id.id})"
                     )
                     locator.catalog.events.remove(event)
                     locator.nb_events = len(locator.catalog)
                     clustcat = locator.catalog
                 elif (
-                    # event.event_type != "no existing" and
+                    event.event_type != "no existing" and
                     not last_round
                     and first_pick_time < next_begin
                     and last_pick_time >= next_begin
@@ -551,11 +560,15 @@ if __name__ == "__main__":
                     # to have a complete event, remove those picks,
                     # so they can't make a new event on the next iteration.
                     # if event.event_type != "not existing":
+                    show_event(event, "***P")
+                    logger.debug(
+                        f"Select a real event between normal and overlapped zone where picks must be (P)runed ({event.resource_id.id})"
+                    )
+                    picks_to_remove = []
                     for origin in event.origins:
                         picks_to_remove += get_picks_from_event(
                             event, origin, next_begin
                         )
-                    show_event(event, "***P")
                 else:
                     show_event(event, "****")
 
