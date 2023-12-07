@@ -7,11 +7,12 @@ import pandas as pd
 from obspy import read_events
 
 
-def export_picks_to_phasenet_format(event, origin, agency=None):
+def export_picks_to_phasenet_format(event, origin, probability=1, agency=None):
     # seedid,phasename,time,probability
     # 1K.OFAS0.00.EH.D,P,2023-02-13T18:30:58.558999Z,0.366400
     lines = []
     for arrival in origin.arrivals:
+        #if arrival.time_weight:
         if arrival.time_weight and arrival.time_residual:
             pick = next(
                 (p for p in event.picks if p.resource_id == arrival.pick_id), None
@@ -21,7 +22,7 @@ def export_picks_to_phasenet_format(event, origin, agency=None):
                     "seedid": pick.waveform_id.get_seed_string(),
                     "phasename": pick.phase_hint,
                     "time": pick.time,
-                    "probability": 1,
+                    "probability": probability,
                     "eventid": event.resource_id,
                 }
                 if agency:
@@ -52,6 +53,14 @@ if __name__ == "__main__":
         dest="outputfile",
         help="output file",
         type=str,
+    )
+    parser.add_argument(
+        "-p",
+        "--probability",
+        default=1,
+        dest="probability",
+        help="probability",
+        type=float,
     )
     parser.add_argument(
         "-a",
@@ -87,10 +96,14 @@ if __name__ == "__main__":
     logger.setLevel(numeric_level)
 
     cat = read_events(args.inputfile)
-    df = pd.DataFrame(columns=["seedid", "phasename", "time", "probability", "eventid", "agency"])
+    df = pd.DataFrame(
+        columns=["seedid", "phasename", "time", "probability", "eventid", "agency"]
+    )
     for event in cat.events:
         origin = event.preferred_origin()
-        picks_list = export_picks_to_phasenet_format(event, origin, agency=args.agency)
+        picks_list = export_picks_to_phasenet_format(
+            event, origin, probability=args.probability, agency=args.agency
+        )
         df = pd.concat([df, pd.DataFrame(picks_list)], ignore_index=True)
 
     df.to_csv(args.outputfile, index=False)
