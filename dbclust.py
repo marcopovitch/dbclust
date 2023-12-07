@@ -6,12 +6,9 @@ import argparse
 import yaml
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 import tempfile
 from obspy import Inventory, read_inventory
-import time
-
-# from obspy import Catalog, UTCDateTime, read_inventory
-# from datetime import datetime
 
 from dbclust.phase import import_phases, import_eqt_phases
 from dbclust.clusterize import (
@@ -21,7 +18,16 @@ from dbclust.clusterize import (
     feed_picks_probabilities,
     feed_picks_event_ids,
 )
+from dbclust.dbclust2pyocto import (
+    dbclust2pyocto,
+    create_haslach_velocity_model,
+    create_rittershoffen_velocity_model,
+)
 from dbclust.localization import NllLoc, show_event
+from dbclust.zones import load_zones
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
 
 
 def ymljoin(loader, node):
@@ -42,9 +48,9 @@ def unload_picks_list(df1, picks):
     df2["phase_time"] = pd.to_datetime(df2["phase_time"].map(lambda x: str(x)))
     df2["unload"] = True
     # remove duplicate pick as they came from same event but from multiple origins
-    df2.drop_duplicates(inplace=True) 
-    #df1.to_csv("df1.csv")
-    #df2.to_csv("df2.csv")
+    df2.drop_duplicates(inplace=True)
+    # df1.to_csv("df1.csv")
+    # df2.to_csv("df2.csv")
     results = pd.merge(
         df1, df2, how="left", on=["station_id", "phase_type", "phase_time"]
     )
@@ -52,7 +58,7 @@ def unload_picks_list(df1, picks):
     keep = results[results["unload"] != True]
     keep = keep.drop(columns=["unload"])
     # print(keep[["station_id", "phase_time"]].to_string())
-    #keep.to_csv("keep.csv")
+    # keep.to_csv("keep.csv")
     return keep
 
 
@@ -111,6 +117,11 @@ if __name__ == "__main__":
     cluster_cfg = cfg["cluster"]
     nll_cfg = cfg["nll"]
     reloc_cfg = cfg["relocation"]
+    if "zones" in cfg:
+        zones_cfg = cfg["zones"]
+    else:
+        zones_cfg = None
+
     if "quakeml" in cfg:
         quakeml_cfg = cfg["quakeml"]
     else:
@@ -269,6 +280,22 @@ if __name__ == "__main__":
     qml_base_filename = catalog_cfg["qml_base_filename"]
     event_flush_count = catalog_cfg["event_flush_count"]
 
+    #
+    # pyocto
+    #
+    use_pyocto = True
+
+    #
+    # Zones
+    #
+    if zones_cfg:
+        zones = load_zones(zones_cfg, nll_cfg)
+        if zones.empty:
+            logger.error("Zones are defined but empty ! Check configuration file ...")
+            sys.exit()
+    else:
+        zones = gpd.GeoDataFrame()
+
     ########################################
 
     logger.info(f"Opening {picks_file} file.")
@@ -301,7 +328,7 @@ if __name__ == "__main__":
                 )
             df["phase_time"] = pd.to_datetime(df["phase_time"], utc=True)
             # limits to 10^-4 seconds same as NLL (needed to unload some picks)
-            df['phase_time'] = df['phase_time'].dt.round('0.0001S')
+            df["phase_time"] = df["phase_time"].dt.round("0.0001S")
             df.sort_values(by=["phase_time"], inplace=True)
             if "phase_index" in df.columns:
                 # seems to be fake picks
@@ -386,8 +413,34 @@ if __name__ == "__main__":
         S_uncertainty=S_uncertainty,
         tt_matrix_fname=pre_computed_tt_matrix,
         tt_matrix_save=tt_matrix_save,
+        zones=zones,
         log_level=logger.level,
     )
+
+    if use_pyocto:
+        import pyocto
+        import resource
+
+        model_path = "/Users/marc/Data/DBClust/france.2016.01/haslach.model"
+        create_haslach_velocity_model(model_path)
+
+        # model_path = "/Users/marc/Data/DBClust/of/rittershoffen.model"
+        # create_rittershoffen_velocity_model(model_path)
+
+        pyocto_velocity_model = pyocto.associator.VelocityModel1D(
+            path=model_path,
+            tolerance=2.0,
+            # association_cutoff_distance=None,
+            # location_cutoff_distance=None,
+            # surface_p_velocity=None,
+            # surface_s_velocity=None,
+        )
+
+        # pyocto_velocity_model = pyocto.VelocityModel0D(
+        #     p_velocity=6.2,
+        #     s_velocity=3.5,
+        #     tolerance=2.0,
+        # )
 
     picks_to_remove = []
     for i, (from_time, to_time) in enumerate(
@@ -417,10 +470,10 @@ if __name__ == "__main__":
         logger.debug(f"test len(df_subset) before = {len(df_subset)}")
         if len(picks_to_remove):
             logger.info(f"before unload picks: pick length is {len(df_subset)}")
-            #print(df_subset.to_string())
+            # print(df_subset.to_string())
             df_subset = unload_picks_list(df_subset, picks_to_remove)
             logger.info(f"after unload picks: pick length is {len(df_subset)}")
-            #print(df_subset.to_string())
+            # print(df_subset.to_string())
             picks_to_remove = []
 
         # print(df_subset[["station_id", "phase_time"]].to_string())
@@ -459,6 +512,7 @@ if __name__ == "__main__":
             S_uncertainty=S_uncertainty,
             tt_matrix_fname=pre_computed_tt_matrix,
             tt_matrix_save=tt_matrix_save,
+            zones=zones,
             log_level=logger.level,
         )
 
@@ -483,6 +537,11 @@ if __name__ == "__main__":
             last_round = True
             logger.info("Last round, merging all remaining clusters.")
             previous_myclust.merge(myclust)
+
+        if use_pyocto:
+            previous_myclust = dbclust2pyocto(
+                previous_myclust, pyocto_velocity_model, min_picks_common
+            )
 
         # Now, process previous_myclust and wait next round to process myclust
         # write each cluster to nll obs files
@@ -549,8 +608,8 @@ if __name__ == "__main__":
                     locator.nb_events = len(locator.catalog)
                     clustcat = locator.catalog
                 elif (
-                    event.event_type != "no existing" and
-                    not last_round
+                    event.event_type != "no existing"
+                    and not last_round
                     and first_pick_time < next_begin
                     and last_pick_time >= next_begin
                 ):

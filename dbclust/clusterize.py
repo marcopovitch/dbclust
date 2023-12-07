@@ -28,9 +28,13 @@ from obspy.geodetics import gps2dist_azimuth
 
 try:
     from phase import import_phases, import_eqt_phases
+
 except:
     from dbclust.phase import import_phases, import_eqt_phases
 
+from dbclust.zones import find_zone
+
+# from zones import find_zone
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -97,10 +101,14 @@ def feed_picks_probabilities(cat, clusters):
         for pick in event.picks:
             for p in chain(*clusters):
                 if pick.time == p.time and pick.phase_hint == p.phase:
+                    if p.agency:
+                        agency = p.agency
+                    else:
+                        agency = "unknown"
                     pick.comments.append(
                         Comment(
-                            text='{"probability": {"name": "phasenet", "value": %.2f}}'
-                            % p.proba
+                            text='{"probability": {"name": "%s", "value": %.2f}}'
+                            % (agency, p.proba)
                         )
                     )
 
@@ -109,12 +117,14 @@ def feed_picks_event_ids(cat, clusters):
     for event in cat:
         o = event.preferred_origin()
         cluster_found = False
-        event_ids = [] 
+        event_ids = []
         for a in o.arrivals:
             if cluster_found == True:
                 break
             if a.time_weight and a.time_residual:
-                pick = next((p for p in event.picks if p.resource_id == a.pick_id), None)
+                pick = next(
+                    (p for p in event.picks if p.resource_id == a.pick_id), None
+                )
                 if pick is None:
                     continue
                 for c in clusters:
@@ -124,9 +134,7 @@ def feed_picks_event_ids(cat, clusters):
                             and pick.phase_hint == cluster_pick.phase
                         ):
                             # cluster found
-                            event_ids = list(
-                                set([p.eventid for p in c if p.eventid])
-                            )
+                            event_ids = list(set([p.eventid for p in c if p.eventid]))
                             cluster_found = True
                             break
                     if cluster_found == True:
@@ -203,6 +211,7 @@ class Clusterize(object):
         tt_matrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
         tt_matrix_save=False,
+        zones=None,
         log_level=logging.DEBUG,
     ):
         logger.setLevel(log_level)
@@ -215,6 +224,8 @@ class Clusterize(object):
         self.n_clusters = 0
         self.noise = []
         self.n_noise = 0
+        self.preloc = None  # pre-localization if pyocto was enable
+        self.zones = zones
 
         # clustering parameters
         self.max_search_dist = max_search_dist
@@ -243,7 +254,7 @@ class Clusterize(object):
             f"min_station_with_P_and_S={min_station_with_P_and_S})."
         )
         if len(phases) < min_cluster_size:
-            logger.info("Too few picks !")
+            logger.info(f"Too few picks ({len(phases)}/{min_cluster_size})!")
             # add noise points
             self.clusters = []
             self.n_clusters = 0
@@ -500,6 +511,30 @@ class Clusterize(object):
                 f"Cluster {i}, writing {obs_file}, stability:{self.clusters_stability[i]}, n_stations:{len(stations_list)})"
             )
             cat.write(obs_file, format="NLLOC_OBS")
+
+            # add velocity model to be used: determined by a preloc
+            if self.preloc:
+                hypo = self.preloc[i]
+                logger.info(
+                    f"Prelocalization is lat={hypo['latitude']}, lon={hypo['longitude']}, depth_m={hypo['depth_m']}"
+                )
+            if not self.zones.empty:
+                zone = find_zone(
+                    zones=self.zones,
+                    latitude=hypo["latitude"],
+                    longitude=hypo["longitude"],
+                )
+                if not zone.empty:
+                    logger.info(
+                        f"Using {zone['name']} with velocity profile: {zone['velocity_profile']}, template: {zone['template']}"
+                    )
+                    vel_file = os.path.join(OBS_PATH, f"cluster-{i}.vel")
+                    logger.debug(
+                        f"writing to file {vel_file}: {zone['template']}"
+                    )
+                    with open(vel_file, "w") as vel:
+                        vel.write(zone["velocity_profile"]+"\n")
+                        vel.write(zone["template"]+"\n")
 
     def merge(self, clusters2):
         logger.info(
