@@ -132,11 +132,12 @@ class Phase(object):
 
         return df.iloc[0]["Latitude"], df.iloc[0]["Longitude"], df.iloc[0]["Elevation"]
 
-    def set_phase_info(self, phase, time, proba, eventid=None):
+    def set_phase_info(self, phase, time, proba, eventid=None, agency=None):
         self.phase = phase
         self.time = time
         self.proba = proba
         self.eventid = eventid
+        self.agency = agency
 
     def show_all(self):
         if self.eventid:
@@ -187,6 +188,11 @@ def import_phases(
             eventid = df.iloc[i]["eventid"]
         else:
             eventid = None
+        if "agency" in df.columns:
+            agency = df.iloc[i]["agency"]
+        else:
+            agency = None
+            
         if phase_type == "P" and proba < P_proba_threshold:
             continue
         if phase_type == "S" and proba < S_proba_threshold:
@@ -207,7 +213,8 @@ def import_phases(
             phase_type,
             phase_time,
             proba,
-            eventid=eventid
+            eventid=eventid,
+            agency=agency,
         )
         phases.append(myphase)
         if logger.level == logging.DEBUG:
