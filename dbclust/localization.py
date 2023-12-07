@@ -183,7 +183,14 @@ class NllLoc(object):
 
         return cat
 
-    def nll_localisation(self, nll_obs_file=None, double_pass=None, pass_count=0):
+    def nll_localisation(
+        self,
+        nll_obs_file=None,
+        double_pass=None,
+        pass_count=0,
+        force_model_id=None,
+        force_template=None,
+    ):
         """
         Do the NLL stuff to localize event phases in nll_obs_file
 
@@ -207,9 +214,38 @@ class NllLoc(object):
             # use the value defined in locator
             pass
 
-        logger.debug(
-            f"Localization of {nll_obs_file} using {self.nll_template} template."
-        )
+        # use default template
+        if not force_template:
+            nll_template = self.nll_template
+        else:
+            # defined by double pass
+            nll_template = force_template
+
+        # defined model_id
+        if not force_model_id:
+            if (
+                "model_id" in self.quakeml_settings
+                and self.quakeml_settings["model_id"]
+            ):
+                model_id = self.quakeml_settings["model_id"]
+            else:
+                model_id = os.path.basename(nll_template)
+        else:
+            # defined by double pass
+            model_id = force_model_id
+
+        # check if .vel file is available to force localization
+        # using this model/template
+        vel_file = os.path.splitext(nll_obs_file)[0] + ".vel"
+        if os.path.exists(vel_file):
+            with open(vel_file) as vel:
+                model_id = vel.readline().strip()
+                nll_template = vel.readline().strip()
+            logger.info(
+                f"Force localization to use model_id: {model_id}, template: {nll_template}."
+            )
+
+        logger.debug(f"Localization of {nll_obs_file} using {nll_template} template.")
         nll_obs_file_basename = os.path.basename(nll_obs_file)
 
         tmp_path = tempfile.mkdtemp(dir=self.tmpdir)
@@ -228,7 +264,7 @@ class NllLoc(object):
 
         # Generate NLL configuration file
         try:
-            self.replace(self.nll_template, conf_file, tags)
+            self.replace(nll_template, conf_file, tags)
         except Exception as e:
             logger.error(e)
             return Catalog()
@@ -329,19 +365,13 @@ class NllLoc(object):
             o.creation_info.author = "DBClust"
             o.evaluation_mode = "automatic"
             o.method_id = "NonLinLoc"
-            o.earth_model_id = os.path.basename(self.nll_template)
+            o.earth_model_id = model_id
         else:
             o.creation_info.agency_id = self.quakeml_settings["agency_id"]
             o.creation_info.author = self.quakeml_settings["author"]
             o.evaluation_mode = self.quakeml_settings["evaluation_mode"]
             o.method_id = self.quakeml_settings["method_id"]
-            if (
-                "model_id" in self.quakeml_settings
-                and self.quakeml_settings["model_id"]
-            ):
-                o.earth_model_id = self.quakeml_settings["model_id"]
-            else:
-                o.earth_model_id = os.path.basename(self.nll_template)
+            o.earth_model_id = model_id
 
         if self.force_uncertainty:
             for pick in e.picks:
@@ -360,7 +390,11 @@ class NllLoc(object):
                 new_nll_obs_file = nll_obs_file + ".2nd_pass"
                 cat2.write(new_nll_obs_file, format="NLLOC_OBS")
                 cat2 = self.nll_localisation(
-                    new_nll_obs_file, double_pass=self.double_pass, pass_count=1
+                    new_nll_obs_file,
+                    double_pass=self.double_pass,
+                    pass_count=1,
+                    force_model_id=model_id,
+                    force_template=nll_template,
                 )
             else:
                 cat2 = None
