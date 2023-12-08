@@ -20,8 +20,7 @@ from dbclust.clusterize import (
 )
 from dbclust.dbclust2pyocto import (
     dbclust2pyocto,
-    create_haslach_velocity_model,
-    create_rittershoffen_velocity_model,
+    create_velocity_model,
 )
 from dbclust.localization import NllLoc, show_event
 from dbclust.zones import load_zones
@@ -128,7 +127,30 @@ if __name__ == "__main__":
         quakeml_cfg = None
     catalog_cfg = cfg["catalog"]
 
-    # path definition
+    if "default_pyocto_vmodel" in cfg:
+        model_name = cfg["default_pyocto_vmodel"]
+        if model_name:
+            if "pyocto_vmodel" in cfg:
+                pyocto_vmodel = cfg["pyocto_vmodel"]
+            else:
+                logger.error("Missing pyocto_vmodel section !")
+                sys.exit(254)
+
+            if model_name not in [i["name"] for i in pyocto_vmodel]:
+                logger.error(f"Referenced model {model_name} is not defined !")
+                sys.exit(254)
+            pyocto_velocity_cfg = [
+                i for i in pyocto_vmodel if i["name"] == model_name
+            ].pop()
+            pyocto_associator_cfg = pyocto_velocity_cfg["associator"]
+            print(pyocto_velocity_cfg)
+            print(pyocto_associator_cfg)
+        else:
+            pyocto_velocity_cfg = None
+    else:
+        pyocto_velocity_cfg = None
+
+    ############### path definition ###################
     OBS_PATH = file_cfg["obs_path"]
     QML_PATH = file_cfg["qml_path"]
     TMP_PATH = file_cfg["tmp_path"]
@@ -281,11 +303,6 @@ if __name__ == "__main__":
     event_flush_count = catalog_cfg["event_flush_count"]
 
     #
-    # pyocto
-    #
-    use_pyocto = True
-
-    #
     # Zones
     #
     if zones_cfg:
@@ -417,19 +434,19 @@ if __name__ == "__main__":
         log_level=logger.level,
     )
 
-    if use_pyocto:
+    if pyocto_velocity_cfg:
         import pyocto
-        import resource
 
-        model_path = "/Users/marc/Data/DBClust/france.2016.01/haslach.model"
-        create_haslach_velocity_model(model_path)
+        model_path = os.path.join(
+            file_cfg["data_path"], f"{pyocto_velocity_cfg['name']}.vmodel"
+        )
+        create_velocity_model(pyocto_velocity_cfg["velocity_model"], model_path)
+        logger.info(f"Using vmodel: {pyocto_velocity_cfg['name']} ({model_path})")
 
-        # model_path = "/Users/marc/Data/DBClust/of/rittershoffen.model"
-        # create_rittershoffen_velocity_model(model_path)
-
+        tolerance = pyocto_velocity_cfg["velocity_model"]["tolerance"]
         pyocto_velocity_model = pyocto.associator.VelocityModel1D(
             path=model_path,
-            tolerance=2.0,
+            tolerance=tolerance,
             # association_cutoff_distance=None,
             # location_cutoff_distance=None,
             # surface_p_velocity=None,
@@ -538,9 +555,12 @@ if __name__ == "__main__":
             logger.info("Last round, merging all remaining clusters.")
             previous_myclust.merge(myclust)
 
-        if use_pyocto:
+        if pyocto_velocity_cfg:
             previous_myclust = dbclust2pyocto(
-                previous_myclust, pyocto_velocity_model, min_picks_common
+                previous_myclust,
+                pyocto_associator_cfg,
+                pyocto_velocity_model,
+                min_picks_common,
             )
 
         # Now, process previous_myclust and wait next round to process myclust
