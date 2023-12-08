@@ -518,23 +518,23 @@ class Clusterize(object):
                 logger.info(
                     f"Prelocalization is lat={hypo['latitude']}, lon={hypo['longitude']}, depth_m={hypo['depth_m']}"
                 )
-            if not self.zones.empty:
-                zone = find_zone(
-                    zones=self.zones,
-                    latitude=hypo["latitude"],
-                    longitude=hypo["longitude"],
-                )
-                if not zone.empty:
-                    logger.info(
-                        f"Using {zone['name']} with velocity profile: {zone['velocity_profile']}, template: {zone['template']}"
+                if not self.zones.empty:
+                    zone = find_zone(
+                        zones=self.zones,
+                        latitude=hypo["latitude"],
+                        longitude=hypo["longitude"],
                     )
-                    vel_file = os.path.join(OBS_PATH, f"cluster-{i}.vel")
-                    logger.debug(
-                        f"writing to file {vel_file}: {zone['template']}"
-                    )
-                    with open(vel_file, "w") as vel:
-                        vel.write(zone["velocity_profile"]+"\n")
-                        vel.write(zone["template"]+"\n")
+                    if not zone.empty:
+                        logger.info(
+                            f"Using {zone['name']} with velocity profile: {zone['velocity_profile']}, template: {zone['template']}"
+                        )
+                        vel_file = os.path.join(OBS_PATH, f"cluster-{i}.vel")
+                        logger.debug(
+                            f"writing to file {vel_file}: {zone['template']}"
+                        )
+                        with open(vel_file, "w") as vel:
+                            vel.write(zone["velocity_profile"]+"\n")
+                            vel.write(zone["template"]+"\n")
 
     def merge(self, clusters2):
         logger.info(
