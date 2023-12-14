@@ -22,11 +22,9 @@ import urllib.request
 import urllib.parse
 import copy
 
-
 # from tqdm import tqdm
 from obspy import Catalog, read_events
 from obspy import read_events
-from obspy.core.event import ResourceIdentifier
 from jinja2 import Template
 
 # default logger
@@ -139,8 +137,8 @@ class NllLoc(object):
         orig = myevent.preferred_origin()
         channel_hint = io.StringIO()
         for arrival in orig.arrivals:
-            res_id = ResourceIdentifier(prefix="smi:local")
-            arrival.resource_id = res_id
+            # res_id = ResourceIdentifier(prefix="smi:local")
+            # arrival.resource_id = res_id
             pick = next(
                 (p for p in myevent.picks if p.resource_id == arrival.pick_id), None
             )
@@ -269,7 +267,9 @@ class NllLoc(object):
             logger.error(e)
             return Catalog()
 
-        # Localization
+        ####################
+        # NLL Localization #
+        ####################
         cmde = f"{self.nll_bin} {conf_file}"
         logger.debug(cmde)
 
@@ -311,7 +311,9 @@ class NllLoc(object):
             logger.debug(e)
             return Catalog()
 
-        # scat file
+        ####################
+        # handle scat file #
+        ####################
         if self.keep_scat:
             # scat2latlon <decim_factor> <output_dir> <hyp_file_list>
             decim_factor = 10
@@ -405,6 +407,7 @@ class NllLoc(object):
                 # add this new origin to catalog and set it as preferred
                 e.origins.append(orig2)
                 e.preferred_origin_id = orig2.resource_id
+                # FIXME: do not copy all picks !
                 e.picks += event2.picks
             else:
                 # can't relocate: set it to "not existing"
