@@ -28,7 +28,6 @@ from obspy.geodetics import gps2dist_azimuth
 
 try:
     from phase import import_phases, import_eqt_phases
-
 except:
     from dbclust.phase import import_phases, import_eqt_phases
 
@@ -99,12 +98,20 @@ def get_picks_from_event(event, origin, time):
 def feed_picks_probabilities(cat, clusters):
     for event in cat:
         for pick in event.picks:
-            for p in chain(*clusters):
-                if pick.time == p.time and pick.phase_hint == p.phase:
+            for p in set(chain(*clusters)):
+                pick_seedid = ".".join(
+                    [pick.waveform_id["network_code"], pick.waveform_id["station_code"]]
+                )
+                p_seedid = ".".join([p.network, p.station])
+                if (
+                    pick_seedid == p_seedid
+                    and pick.time == p.time
+                    and pick.phase_hint == p.phase
+                ):
                     if p.agency:
                         agency = p.agency
                     else:
-                        agency = "unknown"
+                        agency = "undefined"
                     pick.comments.append(
                         Comment(
                             text='{"probability": {"name": "%s", "value": %.2f}}'
@@ -458,7 +465,6 @@ class Clusterize(object):
         for i, cluster in enumerate(self.clusters):
             cat = Catalog()
             event = Event()
-
             # count the number of stations
             stations_list = set([p.station for p in cluster])
             if self.min_station_count:
@@ -512,7 +518,8 @@ class Clusterize(object):
             )
             cat.write(obs_file, format="NLLOC_OBS")
 
-            # add velocity model to be used: determined by a preloc
+            # use pyocto pre-localization to select velocity model to be used
+            # create vel_file with required information
             if self.preloc:
                 hypo = self.preloc[i]
                 logger.info(
@@ -529,12 +536,10 @@ class Clusterize(object):
                             f"Using {zone['name']} with velocity profile: {zone['velocity_profile']}, template: {zone['template']}"
                         )
                         vel_file = os.path.join(OBS_PATH, f"cluster-{i}.vel")
-                        logger.debug(
-                            f"writing to file {vel_file}: {zone['template']}"
-                        )
+                        logger.debug(f"writing to file {vel_file}: {zone['template']}")
                         with open(vel_file, "w") as vel:
-                            vel.write(zone["velocity_profile"]+"\n")
-                            vel.write(zone["template"]+"\n")
+                            vel.write(zone["velocity_profile"] + "\n")
+                            vel.write(zone["template"] + "\n")
 
     def merge(self, clusters2):
         logger.info(
