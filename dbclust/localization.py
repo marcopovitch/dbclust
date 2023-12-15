@@ -27,6 +27,11 @@ from obspy import Catalog, read_events
 from obspy import read_events
 from jinja2 import Template
 
+try:
+    from quakeml import remove_duplicated_picks
+except:
+    from dbclust.quakeml import remove_duplicated_picks
+
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("localization")
@@ -407,8 +412,8 @@ class NllLoc(object):
                 # add this new origin to catalog and set it as preferred
                 e.origins.append(orig2)
                 e.preferred_origin_id = orig2.resource_id
-                # FIXME: do not copy all picks !
                 e.picks += event2.picks
+                e.picks = remove_duplicated_picks(e.picks)
             else:
                 # can't relocate: set it to "not existing"
                 e.event_type = "not existing"
