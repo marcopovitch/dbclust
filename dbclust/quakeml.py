@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 from datetime import datetime
+from itertools import combinations
 import alphabetic_timestamp as ats
 from obspy.core.event import ResourceIdentifier
 
@@ -39,11 +40,9 @@ def make_pick_id(event):
 
 def make_pick_comment_id(pick):
     comment_list = [c.resource_id.id for c in pick.comments]
-    print(comment_list)
     n_comments = 0
     while True:
         comment_id = f"{pick.resource_id.id}/comment/{n_comments}"
-        print(comment_id)
         if comment_id not in comment_list:
             break
         n_comments += 1
@@ -101,3 +100,15 @@ def make_readable_id(cat, prefix, smi_base):
                 a.resource_id = arrival_id
                 a.pick_id = pick_lookup_table[a.pick_id.id]
     return cat
+
+
+def remove_duplicated_picks(picks):
+    to_be_removed = []
+    for p1, p2 in combinations(picks, 2):
+        if p1.resource_id == p2.resource_id:
+            to_be_removed.append(p2)
+
+    for p in to_be_removed:
+        picks.remove(p)
+
+    return picks
