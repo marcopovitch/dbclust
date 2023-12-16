@@ -657,7 +657,7 @@ if __name__ == "__main__":
         feed_picks_event_ids(clustcat, previous_myclust.clusters)
 
         # transform ids to a more human readable thing !
-        #clustcat = make_readable_id(clustcat, "sihex", "quakeml:franceseisme.fr")
+        clustcat = make_readable_id(clustcat, "sihex", "quakeml:franceseisme.fr")
 
         # prepare next round
         previous_myclust = myclust
