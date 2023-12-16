@@ -38,11 +38,14 @@ def make_pick_id(event):
     return ResourceIdentifier(pick_id)
 
 
-def make_pick_comment_id(pick):
-    comment_list = [c.resource_id.id for c in pick.comments]
+def make_comment_id(parent):
+    """
+    Replace comments id from parent (event, pick)
+    """
+    comment_list = [c.resource_id.id for c in parent.comments if c.resource_id]
     n_comments = 0
     while True:
-        comment_id = f"{pick.resource_id.id}/comment/{n_comments}"
+        comment_id = f"{parent.resource_id.id}/comment/{n_comments}"
         if comment_id not in comment_list:
             break
         n_comments += 1
@@ -72,9 +75,12 @@ def make_readable_id(cat, prefix, smi_base):
     cat.resource_id = ResourceIdentifier(catalog_id)
     for e in cat.events:
         o = e.preferred_origin()
-        # forge readable event_id
         event_id = make_event_id(o.time, prefix, smi_base)
         e.resource_id.id = event_id.id
+
+        for c in e.comments:
+            comment_id = make_comment_id(e)
+            c.resource_id = comment_id
 
         # forge readable pick_id
         pick_lookup_table = {}
@@ -84,7 +90,7 @@ def make_readable_id(cat, prefix, smi_base):
             p.resource_id = pick_id
             pick_lookup_table[old_pick_id] = pick_id
             for c in p.comments:
-                comment_id = make_pick_comment_id(p)
+                comment_id = make_comment_id(p)
                 c.resource_id = comment_id
 
         # forge readable origin_id
