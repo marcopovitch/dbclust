@@ -38,7 +38,7 @@ def get_pick_proba_info(outfile, cat, show_station_name=False):
 
 def get_event_ids_info(outfile, cat):
     with open(outfile, 'w') as f:
-        f.write("time,nb_agencies,agencies_list\n")
+        f.write("time,event_id,nb_agencies,agencies_list\n")
         for event in sorted(cat.events, key=lambda e: e.preferred_origin().time):
             origin = event.preferred_origin()
             f.write(f"{origin.time},")
@@ -51,7 +51,7 @@ def get_event_ids_info(outfile, cat):
                 if "event_ids" in info.keys():
                     ids.extend(info["event_ids"])
             all_ids = " ".join(ids)
-            f.write(f"{len(ids)},{event.resource_id.id},{all_ids}\n")
+            f.write(f"{event.resource_id.id},{len(ids)},{all_ids}\n")
         
 
 if __name__ == "__main__":
