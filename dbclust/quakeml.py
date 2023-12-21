@@ -1,8 +1,15 @@
 #!/usr/bin/env python
+import sys
+import logging
 from datetime import datetime
 from itertools import combinations
 import alphabetic_timestamp as ats
 from obspy.core.event import ResourceIdentifier
+
+# default logger
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+logger = logging.getLogger("clusterize")
+logger.setLevel(logging.INFO)
 
 
 def make_event_id(time, prefix, smi_base):
@@ -108,13 +115,26 @@ def make_readable_id(cat, prefix, smi_base):
     return cat
 
 
-def remove_duplicated_picks(picks):
+def remove_duplicated_picks(event):
+    picks = event.picks
     to_be_removed = []
+    match_pick_id = {}
     for p1, p2 in combinations(picks, 2):
-        if p1.resource_id == p2.resource_id:
+        if p1.resource_id == p2.resource_id or (
+            p1.waveform_id.get_seed_string() == p2.waveform_id.get_seed_string()
+            and p1.time == p2.time
+            and p1.phase_hint == p2.phase_hint
+        ):
+            match_pick_id[p2.resource_id] = p1.resource_id
             to_be_removed.append(p2)
-
+            
+    logger.info(f"Removed {len(to_be_removed)}/{len(picks)} duplicated picks.")
     for p in to_be_removed:
         picks.remove(p)
-
-    return picks
+    logger.info(f"Remaining {len(picks)} picks.")
+        
+    for origin in event.origins:
+        for arrival in origin.arrivals:
+            if arrival.pick_id in match_pick_id.keys():
+                arrival.pick_id = match_pick_id[arrival.pick_id] 
+    return event
