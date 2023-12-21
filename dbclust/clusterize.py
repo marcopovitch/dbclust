@@ -99,15 +99,25 @@ def feed_picks_probabilities(cat, clusters):
     for event in cat:
         for pick in event.picks:
             for p in set(chain(*clusters)):
-                pick_seedid = ".".join(
-                    [pick.waveform_id["network_code"], pick.waveform_id["station_code"]]
-                )
-                p_seedid = ".".join([p.network, p.station])
+                # pick_seedid = ".".join(
+                #     [pick.waveform_id["network_code"], pick.waveform_id["station_code"]]
+                # )
+                # p_seedid = ".".join([p.network, p.station])
+                # if (
+                #     pick_seedid == p_seedid
+                #     and pick.time == p.time
+                #     and pick.phase_hint == p.phase
+                # ):
                 if (
-                    pick_seedid == p_seedid
+                    pick.waveform_id["station_code"] == p.station
                     and pick.time == p.time
                     and pick.phase_hint == p.phase
                 ):
+                    if pick.waveform_id["network_code"] != p.network:
+                        logger.warning(
+                            f"Check your inventory for station {p.station}, 2 networks defined : "
+                            f"[{pick.waveform_id['network_code']},{p.network}] "
+                        )
                     if p.agency:
                         agency = p.agency
                     else:
@@ -523,7 +533,7 @@ class Clusterize(object):
             if self.preloc:
                 hypo = self.preloc[i]
                 logger.info(
-                    f"Prelocalization is lat={hypo['latitude']}, lon={hypo['longitude']}, depth_m={hypo['depth_m']}"
+                    f"Prelocalization is time={hypo['time']}, lat={hypo['latitude']}, lon={hypo['longitude']}, depth_m={hypo['depth_m']}"
                 )
                 if not self.zones.empty:
                     zone = find_zone(
@@ -540,6 +550,12 @@ class Clusterize(object):
                         with open(vel_file, "w") as vel:
                             vel.write(zone["velocity_profile"] + "\n")
                             vel.write(zone["template"] + "\n")
+                            vel.write(f"{hypo['time']}\n")
+                            vel.write(f"{hypo['latitude']}\n")
+                            vel.write(f"{hypo['longitude']}\n")
+                            vel.write(f"{hypo['depth_m']}\n")
+                    else:
+                        logger.warning(f"Can't find a matched zone for (lat={hypo['latitude']},lon={hypo['longitude']})!")
 
     def merge(self, clusters2):
         logger.info(
