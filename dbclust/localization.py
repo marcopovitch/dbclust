@@ -23,7 +23,10 @@ import urllib.parse
 import copy
 
 # from tqdm import tqdm
+import dateparser
+from obspy.core import UTCDateTime
 from obspy import Catalog, read_events
+from obspy.core.event import Origin, OriginQuality, ResourceIdentifier
 from obspy import read_events
 from jinja2 import Template
 
@@ -239,14 +242,36 @@ class NllLoc(object):
 
         # check if .vel file is available to force localization
         # using this model/template
+        # create an origin associated to this prelocalization
         vel_file = os.path.splitext(nll_obs_file)[0] + ".vel"
+        preloc_origin = None
         if os.path.exists(vel_file):
             with open(vel_file) as vel:
                 model_id = vel.readline().strip()
                 nll_template = vel.readline().strip()
+                preloc_time = UTCDateTime(dateparser.parse(vel.readline().strip()))
+                preloc_lat = float(vel.readline().strip())
+                preloc_lon = float(vel.readline().strip())
+                preloc_depth_m = float(vel.readline().strip())
             logger.info(
                 f"Force localization to use model_id: {model_id}, template: {nll_template}."
             )
+            if pass_count == 0:
+                preloc_origin = Origin()
+                preloc_origin.evaluation_mode = "automatic"
+                preloc_origin.evaluation_status = "preliminary"
+                preloc_origin.method_id = ResourceIdentifier("pyocto")
+                preloc_origin.earth_model_id = ResourceIdentifier("haslach")
+                if "agency_id" in self.quakeml_settings:
+                    preloc_origin.agency_id = self.quakeml_settings["agency_id"]
+                else:
+                    preloc_origin.agency_id = "MyAgencyId"
+                preloc_origin.latitude = preloc_lat
+                preloc_origin.longitude = preloc_lon
+                preloc_origin.depth = preloc_depth_m  # in meters
+                preloc_origin.time = preloc_time
+                preloc_origin.quality = OriginQuality()
+                preloc_origin.quality.azimuthal_gap = 0
 
         logger.debug(f"Localization of {nll_obs_file} using {nll_template} template.")
         nll_obs_file_basename = os.path.basename(nll_obs_file)
@@ -387,6 +412,10 @@ class NllLoc(object):
                 elif "S" in pick.phase_hint or "s" in pick.phase_hint:
                     pick.time_errors.uncertainty = self.S_uncertainty
 
+        # add preloc origin to event (only basic info) # only the first pass
+        if preloc_origin:
+            e.origins.append(preloc_origin)
+
         # try a relocation
         if self.double_pass and pass_count == 0:
             logger.debug("Starting double pass relocation.")
@@ -413,10 +442,14 @@ class NllLoc(object):
                 e.origins.append(orig2)
                 e.preferred_origin_id = orig2.resource_id
                 e.picks += event2.picks
-                e.picks = remove_duplicated_picks(e.picks)
+                e = remove_duplicated_picks(e)
             else:
                 # can't relocate: set it to "not existing"
                 e.event_type = "not existing"
+
+        # if there is only one origin, set it to the preferred
+        if len(e.origins) == 1:
+            e.preferred_origin_id = e.origins[0].resource_id
 
         return cat
 
@@ -455,7 +488,8 @@ class NllLoc(object):
                 )
                 if count >= self.min_station_with_P_and_S:
                     logger.info(
-                        f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
+                        f"and {count} stations with {self.min_station_with_P_and_S} P and S (both)."
                     )
                     mycatalog += cat
                 else:
@@ -510,7 +544,8 @@ class NllLoc(object):
                 )
                 if count >= self.min_station_with_P_and_S:
                     logger.info(
-                        f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
+                        f"and {count} stations with {self.min_station_with_P_and_S} P and S (both)."
                     )
                     mycatalog += cat
                 else:
@@ -561,7 +596,8 @@ class NllLoc(object):
                 )
                 if count >= self.min_station_with_P_and_S:
                     logger.info(
-                        f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
+                        f"and {count} stations with {self.min_station_with_P_and_S} P and S (both)."
                     )
                     mycatalog += cat
                 else:
@@ -622,7 +658,8 @@ class NllLoc(object):
                 )
                 if count >= self.min_station_with_P_and_S:
                     logger.info(
-                        f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
+                        f"and {count} stations with {self.min_station_with_P_and_S} P and S (both)."
                     )
                     mycatalog += cat
                 else:
@@ -679,7 +716,8 @@ class NllLoc(object):
                 )
                 if count >= self.min_station_with_P_and_S:
                     logger.info(
-                        f"{nb_phase_used} phases, {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
+                        f"and {count} stations with {self.min_station_with_P_and_S} P and S (both)."
                     )
                     mycatalog += cat
                 else:
@@ -949,7 +987,9 @@ def show_event(event, txt="", header=False):
         print(
             "Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2, model, locator"
         )
+        
     o_pref = event.preferred_origin()
+    
     if hasattr(event, "event_type") and event.event_type == "not existing":
         show_origin(o_pref, "FAKE")
     else:
