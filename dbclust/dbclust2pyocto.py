@@ -64,6 +64,8 @@ def dbclust2pyocto(myclust, associator_cfg, velocity_model, min_com_phases):
             lon=(min_lon, max_lon),
             zlim=associator_cfg["zlim"],
             time_before=associator_cfg["time_before"],  # should be greater than dbclust time_window parameter
+            location_split_depth=6,
+            location_split_return=4,
             max_pick_overlap=associator_cfg["max_pick_overlap"],
             min_pick_fraction=associator_cfg["min_pick_fraction"],
             min_node_size=associator_cfg["min_node_size"],  # default 10
@@ -76,7 +78,7 @@ def dbclust2pyocto(myclust, associator_cfg, velocity_model, min_com_phases):
             n_p_picks=associator_cfg["n_p_picks"],
             n_s_picks=associator_cfg["n_s_picks"],
             n_p_and_s_picks=associator_cfg["n_p_and_s_picks"],
-            # exponential_edt=True,
+            exponential_edt=True,
             # refinement_iterations=5,
         )
         associator.transform_stations(stations)
