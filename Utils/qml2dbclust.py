@@ -12,15 +12,20 @@ def export_picks_to_phasenet_format(event, origin, probability=1, agency=None):
     # 1K.OFAS0.00.EH.D,P,2023-02-13T18:30:58.558999Z,0.366400
     lines = []
     for arrival in origin.arrivals:
-        #if arrival.time_weight:
-        if arrival.time_weight and arrival.time_residual:
+        if arrival.time_weight:
+            #if arrival.time_weight and arrival.time_residual:
             pick = next(
                 (p for p in event.picks if p.resource_id == arrival.pick_id), None
             )
             if pick:
+                if arrival.phase != pick.phase_hint:
+                    logger.warning(
+                        f"[{event.resource_id.id}] {pick.waveform_id.get_seed_string()} :"
+                        f"phase mismatch between arrival ({arrival.phase})  and pick ({pick.phase_hint})"
+                    )
                 line = {
                     "seedid": pick.waveform_id.get_seed_string(),
-                    "phasename": pick.phase_hint,
+                    "phasename": arrival.phase,
                     "time": pick.time,
                     "probability": probability,
                     "eventid": event.resource_id,
