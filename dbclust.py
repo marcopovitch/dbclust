@@ -23,7 +23,7 @@ from dbclust.dbclust2pyocto import (
     create_velocity_model,
 )
 from dbclust.localization import NllLoc, show_event
-from dbclust.quakeml import make_readable_id
+from dbclust.quakeml import make_readable_id, feed_distance_from_preloc_to_pref_origin
 from dbclust.zones import load_zones
 import warnings
 
@@ -652,9 +652,16 @@ if __name__ == "__main__":
                 else:
                     show_event(event, "****")
 
-        # write into qml picks probabilities and event_ids where picks are coming from
+        # write into qml/comments picks probabilities and event_ids where picks are coming from
         feed_picks_probabilities(clustcat, previous_myclust.clusters)
         feed_picks_event_ids(clustcat, previous_myclust.clusters)
+
+        # set to manual picks from agency
+        # set to automatic pick from phasenet
+        # feed_picks_event_evaluation_mode(clustcat)
+
+        # write into qml/comments distance from preferred origin and prelocalization
+        feed_distance_from_preloc_to_pref_origin(clustcat)
 
         # transform ids to a more human readable thing !
         clustcat = make_readable_id(clustcat, "sihex", "quakeml:franceseisme.fr")
