@@ -4,7 +4,8 @@ import logging
 from datetime import datetime
 from itertools import combinations
 import alphabetic_timestamp as ats
-from obspy.core.event import ResourceIdentifier
+from obspy.core.event import ResourceIdentifier, Comment
+from obspy.geodetics import gps2dist_azimuth
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -127,14 +128,33 @@ def remove_duplicated_picks(event):
         ):
             match_pick_id[p2.resource_id] = p1.resource_id
             to_be_removed.append(p2)
-            
+
     logger.info(f"Removed {len(to_be_removed)}/{len(picks)} duplicated picks.")
     for p in to_be_removed:
         picks.remove(p)
     logger.info(f"Remaining {len(picks)} picks.")
-        
+
     for origin in event.origins:
         for arrival in origin.arrivals:
             if arrival.pick_id in match_pick_id.keys():
-                arrival.pick_id = match_pick_id[arrival.pick_id] 
+                arrival.pick_id = match_pick_id[arrival.pick_id]
     return event
+
+
+def feed_distance_from_preloc_to_pref_origin(cat):
+    for e in cat:
+        pref_o = e.preferred_origin()
+        distance = None
+        for o in e.origins:
+            if o.resource_id != pref_o.resource_id and "pyocto" in o.method_id.id:
+                distance, az, baz = gps2dist_azimuth(
+                    o.latitude,
+                    o.longitude,
+                    pref_o.latitude,
+                    pref_o.longitude,
+                )
+                # distance in meters, convert it to km
+                distance = distance / 1000.0
+                break
+        if distance != None:
+            e.comments.append(Comment(text='{"preloc_distance_km": %.2f}' % (distance)))
