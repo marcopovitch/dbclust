@@ -13,6 +13,7 @@ pandas==2.1.4
 plotly==5.18.0
 pygmt==0.10.0
 pyocto==0.1.1
+pyrocko==2023.10.11
 PyYAML==6.0.1
 scikit_learn==1.3.2
 Shapely==2.0.2
