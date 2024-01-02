@@ -987,9 +987,9 @@ def show_event(event, txt="", header=False):
         print(
             "Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2, model, locator"
         )
-        
+
     o_pref = event.preferred_origin()
-    
+
     if hasattr(event, "event_type") and event.event_type == "not existing":
         show_origin(o_pref, "FAKE")
     else:
