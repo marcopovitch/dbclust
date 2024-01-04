@@ -568,6 +568,7 @@ if __name__ == "__main__":
                 pyocto_associator_cfg,
                 pyocto_velocity_model,
                 min_picks_common,
+                log_level=logger.level,
             )
 
         # Now, process previous_myclust and wait next round to process myclust
