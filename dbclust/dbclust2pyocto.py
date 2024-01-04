@@ -6,12 +6,13 @@ import datetime
 import logging
 from itertools import chain, combinations
 from collections import Counter
+from icecream import ic
 import pyocto
 from dbclust.clusterize import Clusterize, cluster_share_eventid
 
-""" Use pyocto to speed up and better constrain clusterization
+"""Use pyocto to speed up and better constrain clusterization
 
-https://pyocto.readthedocs.io
+reference: https://pyocto.readthedocs.io
 
 """
 # default logger
@@ -42,7 +43,9 @@ def create_velocity_model(velocity_cfg, model_path):
     )
 
 
-def dbclust2pyocto(myclust, associator_cfg, velocity_model, min_com_phases):
+def dbclust2pyocto(
+    myclust, associator_cfg, velocity_model, min_com_phases, log_level=logging.INFO
+):
     all_picks_list = list(chain(*myclust.clusters))
     logger.info(
         f"Using pyocto to check/split/filter clusters ({len(all_picks_list)} picks)"
@@ -58,6 +61,12 @@ def dbclust2pyocto(myclust, associator_cfg, velocity_model, min_com_phases):
         max_lon = stations["longitude"].max()
 
         picks = get_picks_from_cluster(cluster)
+        # if len(picks):
+        #     picks["time"] = picks["time"].apply(lambda x: x.timestamp)
+        #     picks.sort_values(["station", "phase"], inplace=True)
+
+        if logging.getLevelName(log_level) == "DEBUG":
+            ic(picks)
 
         associator = pyocto.OctoAssociator.from_area(
             lat=(min_lat, max_lat),
@@ -86,19 +95,23 @@ def dbclust2pyocto(myclust, associator_cfg, velocity_model, min_com_phases):
         associator.transform_stations(stations)
 
         events, assignments = associator.associate(picks, stations)
+        # ic(events)
+        # ic(assignments)
 
         if len(events):
             associator.transform_events(events)
             events["time"] = events["time"].apply(
                 datetime.datetime.fromtimestamp, tz=datetime.timezone.utc
             )
-        # print(assignments)
-        # print(events)
 
         pyocto_preloc.extend(get_events_list(events))
         pyocto_clusters.extend(
             get_clusters_from_assignment(cluster, events, assignments)
         )
+
+        # store nll obs file
+        # assignments["time"] = assignments["time"].apply(lambda x: x.datetime)
+        # associator.to_nonlinloc(assignments, "/tmp/nll.obs")
 
     # merge clusters (merge also preloc) with common picks or event_id
     pyocto_clusters, pyocto_preloc = cluster_merge(
@@ -256,19 +269,20 @@ def get_stations_from_cluster(cluster):
 
 
 def get_picks_from_cluster(cluster):
-    """Returns a Dataframe containing stations informations columns:
+    """Returns a Dataframe containing stations information columns:
 
     station
     phase
     time
 
     """
+
     station = []
     phase = []
     time = []
     for p in cluster:
         station.append(".".join([p.network, p.station]))
-        phase.append(p.phase[0])
+        phase.append(p.phase[0].upper())
         time.append(p.time)
 
     df = pd.DataFrame(
