@@ -489,12 +489,13 @@ class NllLoc(object):
                 if count >= self.min_station_with_P_and_S:
                     logger.info(
                         f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
                     )
                     mycatalog += cat
                 else:
-                    logger.debug(
-                        f"Not enough stations with both P and S ... ignoring it !"
+                    logger.info(
+                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
+                        "... ignoring it !"
                     )
             else:
                 logger.debug(
@@ -545,12 +546,13 @@ class NllLoc(object):
                 if count >= self.min_station_with_P_and_S:
                     logger.info(
                         f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
                     )
                     mycatalog += cat
                 else:
-                    logger.debug(
-                        f"Not enough stations with both P and S ... ignoring it !"
+                    logger.info(
+                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
+                        "... ignoring it !"
                     )
             else:
                 logger.debug(
@@ -597,12 +599,13 @@ class NllLoc(object):
                 if count >= self.min_station_with_P_and_S:
                     logger.info(
                         f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
                     )
                     mycatalog += cat
                 else:
-                    logger.debug(
-                        f"Not enough stations with both P and S ... ignoring it !"
+                    logger.info(
+                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
+                        "... ignoring it !"
                     )
             else:
                 logger.debug(
@@ -659,12 +662,13 @@ class NllLoc(object):
                 if count >= self.min_station_with_P_and_S:
                     logger.info(
                         f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
                     )
                     mycatalog += cat
                 else:
-                    logger.debug(
-                        f"Not enough stations with both P and S ... ignoring it !"
+                    logger.info(
+                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
+                        "... ignoring it !"
                     )
             else:
                 logger.debug(
@@ -684,14 +688,18 @@ class NllLoc(object):
         return mycatalog
 
     def get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
-        """
-        nll localisation and export to quakeml
+        """nll localisation and export to quakeml
+        
         warning : network and channel are lost since they are not used by nll
-        use Phase() to get them.
-        if append is True, the obtain catalog is appended to the NllLoc catalog
+        use Phase() to get them back.
 
-        returns a catalog
-        """
+        Args:
+            OBS_PATH (string): directory where are the nll obs files 
+            append (bool, optional): append new origin to self.catalog. Defaults to True.
+
+        Returns:
+            Catalog: returns a catalog of all computed origins
+        """        
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
         logger.debug(f"Localization of {obs_files_pattern}")
 
@@ -717,12 +725,13 @@ class NllLoc(object):
                 if count >= self.min_station_with_P_and_S:
                     logger.info(
                         f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} stations with {self.min_station_with_P_and_S} P and S (both)."
+                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
                     )
                     mycatalog += cat
                 else:
-                    logger.debug(
-                        f"Not enough stations with both P and S ... ignoring it !"
+                    logger.info(
+                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
+                        "... ignoring it !"
                     )
             else:
                 logger.debug(
@@ -1005,7 +1014,7 @@ def show_origin(o, txt):
     if o.quality.azimuthal_gap:
         azimuthal_gap = f"{o.quality.azimuthal_gap:.1f}"
     else:
-        logger.warning("No azimuthal_gap defined !")
+        # logger.warning("No azimuthal_gap defined !")
         azimuthal_gap = "-"
 
     print(
