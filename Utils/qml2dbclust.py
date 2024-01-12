@@ -20,8 +20,8 @@ def export_picks_to_phasenet_format(event, origin, probability=1, agency=None):
             if pick:
                 if arrival.phase != pick.phase_hint:
                     logger.warning(
-                        f"[{event.resource_id.id}] {pick.waveform_id.get_seed_string()} :"
-                        f"phase mismatch between arrival ({arrival.phase})  and pick ({pick.phase_hint})"
+                        f"[{event.resource_id.id}] {pick.waveform_id.get_seed_string()}: "
+                        f"phase mismatch between arrival ({arrival.phase}) and pick ({pick.phase_hint}) fixed !"
                     )
                 line = {
                     "seedid": pick.waveform_id.get_seed_string(),
