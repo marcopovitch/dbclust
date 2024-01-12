@@ -6,6 +6,7 @@ import logging
 import pandas as pd
 from datetime import timedelta
 from sklearn.cluster import DBSCAN
+from icecream import ic
 
 
 def unload_too_close_picks_clustering(
@@ -80,7 +81,8 @@ def unload_too_close_picks_clustering(
     results["phase_time"] = pd.to_datetime(results["phase_time"]).dt.strftime(
         "%Y-%m-%dT%H:%M:%S.%fZ"
     )
-    print(results)
+    results.sort_values(["phase_time"], inplace=True)
+    #ic(results)
     print(f"Writing to {csv_file_out}.")
 
     df.rename(
