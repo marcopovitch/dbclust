@@ -8,7 +8,7 @@ from itertools import chain, combinations
 from collections import Counter
 from icecream import ic
 import pyocto
-from dbclust.clusterize import Clusterize, cluster_share_eventid
+from clusterize import cluster_share_eventid
 
 """Use pyocto to speed up and better constrain clusterization
 
@@ -71,22 +71,18 @@ def dbclust2pyocto(
         associator = pyocto.OctoAssociator.from_area(
             lat=(min_lat, max_lat),
             lon=(min_lon, max_lon),
-            zlim=associator_cfg["zlim"],
-            time_before=associator_cfg[
-                "time_before"
-            ],  # should be greater than dbclust time_window parameter
-            max_pick_overlap=associator_cfg["max_pick_overlap"],
-            min_pick_fraction=associator_cfg["min_pick_fraction"],
-            min_node_size=associator_cfg["min_node_size"],  # default 10
-            min_node_size_location=associator_cfg[
-                "min_node_size_location"
-            ],  # default 1.5
+            zlim=associator_cfg.zlim,
+            time_before=associator_cfg.time_before,  # should be greater than dbclust time_window parameter
+            max_pick_overlap=associator_cfg.max_pick_overlap,
+            min_pick_fraction=associator_cfg.min_pick_fraction,
+            min_node_size=associator_cfg.min_node_size,  # default 10
+            min_node_size_location=associator_cfg.min_node_size_location,  # default 1.5
             velocity_model=velocity_model,
-            pick_match_tolerance=associator_cfg["pick_match_tolerance"],
-            n_picks=associator_cfg["n_picks"],
-            n_p_picks=associator_cfg["n_p_picks"],
-            n_s_picks=associator_cfg["n_s_picks"],
-            n_p_and_s_picks=associator_cfg["n_p_and_s_picks"],
+            pick_match_tolerance=associator_cfg.pick_match_tolerance,
+            n_picks=associator_cfg.n_picks,
+            n_p_picks=associator_cfg.n_p_picks,
+            n_s_picks=associator_cfg.n_s_picks,
+            n_p_and_s_picks=associator_cfg.n_p_and_s_picks,
             exponential_edt=True,
             location_split_depth=6,  # default 6
             location_split_return=4,  # default 4
