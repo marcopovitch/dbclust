@@ -1,5 +1,6 @@
 import sys
 import os
+from typing import List
 import geopandas as gpd
 from shapely.geometry import Polygon, Point
 import logging
@@ -10,10 +11,15 @@ logger = logging.getLogger("dbclust")
 logger.setLevel(logging.INFO)
 
 
-def load_zones(zones, nll_conf):
-    """Returns a geodataframe containing:"
-    - zone information
-    - nll template information
+def load_zones(zones: List[dict], nll_conf: dict) -> gpd.GeoDataFrame:
+    """Associate NLL models to polygones given zones definitions
+
+    Args:
+        zones (List[dict]): zones definitions
+        nll_conf (dict): NonLinLoc models
+
+    Returns:
+        gpd.GeoDataFrame: geopandas dataframe containing all polygones
     """
     records = []
     for z in zones:
@@ -35,7 +41,9 @@ def load_zones(zones, nll_conf):
             {
                 "name": name,
                 "velocity_profile": vprofile["name"],
-                "template": os.path.join(nll_conf['nll_template_path'], vprofile["template"]),
+                "template": os.path.join(
+                    nll_conf["nll_template_path"], vprofile["template"]
+                ),
                 "geometry": polygon,
             }
         )
@@ -44,9 +52,18 @@ def load_zones(zones, nll_conf):
     return gdf
 
 
-def find_zone(latitude=None, longitude=None, zones=None):
-    """Returns the geodataframe requested
-    or an empty one if request failed.
+def find_zone(
+    latitude: float = None, longitude: float = None, zones: gpd.GeoDataFrame = None
+) -> gpd:
+    """Find zone
+
+    Args:
+        latitude (float, optional): Defaults to None.
+        longitude (float, optional): Defaults to None.
+        zones (gpd.GeoDataFrame, optional): Defaults to None.
+
+    Returns:
+        gpd.GeoDataFrame: geodataframe requested or an empty one if request failed.
     """
     point_shapely = Point(longitude, latitude)
     for index, row in zones.iterrows():
