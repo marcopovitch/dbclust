@@ -28,12 +28,14 @@ from obspy.geodetics import gps2dist_azimuth
 
 try:
     from phase import import_phases, import_eqt_phases
-except:
+except ModuleNotFoundError:
     from dbclust.phase import import_phases, import_eqt_phases
 
-from dbclust.zones import find_zone
+try:
+    from zones import find_zone
+except ModuleNotFoundError:
+    from dbclust.zones import find_zone
 
-# from zones import find_zone
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -555,7 +557,9 @@ class Clusterize(object):
                             vel.write(f"{hypo['longitude']}\n")
                             vel.write(f"{hypo['depth_m']}\n")
                     else:
-                        logger.warning(f"Can't find a matched zone for (lat={hypo['latitude']},lon={hypo['longitude']})!")
+                        logger.warning(
+                            f"Can't find a matched zone for (lat={hypo['latitude']},lon={hypo['longitude']})!"
+                        )
 
     def merge(self, clusters2):
         logger.info(
