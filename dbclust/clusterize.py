@@ -26,15 +26,12 @@ from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
 
-try:
-    from phase import import_phases, import_eqt_phases
-except ModuleNotFoundError:
-    from dbclust.phase import import_phases, import_eqt_phases
+from phase import import_phases, import_eqt_phases
 
-try:
-    from zones import find_zone
-except ModuleNotFoundError:
-    from dbclust.zones import find_zone
+#try:
+#    from zones import find_zone
+#except ModuleNotFoundError:
+#    from dbclust.zones import find_zone
 
 
 # default logger
@@ -537,9 +534,8 @@ class Clusterize(object):
                 logger.info(
                     f"Prelocalization is time={hypo['time']}, lat={hypo['latitude']}, lon={hypo['longitude']}, depth_m={hypo['depth_m']}"
                 )
-                if not self.zones.empty:
-                    zone = find_zone(
-                        zones=self.zones,
+                if not self.zones.polygones.empty:
+                    zone = self.zones.find_zone(
                         latitude=hypo["latitude"],
                         longitude=hypo["longitude"],
                     )
