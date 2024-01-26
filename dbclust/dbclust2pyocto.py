@@ -8,7 +8,8 @@ from itertools import chain, combinations
 from collections import Counter
 from icecream import ic
 import pyocto
-from clusterize import cluster_share_eventid
+from config import Associator
+from clusterize import Clusterize, cluster_share_eventid
 
 """Use pyocto to speed up and better constrain clusterization
 
@@ -44,8 +45,24 @@ def create_velocity_model(velocity_cfg, model_path):
 
 
 def dbclust2pyocto(
-    myclust, associator_cfg, velocity_model, min_com_phases, log_level=logging.INFO
-):
+    myclust: Clusterize,
+    associator_cfg: Associator,
+    velocity_model: pyocto.VelocityModel1D,
+    min_com_phases: int,
+    log_level=logging.INFO,
+) -> Clusterize:
+    """_summary_
+
+    Args:
+        myclust (Clusterize): _description_
+        associator_cfg (Associator): _description_
+        velocity_model (pyocto.VelocityModel1D): _description_
+        min_com_phases (int): _description_
+        log_level (_type_, optional): _description_. Defaults to logging.INFO.
+
+    Returns:
+        Clusterize: _description_
+    """    
     all_picks_list = list(chain(*myclust.clusters))
     logger.info(
         f"Using pyocto to check/split/filter clusters ({len(all_picks_list)} picks)"
