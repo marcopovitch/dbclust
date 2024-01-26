@@ -5,14 +5,14 @@ import logging
 import argparse
 import numpy as np
 import pandas as pd
-import geopandas as gpd
 import tempfile
 from dataclasses import asdict
+from typing import Optional
 from icecream import ic
 
 from dask.distributed import Client, LocalCluster
 
-from config import get_config_from_file
+from config import Config, get_config_from_file
 from phase import import_phases, import_eqt_phases
 from clusterize import (
     Clusterize,
@@ -91,60 +91,30 @@ def get_clusturize_from_config(cfg, phases=None):
     return myclust
 
 
-if __name__ == "__main__":
-    # default logger
-    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    logger = logging.getLogger("dbclust")
-    logger.setLevel(logging.INFO)
+def dbclust(
+    cfg: Config,
+    df: Optional[pd.DataFrame] = None,
+) -> None:
+    """Detect and localize events given picks
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-c",
-        "--conf",
-        default=None,
-        dest="configfile",
-        help="yaml configuration file.",
-        type=str,
-    )
-    parser.add_argument(
-        "-p",
-        "--profile",
-        default=None,
-        dest="velocity_profile_name",
-        help="velocity profile name to use",
-        type=str,
-    )
-    parser.add_argument(
-        "-l",
-        "--loglevel",
-        default="INFO",
-        dest="loglevel",
-        help="loglevel (debug,warning,info,error)",
-        type=str,
-    )
-    args = parser.parse_args()
-    if not args.configfile:
-        parser.print_help()
-        sys.exit(255)
-        
-    cluster = LocalCluster()
-    client = Client(cluster)
-    logger.info(f"Dask dashboard url: {client.dashboard_link}")
+    Args:
+        cfg (Config): dbclust parameters and data
+        df (Optional[pd.DataFrame], optional): if defined override picks from cfg
+    """
+    # keep track of each time period processed
+    part = 0
+    last_saved_event_count = 0
+    last_round = False
 
-    numeric_level = getattr(logging, args.loglevel.upper(), None)
-    if not numeric_level:
-        logger.error("Invalid loglevel '%s' !", args.loglevel.upper())
-        logger.error("loglevel should be: debug,warning,info,error.")
-        sys.exit(255)
-    logger.setLevel(numeric_level)
+    # Instantiate a new tool (but empty) to get clusters
+    previous_myclust = get_clusturize_from_config(cfg, phases=None)
 
-    # Get configuration from yaml file
-    # numerous initializations have been already carried out
-    cfg = get_config_from_file(args.configfile, verbose=False)
-    ic(cfg)
+    # get a locator
+    locator = get_locator_from_config(cfg)
 
     # time window split
-    df = cfg.pick.df
+    if not df:
+        df = cfg.pick.df
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
     time_periods = (
@@ -155,28 +125,7 @@ if __name__ == "__main__":
     time_periods += [pd.to_datetime(tmax)]
     logger.info(f"Splitting dataset in {len(time_periods)-1} chunks.")
 
-    # get a locator
-    locator = get_locator_from_config(cfg)
-
-    # process independently each time period
-    # fixme: add overlapp between time period
-    part = 0
-    last_saved_event_count = 0
-    last_round = False
-    # Instantiate a new tool (but empty) to get clusters
-    previous_myclust = get_clusturize_from_config(cfg, phases=None)
-
-    # pyocto
-    tolerance = cfg.pyocto.current_model.velocity_model.tolerance
-    pyocto_velocity_model = pyocto.associator.VelocityModel1D(
-        path=cfg.pyocto.model_filename,
-        tolerance=tolerance,
-        # association_cutoff_distance=None,
-        # location_cutoff_distance=None,
-        # surface_p_velocity=None,
-        # surface_s_velocity=None,
-    )
-
+    # start time looping
     picks_to_remove = []
     for i, (from_time, to_time) in enumerate(
         zip(time_periods[:-1], time_periods[1:]), start=1
@@ -260,7 +209,7 @@ if __name__ == "__main__":
             previous_myclust = dbclust2pyocto(
                 previous_myclust,
                 cfg.pyocto.current_model.associator,
-                pyocto_velocity_model,
+                cfg.pyocto.velocity_model,
                 cfg.cluster.min_picks_common,
                 log_level=logger.level,
             )
@@ -295,9 +244,9 @@ if __name__ == "__main__":
                 # )
 
                 # sequential version
-                #clustcat = locator.get_localisations_from_nllobs_dir(
+                # clustcat = locator.get_localisations_from_nllobs_dir(
                 #    my_obs_path, append=True
-                #)
+                # )
 
                 # fixme
                 # handle scat file here before the directory is deleted
@@ -398,3 +347,61 @@ if __name__ == "__main__":
     )
     logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
     locator.catalog.write(partial_qml, format="QUAKEML")
+
+
+if __name__ == "__main__":
+    # default logger
+    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+    logger = logging.getLogger("dbclust")
+    logger.setLevel(logging.INFO)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-c",
+        "--conf",
+        default=None,
+        dest="configfile",
+        help="yaml configuration file.",
+        type=str,
+    )
+    parser.add_argument(
+        "-p",
+        "--profile",
+        default=None,
+        dest="velocity_profile_name",
+        help="velocity profile name to use",
+        type=str,
+    )
+    parser.add_argument(
+        "-l",
+        "--loglevel",
+        default="INFO",
+        dest="loglevel",
+        help="loglevel (debug,warning,info,error)",
+        type=str,
+    )
+    args = parser.parse_args()
+    if not args.configfile:
+        parser.print_help()
+        sys.exit(255)
+
+    cluster = LocalCluster()
+    client = Client(cluster)
+    logger.info(f"Dask dashboard url: {client.dashboard_link}")
+
+    numeric_level = getattr(logging, args.loglevel.upper(), None)
+    if not numeric_level:
+        logger.error("Invalid loglevel '%s' !", args.loglevel.upper())
+        logger.error("loglevel should be: debug,warning,info,error.")
+        sys.exit(255)
+    logger.setLevel(numeric_level)
+
+    # Get configuration from yaml file
+    # numerous initializations have been already carried out
+    cfg = get_config_from_file(args.configfile, verbose=False)
+    ic(cfg)
+
+    # Warning: change the output name for multiprocessing
+
+    #dbclust(cfg, cfg.pick.df)
+    dbclust(cfg)
