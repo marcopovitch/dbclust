@@ -15,7 +15,7 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Polygon, Point
 from obspy import Inventory, read_inventory
-import pyocto
+from pyocto.associator import VelocityModel1D
 
 
 try:
@@ -449,7 +449,8 @@ class PyoctoConfig:
     models: List[Model]
     # associator and velocity_model are in current_model.keys()
     current_model: Optional[Model] = None
-    model_filename: Optional[str] = None
+    travel_time_grid_filename: Optional[str] = None
+    velocity_model: Optional[VelocityModel1D] = None
 
     def __post_init__(self) -> None:
         if not self.default_model_name:
@@ -466,14 +467,35 @@ class PyoctoConfig:
                 f"Referenced model {self.default_model_name} is not defined !"
             )
 
-        # create velocity model
+        # create travel time grid file
         os.makedirs(self.path, exist_ok=True)
-        self.model_filename = os.path.join(self.path, self.default_model_name)
-        self.create_velocity_model_file(
-            self.current_model.velocity_model, self.model_filename
+        self.travel_time_grid_filename = os.path.join(
+            self.path, self.default_model_name
         )
 
-    def create_velocity_model_file(self, vmodel: VelocityModel, filename: str) -> None:
+        self.create_travel_time_grid_file(
+            self.current_model.velocity_model, self.travel_time_grid_filename
+        )
+
+        # Create 1D velocity model
+        self.velocity_model = self.create_velocity_model()
+
+    def create_velocity_model(self) -> VelocityModel1D:
+        tolerance = self.current_model.velocity_model.tolerance
+        velocity_model = VelocityModel1D(
+            path=self.travel_time_grid_filename,
+            tolerance=tolerance,
+            # association_cutoff_distance=None,
+            # location_cutoff_distance=None,
+            # surface_p_velocity=None,
+            # surface_s_velocity=None,
+        )
+        return velocity_model
+
+    def create_travel_time_grid_file(
+        self, vmodel: VelocityModel, filename: str
+    ) -> None:
+        # create dataframe
         profil_model = pd.DataFrame(
             {
                 "depth": vmodel.depth,
@@ -482,7 +504,8 @@ class PyoctoConfig:
             }
         )
 
-        pyocto.VelocityModel1D.create_model(
+        # create travel time grid
+        VelocityModel1D.create_model(
             profil_model,
             vmodel.grid_spacing_km,
             vmodel.max_horizontal_dist_km,
