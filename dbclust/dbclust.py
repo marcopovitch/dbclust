@@ -8,9 +8,13 @@ import pandas as pd
 import tempfile
 from dataclasses import asdict
 from typing import Optional
+import logging
 from icecream import ic
 
+import dask
 from dask.distributed import Client, LocalCluster
+#import multiprocessing
+
 
 from config import Config, get_config_from_file
 from phase import import_phases, import_eqt_phases
@@ -24,10 +28,14 @@ from clusterize import (
 from dbclust2pyocto import dbclust2pyocto
 from localization import NllLoc, show_event
 from quakeml import make_readable_id, feed_distance_from_preloc_to_pref_origin
-import pyocto
 import warnings
 
 warnings.filterwarnings("ignore", category=UserWarning)
+
+# default logger
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+logger = logging.getLogger("dbclust")
+logger.setLevel(logging.INFO)
 
 
 def unload_picks_list(df1, picks):
@@ -51,7 +59,7 @@ def unload_picks_list(df1, picks):
     return keep
 
 
-def get_locator_from_config(cfg):
+def get_locator_from_config(cfg, log_level=logging.INFO):
     locator = NllLoc(
         cfg.nll.nlloc_bin,
         cfg.nll.scat2latlon_bin,
@@ -68,12 +76,12 @@ def get_locator_from_config(cfg):
         quakeml_settings=asdict(cfg.quakeml),
         nll_verbose=cfg.nll.verbose,
         keep_scat=cfg.nll.enable_scatter,
-        log_level=logger.level,
+        log_level=log_level,
     )
     return locator
 
 
-def get_clusturize_from_config(cfg, phases=None):
+def get_clusturize_from_config(cfg, phases=None, log_level=logging.INFO):
     myclust = Clusterize(
         phases=phases,  # empty cluster / constructor only
         min_cluster_size=cfg.cluster.min_cluster_size,
@@ -86,21 +94,32 @@ def get_clusturize_from_config(cfg, phases=None):
         tt_matrix_fname=cfg.cluster.pre_computed_tt_matrix_file,
         tt_matrix_save=cfg.cluster.tt_matrix_save,
         zones=cfg.zones,
-        log_level=logger.level,
+        log_level=log_level,
     )
     return myclust
 
 
-def dbclust(
+def dbclust_test(
     cfg: Config,
     df: Optional[pd.DataFrame] = None,
+    job_index: Optional[int] = None,
+) -> None:
+    ic(job_index, df)
+
+@dask.delayed
+def dbclust(
+    cfg: Config,
+    df: Optional[pd.DataFrame] = pd.DataFrame(),
+    job_index: Optional[int] = None,
 ) -> None:
     """Detect and localize events given picks
 
     Args:
         cfg (Config): dbclust parameters and data
         df (Optional[pd.DataFrame], optional): if defined override picks from cfg
+        job_index (int): job index, None if in sequential mode
     """
+
     # keep track of each time period processed
     part = 0
     last_saved_event_count = 0
@@ -113,7 +132,7 @@ def dbclust(
     locator = get_locator_from_config(cfg)
 
     # time window split
-    if not df:
+    if df.empty:
         df = cfg.pick.df
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
@@ -245,7 +264,7 @@ def dbclust(
 
                 # sequential version
                 # clustcat = locator.get_localisations_from_nllobs_dir(
-                #    my_obs_path, append=True
+                #     my_obs_path, append=True
                 # )
 
                 # fixme
@@ -329,9 +348,16 @@ def dbclust(
 
         # write partial qml file and clean catalog from memory
         if (last_saved_event_count) > cfg.catalog.event_flush_count:
-            partial_qml = os.path.join(
-                cfg.catalog.path, f"{cfg.catalog.qml_base_filename}-{part}.qml"
-            )
+            if job_index != None:
+                partial_qml = os.path.join(
+                    cfg.catalog.path,
+                    f"{cfg.catalog.qml_base_filename}-{job_index}-{part}.qml",
+                )
+            else:
+                partial_qml = os.path.join(
+                    cfg.catalog.path, f"{cfg.catalog.qml_base_filename}-{part}.qml"
+                )
+
             logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
             locator.catalog.write(partial_qml, format="QUAKEML")
             locator.catalog.clear()
@@ -342,11 +368,22 @@ def dbclust(
             last_saved_event_count += len(locator.catalog)
 
     # Write last events
-    partial_qml = os.path.join(
-        cfg.catalog.path, f"{cfg.catalog.qml_base_filename}-{part}.qml"
-    )
+    if job_index != None:
+        partial_qml = os.path.join(
+            cfg.catalog.path,
+            f"{cfg.catalog.qml_base_filename}-{job_index}-{part}.qml",
+        )
+    else:
+        partial_qml = os.path.join(
+            cfg.catalog.path, f"{cfg.catalog.qml_base_filename}-{part}.qml"
+        )
     logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
     locator.catalog.write(partial_qml, format="QUAKEML")
+
+
+def process_task(args):
+    cfg, df_segment, job_index = args
+    return dbclust(cfg=cfg, df=df_segment, job_index=job_index)
 
 
 if __name__ == "__main__":
@@ -385,23 +422,83 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(255)
 
-    cluster = LocalCluster()
-    client = Client(cluster)
-    logger.info(f"Dask dashboard url: {client.dashboard_link}")
-
     numeric_level = getattr(logging, args.loglevel.upper(), None)
     if not numeric_level:
         logger.error("Invalid loglevel '%s' !", args.loglevel.upper())
         logger.error("loglevel should be: debug,warning,info,error.")
         sys.exit(255)
     logger.setLevel(numeric_level)
+    
+    # Cluster initialization
+    n_workers = os.cpu_count()
+    cluster = LocalCluster(n_workers=n_workers)
+    client = Client(cluster)
+    logger.info(f"Dask dashboard url: {client.dashboard_link}")
+
 
     # Get configuration from yaml file
     # numerous initializations have been already carried out
     cfg = get_config_from_file(args.configfile, verbose=False)
     ic(cfg)
 
-    # Warning: change the output name for multiprocessing
+    # dbclust(cfg)
 
-    #dbclust(cfg, cfg.pick.df)
-    dbclust(cfg)
+    # Create data partition to be distributed 
+    partition_duration = pd.Timedelta(hours=12)
+    overlap_duration = pd.Timedelta(seconds=cfg.time.overlap_window)
+    
+    ic(cfg.pick.start, cfg.pick.end, partition_duration)
+
+    time_divisions = pd.date_range(
+        start=cfg.pick.start, end=cfg.pick.end, freq=partition_duration
+    )
+    adjusted_time_divisions = [
+        (start - overlap_duration, end + overlap_duration)
+        for start, end in zip(time_divisions, time_divisions[1:])
+    ]
+
+    df_adjusted_time_divisions = pd.DataFrame(
+        adjusted_time_divisions, columns=["start", "end"]
+    )
+
+    ic(df_adjusted_time_divisions)
+    
+    # Dask stuff : add @dask.delayed to dbclust
+    delayed_tasks = [
+        dbclust(
+            cfg=cfg,
+            df=cfg.pick.df[
+                (cfg.pick.df["phase_time"] >= start) & (cfg.pick.df["phase_time"] < end)
+            ],
+            job_index=idx,
+        )
+        for idx, (start, end) in enumerate(
+            df_adjusted_time_divisions.itertuples(index=False), start=0
+        )
+    ]
+    # Start tasks
+    results = dask.compute(*delayed_tasks)
+
+    # n_workers = os.cpu_count()
+    # with multiprocessing.Pool(processes=n_workers) as pool:
+    #     results = pool.map(
+    #         process_task,
+    #         [
+    #             (
+    #                 cfg,
+    #                 cfg.pick.df[
+    #                     (cfg.pick.df["phase_time"] >= start)
+    #                     & (cfg.pick.df["phase_time"] < end)
+    #                 ],
+    #                 idx,
+    #             )
+    #             for idx, (start, end) in enumerate(
+    #                 df_adjusted_time_divisions.itertuples(index=False), start=0
+    #             )
+    #         ],
+    #     )
+    # pool.close()
+    # pool.join()
+    
+    
+    
