@@ -18,7 +18,6 @@ import dask.bag as db
 
 # from joblib import parallel_config
 
-
 # from dask.cache import Cache
 from obspy import Catalog
 from obspy.core.event import Event, Comment
@@ -28,9 +27,9 @@ from obspy.geodetics import gps2dist_azimuth
 
 from phase import import_phases, import_eqt_phases
 
-#try:
+# try:
 #    from zones import find_zone
-#except ModuleNotFoundError:
+# except ModuleNotFoundError:
 #    from dbclust.zones import find_zone
 
 
