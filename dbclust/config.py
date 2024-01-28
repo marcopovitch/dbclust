@@ -90,6 +90,16 @@ class PickConfig:
         if self.end:
             self.end = pd.to_datetime(self.end, utc=True)
 
+        # read csv file and trim it from start to end
+        if self.type == "phasenetsds":
+            self.load_phasenetsds()
+        elif self.type == "phasenet":
+            self.load_phasenetsds()
+        else:
+            self.load_eqt()
+
+            self.df = self.df[(self.df["time"] >= start) & (self.df["time"] <= end)]
+
     def load_eqt(self) -> None:
         self.df = pd.read_csv(
             self.filename,
@@ -99,9 +109,11 @@ class PickConfig:
         self.df["phase_time"] = self.df[["p_arrival_time", "s_arrival_time"]].min(
             axis=1
         )
+        # FIXME: col rename ?
 
     def load_phasenet(self) -> None:
         self.df = pd.read_csv(self.filename, low_memory=False)
+        # FIXME: col rename ?
 
     def load_phasenetsds(self) -> None:
         self.df = pd.read_csv(self.filename, low_memory=False)
@@ -131,8 +143,12 @@ class PickConfig:
         self.df["phase_time"] = pd.to_datetime(self.df["phase_time"], utc=True)
         if self.start:
             self.df = self.df[self.df["phase_time"] >= self.start]
+        else:
+            self.start = self.df["phase_time"].min()
         if self.end:
             self.df = self.df[self.df["phase_time"] < self.end]
+        else:
+            self.end = self.df["phase_time"].max()
         if self.df.empty:
             raise ValueError(f"No data in time range [{self.start}, {self.end}].")
 
@@ -141,7 +157,7 @@ class PickConfig:
             self.df = self.df[self.df["phase_index"] != 1]
 
         # limits to 10^-4 seconds same as NLL (needed to unload some picks)
-        self.df["phase_time"] = self.df["phase_time"].dt.round("0.0001S")
+        self.df["phase_time"] = self.df["phase_time"].dt.round("0.0001s")
         self.df.sort_values(by=["phase_time"], inplace=True)
 
         # get rid off nan value when importing phases without eventid
@@ -573,7 +589,7 @@ def get_config_from_file(yaml_file: str, verbose: bool = False) -> Config:
     myconf.zones.load_zones(myconf.nll)
 
     # load picks
-    myconf.pick.load_phasenetsds()
+    # myconf.pick.load_phasenetsds()
     myconf.pick.remove_black_listed_stations(myconf.station.blacklist)
     myconf.pick.preprocessing()
     return myconf
