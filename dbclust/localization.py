@@ -32,10 +32,8 @@ from obspy.core.event import Origin, OriginQuality, ResourceIdentifier
 from obspy import read_events
 from jinja2 import Template
 
-try:
-    from quakeml import remove_duplicated_picks
-except:
-    from dbclust.quakeml import remove_duplicated_picks
+from quakeml import remove_duplicated_picks
+
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
