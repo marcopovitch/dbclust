@@ -16,17 +16,23 @@ import geopandas as gpd
 from shapely.geometry import Polygon, Point
 from obspy import Inventory, read_inventory
 from pyocto.associator import VelocityModel1D
-
-
-try:
-    from read_yml import read_config
-except ModuleNotFoundError:
-    from dbclust.read_yml import read_config
+from read_yml import read_config
+#import dask.dataframe as dd
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("config")
 logger.setLevel(logging.INFO)
+
+
+@dataclass
+class DaskConfig:
+    n_workers: int = None
+    partition_duration_hours: int = 6
+
+    def __post_init__(self):
+        if not self.n_workers:
+            self.n_workers = os.cpu_count()
 
 
 @dataclass
@@ -73,6 +79,7 @@ class PickConfig:
     start: Optional[Union[datetime, pd.Timestamp]] = None
     end: Optional[Union[datetime, pd.Timestamp]] = None
     df: Optional[pd.DataFrame] = None
+    #dd: Optional[dd.DataFrame] = None
 
     def __post_init__(self) -> None:
         if not os.path.exists(self.filename):
@@ -531,6 +538,7 @@ class PyoctoConfig:
 
 
 class Config:
+    dask: DaskConfig
     file: FilesConfig
     pick: PickConfig
     station: StationConfig
@@ -596,16 +604,6 @@ def get_config_from_file(yaml_file: str, verbose: bool = False) -> Config:
 
 
 if __name__ == "__main__":
-    try:
-        from localization import NllLoc
-    except ModuleNotFoundError:
-        from dbclust.localization import NllLoc
-
-    try:
-        from clusterize import Clusterize
-    except ModuleNotFoundError:
-        from dbclust.clusterize import Clusterize
-
     myconf = get_config_from_file(
         "/Users/marc/Data/DBClust/selestat/dbclust-selestat-mod.yml", verbose=True
     )
@@ -618,38 +616,3 @@ if __name__ == "__main__":
     # test zone
     ic(myconf.zones.find_zone(48, 7))
     ic(myconf.pick.df)
-
-    locator = NllLoc(
-        myconf.nll.nlloc_bin,
-        myconf.nll.scat2latlon_bin,
-        myconf.nll.time_path,
-        myconf.nll.template_path,
-        nll_channel_hint=myconf.nll.channel_hint,
-        tmpdir=myconf.file.tmp_path,
-        double_pass=myconf.relocation.double_pass,
-        P_time_residual_threshold=myconf.relocation.P_time_residual_threshold,
-        S_time_residual_threshold=myconf.relocation.S_time_residual_threshold,
-        dist_km_cutoff=myconf.relocation.dist_km_cutoff,
-        nll_min_phase=myconf.nll.min_phase,
-        min_station_with_P_and_S=myconf.cluster.min_station_with_P_and_S,
-        quakeml_settings=asdict(myconf.quakeml),
-        nll_verbose=myconf.nll.verbose,
-        keep_scat=myconf.nll.enable_scatter,
-        log_level=logger.level,
-    )
-    ic(vars(locator))
-
-    myclust = Clusterize(
-        phases=None,  # empty cluster / constructor only
-        average_velocity=myconf.cluster.average_velocity,
-        min_station_count=myconf.cluster.min_station_count,
-        min_station_with_P_and_S=myconf.cluster.min_station_with_P_and_S,
-        max_search_dist=myconf.cluster.max_search_dist,
-        P_uncertainty=myconf.pick.P_uncertainty,
-        S_uncertainty=myconf.pick.S_uncertainty,
-        tt_matrix_fname=myconf.cluster.pre_computed_tt_matrix_file,
-        tt_matrix_save=myconf.cluster.tt_matrix_save,
-        zones=myconf.zones.zones,
-        log_level=logger.level,
-    )
-    ic(vars(myclust))
