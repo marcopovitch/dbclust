@@ -43,7 +43,6 @@ def create_velocity_model(velocity_cfg, model_path):
         model_path,
     )
 
-
 def dbclust2pyocto(
     myclust: Clusterize,
     associator_cfg: Associator,
@@ -145,6 +144,13 @@ def dbclust2pyocto(
     logger.info(
         f"pyocto {newclust.n_clusters} found, dbclust {myclust.n_clusters} found."
     )
+    
+    # clean-up 
+    del myclust.clusters
+    del myclust.clusters_stability
+    del myclust.noise
+    del myclust.zones
+    del myclust.preloc
 
     return newclust
 
