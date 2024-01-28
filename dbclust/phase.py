@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 import sys
 import logging
+from typing import Optional, List, Union
 import functools
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from datetime import datetime
 from obspy import UTCDateTime, Inventory
+from icecream import ic
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -14,19 +17,22 @@ logger.setLevel(logging.INFO)
 
 
 class Phase(object):
+    """Phase class"""
+
     def __init__(
         self,
-        net=None,
-        sta=None,
-        coord=None,
-        time_search=None,
-        info_sta=None,
+        net: str = None,
+        sta: str = None,
+        coord: dict = None,
+        time_search: Optional[Union[datetime, pd.Timestamp]] = None,
+        info_sta: Optional[Union[Inventory, str]] = None,
     ):
         self.network = net
         self.station = sta
         self.phase = None
         self.time = None
         self.proba = None
+
         if coord:
             self.coord = coord
             return
@@ -42,9 +48,10 @@ class Phase(object):
         if type(info_sta) == Inventory:
             get_station_info = self.get_station_info_from_inventory
         else:
+            # url
             get_station_info = self.get_station_info_from_fdsnws
             # hack to get benefit from lru_cache
-            time_search=None 
+            time_search = None
 
         (lat, lon, elev) = get_station_info(
             self.network,
@@ -84,7 +91,12 @@ class Phase(object):
 
     @staticmethod
     # @functools.lru_cache(maxsize=None)
-    def get_station_info_from_inventory(network, station, time_search, inventory):
+    def get_station_info_from_inventory(
+        network: str,
+        station: str,
+        time_search: Union[datetime, pd.Timestamp],
+        inventory: Inventory,
+    ) -> list:
         inv = inventory.select(
             network=network,
             station=station,
@@ -103,12 +115,17 @@ class Phase(object):
 
     @staticmethod
     @functools.lru_cache(maxsize=None)
-    def get_station_info_from_fdsnws(network, station, time_search, fdsnws_station_url):
+    def get_station_info_from_fdsnws(
+        network: str,
+        station: str,
+        time_search: Union[datetime, pd.Timestamp],
+        fdsnws_station_url: str,
+    ) -> list:
         logger.debug(f"Getting station info from {network}.{station}")
         if not time_search:
             time_search = UTCDateTime.now()
 
-        time_search = str(time_search)[:10]
+        # time_search = str(time_search)[:10]
         url = (
             f"{fdsnws_station_url}/fdsnws/station/1/query?"
             + "network=%s&" % network
@@ -120,8 +137,8 @@ class Phase(object):
         try:
             df = pd.read_csv(url, sep="|", skipinitialspace=True)
         except BaseException as e:
-            #logger.error("The exception: {}".format(e))
-            #logger.debug(url)
+            # logger.error("The exception: {}".format(e))
+            # logger.debug(url)
             return None, None, None
 
         df.columns = df.columns.str.replace("#", "")
@@ -132,14 +149,21 @@ class Phase(object):
 
         return df.iloc[0]["Latitude"], df.iloc[0]["Longitude"], df.iloc[0]["Elevation"]
 
-    def set_phase_info(self, phase, time, proba, eventid=None, agency=None):
+    def set_phase_info(
+        self,
+        phase: str,
+        time: str,
+        proba: float,
+        eventid: str = None,
+        agency: str = None,
+    ) -> None:
         self.phase = phase
-        self.time = time
-        self.proba = proba
+        self.time = UTCDateTime(time)
+        self.proba = float(proba)
         self.eventid = eventid
         self.agency = agency
 
-    def show_all(self):
+    def show_all(self) -> None:
         if self.eventid:
             print(f"{self.network}.{self.station}: from {self.eventid}")
         else:
@@ -158,11 +182,11 @@ class Phase(object):
 
 
 def import_phases(
-    df=None,
-    P_proba_threshold=0,
-    S_proba_threshold=0,
-    info_sta=None,
-):
+    df: pd.DataFrame = None,
+    P_proba_threshold: float = 0,
+    S_proba_threshold: float = 0,
+    info_sta: Optional[Union[Inventory, str]] = None,
+) -> List[Phase]:
     """
     Read phaseNet dataframe picks.
     Returns a list of Phase objects.
@@ -178,31 +202,29 @@ def import_phases(
         logger.error("No phasenet header found")
         return None
 
-    #for i in tqdm(range(len(df))):
-    for i in range(len(df)):
-        net, sta = df.iloc[i]["station_id"].split(".")[:2]
-        phase_type = df.iloc[i]["phase_type"]
-        phase_time = UTCDateTime(df.iloc[i]["phase_time"])
-        proba = df.iloc[i]["phase_score"]
+    df = df.loc[~((df["phase_type"] == "P") & (df["phase_score"] < P_proba_threshold))]
+    df = df.loc[~((df["phase_type"] == "S") & (df["phase_score"] < S_proba_threshold))]
+    df[["net", "sta"]] = df["station_id"].astype(str).str.split(".", n=1, expand=True)
+    # df['phase_time'] = df['phase_time'].map(UTCDateTime)
+    # df.compute()
+
+    for row in df.itertuples(index=False):
+        # ic(row)
         if "eventid" in df.columns:
-            eventid = df.iloc[i]["eventid"]
+            eventid = row.eventid
         else:
             eventid = None
+
         if "agency" in df.columns:
-            agency = df.iloc[i]["agency"]
+            agency = row.agency
         else:
             agency = None
-            
-        if phase_type == "P" and proba < P_proba_threshold:
-            continue
-        if phase_type == "S" and proba < S_proba_threshold:
-            continue
 
         try:
             myphase = Phase(
-                net=net,
-                sta=sta,
-                time_search=phase_time,
+                net=row.net,
+                sta=row.sta,
+                time_search=row.phase_time,
                 info_sta=info_sta,
             )
         except Exception as e:
@@ -210,9 +232,9 @@ def import_phases(
             continue
 
         myphase.set_phase_info(
-            phase_type,
-            phase_time,
-            proba,
+            row.phase_type,
+            row.phase_time,
+            row.phase_score,
             eventid=eventid,
             agency=agency,
         )
