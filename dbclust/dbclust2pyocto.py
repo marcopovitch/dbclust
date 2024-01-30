@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import sys
 import pandas as pd
+from typing import Optional, List, Union
 import copy
 import datetime
 import logging
@@ -9,6 +10,7 @@ from collections import Counter
 from icecream import ic
 import pyocto
 from config import Associator
+from phase import Phase
 from clusterize import Clusterize, cluster_share_eventid
 
 """Use pyocto to speed up and better constrain clusterization
@@ -22,7 +24,7 @@ logger = logging.getLogger("match")
 logger.setLevel(logging.INFO)
 
 
-def create_velocity_model(velocity_cfg, model_path):
+def create_velocity_model(velocity_cfg: dict, model_path: str) -> None:
     model = pd.DataFrame(
         {
             "depth": velocity_cfg["depth"],
@@ -43,6 +45,7 @@ def create_velocity_model(velocity_cfg, model_path):
         model_path,
     )
 
+
 def dbclust2pyocto(
     myclust: Clusterize,
     associator_cfg: Associator,
@@ -61,7 +64,7 @@ def dbclust2pyocto(
 
     Returns:
         Clusterize: _description_
-    """    
+    """
     all_picks_list = list(chain(*myclust.clusters))
     logger.info(
         f"Using pyocto to check/split/filter clusters ({len(all_picks_list)} picks)"
@@ -144,8 +147,8 @@ def dbclust2pyocto(
     logger.info(
         f"pyocto {newclust.n_clusters} found, dbclust {myclust.n_clusters} found."
     )
-    
-    # clean-up 
+
+    # clean-up  / necessary ?
     del myclust.clusters
     del myclust.clusters_stability
     del myclust.noise
@@ -155,7 +158,7 @@ def dbclust2pyocto(
     return newclust
 
 
-def cluster_merge(clusters, preloc, min_com_phases):
+def cluster_merge(clusters: List[List[Phase]], preloc, min_com_phases: int):
     # merge as much as possible
     merge_count = 1
     while merge_count:
@@ -165,7 +168,7 @@ def cluster_merge(clusters, preloc, min_com_phases):
     return clusters, preloc
 
 
-def cluster_merge_one_pass(clusters, preloc, min_com_phases):
+def cluster_merge_one_pass(clusters: List[List[Phase]], preloc, min_com_phases: int):
     logger.info(f"pyocto cluster_merge(): {len(clusters)} clusters")
 
     merge_count = 0
@@ -210,7 +213,9 @@ def cluster_merge_one_pass(clusters, preloc, min_com_phases):
     return clusters, preloc, merge_count
 
 
-def aggregate_pick_to_cluster_with_common_event_id(clusters, picks):
+def aggregate_pick_to_cluster_with_common_event_id(
+    clusters: List[List[Phase]], picks: List[Phase]
+) -> List[Phase]:
     for cluster in clusters:
         event_ids = list(set([p.eventid for p in cluster if p.eventid]))
         picks_copy = copy.deepcopy(picks)
@@ -225,7 +230,7 @@ def aggregate_pick_to_cluster_with_common_event_id(clusters, picks):
     return clusters
 
 
-def get_events_list(events):
+def get_events_list(events: pd.DataFrame) -> List[dict]:
     hypocenters = []
     for index, row in events.iterrows():
         hypo = {
@@ -238,10 +243,12 @@ def get_events_list(events):
     return hypocenters
 
 
-def get_clusters_from_assignment(picks, events, assignments):
+def get_clusters_from_assignment(
+    picks: pd.DataFrame, events: pd.DataFrame, assignments: pd.DataFrame
+) -> List[List[dict]]:
     """Returns a clusters list containing picks
 
-    cluster is a list of picks (ie. Phase class)
+    cluster is a list of picks information.
     """
     clusters = []
     for index, row in events.iterrows():
@@ -255,7 +262,7 @@ def get_clusters_from_assignment(picks, events, assignments):
     return clusters
 
 
-def get_stations_from_cluster(cluster):
+def get_stations_from_cluster(cluster: List[Phase]) -> pd.DataFrame:
     """Returns a Dataframe containing stations information columns:
 
     id
@@ -287,7 +294,7 @@ def get_stations_from_cluster(cluster):
     return df
 
 
-def get_picks_from_cluster(cluster):
+def get_picks_from_cluster(cluster: List[Phase]) -> pd.DataFrame:
     """Returns a Dataframe containing stations information columns:
 
     station
