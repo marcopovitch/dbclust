@@ -14,7 +14,7 @@ from icecream import ic
 import dask
 from dask.distributed import Client, LocalCluster
 
-from config import Config, get_config_from_file
+from config import DBClustConfig
 from phase import import_phases, import_eqt_phases
 from clusterize import (
     Clusterize,
@@ -28,8 +28,12 @@ from localization import NllLoc, show_event
 from quakeml import make_readable_id, feed_distance_from_preloc_to_pref_origin
 import warnings
 
-# mem debug
+import ray
+
 # import gc
+
+import multiprocessing
+from functools import partial
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -101,7 +105,7 @@ def get_clusterize_from_config(cfg, phases=None, log_level=logging.INFO):
 
 
 def dbclust_test(
-    cfg: Config,
+    cfg: DBClustConfig,
     df: Optional[pd.DataFrame] = None,
     job_index: Optional[int] = None,
 ) -> None:
@@ -109,7 +113,7 @@ def dbclust_test(
 
 
 def dbclust(
-    cfg: Config,
+    cfg: DBClustConfig,
     df: Optional[pd.DataFrame] = pd.DataFrame(),
     job_index: Optional[int] = None,
 ) -> None:
@@ -120,6 +124,22 @@ def dbclust(
         df (Optional[pd.DataFrame], optional): if defined override picks from cfg
         job_index (int): job index, None if in sequential mode
     """
+
+    start, end = cfg.dask.time_partitions[job_index]
+    if df.empty:
+        df = cfg.pick.df[
+            (cfg.pick.df["phase_time"] >= start) & (cfg.pick.df["phase_time"] < end)
+        ]
+
+    tmin = df["phase_time"].min()
+    tmax = df["phase_time"].max()
+    time_periods = (
+        pd.date_range(tmin, tmax, freq=f"{cfg.time.time_window}min")
+        .to_series()
+        .to_list()
+    )
+    time_periods += [pd.to_datetime(tmax)]
+    logger.info(f"Splitting dataset in {len(time_periods)-1} chunks.")
 
     # keep track of each time period processed
     part = 0
@@ -132,38 +152,14 @@ def dbclust(
     # get a locator
     locator = get_locator_from_config(cfg)
 
-    # time window split
-    if df.empty:
-        df_cleanup = False
-        df = cfg.pick.df
-    else:
-        # force cleanup a the job's end
-        df_cleanup = False
-
-    tmin = df["phase_time"].min()
-    tmax = df["phase_time"].max()
-    time_periods = (
-        pd.date_range(tmin, tmax, freq=f"{cfg.time.time_window}min")
-        .to_series()
-        .to_list()
-    )
-    time_periods += [pd.to_datetime(tmax)]
-    logger.info(f"Splitting dataset in {len(time_periods)-1} chunks.")
-
     # start time looping
     picks_to_remove = []
-    for i, (from_time, to_time) in enumerate(
-        zip(time_periods[:-1], time_periods[1:]), start=1
-    ):
+    for i, (begin, end) in enumerate(zip(time_periods[:-1], time_periods[1:]), start=1):
+        logger.debug("")
         logger.debug("================================================")
         logger.debug("")
-        logger.debug("")
 
-        # keep an overlap
-        begin = from_time - np.timedelta64(cfg.time.overlap_window, "s")
-        end = to_time
         logger.info(
-            # f"Time window extraction #{i}/{len(time_periods)-1} picks from {from_time} to {to_time}."
             f"Time window extraction #{i}/{len(time_periods)-1} picks from {begin} to {end}."
         )
 
@@ -257,10 +253,15 @@ def dbclust(
             ) as tmpdir_automaticaly_cleaned:
                 locator.tmpdir = tmpdir_automaticaly_cleaned
 
-                # Dask // version
-                clustcat = locator.dask_get_localisations_from_nllobs_dir(
+                # Ray // version
+                clustcat = locator.ray_get_localisations_from_nllobs_dir(
                     my_obs_path, append=True
                 )
+
+                # Dask // version
+                # clustcat = locator.dask_get_localisations_from_nllobs_dir(
+                #     my_obs_path, append=True
+                # )
 
                 # thread // version
                 # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
@@ -389,8 +390,69 @@ def dbclust(
     logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
     locator.catalog.write(partial_qml, format="QUAKEML")
 
-    if df_cleanup:
-        del df
+    return True
+
+
+def process_task(cfg, job_arg):
+    job_index = job_arg[0]
+    start, end = job_arg[1]
+    dbclust(cfg=cfg, df=None, job_index=job_index)
+
+
+def run_with_multiproc(cfg: DBClustConfig):
+    func = partial(process_task, cfg)
+    with multiprocessing.Pool(cfg.dask.n_workers) as pool:
+        results = pool.map(func, enumerate(cfg.dask.time_partitions, start=0))
+    return results
+
+
+def run_with_dask(cfg: DBClustConfig):
+    # Cluster initialization
+    cluster = LocalCluster(
+        processes=True,
+        threads_per_worker=1,
+        n_workers=cfg.dask.n_workers,
+    )
+    client = Client(cluster)
+    logger.info(f"Dask running on {cfg.dask.n_workers} cpu(s)")
+    logger.info(f"Dask dashboard url: {client.dashboard_link}")
+    # dask.config.set({"distributed.scheduler.work-stealing": True})
+
+    # Dask stuff
+    delayed_tasks = [
+        dask.delayed(dbclust)(cfg=cfg, job_index=idx)
+        for idx, (start, end) in enumerate(cfg.dask.time_partitions, start=0)
+    ]
+
+    # Start tasks
+    results = dask.compute(*delayed_tasks)
+    dask.distributed.wait(results)
+    logger.info("DBClust completed !")
+    return results
+
+
+def run_with_ray(cfg: DBClustConfig):
+    # Start Ray
+    context = ray.init(num_cpus=cfg.dask.n_workers)
+    logger.info(f" http://{context.dashboard_url}")
+
+    # Ray tasks
+    @ray.remote
+    def run_dbclust_task(cfg, job_index):
+        return dbclust(cfg=cfg, job_index=job_index)
+
+    ray_tasks = [
+        run_dbclust_task.remote(cfg, idx)
+        for idx, (start, end) in enumerate(cfg.dask.time_partitions, start=0)
+    ]
+
+    # Get results
+    results = ray.get(ray_tasks)
+
+    # Shutdown Ray
+    ray.shutdown()
+    logger.info("DBClust completed !")
+    return results
 
 
 if __name__ == "__main__":
@@ -438,54 +500,10 @@ if __name__ == "__main__":
 
     # Get configuration from yaml file
     # numerous initializations have been already carried out
-    cfg = get_config_from_file(args.configfile, verbose=False)
-    for key, value in cfg.__annotations__.items():
-        attribute_value = getattr(cfg, key)
-        ic(key, attribute_value)
+    cfg = DBClustConfig(args.configfile)
+    cfg.show()
 
-    #dbclust(cfg)
-    #sys.exit()
-
-    # Cluster initialization
-    cluster = LocalCluster(n_workers=cfg.dask.n_workers)
-    client = Client(cluster)
-    logger.info(f"Dask dashboard url: {client.dashboard_link}")
-    dask.config.set({"distributed.scheduler.work-stealing": True})
-
-    # Create data partition to be distributed
-    partition_duration = pd.Timedelta(hours=cfg.dask.partition_duration_hours)
-    overlap_duration = pd.Timedelta(seconds=cfg.time.overlap_window)
-
-    ic(cfg.pick.start, cfg.pick.end, partition_duration)
-
-    time_divisions = pd.date_range(
-        start=cfg.pick.start, end=cfg.pick.end, freq=partition_duration
-    )
-    adjusted_time_divisions = [
-        (start - overlap_duration, end + overlap_duration)
-        for start, end in zip(time_divisions, time_divisions[1:])
-    ]
-
-    df_adjusted_time_divisions = pd.DataFrame(
-        adjusted_time_divisions, columns=["start", "end"]
-    )
-
-    ic(df_adjusted_time_divisions)
-
-    # Dask stuff : add @dask.delayed to dbclust
-    delayed_tasks = [
-        dask.delayed(dbclust)(
-            cfg=cfg,
-            df=cfg.pick.df[
-                (cfg.pick.df["phase_time"] >= start) & (cfg.pick.df["phase_time"] < end)
-            ],
-            job_index=idx,
-        )
-        for idx, (start, end) in enumerate(
-            df_adjusted_time_divisions.itertuples(index=False), start=0
-        )
-    ]
-    # Start tasks
-    results = dask.compute(*delayed_tasks)
-    dask.distributed.wait(results)
-    logger.info("DBClust completed !")
+    # results = dbclust(cfg)
+    # results = run_with_multiproc(cfg)
+    # results = run_with_dask(cfg)
+    results = run_with_ray(cfg)
