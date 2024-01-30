@@ -2,6 +2,7 @@
 import os
 import sys
 import logging
+from typing import Optional, List, Union
 from math import pow, sqrt, isnan
 import numpy as np
 import pandas as pd
@@ -20,12 +21,12 @@ import dask.bag as db
 
 # from dask.cache import Cache
 from obspy import Catalog
-from obspy.core.event import Event, Comment
+from obspy.core.event import Event, Origin, Comment
 from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
 
-from phase import import_phases, import_eqt_phases
+from phase import Phase, import_phases, import_eqt_phases
 
 # try:
 #    from zones import find_zone
@@ -40,7 +41,7 @@ logger.setLevel(logging.INFO)
 
 
 # @functools.lru_cache(maxsize=None)
-def compute_tt(p1, p2, vmean):
+def compute_tt(p1: Phase, p2: Phase, vmean) -> float:
     # lru_cache doesn't work with multiprocessing/dask/etc.
     distance, az, baz = gps2dist_azimuth(
         p1.coord["latitude"],
@@ -56,7 +57,7 @@ def compute_tt(p1, p2, vmean):
     return tt
 
 
-def cluster_share_eventid(c1, c2):
+def cluster_share_eventid(c1: List[Phase], c2: List[Phase]) -> bool:
     c1_evtids = set([p.eventid for p in c1 if p.eventid])
     logger.debug("cluster1 eventid: %s" % c1_evtids)
     c2_evtids = set([p.eventid for p in c2 if p.eventid])
@@ -67,7 +68,7 @@ def cluster_share_eventid(c1, c2):
         return False
 
 
-def get_picks_from_event(event, origin, time):
+def get_picks_from_event(event: Event, origin: Origin, time) -> List:
     # station_id,phase_type,phase_time
     # 1K.OFAS0.00.EH.D,P,2023-02-13T18:30:58.558999Z
     lines = []
@@ -93,7 +94,7 @@ def get_picks_from_event(event, origin, time):
     return sorted(lines, key=lambda l: l[2])
 
 
-def feed_picks_probabilities(cat, clusters):
+def feed_picks_probabilities(cat: Catalog, clusters: List[List[Phase]]) -> None:
     for event in cat:
         for pick in event.picks:
             for p in set(chain(*clusters)):
@@ -128,7 +129,7 @@ def feed_picks_probabilities(cat, clusters):
                     )
 
 
-def feed_picks_event_ids(cat, clusters):
+def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
     for event in cat:
         o = event.preferred_origin()
         cluster_found = False
@@ -159,7 +160,9 @@ def feed_picks_event_ids(cat, clusters):
         event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
 
 
-def merge_cluster_with_common_phases(clusters1, clusters2, min_com_phases):
+def merge_cluster_with_common_phases(
+    clusters1: List[Phase], clusters2: List[Phase], min_com_phases: int
+) -> (List[Phase], List[Phase], int):
     """
     Merge into clusters1 all clusters from clusters2 with common phases
     or shared event id.
