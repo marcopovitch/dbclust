@@ -11,28 +11,18 @@ from urllib.error import URLError
 from dacite import from_dict
 from icecream import ic
 import numpy as np
+import pyarrow.parquet as pq
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Polygon, Point
 from obspy import Inventory, read_inventory
 from pyocto.associator import VelocityModel1D
 from read_yml import read_config
-#import dask.dataframe as dd
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger("config")
+logger = logging.getLogger("dbclust_config")
 logger.setLevel(logging.INFO)
-
-
-@dataclass
-class DaskConfig:
-    n_workers: int = None
-    partition_duration_hours: int = 6
-
-    def __post_init__(self):
-        if not self.n_workers:
-            self.n_workers = os.cpu_count()
 
 
 @dataclass
@@ -79,7 +69,6 @@ class PickConfig:
     start: Optional[Union[datetime, pd.Timestamp]] = None
     end: Optional[Union[datetime, pd.Timestamp]] = None
     df: Optional[pd.DataFrame] = None
-    #dd: Optional[dd.DataFrame] = None
 
     def __post_init__(self) -> None:
         if not os.path.exists(self.filename):
@@ -92,22 +81,22 @@ class PickConfig:
             raise ValueError(f"Pick format {self.type} is not recognized !")
 
         if self.start:
-            self.start = pd.to_datetime(self.start, utc=True)
+            self.start = pd.to_datetime(self.start, utc=True).to_datetime64()
 
         if self.end:
-            self.end = pd.to_datetime(self.end, utc=True)
+            self.end = pd.to_datetime(self.end, utc=True).to_datetime64()
 
         # read csv file and trim it from start to end
         if self.type == "phasenetsds":
-            self.load_phasenetsds()
+            self.load_phasenetsds_pq()
         elif self.type == "phasenet":
             self.load_phasenetsds()
         else:
             self.load_eqt()
 
-            self.df = self.df[(self.df["time"] >= start) & (self.df["time"] <= end)]
+        # self.df = self.df[(self.df["time"] >= start) & (self.df["time"] <= end)]
 
-    def load_eqt(self) -> None:
+    def load_eqt_csv(self) -> None:
         self.df = pd.read_csv(
             self.filename,
             parse_dates=["p_arrival_time", "s_arrival_time"],
@@ -118,11 +107,11 @@ class PickConfig:
         )
         # FIXME: col rename ?
 
-    def load_phasenet(self) -> None:
+    def load_phasenet_csv(self) -> None:
         self.df = pd.read_csv(self.filename, low_memory=False)
         # FIXME: col rename ?
 
-    def load_phasenetsds(self) -> None:
+    def load_phasenetsds_csv(self) -> None:
         self.df = pd.read_csv(self.filename, low_memory=False)
         self.df.rename(
             columns={
@@ -134,46 +123,60 @@ class PickConfig:
             inplace=True,
         )
 
-    def preprocessing(self) -> None:
-        """Preprocess picks
+    def load_phasenetsds_pq(self) -> None:
+        table = pq.read_table(self.filename)
+        self.df = table.to_pandas()
+        # self.df["phase_time"] = pd.to_datetime(self.df["phase_time"])
+        assert (
+            self.df["phase_time"].dtype == "datetime64[ns]"
+        ), "'phase_time' is not 'datetime64[ns]'"
 
-        - get only picks from [start, end]
-        - limits pick time to 10^-4 seconds
-        - remove fake picks
-        - remove black listed stations
-        - get rid off nan value
-        - keeps only network.station
-
-        Raises:
-            ValueError: if self.df is empty
-        """
-        self.df["phase_time"] = pd.to_datetime(self.df["phase_time"], utc=True)
-        if self.start:
-            self.df = self.df[self.df["phase_time"] >= self.start]
-        else:
+        if not self.start:
             self.start = self.df["phase_time"].min()
-        if self.end:
-            self.df = self.df[self.df["phase_time"] < self.end]
-        else:
+        if not self.end:
             self.end = self.df["phase_time"].max()
-        if self.df.empty:
-            raise ValueError(f"No data in time range [{self.start}, {self.end}].")
+        # ic(self.df.columns, self.df["phase_time"].dtype, self.start, self.end)
 
-        # remove what seems to be fake picks
-        if "phase_index" in self.df.columns:
-            self.df = self.df[self.df["phase_index"] != 1]
+    # def preprocessing(self) -> None:
+    #     """Preprocess picks
 
-        # limits to 10^-4 seconds same as NLL (needed to unload some picks)
-        self.df["phase_time"] = self.df["phase_time"].dt.round("0.0001s")
-        self.df.sort_values(by=["phase_time"], inplace=True)
+    #     - get only picks from [start, end]
+    #     - limits pick time to 10^-4 seconds
+    #     - remove fake picks
+    #     - remove black listed stations
+    #     - get rid off nan value
+    #     - keeps only network.station
 
-        # get rid off nan value when importing phases without eventid
-        self.df = self.df.replace({np.nan: None})
+    #     Raises:
+    #         ValueError: if self.df is empty
+    #     """
+    #     self.df["phase_time"] = pd.to_datetime(self.df["phase_time"], utc=True)
+    #     if self.start:
+    #         self.df = self.df[self.df["phase_time"] >= self.start]
+    #     else:
+    #         self.start = self.df["phase_time"].min()
+    #     if self.end:
+    #         self.df = self.df[self.df["phase_time"] < self.end]
+    #     else:
+    #         self.end = self.df["phase_time"].max()
+    #     if self.df.empty:
+    #         raise ValueError(f"No data in time range [{self.start}, {self.end}].")
 
-        # keeps only network.station
-        self.df["station_id"] = self.df["station_id"].map(
-            lambda x: ".".join(x.split(".")[:2])
-        )
+    #     # remove what seems to be fake picks
+    #     if "phase_index" in self.df.columns:
+    #         self.df = self.df[self.df["phase_index"] != 1]
+
+    #     # limits to 10^-4 seconds same as NLL (needed to unload some picks)
+    #     self.df["phase_time"] = self.df["phase_time"].dt.round("0.0001s")
+    #     self.df.sort_values(by=["phase_time"], inplace=True)
+
+    #     # get rid off nan value when importing phases without eventid
+    #     self.df = self.df.replace({np.nan: None})
+
+    #     # keeps only network.station
+    #     self.df["station_id"] = self.df["station_id"].map(
+    #         lambda x: ".".join(x.split(".")[:2])
+    #     )
 
     def remove_black_listed_stations(self, black_list: List[str]) -> None:
         logger.info("Removing black listed channels:")
@@ -537,8 +540,37 @@ class PyoctoConfig:
         )
 
 
-class Config:
-    dask: DaskConfig
+@dataclass
+class DaskConfig:
+    n_workers: int = None
+    partition_duration_hours: str = "D"
+    time_partitions: Optional[List] = None
+
+    def __post_init__(self):
+        if not self.n_workers:
+            self.n_workers = os.cpu_count()
+
+    def get_time_partitions(self, time_cfg: TimeConfig, pick_cfg: PickConfig) -> List:
+        time_divisions = (
+            pd.date_range(
+                start=pick_cfg.start,
+                end=pick_cfg.end,
+                freq=self.partition_duration_hours,
+            )
+            .to_series()
+            .to_list()
+        )
+        time_divisions += [pd.to_datetime(pick_cfg.end)]
+
+        adjusted_time_divisions = [
+            (start, end + pd.Timedelta(seconds=time_cfg.overlap_window))
+            for start, end in zip(time_divisions, time_divisions[1:])
+        ]
+
+        return adjusted_time_divisions
+
+
+class DBClustConfig:
     file: FilesConfig
     pick: PickConfig
     station: StationConfig
@@ -550,6 +582,44 @@ class Config:
     catalog: CatalogConfig
     pyocto: PyoctoConfig
     zones: Zones
+    dask: DaskConfig
+
+    def __init__(self, filename) -> None:
+        self.filename = filename
+        logger.info(filename)
+        if not os.path.exists(self.filename):
+            raise FileNotFoundError(f"File {self.filename} does not exist !")
+        self.yaml_data = read_config(self.filename)
+
+        for key, data_class in self.__annotations__.items():
+            if key not in self.yaml_data.keys():
+                raise ValueError(f"Missing section '{key}' in yaml file !")
+            setattr(
+                self, key, from_dict(data_class=data_class, data=self.yaml_data[key])
+            )
+
+        # NLL will discard any location with number of phase < min_phase
+        # take into account cluster parameters to set it accordingly
+        # use -1 to not set a limit
+        self.nll.min_phase = (
+            self.cluster.min_station_count + self.cluster.min_station_with_P_and_S
+        )
+
+        # dask
+        self.dask.time_partitions = self.dask.get_time_partitions(self.time, self.pick)
+
+        # Finalize zones
+        self.zones.load_zones(self.nll)
+
+    def show(self):
+        # debug
+        for key, value in self.__annotations__.items():
+            attribute_value = getattr(self, key)
+            ic(key, attribute_value)
+
+        # test zone
+        ic(self.zones.find_zone(48, 7))
+        ic(self.pick.df)
 
 
 def is_valid_url(url: str) -> bool:
@@ -577,42 +647,6 @@ def is_valid_url(url: str) -> bool:
     return False
 
 
-def get_config_from_file(yaml_file: str, verbose: bool = False) -> Config:
-    yaml_data = read_config(yaml_file)
-
-    myconf = Config()
-    for key, data_class in myconf.__annotations__.items():
-        if key not in yaml_data.keys():
-            raise ValueError(f"Missing section '{key}' in yaml file !")
-        setattr(myconf, key, from_dict(data_class=data_class, data=yaml_data[key]))
-
-    # NLL will discard any location with number of phase < min_phase
-    # take into account cluster parameters to set it accordingly
-    # use -1 to not set a limit
-    myconf.nll.min_phase = (
-        myconf.cluster.min_station_count + myconf.cluster.min_station_with_P_and_S
-    )
-
-    # Finalize zones
-    myconf.zones.load_zones(myconf.nll)
-
-    # load picks
-    # myconf.pick.load_phasenetsds()
-    myconf.pick.remove_black_listed_stations(myconf.station.blacklist)
-    myconf.pick.preprocessing()
-    return myconf
-
-
 if __name__ == "__main__":
-    myconf = get_config_from_file(
-        "/Users/marc/Data/DBClust/selestat/dbclust-selestat-mod.yml", verbose=True
-    )
-
-    # debug
-    for key, value in myconf.__annotations__.items():
-        attribute_value = getattr(myconf, key)
-        ic(key, attribute_value)
-
-    # test zone
-    ic(myconf.zones.find_zone(48, 7))
-    ic(myconf.pick.df)
+    myconf = DBClustConfig("/Users/marc/Data/DBClust/selestat/dbclust-selestat-mod.yml")
+    myconf.show()
