@@ -56,7 +56,7 @@ def convert_csv_to_parquet(
     ddf = ddf.dropna(subset=["station_id"])
 
     # get rid off nan value when importing phases without eventid
-    ddf = ddf.replace({np.nan: None})
+    ddf = ddf.replace({np.nan: ""})
 
     # Needed for time partition
     ddf["idxtime"] = ddf[time_name]
