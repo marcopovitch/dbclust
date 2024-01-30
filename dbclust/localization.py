@@ -33,6 +33,7 @@ from obspy import read_events
 from jinja2 import Template
 
 from quakeml import remove_duplicated_picks
+import ray
 
 
 # default logger
@@ -642,6 +643,75 @@ class NllLoc(object):
         cat_results = b.map(
             lambda x: self.nll_localisation(x, double_pass=self.double_pass)
         ).compute()
+
+        mycatalog = Catalog()
+        for cat in cat_results:
+            if not cat:
+                continue
+            # there is always only one event in the catalog
+            e = cat.events[0]
+            o = e.preferred_origin()
+            # nb_station_used = o.quality.used_station_count
+            o.quality.used_station_count = self.get_used_station_count(e, o)
+            # nb_station_used = o.quality.used_station_count
+            nb_phase_used = o.quality.used_phase_count
+            # if nb_station_used >= self.nll_min_phase:
+            if nb_phase_used >= self.nll_min_phase:
+                count = self.check_stations_with_P_and_S(
+                    e, o, self.min_station_with_P_and_S
+                )
+                if count >= self.min_station_with_P_and_S:
+                    logger.info(
+                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
+                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
+                    )
+                    mycatalog += cat
+                else:
+                    logger.info(
+                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
+                        "... ignoring it !"
+                    )
+            else:
+                logger.debug(
+                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
+                    f" ... ignoring it !"
+                )
+
+        if append is True:
+            self.catalog += mycatalog
+
+        # sort events by time
+        self.nb_events = len(self.catalog)
+        if self.nb_events > 1:
+            self.catalog.events = sorted(
+                self.catalog.events, key=lambda e: e.preferred_origin().time
+            )
+        return mycatalog
+
+    def ray_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
+        """
+        nll localisation and export to quakeml
+        warning : network and channel are lost since they are not used by nll
+        use Phase() to get them.
+        if append is True, the obtain catalog is appended to the NllLoc catalog
+
+        returns a catalog
+        """
+
+        @ray.remote
+        def remote_nll_localisation(file_path, double_pass):
+            return self.nll_localisation(file_path, double_pass=double_pass)
+
+        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
+        logger.debug(f"Localization of {obs_files_pattern}")
+
+        delayed_tasks = [
+            remote_nll_localisation.remote(f, double_pass=self.double_pass)
+            for f in glob.glob(obs_files_pattern)
+        ]
+
+        # Récupérer les résultats
+        cat_results = ray.get(delayed_tasks)
 
         mycatalog = Catalog()
         for cat in cat_results:
