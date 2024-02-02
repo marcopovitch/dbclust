@@ -17,7 +17,7 @@ import multiprocessing
 
 import dask
 import dask.bag as db
-from dask import delayed
+#from dask import delayed
 
 from itertools import combinations
 import urllib.request
@@ -29,7 +29,6 @@ import dateparser
 from obspy.core import UTCDateTime
 from obspy import Catalog, read_events
 from obspy.core.event import Origin, OriginQuality, ResourceIdentifier
-from obspy import read_events
 from jinja2 import Template
 
 from quakeml import remove_duplicated_picks
@@ -1183,7 +1182,7 @@ def reloc_fdsn_event(locator, eventid, fdsnws):
         with urllib.request.urlopen(link) as f:
             cat = read_events(f.read())
     except Exception as e:
-        logger.error("Error getting/reading eventid %s", eventid)
+        logger.error(f"Error getting/reading eventid {eventid} ({e})")
         sys.exit()
 
     if not cat:
