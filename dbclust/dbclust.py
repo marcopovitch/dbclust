@@ -8,7 +8,6 @@ import pandas as pd
 import tempfile
 from dataclasses import asdict
 from typing import Optional
-import logging
 from icecream import ic
 
 import dask
@@ -27,10 +26,6 @@ from dbclust2pyocto import dbclust2pyocto
 from localization import NllLoc, show_event
 from quakeml import make_readable_id, feed_distance_from_preloc_to_pref_origin
 import warnings
-
-import ray
-
-# import gc
 
 import multiprocessing
 from functools import partial
@@ -126,7 +121,7 @@ def dbclust(
     """
 
     start, end = cfg.dask.time_partitions[job_index]
-    if df.empty:
+    if df is None or df.empty:
         df = cfg.pick.df[
             (cfg.pick.df["phase_time"] >= start) & (cfg.pick.df["phase_time"] < end)
         ]
@@ -254,9 +249,9 @@ def dbclust(
                 locator.tmpdir = tmpdir_automaticaly_cleaned
 
                 # Ray // version
-                clustcat = locator.ray_get_localisations_from_nllobs_dir(
-                    my_obs_path, append=True
-                )
+                # clustcat = locator.ray_get_localisations_from_nllobs_dir(
+                #     my_obs_path, append=True
+                # )
 
                 # Dask // version
                 # clustcat = locator.dask_get_localisations_from_nllobs_dir(
@@ -264,9 +259,9 @@ def dbclust(
                 # )
 
                 # thread // version
-                # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
-                #     my_obs_path, append=True
-                # )
+                clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
+                    my_obs_path, append=True
+                )
 
                 # clustcat = locator.processes_get_localisations_from_nllobs_dir(
                 #     my_obs_path, append=True
@@ -412,11 +407,12 @@ def run_with_dask(cfg: DBClustConfig):
         processes=True,
         threads_per_worker=1,
         n_workers=cfg.dask.n_workers,
+        dashboard_address='10.0.1.40:8787',
     )
     client = Client(cluster)
     logger.info(f"Dask running on {cfg.dask.n_workers} cpu(s)")
     logger.info(f"Dask dashboard url: {client.dashboard_link}")
-    # dask.config.set({"distributed.scheduler.work-stealing": True})
+    dask.config.set({"distributed.scheduler.work-stealing": True})
 
     # Dask stuff
     delayed_tasks = [
@@ -432,8 +428,12 @@ def run_with_dask(cfg: DBClustConfig):
 
 
 def run_with_ray(cfg: DBClustConfig):
+    import ray
     # Start Ray
-    context = ray.init(num_cpus=cfg.dask.n_workers)
+    context = ray.init(num_cpus=cfg.dask.n_workers * 4,
+                       #dashboard_host="10.0.1.40",
+                       #dashboard_port=8087,
+                       )
     logger.info(f" http://{context.dashboard_url}")
 
     # Ray tasks
@@ -504,6 +504,6 @@ if __name__ == "__main__":
     cfg.show()
 
     # results = dbclust(cfg)
-    # results = run_with_multiproc(cfg)
+    results = run_with_multiproc(cfg)
     # results = run_with_dask(cfg)
-    results = run_with_ray(cfg)
+    # results = run_with_ray(cfg)
