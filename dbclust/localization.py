@@ -2,6 +2,7 @@
 import sys
 import io
 import os
+from typing import List
 from math import isclose, fabs
 import logging
 import glob
@@ -17,7 +18,8 @@ import multiprocessing
 
 import dask
 import dask.bag as db
-#from dask import delayed
+
+# from dask import delayed
 
 from itertools import combinations
 import urllib.request
@@ -33,6 +35,7 @@ from jinja2 import Template
 
 from quakeml import remove_duplicated_picks
 import ray
+from ray.util.multiprocessing import Pool
 
 
 # default logger
@@ -453,6 +456,49 @@ class NllLoc(object):
 
         return cat
 
+    def get_catalog_from_results(self, cat_results: List[Catalog]) -> Catalog:
+        """Compute attributes and filter events from catalogs"""
+        mycatalog = Catalog()
+        for cat in cat_results:
+            if not cat:
+                continue
+            # there is always only one event in the catalog
+            e = cat.events[0]
+            o = e.preferred_origin()
+            # nb_station_used = o.quality.used_station_count
+            o.quality.used_station_count = self.get_used_station_count(e, o)
+            # nb_station_used = o.quality.used_station_count
+            nb_phase_used = o.quality.used_phase_count
+            # if nb_station_used >= self.nll_min_phase:
+            if nb_phase_used >= self.nll_min_phase:
+                count = self.check_stations_with_P_and_S(
+                    e, o, self.min_station_with_P_and_S
+                )
+                if count >= self.min_station_with_P_and_S:
+                    logger.info(
+                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
+                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
+                    )
+                    mycatalog += cat
+                else:
+                    logger.info(
+                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
+                        "... ignoring it !"
+                    )
+            else:
+                logger.debug(
+                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
+                    f" ... ignoring it !"
+                )
+
+        # sort events by time
+        self.nb_events = len(self.catalog)
+        if self.nb_events > 1:
+            self.catalog.events = sorted(
+                self.catalog.events, key=lambda e: e.preferred_origin().time
+            )
+        return mycatalog
+
     def processes_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
         logger.debug(f"Localization of {obs_files_pattern}")
@@ -469,49 +515,11 @@ class NllLoc(object):
             process.join()
 
         cat_results = [process.exitcode for process in processes]
-
-        mycatalog = Catalog()
-        for cat in cat_results:
-            if not cat:
-                continue
-            # there is always only one event in the catalog
-            e = cat.events[0]
-            o = e.preferred_origin()
-            # nb_station_used = o.quality.used_station_count
-            o.quality.used_station_count = self.get_used_station_count(e, o)
-            # nb_station_used = o.quality.used_station_count
-            nb_phase_used = o.quality.used_phase_count
-            # if nb_station_used >= self.nll_min_phase:
-            if nb_phase_used >= self.nll_min_phase:
-                count = self.check_stations_with_P_and_S(
-                    e, o, self.min_station_with_P_and_S
-                )
-                if count >= self.min_station_with_P_and_S:
-                    logger.info(
-                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
-                    )
-                    mycatalog += cat
-                else:
-                    logger.info(
-                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
-                        "... ignoring it !"
-                    )
-            else:
-                logger.debug(
-                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
-                    f" ... ignoring it !"
-                )
+        mycatalog = self.get_catalog_from_results(cat_results)
 
         if append is True:
             self.catalog += mycatalog
 
-        # sort events by time
-        self.nb_events = len(self.catalog)
-        if self.nb_events > 1:
-            self.catalog.events = sorted(
-                self.catalog.events, key=lambda e: e.preferred_origin().time
-            )
         return mycatalog
 
     def multiproc_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
@@ -519,56 +527,30 @@ class NllLoc(object):
         logger.debug(f"Localization of {obs_files_pattern}")
 
         max_workers = multiprocessing.cpu_count()
-        pool = multiprocessing.Pool(processes=max_workers)
-
         my_loc_proc = partial(self.nll_localisation, double_pass=self.double_pass)
-        cat_results = pool.map(my_loc_proc, glob.glob(obs_files_pattern))
+        with multiprocessing.Pool(processes=max_workers) as pool:
+            cat_results = pool.map(my_loc_proc, glob.glob(obs_files_pattern))
 
-        pool.close()
-        pool.join()
-
-        mycatalog = Catalog()
-        for cat in cat_results:
-            if not cat:
-                continue
-            # there is always only one event in the catalog
-            e = cat.events[0]
-            o = e.preferred_origin()
-            # nb_station_used = o.quality.used_station_count
-            o.quality.used_station_count = self.get_used_station_count(e, o)
-            # nb_station_used = o.quality.used_station_count
-            nb_phase_used = o.quality.used_phase_count
-            # if nb_station_used >= self.nll_min_phase:
-            if nb_phase_used >= self.nll_min_phase:
-                count = self.check_stations_with_P_and_S(
-                    e, o, self.min_station_with_P_and_S
-                )
-                if count >= self.min_station_with_P_and_S:
-                    logger.info(
-                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
-                    )
-                    mycatalog += cat
-                else:
-                    logger.info(
-                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
-                        "... ignoring it !"
-                    )
-            else:
-                logger.debug(
-                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
-                    f" ... ignoring it !"
-                )
+        mycatalog = self.get_catalog_from_results(cat_results)
 
         if append is True:
             self.catalog += mycatalog
 
-        # sort events by time
-        self.nb_events = len(self.catalog)
-        if self.nb_events > 1:
-            self.catalog.events = sorted(
-                self.catalog.events, key=lambda e: e.preferred_origin().time
-            )
+        return mycatalog
+
+    def ray_multiproc_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
+        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
+        logger.debug(f"Localization of {obs_files_pattern}")
+
+        my_loc_proc = partial(self.nll_localisation, double_pass=self.double_pass)
+        with Pool() as pool:
+            cat_results = pool.map(my_loc_proc, glob.glob(obs_files_pattern))
+
+        mycatalog = self.get_catalog_from_results(cat_results)
+
+        if append is True:
+            self.catalog += mycatalog
+
         return mycatalog
 
     def thread_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
@@ -576,52 +558,15 @@ class NllLoc(object):
         logger.debug(f"Localization of {obs_files_pattern}")
 
         max_workers = multiprocessing.cpu_count()
+        my_loc_proc = partial(self.nll_localisation, double_pass=self.double_pass)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            my_loc_proc = partial(self.nll_localisation, double_pass=self.double_pass)
             cat_results = list(executor.map(my_loc_proc, glob.glob(obs_files_pattern)))
 
-        mycatalog = Catalog()
-        for cat in cat_results:
-            if not cat:
-                continue
-            # there is always only one event in the catalog
-            e = cat.events[0]
-            o = e.preferred_origin()
-            # nb_station_used = o.quality.used_station_count
-            o.quality.used_station_count = self.get_used_station_count(e, o)
-            # nb_station_used = o.quality.used_station_count
-            nb_phase_used = o.quality.used_phase_count
-            # if nb_station_used >= self.nll_min_phase:
-            if nb_phase_used >= self.nll_min_phase:
-                count = self.check_stations_with_P_and_S(
-                    e, o, self.min_station_with_P_and_S
-                )
-                if count >= self.min_station_with_P_and_S:
-                    logger.info(
-                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
-                    )
-                    mycatalog += cat
-                else:
-                    logger.info(
-                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
-                        "... ignoring it !"
-                    )
-            else:
-                logger.debug(
-                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
-                    f" ... ignoring it !"
-                )
+        mycatalog = self.get_catalog_from_results(cat_results)
 
         if append is True:
             self.catalog += mycatalog
 
-        # sort events by time
-        self.nb_events = len(self.catalog)
-        if self.nb_events > 1:
-            self.catalog.events = sorted(
-                self.catalog.events, key=lambda e: e.preferred_origin().time
-            )
         return mycatalog
 
     def dask_bag_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
@@ -643,48 +588,11 @@ class NllLoc(object):
             lambda x: self.nll_localisation(x, double_pass=self.double_pass)
         ).compute()
 
-        mycatalog = Catalog()
-        for cat in cat_results:
-            if not cat:
-                continue
-            # there is always only one event in the catalog
-            e = cat.events[0]
-            o = e.preferred_origin()
-            # nb_station_used = o.quality.used_station_count
-            o.quality.used_station_count = self.get_used_station_count(e, o)
-            # nb_station_used = o.quality.used_station_count
-            nb_phase_used = o.quality.used_phase_count
-            # if nb_station_used >= self.nll_min_phase:
-            if nb_phase_used >= self.nll_min_phase:
-                count = self.check_stations_with_P_and_S(
-                    e, o, self.min_station_with_P_and_S
-                )
-                if count >= self.min_station_with_P_and_S:
-                    logger.info(
-                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
-                    )
-                    mycatalog += cat
-                else:
-                    logger.info(
-                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
-                        "... ignoring it !"
-                    )
-            else:
-                logger.debug(
-                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
-                    f" ... ignoring it !"
-                )
+        mycatalog = self.get_catalog_from_results(cat_results)
 
         if append is True:
             self.catalog += mycatalog
 
-        # sort events by time
-        self.nb_events = len(self.catalog)
-        if self.nb_events > 1:
-            self.catalog.events = sorted(
-                self.catalog.events, key=lambda e: e.preferred_origin().time
-            )
         return mycatalog
 
     def ray_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
@@ -712,48 +620,11 @@ class NllLoc(object):
         # Récupérer les résultats
         cat_results = ray.get(delayed_tasks)
 
-        mycatalog = Catalog()
-        for cat in cat_results:
-            if not cat:
-                continue
-            # there is always only one event in the catalog
-            e = cat.events[0]
-            o = e.preferred_origin()
-            # nb_station_used = o.quality.used_station_count
-            o.quality.used_station_count = self.get_used_station_count(e, o)
-            # nb_station_used = o.quality.used_station_count
-            nb_phase_used = o.quality.used_phase_count
-            # if nb_station_used >= self.nll_min_phase:
-            if nb_phase_used >= self.nll_min_phase:
-                count = self.check_stations_with_P_and_S(
-                    e, o, self.min_station_with_P_and_S
-                )
-                if count >= self.min_station_with_P_and_S:
-                    logger.info(
-                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
-                    )
-                    mycatalog += cat
-                else:
-                    logger.info(
-                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
-                        "... ignoring it !"
-                    )
-            else:
-                logger.debug(
-                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
-                    f" ... ignoring it !"
-                )
+        mycatalog = self.get_catalog_from_results(cat_results)
 
         if append is True:
             self.catalog += mycatalog
 
-        # sort events by time
-        self.nb_events = len(self.catalog)
-        if self.nb_events > 1:
-            self.catalog.events = sorted(
-                self.catalog.events, key=lambda e: e.preferred_origin().time
-            )
         return mycatalog
 
     def dask_get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
@@ -775,48 +646,11 @@ class NllLoc(object):
         # execute tasks
         cat_results = dask.compute(*delayed_tasks)
 
-        mycatalog = Catalog()
-        for cat in cat_results:
-            if not cat:
-                continue
-            # there is always only one event in the catalog
-            e = cat.events[0]
-            o = e.preferred_origin()
-            # nb_station_used = o.quality.used_station_count
-            o.quality.used_station_count = self.get_used_station_count(e, o)
-            # nb_station_used = o.quality.used_station_count
-            nb_phase_used = o.quality.used_phase_count
-            # if nb_station_used >= self.nll_min_phase:
-            if nb_phase_used >= self.nll_min_phase:
-                count = self.check_stations_with_P_and_S(
-                    e, o, self.min_station_with_P_and_S
-                )
-                if count >= self.min_station_with_P_and_S:
-                    logger.info(
-                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
-                    )
-                    mycatalog += cat
-                else:
-                    logger.info(
-                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
-                        "... ignoring it !"
-                    )
-            else:
-                logger.debug(
-                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
-                    f" ... ignoring it !"
-                )
+        mycatalog = self.get_catalog_from_results(cat_results)
 
         if append is True:
             self.catalog += mycatalog
 
-        # sort events by time
-        self.nb_events = len(self.catalog)
-        if self.nb_events > 1:
-            self.catalog.events = sorted(
-                self.catalog.events, key=lambda e: e.preferred_origin().time
-            )
         return mycatalog
 
     def get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
@@ -835,51 +669,19 @@ class NllLoc(object):
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
         logger.debug(f"Localization of {obs_files_pattern}")
 
-        mycatalog = Catalog()
+        cat_results = []
         for nll_obs_file in sorted(glob.glob(obs_files_pattern)):
             # localization
             cat = self.nll_localisation(nll_obs_file, double_pass=self.double_pass)
             if not cat:
                 logger.debug(f"No loc obtained for {nll_obs_file}:/")
                 continue
+            cat_results.append(cat)
 
-            # there is always only one event in the catalog
-            e = cat.events[0]
-            o = e.preferred_origin()
-            o.quality.used_station_count = self.get_used_station_count(e, o)
-            # nb_station_used = o.quality.used_station_count
-            nb_phase_used = o.quality.used_phase_count
-            # if nb_station_used >= self.nll_min_phase:
-            if nb_phase_used >= self.nll_min_phase:
-                count = self.check_stations_with_P_and_S(
-                    e, o, self.min_station_with_P_and_S
-                )
-                if count >= self.min_station_with_P_and_S:
-                    logger.info(
-                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
-                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
-                    )
-                    mycatalog += cat
-                else:
-                    logger.info(
-                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
-                        "... ignoring it !"
-                    )
-            else:
-                logger.debug(
-                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
-                    f" ... ignoring it !"
-                )
+        mycatalog = self.get_catalog_from_results(cat_results)
 
         if append is True:
             self.catalog += mycatalog
-
-        # sort events by time
-        self.nb_events = len(self.catalog)
-        if self.nb_events > 1:
-            self.catalog.events = sorted(
-                self.catalog.events, key=lambda e: e.preferred_origin().time
-            )
 
         return mycatalog
 
