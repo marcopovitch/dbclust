@@ -27,8 +27,10 @@ from localization import NllLoc, show_event
 from quakeml import make_readable_id, feed_distance_from_preloc_to_pref_origin
 import warnings
 
-import multiprocessing
 from functools import partial
+import multiprocessing
+from ray.util.multiprocessing import Pool
+
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -248,6 +250,21 @@ def dbclust(
             ) as tmpdir_automaticaly_cleaned:
                 locator.tmpdir = tmpdir_automaticaly_cleaned
 
+                # sequential version
+                clustcat = locator.get_localisations_from_nllobs_dir(
+                    my_obs_path, append=True
+                )
+
+                # multiproc  // version
+                # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
+                #     my_obs_path, append=True
+                # )
+
+                # Ray pool // version
+                # clustcat = locator.ray_multiproc_get_localisations_from_nllobs_dir(
+                #    my_obs_path, append=True
+                # )
+
                 # Ray // version
                 # clustcat = locator.ray_get_localisations_from_nllobs_dir(
                 #     my_obs_path, append=True
@@ -259,16 +276,11 @@ def dbclust(
                 # )
 
                 # thread // version
-                clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
-                    my_obs_path, append=True
-                )
-
-                # clustcat = locator.processes_get_localisations_from_nllobs_dir(
+                # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
                 #     my_obs_path, append=True
                 # )
 
-                # sequential version
-                # clustcat = locator.get_localisations_from_nllobs_dir(
+                # clustcat = locator.processes_get_localisations_from_nllobs_dir(
                 #     my_obs_path, append=True
                 # )
 
@@ -401,13 +413,20 @@ def run_with_multiproc(cfg: DBClustConfig):
     return results
 
 
+def run_with_ray_multiproc(cfg: DBClustConfig):
+    func = partial(process_task, cfg)
+    with Pool(cfg.dask.n_workers) as pool:
+        results = pool.map(func, enumerate(cfg.dask.time_partitions, start=0))
+    return results
+
+
 def run_with_dask(cfg: DBClustConfig):
     # Cluster initialization
     cluster = LocalCluster(
         processes=True,
         threads_per_worker=1,
         n_workers=cfg.dask.n_workers,
-        dashboard_address='10.0.1.40:8787',
+        dashboard_address="10.0.1.40:8787",
     )
     client = Client(cluster)
     logger.info(f"Dask running on {cfg.dask.n_workers} cpu(s)")
@@ -429,11 +448,13 @@ def run_with_dask(cfg: DBClustConfig):
 
 def run_with_ray(cfg: DBClustConfig):
     import ray
+
     # Start Ray
-    context = ray.init(num_cpus=cfg.dask.n_workers * 4,
-                       #dashboard_host="10.0.1.40",
-                       #dashboard_port=8087,
-                       )
+    context = ray.init(
+        num_cpus=cfg.dask.n_workers,
+        # dashboard_host="10.0.1.40",
+        # dashboard_port=8087,
+    )
     logger.info(f" http://{context.dashboard_url}")
 
     # Ray tasks
@@ -504,6 +525,7 @@ if __name__ == "__main__":
     cfg.show()
 
     # results = dbclust(cfg)
-    results = run_with_multiproc(cfg)
+    # results = run_with_multiproc(cfg)
     # results = run_with_dask(cfg)
     # results = run_with_ray(cfg)
+    results = run_with_ray_multiproc(cfg)
