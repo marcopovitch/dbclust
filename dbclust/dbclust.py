@@ -128,15 +128,20 @@ def dbclust(
             (cfg.pick.df["phase_time"] >= start) & (cfg.pick.df["phase_time"] < end)
         ]
 
+    logger.info(f"[{job_index}] loading data ... ")
+    df = df.compute()  # load all data now
+    logger.info(f"[{job_index}] data loaded !")
+    
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
+    
     time_periods = (
         pd.date_range(tmin, tmax, freq=f"{cfg.time.time_window}min")
         .to_series()
         .to_list()
     )
     time_periods += [pd.to_datetime(tmax)]
-    logger.info(f"Splitting dataset in {len(time_periods)-1} chunks.")
+    logger.info(f"[{job_index}] Splitting dataset in {len(time_periods)-1} chunks.")
 
     # keep track of each time period processed
     part = 0
@@ -157,23 +162,23 @@ def dbclust(
         logger.debug("")
 
         logger.info(
-            f"Time window extraction #{i}/{len(time_periods)-1} picks from {begin} to {end}."
+            f"[{job_index}] Time window extraction #{i}/{len(time_periods)-1} picks from {begin} to {end}."
         )
 
         # Extract picks on this time period
         df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
         if not len(df_subset):
-            logger.info(f"Skipping clustering {len(df_subset)} phases.")
+            logger.info(f"[{job_index}] Skipping clustering {len(df_subset)} phases.")
             continue
-        logger.info(f"Clustering {len(df_subset)} phases.")
+        logger.info(f"[{job_index}] Clustering {len(df_subset)} phases.")
 
         # to prevents extra event, remove from current picks list,
         # picks previously associated with events on the previous iteration
         logger.debug(f"test len(df_subset) before = {len(df_subset)}")
         if len(picks_to_remove):
-            logger.info(f"before unload picks: pick length is {len(df_subset)}")
+            logger.info(f"[{job_index}] before unload picks: pick length is {len(df_subset)}")
             df_subset = unload_picks_list(df_subset, picks_to_remove)
-            logger.info(f"after unload picks: pick length is {len(df_subset)}")
+            logger.info(f"[{job_index}] after unload picks: pick length is {len(df_subset)}")
             picks_to_remove = []
 
         # Import picks
@@ -251,9 +256,9 @@ def dbclust(
                 locator.tmpdir = tmpdir_automaticaly_cleaned
 
                 # sequential version
-                clustcat = locator.get_localisations_from_nllobs_dir(
-                    my_obs_path, append=True
-                )
+                # clustcat = locator.get_localisations_from_nllobs_dir(
+                #     my_obs_path, append=True
+                # )
 
                 # multiproc  // version
                 # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
@@ -271,9 +276,9 @@ def dbclust(
                 # )
 
                 # Dask // version
-                # clustcat = locator.dask_get_localisations_from_nllobs_dir(
-                #     my_obs_path, append=True
-                # )
+                clustcat = locator.dask_get_localisations_from_nllobs_dir(
+                    my_obs_path, append=True
+                )
 
                 # thread // version
                 # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
@@ -426,7 +431,7 @@ def run_with_dask(cfg: DBClustConfig):
         processes=True,
         threads_per_worker=1,
         n_workers=cfg.dask.n_workers,
-        dashboard_address="10.0.1.40:8787",
+        # dashboard_address="10.0.1.40:8787",
     )
     client = Client(cluster)
     logger.info(f"Dask running on {cfg.dask.n_workers} cpu(s)")
@@ -526,6 +531,6 @@ if __name__ == "__main__":
 
     # results = dbclust(cfg)
     # results = run_with_multiproc(cfg)
-    # results = run_with_dask(cfg)
+    results = run_with_dask(cfg)
     # results = run_with_ray(cfg)
-    results = run_with_ray_multiproc(cfg)
+    # results = run_with_ray_multiproc(cfg)
