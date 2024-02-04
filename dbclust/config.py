@@ -10,9 +10,11 @@ from urllib.request import urlopen
 from urllib.error import URLError
 from dacite import from_dict
 from icecream import ic
-import numpy as np
+
+# import numpy as np
 import pyarrow.parquet as pq
 import pandas as pd
+import dask.dataframe as dd
 import geopandas as gpd
 from shapely.geometry import Polygon, Point
 from obspy import Inventory, read_inventory
@@ -124,18 +126,21 @@ class PickConfig:
         )
 
     def load_phasenetsds_pq(self) -> None:
+        # Dask doesn't use page index to get min and max
+        # and pyarrow seems to have memory leaks
         table = pq.read_table(self.filename)
-        self.df = table.to_pandas()
-        # self.df["phase_time"] = pd.to_datetime(self.df["phase_time"])
+        # self.df = table.to_pandas()
+        self.df = dd.read_parquet(self.filename)
         assert (
             self.df["phase_time"].dtype == "datetime64[ns]"
         ), "'phase_time' is not 'datetime64[ns]'"
 
         if not self.start:
-            self.start = self.df["phase_time"].min()
+            # self.start = self.df["phase_time"].min().compute()
+            self.start = table["phase_time"].to_pandas().min()
         if not self.end:
-            self.end = self.df["phase_time"].max()
-        # ic(self.df.columns, self.df["phase_time"].dtype, self.start, self.end)
+            # self.end = self.df["phase_time"].max().compute()
+            self.end = table["phase_time"].to_pandas().max()
 
     # def preprocessing(self) -> None:
     #     """Preprocess picks
