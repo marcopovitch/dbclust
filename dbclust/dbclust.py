@@ -122,18 +122,23 @@ def dbclust(
         job_index (int): job index, None if in sequential mode
     """
 
-    start, end = cfg.dask.time_partitions[job_index]
-    if df is None or df.empty:
-        df = cfg.pick.df[
-            (cfg.pick.df["phase_time"] >= start) & (cfg.pick.df["phase_time"] < end)
-        ]
-
-    logger.info(f"[{job_index}] loading data ... ")
-    df = df.compute()  # load all data now
-    logger.info(f"[{job_index}] data loaded !")
+    #start, end = cfg.dask.time_partitions[job_index]
+    # if df is None or df.empty:
+    #     df = cfg.pick.df[
+    #         (cfg.pick.df["phase_time"] >= start) & (cfg.pick.df["phase_time"] < end)
+    #     ]
+    # logger.info(f"[{job_index}] loading data ... ")
+    # df = df.compute()  # load all data now
+    # logger.info(f"[{job_index}] data loaded !")
     
+    if df is None or df.empty:
+        start, end = cfg.dask.time_partitions[job_index]
+        logger.info(f"[{job_index}] loading data ... ")
+        df = cfg.pick.get_dataframe_slice(start, end)
+        logger.info(f"[{job_index}] data loaded !")
+        
     tmin = df["phase_time"].min()
-    tmax = df["phase_time"].max()
+    tmax = df["phase_time"].max() 
     
     time_periods = (
         pd.date_range(tmin, tmax, freq=f"{cfg.time.time_window}min")

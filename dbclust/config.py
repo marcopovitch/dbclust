@@ -11,7 +11,6 @@ from urllib.error import URLError
 from dacite import from_dict
 from icecream import ic
 
-# import numpy as np
 import pyarrow.parquet as pq
 import pandas as pd
 import dask.dataframe as dd
@@ -20,6 +19,7 @@ from shapely.geometry import Polygon, Point
 from obspy import Inventory, read_inventory
 from pyocto.associator import VelocityModel1D
 from read_yml import read_config
+import duckdb
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -68,6 +68,7 @@ class PickConfig:
     S_uncertainty: float
     P_proba_threshold: float
     S_proba_threshold: float
+    parquet_filename: Optional[str] = None
     start: Optional[Union[datetime, pd.Timestamp]] = None
     end: Optional[Union[datetime, pd.Timestamp]] = None
     df: Optional[pd.DataFrame] = None
@@ -78,6 +79,11 @@ class PickConfig:
 
         if not os.access(self.filename, os.R_OK):
             raise PermissionError(f"{self.filename}.")
+
+        if os.path.isdir(self.filename):
+            self.parquet_filename = os.path.join(self.filename, "*")
+        else:
+            self.parquet_filename = self.filename
 
         if self.type not in ["eqt", "phasenet", "phasenetsds"]:
             raise ValueError(f"Pick format {self.type} is not recognized !")
@@ -90,7 +96,8 @@ class PickConfig:
 
         # read csv file and trim it from start to end
         if self.type == "phasenetsds":
-            self.load_phasenetsds_pq()
+            # self.load_phasenetsds_pq()
+            self.load_phasenetsds_duckdb()
         elif self.type == "phasenet":
             self.load_phasenetsds()
         else:
@@ -142,46 +149,24 @@ class PickConfig:
             # self.end = self.df["phase_time"].max().compute()
             self.end = table["phase_time"].to_pandas().max()
 
-    # def preprocessing(self) -> None:
-    #     """Preprocess picks
+    def load_phasenetsds_duckdb(self) -> None:
+        rqt = (
+            "SELECT MIN(phase_time), MAX(phase_time) "
+            f"from read_parquet('{self.parquet_filename}')"
+        )
+        min, max = duckdb.sql(rqt).fetchall().pop()
+        if not self.start:
+            self.start = min
+        if not self.end:
+            self.end = max
 
-    #     - get only picks from [start, end]
-    #     - limits pick time to 10^-4 seconds
-    #     - remove fake picks
-    #     - remove black listed stations
-    #     - get rid off nan value
-    #     - keeps only network.station
-
-    #     Raises:
-    #         ValueError: if self.df is empty
-    #     """
-    #     self.df["phase_time"] = pd.to_datetime(self.df["phase_time"], utc=True)
-    #     if self.start:
-    #         self.df = self.df[self.df["phase_time"] >= self.start]
-    #     else:
-    #         self.start = self.df["phase_time"].min()
-    #     if self.end:
-    #         self.df = self.df[self.df["phase_time"] < self.end]
-    #     else:
-    #         self.end = self.df["phase_time"].max()
-    #     if self.df.empty:
-    #         raise ValueError(f"No data in time range [{self.start}, {self.end}].")
-
-    #     # remove what seems to be fake picks
-    #     if "phase_index" in self.df.columns:
-    #         self.df = self.df[self.df["phase_index"] != 1]
-
-    #     # limits to 10^-4 seconds same as NLL (needed to unload some picks)
-    #     self.df["phase_time"] = self.df["phase_time"].dt.round("0.0001s")
-    #     self.df.sort_values(by=["phase_time"], inplace=True)
-
-    #     # get rid off nan value when importing phases without eventid
-    #     self.df = self.df.replace({np.nan: None})
-
-    #     # keeps only network.station
-    #     self.df["station_id"] = self.df["station_id"].map(
-    #         lambda x: ".".join(x.split(".")[:2])
-    #     )
+    def get_dataframe_slice(self, start, end):
+        rqt = (
+            f"select * from read_parquet('{self.parquet_filename}') "
+            f"where phase_time between '{start}' and '{end}'"
+        )
+        ic(rqt)
+        return duckdb.sql(rqt).df()
 
     def remove_black_listed_stations(self, black_list: List[str]) -> None:
         logger.info("Removing black listed channels:")
