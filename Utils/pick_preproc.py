@@ -23,15 +23,18 @@ def unload_too_close_picks_clustering(
         },
         inplace=True,
     )
-    # Keeps only network_code.station_code
+    # Keeps only network_code.station_code, move channel to 
+    df["channel"] = df["station_id"].map(lambda x: ".".join(x.split(".")[2:4]))
     df["station_id"] = df["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
     df["phase_time"] = pd.to_datetime(df["phase_time"], utc=True)
 
     df = df.sort_values(by=["station_id", "phase_type", "phase_time"])
 
+    # empty dataframe
     results = pd.DataFrame(
-        columns=["station_id", "phase_type", "phase_time", "phase_score"]
+        columns=["station_id", "channel", "phase_type", "phase_time", "phase_score", "eventid", "agency"]
     )
+    
     # run separately by phase type
     for phase in ("P", "S"):
         print(f"Working on {phase}.")
@@ -81,21 +84,9 @@ def unload_too_close_picks_clustering(
     results["phase_time"] = pd.to_datetime(results["phase_time"]).dt.strftime(
         "%Y-%m-%dT%H:%M:%S.%fZ"
     )
-    results.sort_values(["phase_time"], inplace=True)
-    #ic(results)
-    print(f"Writing to {csv_file_out}.")
-
-    df.rename(
-        columns={
-            "station_id": "seedid",
-            "phase_type": "phasename",
-            "phase_time": "time",
-            "phase_score": "probability",
-        },
-        inplace=True,
-    )
-
+    
     results.sort_values(by=["phase_time", "station_id"], inplace=True)
+    print(f"Writing to {csv_file_out}.")
     results.to_csv(csv_file_out, index=False)
 
 
