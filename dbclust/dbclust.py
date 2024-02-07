@@ -127,7 +127,7 @@ def dbclust(
     """
 
     if df is None or df.empty:
-        # get duckdb connection
+        # Get Duckdb connection and read picks in [start, end[ range
         con = duckdb_init(cfg.pick.parquet_filename)
         start, end = cfg.dask.time_partitions[job_index]
         rqt = f"SELECT * FROM PICKS WHERE phase_time BETWEEN '{start}' AND '{end}'"
@@ -136,7 +136,15 @@ def dbclust(
         logger.info(f"[{job_index}] {len(df)} row loaded !")
         df["phase_time"] = df["phase_time"].dt.tz_localize("UTC")
     else:
+        # Uses the pandas Dataframe given as function argument.
+        con = None
         logger.info(f"[{job_index}] uses {len(df)} rows !")
+
+    if df.empty:
+        # Nothing to do
+        if con:
+            con.close()
+        return True
 
     tmin = df["phase_time"].min()
     tmax = df["phase_time"].max()
@@ -281,14 +289,14 @@ def dbclust(
                 # )
 
                 # Ray // version
-                # clustcat = locator.ray_get_localisations_from_nllobs_dir(
-                #     my_obs_path, append=True
-                # )
-
-                # Dask // version
-                clustcat = locator.dask_get_localisations_from_nllobs_dir(
+                clustcat = locator.ray_get_localisations_from_nllobs_dir(
                     my_obs_path, append=True
                 )
+
+                # Dask // version
+                # clustcat = locator.dask_get_localisations_from_nllobs_dir(
+                #     my_obs_path, append=True
+                # )
 
                 # thread // version
                 # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
@@ -411,6 +419,10 @@ def dbclust(
         )
     logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
     locator.catalog.write(partial_qml, format="QUAKEML")
+
+    if con:
+        con.close()
+        del df
 
     return True
 
@@ -546,6 +558,6 @@ if __name__ == "__main__":
 
     # results = dbclust(cfg)
     # results = run_with_multiproc(cfg)
-    results = run_with_dask(cfg)  # change the locator accordingly
+    # results = run_with_dask(cfg)  # change the locator accordingly
     # results = run_with_ray_multiproc(cfg)
-    # results = run_with_ray(cfg)  # change the locator accordingly
+    results = run_with_ray(cfg)  # change the locator accordingly
