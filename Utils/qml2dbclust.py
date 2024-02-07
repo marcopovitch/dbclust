@@ -21,14 +21,15 @@ def export_picks_to_phasenet_format(event, origin, probability=1, agency=None):
                 if arrival.phase != pick.phase_hint:
                     logger.warning(
                         f"[{event.resource_id.id}] {pick.waveform_id.get_seed_string()}: "
-                        f"phase mismatch between arrival ({arrival.phase}) and pick ({pick.phase_hint}) fixed !"
+                        f"phase mismatch between arrival ({arrival.phase}) and pick ({pick.phase_hint}). "
+                        "Using arrival phase."
                     )
                 line = {
                     "station_id": pick.waveform_id.get_seed_string(),
                     "phase_type": arrival.phase,
                     "phase_time": pick.time,
                     "phase_score": probability,
-                    #"eventid": event.resource_id.id.split("/")[-1],
+                    # "eventid": event.resource_id.id.split("/")[-1],
                     "eventid": event.resource_id.id,
                 }
                 if agency:
@@ -77,6 +78,20 @@ if __name__ == "__main__":
         type=str,
     )
     parser.add_argument(
+        "--from",
+        default=None,
+        dest="from_time",
+        help="select time window start",
+        type=str,
+    )
+    parser.add_argument(
+        "--to",
+        default=None,
+        dest="to_time",
+        help="select time window end",
+        type=str,
+    )
+    parser.add_argument(
         "-l",
         "--loglevel",
         default="INFO",
@@ -102,6 +117,20 @@ if __name__ == "__main__":
     logger.setLevel(numeric_level)
 
     cat = read_events(args.inputfile)
+
+    rqt = []
+    if args.from_time:
+        rqt_from = f"time >= {args.from_time}"
+        rqt.append(rqt_from)
+
+    if args.to_time:
+        rqt_to = f"time < {args.to_time}"
+        rqt.append(rqt_to)
+
+    if len(rqt):
+        logger.info(f"Filtering in time {rqt}")
+        cat = cat.filter(*rqt)
+
     df = pd.DataFrame(
         columns=[
             "station_id",
