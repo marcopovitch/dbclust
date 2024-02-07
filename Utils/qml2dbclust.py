@@ -13,7 +13,7 @@ def export_picks_to_phasenet_format(event, origin, probability=1, agency=None):
     lines = []
     for arrival in origin.arrivals:
         if arrival.time_weight:
-            #if arrival.time_weight and arrival.time_residual:
+            # if arrival.time_weight and arrival.time_residual:
             pick = next(
                 (p for p in event.picks if p.resource_id == arrival.pick_id), None
             )
@@ -24,11 +24,12 @@ def export_picks_to_phasenet_format(event, origin, probability=1, agency=None):
                         f"phase mismatch between arrival ({arrival.phase}) and pick ({pick.phase_hint}) fixed !"
                     )
                 line = {
-                    "seedid": pick.waveform_id.get_seed_string(),
-                    "phasename": arrival.phase,
-                    "time": pick.time,
-                    "probability": probability,
-                    "eventid": event.resource_id,
+                    "station_id": pick.waveform_id.get_seed_string(),
+                    "phase_type": arrival.phase,
+                    "phase_time": pick.time,
+                    "phase_score": probability,
+                    #"eventid": event.resource_id.id.split("/")[-1],
+                    "eventid": event.resource_id.id,
                 }
                 if agency:
                     line["agency"] = agency
@@ -102,7 +103,15 @@ if __name__ == "__main__":
 
     cat = read_events(args.inputfile)
     df = pd.DataFrame(
-        columns=["seedid", "phasename", "time", "probability", "eventid", "agency"]
+        columns=[
+            "station_id",
+            "phase_type",
+            "phase_time",
+            "phase_score",
+            "eventid",
+            "agency",
+        ]
+        # columns=["seedid", "phasename", "time", "probability", "eventid", "agency"]
     )
     for event in cat.events:
         origin = event.preferred_origin()
