@@ -6,12 +6,18 @@ import argparse
 import numpy as np
 import pandas as pd
 import tempfile
+import warnings
 from dataclasses import asdict
 from typing import Optional
 from icecream import ic
 
 import dask
 from dask.distributed import Client, LocalCluster
+
+from functools import partial
+import multiprocessing
+import ray
+from ray.util.multiprocessing import Pool
 
 from config import DBClustConfig
 from phase import import_phases, import_eqt_phases
@@ -25,11 +31,7 @@ from clusterize import (
 from dbclust2pyocto import dbclust2pyocto
 from localization import NllLoc, show_event
 from quakeml import make_readable_id, feed_distance_from_preloc_to_pref_origin
-import warnings
-
-from functools import partial
-import multiprocessing
-from ray.util.multiprocessing import Pool
+from db import duckdb_init
 
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -44,7 +46,9 @@ def unload_picks_list(df1, picks):
     # format picks coming from events like the ones used as input for dbclust
     df2 = pd.DataFrame(picks, columns=["station_id", "phase_type", "phase_time"])
     df2["station_id"] = df2["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
-    df2["phase_time"] = pd.to_datetime(df2["phase_time"].map(lambda x: str(x)))
+    df2["phase_time"] = pd.to_datetime(
+        df2["phase_time"].map(lambda x: str(x)), utc=True
+    )
     df2["unload"] = True
     # remove duplicate pick as they came from same event but from multiple origins
     df2.drop_duplicates(inplace=True)
@@ -122,24 +126,21 @@ def dbclust(
         job_index (int): job index, None if in sequential mode
     """
 
-    #start, end = cfg.dask.time_partitions[job_index]
-    # if df is None or df.empty:
-    #     df = cfg.pick.df[
-    #         (cfg.pick.df["phase_time"] >= start) & (cfg.pick.df["phase_time"] < end)
-    #     ]
-    # logger.info(f"[{job_index}] loading data ... ")
-    # df = df.compute()  # load all data now
-    # logger.info(f"[{job_index}] data loaded !")
-    
     if df is None or df.empty:
+        # get duckdb connection
+        con = duckdb_init(cfg.pick.parquet_filename)
         start, end = cfg.dask.time_partitions[job_index]
+        rqt = f"SELECT * FROM PICKS WHERE phase_time BETWEEN '{start}' AND '{end}'"
         logger.info(f"[{job_index}] loading data ... ")
-        df = cfg.pick.get_dataframe_slice(start, end)
-        logger.info(f"[{job_index}] data loaded !")
-        
+        df = con.sql(rqt).fetchdf()
+        logger.info(f"[{job_index}] {len(df)} row loaded !")
+        df["phase_time"] = df["phase_time"].dt.tz_localize("UTC")
+    else:
+        logger.info(f"[{job_index}] uses {len(df)} rows !")
+
     tmin = df["phase_time"].min()
-    tmax = df["phase_time"].max() 
-    
+    tmax = df["phase_time"].max()
+
     time_periods = (
         pd.date_range(tmin, tmax, freq=f"{cfg.time.time_window}min")
         .to_series()
@@ -181,9 +182,13 @@ def dbclust(
         # picks previously associated with events on the previous iteration
         logger.debug(f"test len(df_subset) before = {len(df_subset)}")
         if len(picks_to_remove):
-            logger.info(f"[{job_index}] before unload picks: pick length is {len(df_subset)}")
+            logger.info(
+                f"[{job_index}] before unload picks: pick length is {len(df_subset)}"
+            )
             df_subset = unload_picks_list(df_subset, picks_to_remove)
-            logger.info(f"[{job_index}] after unload picks: pick length is {len(df_subset)}")
+            logger.info(
+                f"[{job_index}] after unload picks: pick length is {len(df_subset)}"
+            )
             picks_to_remove = []
 
         # Import picks
@@ -265,12 +270,12 @@ def dbclust(
                 #     my_obs_path, append=True
                 # )
 
-                # multiproc  // version
+                # multiproc  // version with pool
                 # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
                 #     my_obs_path, append=True
                 # )
 
-                # Ray pool // version
+                # Ray pool // version with Pool
                 # clustcat = locator.ray_multiproc_get_localisations_from_nllobs_dir(
                 #    my_obs_path, append=True
                 # )
@@ -437,6 +442,8 @@ def run_with_dask(cfg: DBClustConfig):
         threads_per_worker=1,
         n_workers=cfg.dask.n_workers,
         # dashboard_address="10.0.1.40:8787",
+        # dashboard_address=None,
+        # death_timeout=120,
     )
     client = Client(cluster)
     logger.info(f"Dask running on {cfg.dask.n_workers} cpu(s)")
@@ -457,11 +464,14 @@ def run_with_dask(cfg: DBClustConfig):
 
 
 def run_with_ray(cfg: DBClustConfig):
-    import ray
+
+    os.environ["RAY_DEDUP_LOGS"] = "0"
+    os.environ["RAY_COLOR_PREFIX"] = "1"
 
     # Start Ray
     context = ray.init(
         num_cpus=cfg.dask.n_workers,
+        # include_dashboard=True,
         # dashboard_host="10.0.1.40",
         # dashboard_port=8087,
     )
@@ -536,6 +546,6 @@ if __name__ == "__main__":
 
     # results = dbclust(cfg)
     # results = run_with_multiproc(cfg)
-    results = run_with_dask(cfg)
-    # results = run_with_ray(cfg)
+    results = run_with_dask(cfg)  # change the locator accordingly
     # results = run_with_ray_multiproc(cfg)
+    # results = run_with_ray(cfg)  # change the locator accordingly
