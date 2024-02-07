@@ -18,8 +18,9 @@ import geopandas as gpd
 from shapely.geometry import Polygon, Point
 from obspy import Inventory, read_inventory
 from pyocto.associator import VelocityModel1D
+
 from read_yml import read_config
-import duckdb
+from db import duckdb_init
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -150,23 +151,19 @@ class PickConfig:
             self.end = table["phase_time"].to_pandas().max()
 
     def load_phasenetsds_duckdb(self) -> None:
-        rqt = (
-            "SELECT MIN(phase_time), MAX(phase_time) "
-            f"from read_parquet('{self.parquet_filename}')"
-        )
-        min, max = duckdb.sql(rqt).fetchall().pop()
+        """_summary_"""
+        duckdb_con = duckdb_init(self.parquet_filename)
+        rqt = "SELECT MIN(phase_time), MAX(phase_time) FROM PICKS"
+        try:
+            min, max = duckdb_con.sql(rqt).fetchall().pop()
+        except Exception as e:
+            logger.error(f"{e}: {rqt}")
+            raise e
+
         if not self.start:
             self.start = min
         if not self.end:
             self.end = max
-
-    def get_dataframe_slice(self, start, end):
-        rqt = (
-            f"select * from read_parquet('{self.parquet_filename}') "
-            f"where phase_time between '{start}' and '{end}'"
-        )
-        ic(rqt)
-        return duckdb.sql(rqt).df()
 
     def remove_black_listed_stations(self, black_list: List[str]) -> None:
         logger.info("Removing black listed channels:")
@@ -638,5 +635,8 @@ def is_valid_url(url: str) -> bool:
 
 
 if __name__ == "__main__":
-    myconf = DBClustConfig("/Users/marc/Data/DBClust/selestat/dbclust-selestat-mod.yml")
+    # myconf = DBClustConfig("/Users/marc/Data/DBClust/selestat/dbclust-selestat-mod.yml")
+    myconf = DBClustConfig(
+        "/Users/marc/Data/DBClust/france.2016.01/dbclust-france.2016.01.yml"
+    )
     myconf.show()
