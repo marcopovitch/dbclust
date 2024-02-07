@@ -35,6 +35,7 @@ def convert_csv_to_parquet(
             "phase_score": "float64",
             "eventid": "string",
             "agency": "string",
+            "channel": "string",
         },
     )
     ddf[time_name] = dd.to_datetime(ddf[time_name])
@@ -46,13 +47,6 @@ def convert_csv_to_parquet(
     # limits to 10^-4 seconds same as NLL (needed by dbclust to unload some picks)
     ddf["phase_time"] = ddf["phase_time"].dt.round("0.0001s")
 
-    # split net.sta and loc.chan
-    ddf["channel"] = ddf["station_id"].map(
-        lambda x: ".".join(x.split(".")[2:]) if not pd.isnull(x) else None
-    )
-    ddf["station_id"] = ddf["station_id"].map(
-        lambda x: ".".join(x.split(".")[:2]) if not pd.isnull(x) else None
-    )
     ddf = ddf.dropna(subset=["station_id"])
 
     # get rid off nan value when importing phases without eventid
