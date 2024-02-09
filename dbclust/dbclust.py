@@ -1,37 +1,37 @@
 #!/usr/bin/env python
-import sys
-import os
-import logging
 import argparse
-import numpy as np
-import pandas as pd
+import logging
+import multiprocessing
+import os
+import sys
 import tempfile
 import warnings
 from dataclasses import asdict
+from functools import partial
 from typing import Optional
-from icecream import ic
 
 import dask
-from dask.distributed import Client, LocalCluster
-
-from functools import partial
-import multiprocessing
+import numpy as np
+import pandas as pd
 import ray
-from ray.util.multiprocessing import Pool
-
+from clusterize import Clusterize
+from clusterize import feed_picks_event_ids
+from clusterize import feed_picks_probabilities
+from clusterize import get_picks_from_event
+from clusterize import merge_cluster_with_common_phases
 from config import DBClustConfig
-from phase import import_phases, import_eqt_phases
-from clusterize import (
-    Clusterize,
-    get_picks_from_event,
-    merge_cluster_with_common_phases,
-    feed_picks_probabilities,
-    feed_picks_event_ids,
-)
-from dbclust2pyocto import dbclust2pyocto
-from localization import NllLoc, show_event
-from quakeml import make_readable_id, feed_distance_from_preloc_to_pref_origin
+from dask.distributed import Client
+from dask.distributed import LocalCluster
 from db import duckdb_init
+from dbclust2pyocto import dbclust2pyocto
+from icecream import ic
+from localization import NllLoc
+from localization import show_event
+from phase import import_eqt_phases
+from phase import import_phases
+from quakeml import feed_distance_from_preloc_to_pref_origin
+from quakeml import make_readable_id
+from ray.util.multiprocessing import Pool
 
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -127,40 +127,21 @@ def dbclust(
     """
 
     if df is None or df.empty:
-        # Get Duckdb connection and read picks in [start, end[ range
+        # Uses duckdb
         con = duckdb_init(cfg.pick.parquet_filename)
-        start, end = cfg.dask.time_partitions[job_index]
-        rqt = f"SELECT * FROM PICKS WHERE phase_time BETWEEN '{start}' AND '{end}'"
-        logger.info(f"[{job_index}] loading data ... ")
-        df = con.sql(rqt).fetchdf()
-        logger.info(f"[{job_index}] {len(df)} row loaded !")
-        df["phase_time"] = df["phase_time"].dt.tz_localize("UTC")
     else:
         # Uses the pandas Dataframe given as function argument.
         con = None
-        logger.info(f"[{job_index}] uses {len(df)} rows !")
 
-    if df.empty:
-        # Nothing to do
-        if con:
-            con.close()
-        return True
-
-    tmin = df["phase_time"].min()
-    tmax = df["phase_time"].max()
-
+    # Time blocs
+    start, stop = cfg.dask.time_partitions[job_index]
     time_periods = (
-        pd.date_range(tmin, tmax, freq=f"{cfg.time.time_window}min")
+        pd.date_range(start, stop, freq=f"{cfg.time.time_window}min")
         .to_series()
         .to_list()
     )
-    time_periods += [pd.to_datetime(tmax)]
+    time_periods += [pd.to_datetime(stop)]
     logger.info(f"[{job_index}] Splitting dataset in {len(time_periods)-1} chunks.")
-
-    # keep track of each time period processed
-    part = 0
-    last_saved_event_count = 0
-    last_round = False
 
     # Instantiate a new tool (but empty) to get clusters
     previous_myclust = get_clusterize_from_config(cfg, phases=None)
@@ -168,8 +149,13 @@ def dbclust(
     # get a locator
     locator = get_locator_from_config(cfg)
 
-    # start time looping
+    # keep track of each time period processed
+    part = 0
+    last_saved_event_count = 0
+    last_round = False
     picks_to_remove = []
+
+    # start time looping
     for i, (begin, end) in enumerate(zip(time_periods[:-1], time_periods[1:]), start=1):
         logger.debug("")
         logger.debug("================================================")
@@ -180,11 +166,18 @@ def dbclust(
         )
 
         # Extract picks on this time period
-        df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
-        if not len(df_subset):
+        if con:
+            rqt = f"SELECT * FROM PICKS WHERE phase_time BETWEEN '{begin}' AND '{end}'"
+            df_subset = con.sql(rqt).fetchdf()
+            df_subset["phase_time"] = df_subset["phase_time"].dt.tz_localize("UTC")
+        else:
+            df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
+
+        if df_subset.empty:
             logger.info(f"[{job_index}] Skipping clustering {len(df_subset)} phases.")
             continue
-        logger.info(f"[{job_index}] Clustering {len(df_subset)} phases.")
+
+        logger.info(f"[{job_index}] Starting clustering with {len(df_subset)} phases.")
 
         # to prevents extra event, remove from current picks list,
         # picks previously associated with events on the previous iteration
@@ -351,7 +344,7 @@ def dbclust(
                     # First pick time is before overlapped zone
                     # but some others picks are inside it.
                     # Assuming the overlapped zone is large enough
-                    # to have a complete event, remove those picks,
+                    # to have a complete event, remove those picks (in the next round),
                     # so they can't make a new event on the next iteration.
                     # (event is kept, only picks are removed for the next round)
                     # if event.event_type != "not existing":
@@ -420,9 +413,8 @@ def dbclust(
     logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
     locator.catalog.write(partial_qml, format="QUAKEML")
 
-    if con:
-        con.close()
-        del df
+    # if con:
+    #    con.close()
 
     return True
 
@@ -475,6 +467,12 @@ def run_with_dask(cfg: DBClustConfig):
     return results
 
 
+# Ray tasks
+@ray.remote
+def run_dbclust_task(cfg, job_index):
+    return dbclust(cfg=cfg, job_index=job_index)
+
+
 def run_with_ray(cfg: DBClustConfig):
 
     os.environ["RAY_DEDUP_LOGS"] = "0"
@@ -489,11 +487,6 @@ def run_with_ray(cfg: DBClustConfig):
     )
     logger.info(f" http://{context.dashboard_url}")
 
-    # Ray tasks
-    @ray.remote
-    def run_dbclust_task(cfg, job_index):
-        return dbclust(cfg=cfg, job_index=job_index)
-
     ray_tasks = [
         run_dbclust_task.remote(cfg, idx)
         for idx, (start, end) in enumerate(cfg.dask.time_partitions, start=0)
@@ -504,6 +497,7 @@ def run_with_ray(cfg: DBClustConfig):
 
     # Shutdown Ray
     ray.shutdown()
+
     logger.info("DBClust completed !")
     return results
 
