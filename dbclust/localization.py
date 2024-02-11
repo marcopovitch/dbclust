@@ -1,41 +1,40 @@
 #!/usr/bin/env python
-import sys
-import io
-import os
-from typing import List
-from math import isclose, fabs
-import logging
-import glob
-import subprocess
-import shlex
-import tempfile
-import numpy as np
-import pandas as pd
-
 import concurrent.futures
-from functools import partial
+import copy
+import glob
+import io
+import logging
 import multiprocessing
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+import urllib.request
+from functools import partial
+from itertools import combinations
+from math import fabs
+from math import isclose
+from typing import List
 
 import dask
 import dask.bag as db
-
-# from dask import delayed
-
-from itertools import combinations
-import urllib.request
-import urllib.parse
-import copy
-
-# from tqdm import tqdm
 import dateparser
-from obspy.core import UTCDateTime
-from obspy import Catalog, read_events
-from obspy.core.event import Origin, OriginQuality, ResourceIdentifier
-from jinja2 import Template
-
-from quakeml import remove_duplicated_picks
+import numpy as np
+import pandas as pd
 import ray
+from jinja2 import Template
+from obspy import Catalog
+from obspy import read_events
+from obspy.core import UTCDateTime
+from obspy.core.event import Origin
+from obspy.core.event import OriginQuality
+from obspy.core.event import ResourceIdentifier
+from quakeml import remove_duplicated_picks
 from ray.util.multiprocessing import Pool
+# from dask import delayed
+# from tqdm import tqdm
 
 
 # default logger

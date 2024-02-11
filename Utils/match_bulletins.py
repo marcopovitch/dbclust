@@ -1,13 +1,15 @@
 #!/usr/bin/env python
-import sys
 import argparse
-import pandas as pd
-from os.path import exists
-from math import sqrt, pow
-import numpy as np
 import logging
-from sklearn.cluster import DBSCAN
+import sys
+from math import pow
+from math import sqrt
+from os.path import exists
+
+import numpy as np
+import pandas as pd
 from obspy.geodetics import gps2dist_azimuth
+from sklearn.cluster import DBSCAN
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -65,7 +67,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "-i",
         "--input-file",
-        action='append', 
+        action='append',
         nargs='?',
         default=None,
         dest="input_files",
@@ -104,15 +106,15 @@ if __name__ == "__main__":
         type=float,
     )
     args = parser.parse_args()
-    
+
     if not args.input_files or not args.output_file:
         parser.print_help()
         sys.exit(255)
-        
+
     if args.output_file and exists(args.output_file):
         print(f"File {args.output_file} already exists !")
         sys.exit(255)
-    
+
     logger.info(f"Config: vmean={args.vmean}, dist_max={args.dist_max}, dt_max={args.dt_max}")
     max_distance = sqrt(pow(args.dist_max / args.vmean, 2) + pow(args.dt_max, 2))
 

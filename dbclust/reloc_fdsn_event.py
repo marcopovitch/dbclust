@@ -1,14 +1,17 @@
 #!/usr/bin/env python
-import sys
-import os
-import tempfile
-import logging
-import urllib.parse
-from obspy import read_events
-from localization import reloc_fdsn_event, NllLoc, show_event
 import argparse
-import yaml
+import logging
+import os
+import sys
+import tempfile
+import urllib.parse
 from shutil import copyfile
+
+import yaml
+from localization import NllLoc
+from localization import reloc_fdsn_event
+from localization import show_event
+from obspy import read_events
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -149,7 +152,7 @@ if __name__ == "__main__":
         double_pass = False
     else:
         double_pass = parameters_conf["double_pass"]
-    
+
     if args.force_uncertainty:
         force_uncertainty = args.force_uncertainty
     else:
@@ -213,7 +216,7 @@ if __name__ == "__main__":
             #
             dist_km_cutoff=dist_km_cutoff,
             use_deactivated_arrivals=use_deactivated_arrivals,
-            
+
             P_time_residual_threshold=P_time_residual_threshold,
             S_time_residual_threshold=S_time_residual_threshold,
             #

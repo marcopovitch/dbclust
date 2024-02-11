@@ -1,12 +1,13 @@
 #!/usr/bin/env python
-import sys
-import os
 import argparse
 import logging
-import pandas as pd
+import os
+import sys
 from datetime import timedelta
-from sklearn.cluster import DBSCAN
+
+import pandas as pd
 from icecream import ic
+from sklearn.cluster import DBSCAN
 
 
 def unload_too_close_picks_clustering(
@@ -23,7 +24,7 @@ def unload_too_close_picks_clustering(
         },
         inplace=True,
     )
-    # Keeps only network_code.station_code, move channel to 
+    # Keeps only network_code.station_code, move channel to
     df["channel"] = df["station_id"].map(lambda x: ".".join(x.split(".")[2:4]))
     df["station_id"] = df["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
     df["phase_time"] = pd.to_datetime(df["phase_time"], utc=True)
@@ -34,7 +35,7 @@ def unload_too_close_picks_clustering(
     results = pd.DataFrame(
         columns=["station_id", "channel", "phase_type", "phase_time", "phase_score", "eventid", "agency"]
     )
-    
+
     # run separately by phase type
     for phase in ("P", "S"):
         print(f"Working on {phase}.")
@@ -84,7 +85,7 @@ def unload_too_close_picks_clustering(
     results["phase_time"] = pd.to_datetime(results["phase_time"]).dt.strftime(
         "%Y-%m-%dT%H:%M:%S.%fZ"
     )
-    
+
     results.sort_values(by=["phase_time", "station_id"], inplace=True)
     print(f"Writing to {csv_file_out}.")
     results.to_csv(csv_file_out, index=False)

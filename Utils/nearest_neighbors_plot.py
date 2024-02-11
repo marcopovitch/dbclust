@@ -1,11 +1,12 @@
 #!/usr/bin/env python
-import sys
-import logging
 import argparse
+import logging
+import sys
+
+import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 from sklearn.neighbors import NearestNeighbors
-import matplotlib.pyplot as plt
 
 
 def ymljoin(loader, node):
@@ -80,5 +81,5 @@ if __name__ == "__main__":
     plt.title(f"k-NearestNeighbors distance using min_size={min_size}")
     plt.ylabel("k-NN distance")
     plt.xlabel(f"Sorted observations (ie. P & S phases)")
-    plt.legend() 
+    plt.legend()
     plt.show()

@@ -1,7 +1,7 @@
 # Build image
 docker build -t dbclust:latest .
 
-# Run 
+# Run
 
 User have to provide:
 - nll time grid files

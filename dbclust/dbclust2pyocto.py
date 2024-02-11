@@ -1,17 +1,22 @@
 #!/usr/bin/env python
-import sys
-import pandas as pd
-from typing import Optional, List, Union
 import copy
 import datetime
 import logging
-from itertools import chain, combinations
+import sys
 from collections import Counter
-from icecream import ic
+from itertools import chain
+from itertools import combinations
+from typing import List
+from typing import Optional
+from typing import Union
+
+import pandas as pd
 import pyocto
+from clusterize import cluster_share_eventid
+from clusterize import Clusterize
 from config import Associator
+from icecream import ic
 from phase import Phase
-from clusterize import Clusterize, cluster_share_eventid
 
 """Use pyocto to speed up and better constrain clusterization
 
