@@ -1,10 +1,12 @@
 #!/usr/bin/env python
-import sys
 import logging
+import sys
 from datetime import datetime
 from itertools import combinations
+
 import alphabetic_timestamp as ats
-from obspy.core.event import ResourceIdentifier, Comment
+from obspy.core.event import Comment
+from obspy.core.event import ResourceIdentifier
 from obspy.geodetics import gps2dist_azimuth
 
 # default logger

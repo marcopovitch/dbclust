@@ -1,14 +1,18 @@
 #!/usr/bin/env python
-import sys
-import logging
-from typing import Optional, List, Union
 import functools
+import logging
+import sys
+from datetime import datetime
+from typing import List
+from typing import Optional
+from typing import Union
+
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-from datetime import datetime
-from obspy import UTCDateTime, Inventory
 from icecream import ic
+from obspy import Inventory
+from obspy import UTCDateTime
+from tqdm import tqdm
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -193,6 +197,10 @@ def import_phases(
     """
     phases = []
 
+    if df is None or not isinstance(df, pd.DataFrame) or not len(df):
+        ic(df)
+        return None
+
     if (
         "station_id" not in df.columns
         and "phase_type" not in df.columns
@@ -204,9 +212,7 @@ def import_phases(
 
     df = df.loc[~((df["phase_type"] == "P") & (df["phase_score"] < P_proba_threshold))]
     df = df.loc[~((df["phase_type"] == "S") & (df["phase_score"] < S_proba_threshold))]
-    df[["net", "sta"]] = df["station_id"].astype(str).str.split(".", n=1, expand=True)
-    # df['phase_time'] = df['phase_time'].map(UTCDateTime)
-    # df.compute()
+    #df[["net", "sta"]] = df["station_id"].astype(str).str.split(".", n=1, expand=True)
 
     for row in df.itertuples(index=False):
         # ic(row)
@@ -220,10 +226,12 @@ def import_phases(
         else:
             agency = None
 
+        net, sta = row.station_id.split(".")[:2]
+
         try:
             myphase = Phase(
-                net=row.net,
-                sta=row.sta,
+                net=net,
+                sta=sta,
                 time_search=row.phase_time,
                 info_sta=info_sta,
             )
