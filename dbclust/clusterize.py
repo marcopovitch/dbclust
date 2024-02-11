@@ -1,38 +1,35 @@
 #!/usr/bin/env python
+import functools
+import json
+import logging
 import os
 import sys
-import logging
-from typing import Optional, List, Union
-from math import pow, sqrt, isnan
+from collections import Counter
+from itertools import chain
+from itertools import product
+from math import isnan
+from math import pow
+from math import sqrt
+from typing import List
+from typing import Optional
+from typing import Union
+
+import dask.bag as db
+import hdbscan
 import numpy as np
 import pandas as pd
-from itertools import product, chain
-from collections import Counter
-import json
-
-# from sklearn.cluster import DBSCAN, OPTICS
-import hdbscan
-from tqdm import tqdm
-
-# import functools
-import dask.bag as db
-
-# from joblib import parallel_config
-
-# from dask.cache import Cache
+import ray
 from obspy import Catalog
-from obspy.core.event import Event, Origin, Comment
+from obspy.core.event import Comment
+from obspy.core.event import Event
+from obspy.core.event import Origin
 from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
-
-from phase import Phase, import_phases, import_eqt_phases
-
-# try:
-#    from zones import find_zone
-# except ModuleNotFoundError:
-#    from dbclust.zones import find_zone
-
+from phase import import_eqt_phases
+from phase import import_phases
+from phase import Phase
+from tqdm import tqdm
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -40,7 +37,7 @@ logger = logging.getLogger("clusterize")
 logger.setLevel(logging.INFO)
 
 
-# @functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None)
 def compute_tt(p1: Phase, p2: Phase, vmean) -> float:
     # lru_cache doesn't work with multiprocessing/dask/etc.
     distance, az, baz = gps2dist_azimuth(
