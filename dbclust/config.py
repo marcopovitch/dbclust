@@ -1,26 +1,29 @@
 #!/usr/bin/env python
-import sys
-import os
-from datetime import datetime
-from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Union
 import logging
+import os
+import sys
+from dataclasses import dataclass
+from dataclasses import field
+from datetime import datetime
+from typing import List
+from typing import Optional
+from typing import Union
+from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import urlopen
-from urllib.error import URLError
-from dacite import from_dict
-from icecream import ic
 
-import pyarrow.parquet as pq
-import pandas as pd
-import dask.dataframe as dd
 import geopandas as gpd
-from shapely.geometry import Polygon, Point
-from obspy import Inventory, read_inventory
-from pyocto.associator import VelocityModel1D
-
-from read_yml import read_config
+import pandas as pd
+import pyarrow.parquet as pq
+from dacite import from_dict
 from db import duckdb_init
+from icecream import ic
+from obspy import Inventory
+from obspy import read_inventory
+from pyocto.associator import VelocityModel1D
+from read_yml import read_config
+from shapely.geometry import Point
+from shapely.geometry import Polygon
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -69,7 +72,6 @@ class PickConfig:
     S_uncertainty: float
     P_proba_threshold: float
     S_proba_threshold: float
-    parquet_filename: Optional[str] = None
     start: Optional[Union[datetime, pd.Timestamp]] = None
     end: Optional[Union[datetime, pd.Timestamp]] = None
     df: Optional[pd.DataFrame] = None
@@ -81,13 +83,8 @@ class PickConfig:
         if not os.access(self.filename, os.R_OK):
             raise PermissionError(f"{self.filename}.")
 
-        if os.path.isdir(self.filename):
-            self.parquet_filename = os.path.join(self.filename, "*")
-        else:
-            self.parquet_filename = self.filename
-
-        if self.type not in ["eqt", "phasenet", "phasenetsds"]:
-            raise ValueError(f"Pick format {self.type} is not recognized !")
+        if self.type not in ["csv", "parquet"]:
+            raise ValueError(f"Pick file format {self.type} is not recognized !")
 
         if self.start:
             self.start = pd.to_datetime(self.start, utc=True).to_datetime64()
@@ -95,71 +92,33 @@ class PickConfig:
         if self.end:
             self.end = pd.to_datetime(self.end, utc=True).to_datetime64()
 
-        # read csv file and trim it from start to end
-        if self.type == "phasenetsds":
-            # self.load_phasenetsds_pq()
-            self.load_phasenetsds_duckdb()
-        elif self.type == "phasenet":
-            self.load_phasenetsds()
+        # Check parquet or csv file
+        if self.type == "parquet":
+            try:
+                table = pq.read_table(
+                    self.filename, columns=[], use_pandas_metadata=False
+                )
+            except:
+                raise ValueError(f"{self.filename} is not parquet formated !")
+            if os.path.isdir(self.filename):
+                self.filename = os.path.join(self.filename, "*")
         else:
-            self.load_eqt()
+            # CSV
+            try:
+                with open(self.filename, "r") as file:
+                    first_line = file.readline().strip()
+                    nbcol = first_line.count(",")
+                    if nbcol < 4:
+                        raise ValueError(
+                            f"{self.filename} is not a csv file or miss columns ({nbcol}) !"
+                        )
+            except Exception as e:
+                raise e
 
-        # self.df = self.df[(self.df["time"] >= start) & (self.df["time"] <= end)]
-
-    def load_eqt_csv(self) -> None:
-        self.df = pd.read_csv(
-            self.filename,
-            parse_dates=["p_arrival_time", "s_arrival_time"],
-            low_memory=False,
-        )
-        self.df["phase_time"] = self.df[["p_arrival_time", "s_arrival_time"]].min(
-            axis=1
-        )
-        # FIXME: col rename ?
-
-    def load_phasenet_csv(self) -> None:
-        self.df = pd.read_csv(self.filename, low_memory=False)
-        # FIXME: col rename ?
-
-    def load_phasenetsds_csv(self) -> None:
-        self.df = pd.read_csv(self.filename, low_memory=False)
-        self.df.rename(
-            columns={
-                "seedid": "station_id",
-                "phasename": "phase_type",
-                "time": "phase_time",
-                "probability": "phase_score",
-            },
-            inplace=True,
-        )
-
-    def load_phasenetsds_pq(self) -> None:
-        # Dask doesn't use page index to get min and max
-        # and pyarrow seems to have memory leaks
-        table = pq.read_table(self.filename)
-        # self.df = table.to_pandas()
-        self.df = dd.read_parquet(self.filename)
-        assert (
-            self.df["phase_time"].dtype == "datetime64[ns]"
-        ), "'phase_time' is not 'datetime64[ns]'"
-
-        if not self.start:
-            # self.start = self.df["phase_time"].min().compute()
-            self.start = table["phase_time"].to_pandas().min()
-        if not self.end:
-            # self.end = self.df["phase_time"].max().compute()
-            self.end = table["phase_time"].to_pandas().max()
-
-    def load_phasenetsds_duckdb(self) -> None:
-        """_summary_"""
-        duckdb_con = duckdb_init(self.parquet_filename)
+        # set min, max time from data
+        conn = duckdb_init(self.filename, self.type)
         rqt = "SELECT MIN(phase_time), MAX(phase_time) FROM PICKS"
-        try:
-            min, max = duckdb_con.sql(rqt).fetchall().pop()
-        except Exception as e:
-            logger.error(f"{e}: {rqt}")
-            raise e
-
+        min, max = conn.sql(rqt).fetchall().pop()
         if not self.start:
             self.start = min
         if not self.end:
@@ -528,7 +487,7 @@ class PyoctoConfig:
 
 
 @dataclass
-class DaskConfig:
+class ParallelConfig:
     n_workers: int = None
     partition_duration_hours: str = "D"
     time_partitions: Optional[List] = None
@@ -538,6 +497,7 @@ class DaskConfig:
             self.n_workers = os.cpu_count()
 
     def get_time_partitions(self, time_cfg: TimeConfig, pick_cfg: PickConfig) -> List:
+        ic(pick_cfg.start, pick_cfg.end)
         time_divisions = (
             pd.date_range(
                 start=pick_cfg.start,
@@ -569,7 +529,7 @@ class DBClustConfig:
     catalog: CatalogConfig
     pyocto: PyoctoConfig
     zones: Zones
-    dask: DaskConfig
+    parallel: ParallelConfig
 
     def __init__(self, filename) -> None:
         self.filename = filename
@@ -592,8 +552,10 @@ class DBClustConfig:
             self.cluster.min_station_count + self.cluster.min_station_with_P_and_S
         )
 
-        # dask
-        self.dask.time_partitions = self.dask.get_time_partitions(self.time, self.pick)
+        # parallel
+        self.parallel.time_partitions = self.parallel.get_time_partitions(
+            self.time, self.pick
+        )
 
         # Finalize zones
         self.zones.load_zones(self.nll)
