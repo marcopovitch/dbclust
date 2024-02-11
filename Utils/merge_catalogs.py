@@ -1,11 +1,13 @@
 #!/usr/bin/env python
-import sys
-import os
-import logging
 import argparse
+import logging
+import os
+import sys
+
 import pandas as pd
 import yaml
-from obspy import read_events, Catalog
+from obspy import Catalog
+from obspy import read_events
 
 
 def yml_read_config(filename):

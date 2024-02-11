@@ -1,10 +1,15 @@
 #!/usr/bin/env python
-import sys
-import os
-import logging
 import argparse
 import json
-from obspy import read_events, Catalog, read, UTCDateTime, read_inventory
+import logging
+import os
+import sys
+
+from obspy import Catalog
+from obspy import read
+from obspy import read_events
+from obspy import read_inventory
+from obspy import UTCDateTime
 
 
 def get_pick_proba_info(outfile, cat, show_station_name=False):

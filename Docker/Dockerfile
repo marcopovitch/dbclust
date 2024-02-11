@@ -9,7 +9,7 @@ RUN apt update && \
     apt upgrade -y && \
     apt-get install -y --no-install-recommends cmake && \
     pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt 
+    pip install --no-cache-dir -r requirements.txt
 
 ARG NLL_PATH=/usr/local/nll
 #RUN svn export https://github.com/alomax/NonLinLoc/trunk/src ${NLL_PATH} && \
