@@ -128,13 +128,13 @@ def dbclust(
 
     if df is None or df.empty:
         # Uses duckdb
-        con = duckdb_init(cfg.pick.parquet_filename)
+        con = duckdb_init(cfg.pick.filename, cfg.pick.type)
     else:
         # Uses the pandas Dataframe given as function argument.
         con = None
 
     # Time blocs
-    start, stop = cfg.dask.time_partitions[job_index]
+    start, stop = cfg.parallel.time_partitions[job_index]
     time_periods = (
         pd.date_range(start, stop, freq=f"{cfg.time.time_window}min")
         .to_series()
@@ -427,15 +427,15 @@ def process_task(cfg, job_arg):
 
 def run_with_multiproc(cfg: DBClustConfig):
     func = partial(process_task, cfg)
-    with multiprocessing.Pool(cfg.dask.n_workers) as pool:
-        results = pool.map(func, enumerate(cfg.dask.time_partitions, start=0))
+    with multiprocessing.Pool(cfg.parallel.n_workers) as pool:
+        results = pool.map(func, enumerate(cfg.parallel.time_partitions, start=0))
     return results
 
 
 def run_with_ray_multiproc(cfg: DBClustConfig):
     func = partial(process_task, cfg)
-    with Pool(cfg.dask.n_workers) as pool:
-        results = pool.map(func, enumerate(cfg.dask.time_partitions, start=0))
+    with Pool(cfg.parallel.n_workers) as pool:
+        results = pool.map(func, enumerate(cfg.parallel.time_partitions, start=0))
     return results
 
 
@@ -444,20 +444,20 @@ def run_with_dask(cfg: DBClustConfig):
     cluster = LocalCluster(
         processes=True,
         threads_per_worker=1,
-        n_workers=cfg.dask.n_workers,
+        n_workers=cfg.parallel.n_workers,
         # dashboard_address="10.0.1.40:8787",
         # dashboard_address=None,
         # death_timeout=120,
     )
     client = Client(cluster)
-    logger.info(f"Dask running on {cfg.dask.n_workers} cpu(s)")
+    logger.info(f"Dask running on {cfg.parallel.n_workers} cpu(s)")
     logger.info(f"Dask dashboard url: {client.dashboard_link}")
     dask.config.set({"distributed.scheduler.work-stealing": True})
 
     # Dask stuff
     delayed_tasks = [
         dask.delayed(dbclust)(cfg=cfg, job_index=idx)
-        for idx, (start, end) in enumerate(cfg.dask.time_partitions, start=0)
+        for idx, (start, end) in enumerate(cfg.parallel.time_partitions, start=0)
     ]
 
     # Start tasks
@@ -480,7 +480,7 @@ def run_with_ray(cfg: DBClustConfig):
 
     # Start Ray
     context = ray.init(
-        num_cpus=cfg.dask.n_workers,
+        num_cpus=cfg.parallel.n_workers,
         # include_dashboard=True,
         # dashboard_host="10.0.1.40",
         # dashboard_port=8087,
@@ -489,7 +489,7 @@ def run_with_ray(cfg: DBClustConfig):
 
     ray_tasks = [
         run_dbclust_task.remote(cfg, idx)
-        for idx, (start, end) in enumerate(cfg.dask.time_partitions, start=0)
+        for idx, (start, end) in enumerate(cfg.parallel.time_partitions, start=0)
     ]
 
     # Get results
