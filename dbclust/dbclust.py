@@ -105,14 +105,6 @@ def get_clusterize_from_config(cfg, phases=None, log_level=logging.INFO):
     return myclust
 
 
-def dbclust_test(
-    cfg: DBClustConfig,
-    df: Optional[pd.DataFrame] = None,
-    job_index: Optional[int] = None,
-) -> None:
-    ic(job_index, df)
-
-
 def dbclust(
     cfg: DBClustConfig,
     df: Optional[pd.DataFrame] = pd.DataFrame(),
@@ -134,7 +126,12 @@ def dbclust(
         con = None
 
     # Time blocs
-    start, stop = cfg.parallel.time_partitions[job_index]
+    if job_index:
+        start, stop = cfg.parallel.time_partitions[job_index]
+    else:
+        start = cfg.pick.start
+        stop = cfg.pick.end
+
     time_periods = (
         pd.date_range(start, stop, freq=f"{cfg.time.time_window}min")
         .to_series()
@@ -193,22 +190,16 @@ def dbclust(
             picks_to_remove = []
 
         # Import picks
-        if cfg.pick.type == "eqt":
-            phases = import_eqt_phases(
-                df_subset,
-                cfg.pick.P_proba_threshold,
-                cfg.pick.S_proba_threshold,
-            )
-        else:
-            phases = import_phases(
-                df_subset,
-                cfg.pick.P_proba_threshold,
-                cfg.pick.S_proba_threshold,
-                cfg.station.info_sta,
-            )
-            if logger.level == logging.DEBUG:
-                for p in phases:
-                    p.show_all()
+        phases = import_phases(
+            df_subset,
+            cfg.pick.P_proba_threshold,
+            cfg.pick.S_proba_threshold,
+            cfg.station.info_sta,
+        )
+        if logger.level == logging.DEBUG:
+            for p in phases:
+                p.show_all()
+
         # clean up
         del df_subset
 
@@ -550,8 +541,11 @@ if __name__ == "__main__":
     cfg = DBClustConfig(args.configfile)
     cfg.show()
 
-    # results = dbclust(cfg)
-    # results = run_with_multiproc(cfg)
-    # results = run_with_dask(cfg)  # change the locator accordingly
-    # results = run_with_ray_multiproc(cfg)
-    results = run_with_ray(cfg)  # change the locator accordingly
+    if cfg.parallel.n_workers == 1:
+        dbclust(cfg)
+    else:
+        # results = dbclust(cfg)
+        # results = run_with_multiproc(cfg)
+        # results = run_with_dask(cfg)  # change the locator accordingly
+        # results = run_with_ray_multiproc(cfg)
+        results = run_with_ray(cfg)  # change the locator accordingly
