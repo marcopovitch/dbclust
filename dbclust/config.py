@@ -490,8 +490,9 @@ class PyoctoConfig:
 @dataclass
 class ParallelConfig:
     n_workers: int = None
-    # use pandas.tseries.offsets.DateOffset
-    partition_duration: str = "D"
+    # Use Timedelta unit
+    # https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.Timedelta.html
+    partition_duration: str = "1D"
     nb_partitions: Optional[int] = None
     time_partitions: Optional[List] = None
 
@@ -515,10 +516,14 @@ class ParallelConfig:
             .to_list()
         )
 
-        adjusted_time_divisions = [
-            (start, end + pd.Timedelta(seconds=time_cfg.overlap_window))
-            for start, end in zip(time_divisions, time_divisions[1:])
-        ]
+        if nb_periods == 1:
+            # only one period: use [start, end] without overlap
+            adjusted_time_divisions = [[pick_cfg.start, pick_cfg.end]]
+        else:
+            adjusted_time_divisions = [
+                (start, end + pd.Timedelta(seconds=time_cfg.overlap_window))
+                for start, end in zip(time_divisions, time_divisions[1:])
+            ]
 
         self.nb_partitions = len(adjusted_time_divisions)
 
@@ -572,6 +577,8 @@ class DBClustConfig:
         # Finalize zones
         self.zones.load_zones(self.nll)
 
+        assert len(self.parallel.time_partitions)
+
     def show(self):
         # debug
         for key, value in self.__annotations__.items():
@@ -593,12 +600,8 @@ def is_valid_url(url: str) -> bool:
         bool
     """
     try:
-        # Analyse de l'URL
         parsed_url = urlparse(url)
-
-        # Vérification si l'URL a un schéma et un netloc (domaine)
         if parsed_url.scheme and parsed_url.netloc:
-            # Tentative d'ouverture de l'URL pour vérifier son existence
             with urlopen(url):
                 pass
             return True
