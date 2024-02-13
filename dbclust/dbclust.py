@@ -33,7 +33,7 @@ from quakeml import feed_distance_from_preloc_to_pref_origin
 from quakeml import make_readable_id
 from ray.util.multiprocessing import Pool
 
-
+ic.configureOutput(prefix='DBClust: ')
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # default logger
@@ -105,6 +105,30 @@ def get_clusterize_from_config(cfg, phases=None, log_level=logging.INFO):
     return myclust
 
 
+def dbclust_test(
+    cfg: DBClustConfig,
+    df: Optional[pd.DataFrame] = pd.DataFrame(),
+    job_index: Optional[int] = None,
+) -> None:
+
+    # Time blocks
+    if job_index is not None:
+        start, stop = cfg.parallel.time_partitions[job_index]
+    else:
+        start = cfg.pick.start
+        stop = cfg.pick.end
+
+    msg = "test started."
+    ic(
+        msg,
+        job_index,
+        start,
+        stop,
+        df
+    )
+    return True
+
+
 def dbclust(
     cfg: DBClustConfig,
     df: Optional[pd.DataFrame] = pd.DataFrame(),
@@ -118,19 +142,27 @@ def dbclust(
         job_index (int): job index, None if in sequential mode
     """
 
+    # Time blocks
+    if job_index is not None:
+        start, stop = cfg.parallel.time_partitions[job_index]
+    else:
+        start = cfg.pick.start
+        stop = cfg.pick.end
+
+    msg = "started."
+    ic(
+        msg,
+        job_index,
+        start,
+        stop
+    )
+
     if df is None or df.empty:
         # Uses duckdb
         con = duckdb_init(cfg.pick.filename, cfg.pick.type)
     else:
         # Uses the pandas Dataframe given as function argument.
         con = None
-
-    # Time blocs
-    if job_index:
-        start, stop = cfg.parallel.time_partitions[job_index]
-    else:
-        start = cfg.pick.start
-        stop = cfg.pick.end
 
     time_periods = (
         pd.date_range(start, stop, freq=f"{cfg.time.time_window}min")
@@ -466,7 +498,7 @@ def run_dbclust_task(cfg, job_index):
 
 def run_with_ray(cfg: DBClustConfig):
 
-    os.environ["RAY_DEDUP_LOGS"] = "0"
+    # os.environ["RAY_DEDUP_LOGS"] = "0"
     os.environ["RAY_COLOR_PREFIX"] = "1"
 
     # Start Ray
@@ -485,10 +517,6 @@ def run_with_ray(cfg: DBClustConfig):
 
     # Get results
     results = ray.get(ray_tasks)
-
-    # Shutdown Ray
-    ray.shutdown()
-
     logger.info("DBClust completed !")
     return results
 
@@ -542,10 +570,14 @@ if __name__ == "__main__":
     cfg.show()
 
     if cfg.parallel.n_workers == 1:
-        dbclust(cfg)
+        results = []
+        for idx, (start, end) in enumerate(cfg.parallel.time_partitions, start=0):
+            results.append(dbclust(cfg=cfg, df=None, job_index=idx))
     else:
         # results = dbclust(cfg)
         # results = run_with_multiproc(cfg)
         # results = run_with_dask(cfg)  # change the locator accordingly
         # results = run_with_ray_multiproc(cfg)
         results = run_with_ray(cfg)  # change the locator accordingly
+
+    print(results)
