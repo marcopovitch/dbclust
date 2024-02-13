@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import argparse
 import logging
 import math
 import os
@@ -612,8 +613,19 @@ def is_valid_url(url: str) -> bool:
 
 
 if __name__ == "__main__":
-    # myconf = DBClustConfig("/Users/marc/Data/DBClust/selestat/dbclust-selestat-mod.yml")
-    myconf = DBClustConfig(
-        "/Users/marc/Data/DBClust/france.2016.01/dbclust-france.2016.01.yml"
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-c",
+        "--conf",
+        default=None,
+        dest="configfile",
+        help="yaml configuration file.",
+        type=str,
     )
+    args = parser.parse_args()
+    if not args.configfile:
+        parser.print_help()
+        sys.exit(255)
+
+    myconf = DBClustConfig(args.configfile)
     myconf.show()
