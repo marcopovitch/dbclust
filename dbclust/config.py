@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import logging
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -489,7 +490,9 @@ class PyoctoConfig:
 @dataclass
 class ParallelConfig:
     n_workers: int = None
-    partition_duration_hours: str = "D"
+    # use pandas.tseries.offsets.DateOffset
+    partition_duration: str = "D"
+    nb_partitions: Optional[int] = None
     time_partitions: Optional[List] = None
 
     def __post_init__(self):
@@ -498,23 +501,32 @@ class ParallelConfig:
 
     def get_time_partitions(self, time_cfg: TimeConfig, pick_cfg: PickConfig) -> List:
         ic(pick_cfg.start, pick_cfg.end)
+        nb_periods = self.get_nb_of_divisions(
+            pick_cfg.start, pick_cfg.end, self.partition_duration
+        )
         time_divisions = (
             pd.date_range(
                 start=pick_cfg.start,
                 end=pick_cfg.end,
-                freq=self.partition_duration_hours,
+                periods=nb_periods,
+                inclusive="both",
             )
             .to_series()
             .to_list()
         )
-        time_divisions += [pd.to_datetime(pick_cfg.end)]
 
         adjusted_time_divisions = [
             (start, end + pd.Timedelta(seconds=time_cfg.overlap_window))
             for start, end in zip(time_divisions, time_divisions[1:])
         ]
 
+        self.nb_partitions = len(adjusted_time_divisions)
+
         return adjusted_time_divisions
+
+    @staticmethod
+    def get_nb_of_divisions(start, end, freq):
+        return math.ceil((end - start) / pd.Timedelta(freq))
 
 
 class DBClustConfig:
