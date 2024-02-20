@@ -33,6 +33,7 @@ from obspy.core.event import OriginQuality
 from obspy.core.event import ResourceIdentifier
 from quakeml import remove_duplicated_picks
 from ray.util.multiprocessing import Pool
+
 # from dask import delayed
 # from tqdm import tqdm
 
@@ -319,14 +320,19 @@ class NllLoc(object):
             logger.error(e)
             return Catalog()
 
-        # check if location was rejected
+        if result.returncode != 0:
+            logger.error(
+                f"!!! Something went wrong using: {cmde}, "
+                "returned code is {result.returncode}"
+            )
+            return Catalog()
 
         # check from stdout if there is any missing station grid file
-        # WARNING: cannot open grid buffer file: nll_times/auvergne-pyrocko2/auvergne.P.01x02.time.buf
         for line in result.stdout.splitlines():
             if "WARNING: cannot open grid buffer file" in line:
                 logger.error(line)
             elif any(k in line for k in ("ABORTED", "IGNORED", "REJECTED")):
+                # check if location was rejected
                 why = " ".join(line.split()[3:]).replace('"', "")
                 logger.info(f"Localization was ABORTED|IGNORED|REJECTED: {why}")
                 return Catalog()
@@ -964,9 +970,11 @@ def show_origin(o, txt):
                     o.quality.used_station_count,
                     o.quality.used_phase_count,
                     azimuthal_gap,
-                    f"{o.quality.secondary_azimuthal_gap:.1f}"
-                    if o.quality.secondary_azimuthal_gap
-                    else "-",
+                    (
+                        f"{o.quality.secondary_azimuthal_gap:.1f}"
+                        if o.quality.secondary_azimuthal_gap
+                        else "-"
+                    ),
                     o.earth_model_id.id.split("/")[-1],
                     o.method_id.id.split("/")[-1],
                 ],
