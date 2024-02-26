@@ -248,6 +248,7 @@ class NllLoc(object):
         # create an origin associated to this prelocalization
         vel_file = os.path.splitext(nll_obs_file)[0] + ".vel"
         preloc_origin = None
+        # Fixme: add picks/arrivals to this loc
         if os.path.exists(vel_file):
             with open(vel_file) as vel:
                 model_id = vel.readline().strip()
@@ -429,7 +430,7 @@ class NllLoc(object):
             logger.debug("Starting double pass relocation.")
             cat2 = cat.copy()
             event2 = cat2.events[0]
-            event2 = self.cleanup_pick_phase(event2)
+            event2 = self.cleanup_pick_phase(event2, keep_manual_picks=True)
             if len(event2.picks):
                 new_nll_obs_file = nll_obs_file + ".2nd_pass"
                 cat2.write(new_nll_obs_file, format="NLLOC_OBS")
@@ -690,7 +691,7 @@ class NllLoc(object):
 
         return mycatalog
 
-    def cleanup_pick_phase(self, event):
+    def cleanup_pick_phase(self, event, keep_manual_picks=True):
         """
         Remove picks/arrivals with:
             - time weight set to 0
@@ -701,6 +702,16 @@ class NllLoc(object):
         pick_to_delete = []
         arrival_to_delete = []
         for arrival in orig.arrivals:
+            pick = next(
+                (p for p in event.picks if p.resource_id == arrival.pick_id), None
+            )
+            if pick is None:
+                logger.error(f"Can't find pick for arrival {arrival.pick_id}")
+                continue
+
+            if keep_manual_picks and pick.evaluation_mode == "manual":
+                continue
+
             if "P" in arrival.phase.upper():
                 time_residual_threshold = self.P_time_residual_threshold
             elif "S" in arrival.phase.upper():
@@ -723,13 +734,8 @@ class NllLoc(object):
                     and arrival.distance > self.dist_km_cutoff / 111.0
                 )
             ):
-                pick = next(
-                    (p for p in event.picks if p.resource_id == arrival.pick_id), None
-                )
                 pick_to_delete.append(pick)
                 arrival_to_delete.append(arrival)
-                # logger.info(pick)
-                # logger.info(arrival)
 
         logger.debug(
             f"cleanup: remove {len(arrival_to_delete)} phases and {len(pick_to_delete)} picks."
