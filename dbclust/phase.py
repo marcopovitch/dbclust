@@ -3,6 +3,7 @@ import functools
 import logging
 import sys
 from datetime import datetime
+from math import isnan
 from typing import List
 from typing import Optional
 from typing import Union
@@ -36,6 +37,8 @@ class Phase(object):
         self.phase = None
         self.time = None
         self.proba = None
+        self.evaluation = None
+        self.method = None
 
         if coord:
             self.coord = coord
@@ -47,7 +50,7 @@ class Phase(object):
             return
 
         if time_search:
-            time_search = str(time_search)  # madatorry to use lru_cache
+            time_search = str(time_search)  # mandatory to use lru_cache
 
         if type(info_sta) == Inventory:
             get_station_info = self.get_station_info_from_inventory
@@ -155,23 +158,29 @@ class Phase(object):
 
     def set_phase_info(
         self,
-        phase: str,
-        time: str,
-        proba: float,
-        eventid: str = None,
+        phase_type: str,
+        phase_time: str,
+        phase_score: float,
+        phase_evaluation: str,
+        phase_method: str,
+        event_id: str = None,
         agency: str = None,
     ) -> None:
-        self.phase = phase
-        self.time = UTCDateTime(time)
-        self.proba = float(proba)
-        self.eventid = eventid
+        self.phase = phase_type
+        self.time = UTCDateTime(phase_time)
+        self.proba = float(phase_score)
+        self.evaluation = phase_evaluation
+        self.method = phase_method
+        self.event_id = event_id
         self.agency = agency
 
     def show_all(self) -> None:
-        if self.eventid:
-            print(f"{self.network}.{self.station}: from {self.eventid}")
+        if self.event_id:
+            print(f"{self.network}.{self.station}: from {self.event_id}")
         else:
             print(f"{self.network}.{self.station}:")
+
+        print(f"    evaluation is {self.evaluation}, method: {self.method}, agency: {self.agency}")
         if (
             self.coord["latitude"] is not None
             and self.coord["longitude"] is not None
@@ -191,9 +200,16 @@ def import_phases(
     S_proba_threshold: float = 0,
     info_sta: Optional[Union[Inventory, str]] = None,
 ) -> List[Phase]:
-    """
-    Read phaseNet dataframe picks.
-    Returns a list of Phase objects.
+    """Read phaseNet dataframe picks
+
+    Args:
+        df (pd.DataFrame, optional): _description_. Defaults to None.
+        P_proba_threshold (float, optional): P filter threshold. Defaults to 0 ie. no filter.
+        S_proba_threshold (float, optional): S filter threshold. Defaults to 0 ie. no filter.
+        info_sta (Optional[Union[Inventory, str]], optional): How to get stations information.
+
+    Returns:
+        List[Phase]: returns a list of Phase objects
     """
     phases = []
 
@@ -210,18 +226,27 @@ def import_phases(
         logger.error("No phasenet header found")
         return None
 
+    # use threshold filters
     df = df.loc[~((df["phase_type"] == "P") & (df["phase_score"] < P_proba_threshold))]
     df = df.loc[~((df["phase_type"] == "S") & (df["phase_score"] < S_proba_threshold))]
-    #df[["net", "sta"]] = df["station_id"].astype(str).str.split(".", n=1, expand=True)
 
     for row in df.itertuples(index=False):
-        # ic(row)
-        if "eventid" in df.columns:
-            eventid = row.eventid
+        if "phase_evaluation" in df.columns and type(row.phase_evaluation) is str:
+            evaluation = row.phase_evaluation
         else:
-            eventid = None
+            evaluation = None
 
-        if "agency" in df.columns:
+        if "phase_method" in df.columns and type(row.phase_method) is str:
+            method = row.phase_method
+        else:
+            method = None
+
+        if "event_id" in df.columns and type(row.event_id) is str:
+            event_id = row.event_id
+        else:
+            event_id = None
+
+        if "agency" in df.columns and type(row.agency) is str:
             agency = row.agency
         else:
             agency = None
@@ -240,10 +265,12 @@ def import_phases(
             continue
 
         myphase.set_phase_info(
-            row.phase_type,
-            row.phase_time,
-            row.phase_score,
-            eventid=eventid,
+            phase_type=row.phase_type,
+            phase_time=row.phase_time,
+            phase_score=row.phase_score,
+            phase_evaluation=evaluation,
+            phase_method=method,
+            event_id=event_id,
             agency=agency,
         )
         phases.append(myphase)
@@ -312,8 +339,7 @@ def import_eqt_phases(df=None, P_proba_threshold=0, S_proba_threshold=0):
     return phases
 
 
-def _test_phasenet_import():
-    picks_file = "../test/picksSS.csv"
+def _test_phasenet_import(picks_file):
     logger.info(f"Opening {picks_file} file.")
     try:
         df = pd.read_csv(picks_file, parse_dates=["phase_time"])
@@ -351,6 +377,7 @@ def _test_eqt_import():
 
 
 if __name__ == "__main__":
-    logger.setLevel(logging.INFO)
-    _test_phasenet_import()
-    _test_eqt_import()
+    logger.setLevel(logging.DEBUG)
+    _test_phasenet_import("../samples/renass.csv")
+    _test_phasenet_import("../samples/phasenet.csv")
+    # _test_eqt_import()
