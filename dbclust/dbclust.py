@@ -194,7 +194,7 @@ def dbclust(
     # keep track of each time period processed
     part = 0
     last_saved_event_count = 0
-    last_round = False # over time_periods
+    last_round = False  # over time_periods
     picks_to_remove = []
 
     # start time looping
@@ -218,6 +218,10 @@ def dbclust(
         if df_subset.empty:
             logger.info(f"[{job_index}] Skipping clustering {len(df_subset)} phases.")
             continue
+
+        # remove blacklisted stations
+        for b in cfg.station.blacklist:
+            df_subset = df_subset[~df_subset["station_id"].str.contains(b, regex=True)]
 
         logger.info(f"[{job_index}] Starting clustering with {len(df_subset)} phases.")
 
