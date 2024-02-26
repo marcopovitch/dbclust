@@ -115,7 +115,7 @@ class PickConfig:
                     nbcol = first_line.count(",")
                     if nbcol < 4:
                         raise ValueError(
-                            f"{self.filename} is not a csv file or miss columns ({nbcol}) !"
+                            f"{self.filename} is not a csv file or some columns are missing ({nbcol}) !"
                         )
             except Exception as e:
                 raise e
@@ -128,18 +128,6 @@ class PickConfig:
             self.start = min
         if not self.end:
             self.end = max
-
-    def remove_black_listed_stations(self, black_list: List[str]) -> None:
-        logger.info("Removing black listed channels:")
-        if not black_list:
-            logger.info("\t- black_list is empty")
-            return
-
-        for b in black_list:
-            before = len(self.df)
-            self.df = self.df[~self.df["station_id"].str.contains(b, regex=True)]
-            after = len(self.df)
-            logger.info(f"\t- removed {before-after} {b} picks")
 
 
 @dataclass
