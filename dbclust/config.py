@@ -9,6 +9,7 @@ from dataclasses import field
 from datetime import datetime
 from typing import List
 from typing import Optional
+from typing import Tuple
 from typing import Union
 from urllib.error import URLError
 from urllib.parse import urlparse
@@ -17,6 +18,7 @@ from urllib.request import urlopen
 import geopandas as gpd
 import pandas as pd
 import pyarrow.parquet as pq
+import pyproj
 from dacite import from_dict
 from db import duckdb_init
 from icecream import ic
@@ -24,6 +26,7 @@ from obspy import Inventory
 from obspy import read_inventory
 from pyocto.associator import VelocityModel1D
 from read_yml import read_config
+from shapely.geometry import LineString
 from shapely.geometry import Point
 from shapely.geometry import Polygon
 
@@ -324,13 +327,17 @@ class CatalogConfig:
 class Zone:
     name: str
     velocity_profile: str
-    polygone: List[List[float]]
+    polygon: List[List[float]]
+
+    def __str__(self) -> str:
+        txt = f"zone:\n\tname: '{self.name}'\n\tprofile: '{self.velocity_profile}'\n\tpolygon: {self.polygon}"
+        return txt
 
 
 @dataclass
 class Zones:
     zones: List[Zone]
-    polygones: Optional[gpd.geodataframe.GeoDataFrame] = field(default=None)
+    polygons: Optional[gpd.GeoDataFrame] = None
 
     def load_zones(self, nll_cfg: NonLinLocConfig) -> None:
         records = []
@@ -345,7 +352,7 @@ class Zones:
                     f"Can't find zone velocity profile {z.velocity_profile}"
                 )
 
-            polygon = Polygon(z.polygone)
+            polygon = Polygon(z.polygon)
             records.append(
                 {
                     "name": z.name,
@@ -357,9 +364,25 @@ class Zones:
         if not len(records):
             raise ValueError(f"Zones defined ... but empty !")
 
-        self.polygones = gpd.GeoDataFrame(records)
+        self.polygons = gpd.GeoDataFrame(records)
 
-    def find_zone(self, latitude: float = None, longitude: float = None) -> gpd:
+    def get_zone_from_name(self, name: str) -> gpd.GeoDataFrame:
+        """Get zone given it's name
+
+        Args:
+            name (str): zone name to get
+
+        Returns:
+            gpd.GeoDataFrame: zone dataframe
+        """
+        for index, row in self.polygons.iterrows():
+            if row["name"] == name:
+                return row
+        return gpd.GeoDataFrame()
+
+    def find_zone(
+        self, latitude: float = None, longitude: float = None
+    ) -> Tuple[gpd.GeoDataFrame, float]:
         """Find zone
 
         Args:
@@ -371,10 +394,36 @@ class Zones:
             gpd.GeoDataFrame: geodataframe found or an empty one if nothing found.
         """
         point_shapely = Point(longitude, latitude)
-        for index, row in self.polygones.iterrows():
-            if row["geometry"].contains(point_shapely):
-                return row
-        return gpd.GeoDataFrame()
+        for index, row in self.polygons.iterrows():
+            polygon = row["geometry"]
+            if polygon.contains(point_shapely):
+
+                # convert wgs84 coord to lambert II (metric)
+                transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:27572")
+                x_point, y_point = transformer.transform(longitude, latitude)
+                sommets_lambert = [
+                    transformer.transform(lon, lat)
+                    for lon, lat in polygon.exterior.coords
+                ]
+
+                polygon = Polygon(sommets_lambert)
+                point_shapely = Point(x_point, y_point)
+
+                lines = [
+                    LineString(
+                        [
+                            polygon.exterior.coords[i],
+                            polygon.exterior.coords[
+                                (i + 1) % len(polygon.exterior.coords)
+                            ],
+                        ]
+                    )
+                    for i in range(len(polygon.exterior.coords))
+                ]
+                distances = [point_shapely.distance(line) for line in lines]
+                distance_km = min(distances) / 1000
+                return row, distance_km
+        return gpd.GeoDataFrame(), None
 
 
 @dataclass
@@ -587,7 +636,6 @@ class DBClustConfig:
             ic(key, attribute_value)
 
         # test zone
-        ic(self.zones.find_zone(48, 7))
         ic(self.pick.df)
 
 
