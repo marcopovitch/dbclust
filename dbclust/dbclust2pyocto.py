@@ -115,8 +115,8 @@ def dbclust2pyocto(
         associator.transform_stations(stations)
 
         events, assignments = associator.associate(picks, stations)
-        # ic(events)
-        # ic(assignments)
+        #ic(events)
+        #ic(assignments)
 
         if len(events):
             associator.transform_events(events)
@@ -124,7 +124,8 @@ def dbclust2pyocto(
                 datetime.datetime.fromtimestamp, tz=datetime.timezone.utc
             )
 
-        pyocto_preloc.extend(get_events_list(events))
+        # store pyocto events
+        pyocto_preloc.extend(get_events_list(events, assignments))
         pyocto_clusters.extend(
             get_clusters_from_assignment(cluster, events, assignments)
         )
@@ -235,14 +236,31 @@ def aggregate_pick_to_cluster_with_common_event_id(
     return clusters
 
 
-def get_events_list(events: pd.DataFrame) -> List[dict]:
+def get_events_list(events: pd.DataFrame, assignments: pd.DataFrame) -> List[dict]:
+    """Get info on events and picks to populate an event quakeml
+
+    Args:
+        events (pd.DataFrame): Dataframe with events
+        assignments (pd.DataFrame): Dataframe with picks corresponding to events
+
+    Returns:
+        List[dict]: simple dict with events information
+    """
     hypocenters = []
     for index, row in events.iterrows():
+        event_idx = row["idx"]
+        picks = assignments[assignments["event_idx"] == event_idx]
+        col_names = ["station",  "phase", "time", "residual"]
+        picks = picks[col_names].values.tolist()
+
         hypo = {
             "time": row["time"],
             "latitude": row["latitude"],
             "longitude": row["longitude"],
             "depth_m": row["depth"] * 1000.0,
+            "phase_count": row["picks"],
+            "col_names": col_names,
+            "phases": picks,
         }
         hypocenters.append(hypo)
     return hypocenters
