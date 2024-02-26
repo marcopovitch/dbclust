@@ -22,6 +22,7 @@ import ray
 from icecream import ic
 from obspy import Catalog
 from obspy.core.event import Comment
+from obspy.core.event import CreationInfo
 from obspy.core.event import Event
 from obspy.core.event import Origin
 from obspy.core.event.base import WaveformStreamID
@@ -56,9 +57,9 @@ def compute_tt(p1: Phase, p2: Phase, vmean) -> float:
 
 
 def cluster_share_eventid(c1: List[Phase], c2: List[Phase]) -> bool:
-    c1_evtids = set([p.eventid for p in c1 if p.eventid])
+    c1_evtids = set([p.event_id for p in c1 if p.event_id])
     logger.debug("cluster1 eventid: %s" % c1_evtids)
-    c2_evtids = set([p.eventid for p in c2 if p.eventid])
+    c2_evtids = set([p.event_id for p in c2 if p.event_id])
     logger.debug("cluster2 eventid: %s" % c2_evtids)
     if c1_evtids.intersection(c2_evtids):
         return True
@@ -148,13 +149,13 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
                             and pick.phase_hint == cluster_pick.phase
                         ):
                             # cluster found
-                            event_ids = list(set([p.eventid for p in c if p.eventid]))
+                            event_ids = list(set([p.event_id for p in c if p.event_id]))
                             cluster_found = True
                             break
                     if cluster_found == True:
                         break
 
-        # event_ids = list(set([p.eventid for p in chain(*clusters) if p.eventid]))
+        # event_ids = list(set([p.event_id for p in chain(*clusters) if p.event_id]))
         event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
 
 
@@ -506,8 +507,10 @@ class Clusterize(object):
 
             for p in cluster:
                 pick = Pick()
-                pick.evaluation_mode = "automatic"
-                pick.method_id = "phaseNet"
+                pick.creation_info = CreationInfo(agencyID=p.agency)
+                if p.evaluation in ["automatic", "manual"]:
+                    pick.evaluation_mode = p.evaluation
+                pick.method_id = p.method
                 pick.waveform_id = WaveformStreamID(
                     network_code=f"{p.network}", station_code=f"{p.station}"
                 )
@@ -533,7 +536,7 @@ class Clusterize(object):
                 hypo = self.preloc[i]
                 logger.info(
                     f"Prelocalization is time={hypo['time']}, lat={hypo['latitude']}, "
-                    "lon={hypo['longitude']}, depth_m={hypo['depth_m']}"
+                    f"lon={hypo['longitude']}, depth_m={hypo['depth_m']}"
                 )
                 if not self.zones.polygons.empty:
                     zone, min_dist_km = self.zones.find_zone(
@@ -592,12 +595,12 @@ class Clusterize(object):
         # self.show_clusters()
 
     def show_clusters(self):
-        print(f"Clusters: {self.n_clusters}")
+        print(f"Clusters: number of clusters = {self.n_clusters}")
         for i, cluster in enumerate(self.clusters):
             stations_list = set([p.station for p in cluster])
-            evtids = set([p.eventid for p in cluster if p.eventid])
+            evtids = set([p.event_id for p in cluster if p.event_id])
             print(
-                f"cluster {i}: stability=%.2f, %d picks / %d stations, eventids: %s"
+                f"\tcluster {i}: stability=%.2f, %d picks / %d stations, eventids: %s"
                 % (
                     self.clusters_stability[i],
                     len(self.clusters[i]),
@@ -617,32 +620,30 @@ class Clusterize(object):
 
 
 def _test():
-    max_search_dist = 17.0
-    min_cluster_size = 6
-    average_velocity = 4.0  # km/s
-    # phases = import_phases("../test/picks.csv")
+    average_velocity = 5.0  # km/s
 
-    picks_file = "../test/EQT-2022-09-10.csv"
+    picks_file = "../samples/renass.csv"
     logger.info(f"Opening {picks_file} file.")
     try:
-        df = pd.read_csv(picks_file, parse_dates=["p_arrival_time", "s_arrival_time"])
+        df = pd.read_csv(picks_file, parse_dates=["phase_time"])
     except Exception as e:
         logger.error(e)
         sys.exit()
 
-    phases = import_eqt_phases(
+    logger.info(f"Read {len(df)} phases.")
+    phases = import_phases(
         df,
-        P_proba_threshold=0.8,
-        S_proba_threshold=0.5,
+        P_proba_threshold=0.3,
+        S_proba_threshold=0.3,
+        info_sta="http://10.0.1.36:8080",
+        # info_sta="http://ws.resif.fr",
     )
-    logger.info(f"Read {len(phases)}")
+
     myclusters = Clusterize(
         phases=phases,
-        # max_search_dist=max_search_dist,
-        max_search_dist=0,
-        # min_cluster_size=min_cluster_size,
-        # min_station_with_P_and_S=2,
-        min_cluster_size=5,
+        max_search_dist=60,
+        min_station_with_P_and_S=1,
+        min_cluster_size=3,
         average_velocity=average_velocity,
     )
     myclusters.generate_nllobs("../test/obs")
