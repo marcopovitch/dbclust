@@ -222,12 +222,12 @@ def aggregate_pick_to_cluster_with_common_event_id(
     clusters: List[List[Phase]], picks: List[Phase]
 ) -> List[Phase]:
     for cluster in clusters:
-        event_ids = list(set([p.eventid for p in cluster if p.eventid]))
+        event_ids = list(set([p.event_id for p in cluster if p.event_id]))
         picks_copy = copy.deepcopy(picks)
         for p in picks:
-            if not p.eventid:
+            if not p.event_id:
                 continue
-            if p.eventid in event_ids:
+            if p.event_id in event_ids:
                 cluster.append(p)
                 picks_copy.remove(p)
         pick = picks_copy
