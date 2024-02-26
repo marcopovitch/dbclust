@@ -8,7 +8,9 @@ import pandas as pd
 from obspy import read_events
 
 
-def export_picks_to_phasenet_format(event, origin, probability=1, agency=None):
+def export_picks_to_phasenet_format(
+    event, origin, probability=1, evaluation=None, method=None, agency=None
+):
     # seedid,phasename,time,probability
     # 1K.OFAS0.00.EH.D,P,2023-02-13T18:30:58.558999Z,0.366400
     lines = []
@@ -26,13 +28,20 @@ def export_picks_to_phasenet_format(event, origin, probability=1, agency=None):
                         "Using arrival phase."
                     )
                 line = {
-                    "station_id": pick.waveform_id.get_seed_string(),
+                    "station_id": pick.waveform_id.get_seed_string().rstrip(".."),
                     "phase_type": arrival.phase,
                     "phase_time": pick.time,
                     "phase_score": probability,
+                    "phase_evaluation": pick.evaluation_mode,
+                    "phase_method": pick.method_id,
                     # "eventid": event.resource_id.id.split("/")[-1],
-                    "eventid": event.resource_id.id,
+                    "event_id": event.resource_id.id,
                 }
+                # override
+                if evaluation:
+                    line["phase_evaluation"] = evaluation
+                if method:
+                    line["phase_method"] = method
                 if agency:
                     line["agency"] = agency
                 lines.append(line)
@@ -42,7 +51,7 @@ def export_picks_to_phasenet_format(event, origin, probability=1, agency=None):
 if __name__ == "__main__":
     # default logger
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    logger = logging.getLogger("dbclust")
+    logger = logging.getLogger("qml2dbclust")
     logger.setLevel(logging.INFO)
 
     parser = argparse.ArgumentParser()
@@ -69,6 +78,22 @@ if __name__ == "__main__":
         dest="probability",
         help="probability",
         type=float,
+    )
+    parser.add_argument(
+        "-e",
+        "--evaluation",
+        default=None,
+        dest="evaluation",
+        help="override pick evaluation mode (automatic|manual)",
+        type=str,
+    )
+    parser.add_argument(
+        "-m",
+        "--method",
+        default=None,
+        dest="method",
+        help="override pick method_id (AIC|PHASENET|...)",
+        type=str,
     )
     parser.add_argument(
         "-a",
@@ -135,13 +160,15 @@ if __name__ == "__main__":
     df = pd.DataFrame(
         columns=[
             "station_id",
+            "channel",
             "phase_type",
             "phase_time",
             "phase_score",
-            "eventid",
+            "phase_evaluation",
+            "phase_method",
+            "event_id",
             "agency",
         ]
-        # columns=["seedid", "phasename", "time", "probability", "eventid", "agency"]
     )
     for event in cat.events:
         origin = event.preferred_origin()
