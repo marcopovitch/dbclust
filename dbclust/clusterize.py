@@ -19,6 +19,7 @@ import hdbscan
 import numpy as np
 import pandas as pd
 import ray
+from icecream import ic
 from obspy import Catalog
 from obspy.core.event import Comment
 from obspy.core.event import Event
@@ -531,17 +532,32 @@ class Clusterize(object):
             if self.preloc:
                 hypo = self.preloc[i]
                 logger.info(
-                    f"Prelocalization is time={hypo['time']}, lat={hypo['latitude']}, lon={hypo['longitude']}, depth_m={hypo['depth_m']}"
+                    f"Prelocalization is time={hypo['time']}, lat={hypo['latitude']}, "
+                    "lon={hypo['longitude']}, depth_m={hypo['depth_m']}"
                 )
-                if not self.zones.polygones.empty:
-                    zone = self.zones.find_zone(
+                if not self.zones.polygons.empty:
+                    zone, min_dist_km = self.zones.find_zone(
                         latitude=hypo["latitude"],
                         longitude=hypo["longitude"],
                     )
+
+                    # If preloc is too close from an polygon edge
+                    # use the national velocity model
+                    # if min_dist_km < 100:
+                    #     logger.info(f"Preloc is close ({min_dist_km} km)"
+                    #                 f" to '{zone['name']}' polygon edge ! Using 'world' zone")
+                    #     zone = self.zones.get_zone_from_name("world")
+                    #     min_dist_km = None
+
                     if not zone.empty:
                         logger.info(
-                            f"Using {zone['name']} with velocity profile: {zone['velocity_profile']}, template: {zone['template']}"
+                            f"Using zone:\n"
+                            f"\tname: '{zone['name']}'\n"
+                            f"\twith velocity profile: '{zone['velocity_profile']}'\n"
+                            f"\ttemplate: '{zone['template']}'\n"
+                            f"\tmin_dist_km: {min_dist_km}"
                         )
+
                         vel_file = os.path.join(OBS_PATH, f"cluster-{i}.vel")
                         logger.debug(f"writing to file {vel_file}: {zone['template']}")
                         with open(vel_file, "w") as vel:
