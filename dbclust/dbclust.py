@@ -148,16 +148,24 @@ def dbclust(
 
     Args:
         cfg (Config): dbclust parameters and data
-        df (Optional[pd.DataFrame], optional): if defined override picks from cfg
+        df (Optional[pd.DataFrame], optional): use df if defined rather than picks from cfg
         job_index (int): job index, None if in sequential mode
     """
 
     # Time blocks
     if job_index is not None:
         start, stop = cfg.parallel.time_partitions[job_index]
+        if job_index == len(cfg.parallel.time_partitions) - 1:
+            # get event in the overlapped zone
+            last_job = True
+        else:
+            # don't get event in the overlapped zone
+            last_job = False
     else:
         start = cfg.pick.start
         stop = cfg.pick.end
+        # get event in the overlapped zone during the last time_periods round
+        last_job = True
 
     msg = "started."
     ic(msg, job_index, start, stop)
@@ -186,7 +194,7 @@ def dbclust(
     # keep track of each time period processed
     part = 0
     last_saved_event_count = 0
-    last_round = False
+    last_round = False # over time_periods
     picks_to_remove = []
 
     # start time looping
@@ -265,7 +273,7 @@ def dbclust(
         )
 
         # This is the last round: merge previous_myclust and myclust
-        if i == (len(time_periods) - 1):
+        if i == (len(time_periods) - 1) and last_job == True:
             last_round = True
             logger.info("Last round, merging all remaining clusters.")
             previous_myclust.merge(myclust)
