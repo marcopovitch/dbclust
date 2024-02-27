@@ -17,6 +17,9 @@ from itertools import combinations
 from math import fabs
 from math import isclose
 from typing import List
+from typing import Optional
+from typing import Tuple
+from typing import Union
 
 import dask
 import dask.bag as db
@@ -24,13 +27,20 @@ import dateparser
 import numpy as np
 import pandas as pd
 import ray
+from gap import compute_gap
+from icecream import ic
 from jinja2 import Template
 from obspy import Catalog
 from obspy import read_events
 from obspy.core import UTCDateTime
+from obspy.core.event import Arrival
+from obspy.core.event import CreationInfo
 from obspy.core.event import Origin
 from obspy.core.event import OriginQuality
+from obspy.core.event import Pick
 from obspy.core.event import ResourceIdentifier
+from obspy.core.event import WaveformStreamID
+from obspy.geodetics import gps2dist_azimuth
 from quakeml import remove_duplicated_picks
 from ray.util.multiprocessing import Pool
 
@@ -248,34 +258,25 @@ class NllLoc(object):
         # create an origin associated to this prelocalization
         vel_file = os.path.splitext(nll_obs_file)[0] + ".vel"
         preloc_origin = None
-        # Fixme: add picks/arrivals to this loc
+        # get velocity model to use thanks to preliminary location
         if os.path.exists(vel_file):
             with open(vel_file) as vel:
                 model_id = vel.readline().strip()
                 nll_template = vel.readline().strip()
-                preloc_time = UTCDateTime(dateparser.parse(vel.readline().strip()))
-                preloc_lat = float(vel.readline().strip())
-                preloc_lon = float(vel.readline().strip())
-                preloc_depth_m = float(vel.readline().strip())
+
             logger.info(
-                f"Force localization to use model_id: {model_id}, template: {nll_template}."
+                f"Preloc forces localization to use model_id: {model_id}, "
+                f"template: {nll_template}."
             )
-            if pass_count == 0:
-                preloc_origin = Origin()
-                preloc_origin.evaluation_mode = "automatic"
-                preloc_origin.evaluation_status = "preliminary"
-                preloc_origin.method_id = ResourceIdentifier("pyocto")
-                preloc_origin.earth_model_id = ResourceIdentifier("haslach")
-                if "agency_id" in self.quakeml_settings:
-                    preloc_origin.agency_id = self.quakeml_settings["agency_id"]
-                else:
-                    preloc_origin.agency_id = "MyAgencyId"
-                preloc_origin.latitude = preloc_lat
-                preloc_origin.longitude = preloc_lon
-                preloc_origin.depth = preloc_depth_m  # in meters
-                preloc_origin.time = preloc_time
-                preloc_origin.quality = OriginQuality()
-                preloc_origin.quality.azimuthal_gap = 0
+
+        if pass_count == 0:
+            # get info to create an full Origin for preliminary location
+            # (only on the first location iteration)
+            picks_file = os.path.splitext(nll_obs_file)[0] + "-picks.csv"
+            sta_file = os.path.splitext(nll_obs_file)[0] + "-sta.csv"
+            preloc_origin, preloc_picks_list = make_preloc_origin(
+                vel_file, picks_file, sta_file, self.quakeml_settings
+            )
 
         logger.debug(f"Localization of {nll_obs_file} using {nll_template} template.")
         nll_obs_file_basename = os.path.basename(nll_obs_file)
@@ -421,15 +422,12 @@ class NllLoc(object):
                 elif "S" in pick.phase_hint or "s" in pick.phase_hint:
                     pick.time_errors.uncertainty = self.S_uncertainty
 
-        # add preloc origin to event (only basic info) # only the first pass
-        if preloc_origin:
-            e.origins.append(preloc_origin)
-
         # try a relocation
         if self.double_pass and pass_count == 0:
             logger.debug("Starting double pass relocation.")
             cat2 = cat.copy()
             event2 = cat2.events[0]
+
             event2 = self.cleanup_pick_phase(event2, keep_manual_picks=True)
             if len(event2.picks):
                 new_nll_obs_file = nll_obs_file + ".2nd_pass"
@@ -459,6 +457,11 @@ class NllLoc(object):
         # if there is only one origin, set it to the preferred
         if len(e.origins) == 1:
             e.preferred_origin_id = e.origins[0].resource_id
+
+        # add preloc origin to event # only on the first pass
+        if preloc_origin:
+            e.picks.extend(preloc_picks_list)
+            e.origins.append(preloc_origin)
 
         return cat
 
@@ -1007,6 +1010,127 @@ def reloc_fdsn_event(locator, eventid, fdsnws):
     event = cat[0]
     cat = locator.reloc_event(event)
     return cat
+
+
+def make_preloc_origin(
+    o_parameters_file: str, picks_file: str, sta_file: str, quakeml_settings
+) -> Tuple[Union[Origin, None], Union[Pick, None]]:
+    """From PyOcto preliminary location build Origin/Arrivals/Picks
+
+    Args:
+        o_parameters_file (str): file with origin parameters
+        picks_file (str): csv file with picks information
+        sta_file (srt): csv file with station coordinates
+        quakeml_settings (_type_): quakeml parameters to set up
+
+    Returns:
+        Tuple[Union[Origin, None], Union[Pick, None]]: Returns Origin, Picks objects
+    """
+    if not os.path.exists(o_parameters_file):
+        logger.debug("Preloc: no preloc file")
+        return None, None
+
+    with open(o_parameters_file) as vel:
+        model_id = vel.readline().strip()
+        nll_template = vel.readline().strip()
+        preloc_time = UTCDateTime(dateparser.parse(vel.readline().strip()))
+        preloc_lat = float(vel.readline().strip())
+        preloc_lon = float(vel.readline().strip())
+        preloc_depth_m = float(vel.readline().strip())
+
+    preloc_origin = Origin()
+    preloc_origin.evaluation_mode = "automatic"
+    preloc_origin.evaluation_status = "preliminary"
+    preloc_origin.method_id = ResourceIdentifier("PyOcto")
+    preloc_origin.earth_model_id = ResourceIdentifier("haslach")
+    if "agency_id" in quakeml_settings:
+        preloc_origin.agency_id = quakeml_settings["agency_id"]
+    else:
+        preloc_origin.agency_id = "MyAgencyId"
+
+    preloc_origin.time = preloc_time
+    preloc_origin.latitude = preloc_lat
+    preloc_origin.longitude = preloc_lon
+    preloc_origin.depth = preloc_depth_m  # in meters
+    preloc_origin.depth_type = "from location"
+    preloc_origin.earth_model_id = model_id
+
+    if "author" in quakeml_settings:
+        author = quakeml_settings["author"]
+    else:
+        author = "DBClust"
+    preloc_origin.creation_info = CreationInfo(
+        agency_id=preloc_origin.agency_id,
+        author=author,
+        creation_time=UTCDateTime.now(),
+    )
+
+    # Read csv file and merge them on station column
+    picks_df = pd.read_csv(picks_file)  # station, phase, time, residual
+    coord_df = pd.read_csv(sta_file)  # id, latitude, longitude, elevation
+    coord_df.drop_duplicates(inplace=True)
+    coord_df.rename(columns={"id": "station"}, inplace=True)
+    df = pd.merge(picks_df, coord_df, on="station", how="inner")
+
+    preloc_origin.quality = OriginQuality()
+
+    # preloc_origin.quality.used_phase_count = preloc_phase_count
+    preloc_origin.quality.used_phase_count = len(df)
+    preloc_origin.quality.associated_phase_count = (
+        preloc_origin.quality.used_phase_count
+    )
+    preloc_origin.quality.used_station_count = df["station"].nunique()
+    preloc_origin.quality.associated_station_count = (
+        preloc_origin.quality.used_station_count
+    )
+
+    preloc_origin.quality.standard_error = np.round(
+        np.sqrt((df["residual"] ** 2).mean()), 3
+    )
+
+    picks_list = []
+    for r, row in df.iterrows():
+        pick = Pick()
+        pick.creation_info = CreationInfo(agency_id=preloc_origin.agency_id)
+        # pick.evaluation_mode = "automatic"
+        # pick.method_id = p.method
+        net, sta = row["station"].split(".")[:2]
+        pick.waveform_id = WaveformStreamID(
+            network_code=f"{net}", station_code=f"{sta}"
+        )
+        pick.phase_hint = row["phase"]
+        pick.time = row["time"]
+        picks_list.append(pick)
+
+        arrival = Arrival()
+        arrival.phase = row["phase"]
+        arrival.time_weight = 1
+        arrival.time_residual = row["residual"]
+        arrival.distance, arrival.azimuth, _ = gps2dist_azimuth(
+            preloc_lat,
+            preloc_lon,
+            row["latitude"],
+            row["longitude"],
+        )
+        # approx : convert to degres as distance is in meter
+        arrival.distance = arrival.distance / (1000 * 111.1)
+        arrival.pick_id = pick.resource_id
+        arrival.creation_info = CreationInfo(agencyID=preloc_origin.agency_id)
+        preloc_origin.arrivals.append(arrival)
+
+        # Fixme, add:
+        # - azimthal gap
+        # - loc/chan
+        # - pick manual|automatic
+
+    distances = [a.distance for a in preloc_origin.arrivals]
+    preloc_origin.minimum_distance = min(distances)
+    preloc_origin.maximum_distance = max(distances)
+    preloc_origin.median_distance = np.median(distances)
+    azimuths = [a.azimuth for a in preloc_origin.arrivals]
+    preloc_origin.quality.azimuthal_gap = compute_gap(azimuths)
+
+    return preloc_origin, picks_list
 
 
 if __name__ == "__main__":
