@@ -1031,12 +1031,14 @@ def make_preloc_origin(
         return None, None
 
     with open(o_parameters_file) as vel:
-        model_id = vel.readline().strip()
-        nll_template = vel.readline().strip()
+        _ = vel.readline().strip()
+        _ = vel.readline().strip()
         preloc_time = UTCDateTime(dateparser.parse(vel.readline().strip()))
         preloc_lat = float(vel.readline().strip())
         preloc_lon = float(vel.readline().strip())
         preloc_depth_m = float(vel.readline().strip())
+        _ = float(vel.readline().strip())
+        model_name_used = vel.readline().strip()
 
     preloc_origin = Origin()
     preloc_origin.evaluation_mode = "automatic"
@@ -1053,7 +1055,7 @@ def make_preloc_origin(
     preloc_origin.longitude = preloc_lon
     preloc_origin.depth = preloc_depth_m  # in meters
     preloc_origin.depth_type = "from location"
-    preloc_origin.earth_model_id = model_id
+    preloc_origin.earth_model_id = model_name_used
 
     if "author" in quakeml_settings:
         author = quakeml_settings["author"]
@@ -1119,7 +1121,6 @@ def make_preloc_origin(
         preloc_origin.arrivals.append(arrival)
 
         # Fixme, add:
-        # - azimthal gap
         # - loc/chan
         # - pick manual|automatic
 
