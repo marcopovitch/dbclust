@@ -568,6 +568,7 @@ class Clusterize(object):
                             vel.write(f"{hypo['longitude']}\n")
                             vel.write(f"{hypo['depth_m']}\n")
                             vel.write(f"{hypo['phase_count']}\n")
+                            vel.write(f"{hypo['model_name_used']}\n")
 
                         picks_file = os.path.join(OBS_PATH, f"cluster-{i}-picks.csv")
                         logger.debug(f"writing file {picks_file}")
