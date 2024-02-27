@@ -53,6 +53,7 @@ def create_velocity_model(velocity_cfg: dict, model_path: str) -> None:
 
 def dbclust2pyocto(
     myclust: Clusterize,
+    model_name: str,
     associator_cfg: Associator,
     velocity_model: pyocto.VelocityModel1D,
     min_com_phases: int,
@@ -115,8 +116,8 @@ def dbclust2pyocto(
         associator.transform_stations(stations)
 
         events, assignments = associator.associate(picks, stations)
-        #ic(events)
-        #ic(assignments)
+        # ic(events)
+        # ic(assignments)
 
         if len(events):
             associator.transform_events(events)
@@ -125,7 +126,7 @@ def dbclust2pyocto(
             )
 
         # store pyocto events
-        pyocto_preloc.extend(get_events_list(events, assignments, stations))
+        pyocto_preloc.extend(get_events_list(events, assignments, stations, model_name))
         pyocto_clusters.extend(
             get_clusters_from_assignment(cluster, events, assignments)
         )
@@ -236,13 +237,19 @@ def aggregate_pick_to_cluster_with_common_event_id(
     return clusters
 
 
-def get_events_list(events: pd.DataFrame, assignments: pd.DataFrame, stations: pd.DataFrame) -> List[dict]:
+def get_events_list(
+    events: pd.DataFrame,
+    assignments: pd.DataFrame,
+    stations: pd.DataFrame,
+    model_name_used: str,
+) -> List[dict]:
     """Get info on events and picks to populate an event quakeml
 
     Args:
         events (pd.DataFrame): Dataframe with events
         assignments (pd.DataFrame): Dataframe with picks corresponding to events
         stations (pd.DataFrame): Dataframe with stations coordinates
+        model_name (str): model name used by PyOcto to get preliminary location
 
     Returns:
         List[dict]: simple dict with events information
@@ -251,7 +258,7 @@ def get_events_list(events: pd.DataFrame, assignments: pd.DataFrame, stations: p
     for index, row in events.iterrows():
         event_idx = row["idx"]
         picks = assignments[assignments["event_idx"] == event_idx]
-        picks_col_names = ["station",  "phase", "time", "residual"]
+        picks_col_names = ["station", "phase", "time", "residual"]
         picks = picks[picks_col_names].values.tolist()
         coords_col_names = ["id", "latitude", "longitude", "elevation"]
         coords = stations[coords_col_names].values.tolist()
@@ -262,6 +269,7 @@ def get_events_list(events: pd.DataFrame, assignments: pd.DataFrame, stations: p
             "longitude": row["longitude"],
             "depth_m": row["depth"] * 1000.0,
             "phase_count": row["picks"],
+            "model_name_used": model_name_used,
             "picks_col_names": picks_col_names,
             "phases": picks,
             "coords_col_names": coords_col_names,

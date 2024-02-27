@@ -285,6 +285,7 @@ def dbclust(
         if cfg.pyocto.current_model:
             previous_myclust = dbclust2pyocto(
                 previous_myclust,
+                cfg.pyocto.default_model_name,
                 cfg.pyocto.current_model.associator,
                 cfg.pyocto.velocity_model,
                 cfg.cluster.min_picks_common,
