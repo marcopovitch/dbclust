@@ -11,15 +11,12 @@ from math import isnan
 from math import pow
 from math import sqrt
 from typing import List
-from typing import Optional
-from typing import Union
 
 import dask.bag as db
 import hdbscan
 import numpy as np
 import pandas as pd
 import ray
-from icecream import ic
 from obspy import Catalog
 from obspy.core.event import Comment
 from obspy.core.event import CreationInfo
@@ -28,7 +25,6 @@ from obspy.core.event import Origin
 from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
-from phase import import_eqt_phases
 from phase import import_phases
 from phase import Phase
 from tqdm import tqdm
@@ -538,6 +534,7 @@ class Clusterize(object):
                     f"Prelocalization is time={hypo['time']}, lat={hypo['latitude']}, "
                     f"lon={hypo['longitude']}, depth_m={hypo['depth_m']}"
                 )
+
                 if not self.zones.polygons.empty:
                     zone, min_dist_km = self.zones.find_zone(
                         latitude=hypo["latitude"],
@@ -570,6 +567,26 @@ class Clusterize(object):
                             vel.write(f"{hypo['latitude']}\n")
                             vel.write(f"{hypo['longitude']}\n")
                             vel.write(f"{hypo['depth_m']}\n")
+                            vel.write(f"{hypo['phase_count']}\n")
+
+                        picks_file = os.path.join(OBS_PATH, f"cluster-{i}-picks.csv")
+                        logger.debug(f"writing file {picks_file}")
+                        with open(picks_file, "w") as picks:
+                            header = ",".join(hypo["picks_col_names"])
+                            picks.write(f"{header}\n")
+                            for fields in hypo["phases"]:
+                                line = ",".join(map(str, fields))
+                                picks.write(f"{line}\n")
+
+                        sta_file = os.path.join(OBS_PATH, f"cluster-{i}-sta.csv")
+                        logger.debug(f"writing file {sta_file}")
+                        with open(sta_file, "w") as sta:
+                            header = ",".join(hypo["coords_col_names"])
+                            sta.write(f"{header}\n")
+                            for fields in hypo["coords"]:
+                                line = ",".join(map(str, fields))
+                                sta.write(f"{line}\n")
+
                     else:
                         logger.warning(
                             f"Can't find a matched zone for (lat={hypo['latitude']},lon={hypo['longitude']})!"
