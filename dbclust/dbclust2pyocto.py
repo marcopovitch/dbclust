@@ -125,7 +125,7 @@ def dbclust2pyocto(
             )
 
         # store pyocto events
-        pyocto_preloc.extend(get_events_list(events, assignments))
+        pyocto_preloc.extend(get_events_list(events, assignments, stations))
         pyocto_clusters.extend(
             get_clusters_from_assignment(cluster, events, assignments)
         )
@@ -236,12 +236,13 @@ def aggregate_pick_to_cluster_with_common_event_id(
     return clusters
 
 
-def get_events_list(events: pd.DataFrame, assignments: pd.DataFrame) -> List[dict]:
+def get_events_list(events: pd.DataFrame, assignments: pd.DataFrame, stations: pd.DataFrame) -> List[dict]:
     """Get info on events and picks to populate an event quakeml
 
     Args:
         events (pd.DataFrame): Dataframe with events
         assignments (pd.DataFrame): Dataframe with picks corresponding to events
+        stations (pd.DataFrame): Dataframe with stations coordinates
 
     Returns:
         List[dict]: simple dict with events information
@@ -250,8 +251,10 @@ def get_events_list(events: pd.DataFrame, assignments: pd.DataFrame) -> List[dic
     for index, row in events.iterrows():
         event_idx = row["idx"]
         picks = assignments[assignments["event_idx"] == event_idx]
-        col_names = ["station",  "phase", "time", "residual"]
-        picks = picks[col_names].values.tolist()
+        picks_col_names = ["station",  "phase", "time", "residual"]
+        picks = picks[picks_col_names].values.tolist()
+        coords_col_names = ["id", "latitude", "longitude", "elevation"]
+        coords = stations[coords_col_names].values.tolist()
 
         hypo = {
             "time": row["time"],
@@ -259,8 +262,10 @@ def get_events_list(events: pd.DataFrame, assignments: pd.DataFrame) -> List[dic
             "longitude": row["longitude"],
             "depth_m": row["depth"] * 1000.0,
             "phase_count": row["picks"],
-            "col_names": col_names,
+            "picks_col_names": picks_col_names,
             "phases": picks,
+            "coords_col_names": coords_col_names,
+            "coords": coords,
         }
         hypocenters.append(hypo)
     return hypocenters
