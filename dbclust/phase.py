@@ -2,6 +2,7 @@
 import functools
 import logging
 import sys
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List
@@ -71,7 +72,7 @@ class Phase:
             time_search_begin = str(time_search_begin)
             time_search_end = str(time_search_end)
 
-        (lat, lon, elev, chans) = get_station_info(
+        (lat, lon, elev, loc, chans) = get_station_info(
             self.network,
             self.station,
             time_search_begin,
@@ -86,6 +87,9 @@ class Phase:
                 f"from {time_search_begin} to {time_search_end}."
             )
         self.coord = {"latitude": lat, "longitude": lon, "elevation": elev}
+
+        if self.location == None:
+            self.location = loc
 
         # chans order is in lexicographic order
         if "P" in self.phase:
@@ -135,6 +139,107 @@ class Phase:
             print("No coordinates found !")
 
 
+def inventory2df(inventory: Inventory) -> pd.DataFrame:
+    """Convert inventory to dataframe
+
+    Args:
+        inventory (Inventory): inventory to convert
+
+    Returns:
+        pd.DataFrame: dataframe
+    """
+    channels_info = []
+    for network in inventory:
+        for station in network:
+            for channel in station.channels:
+
+                if channel.response.instrument_sensitivity:
+                    scale = channel.response.instrument_sensitivity.value
+                    scale_freq = channel.response.instrument_sensitivity.frequency
+                    scale_units = channel.response.instrument_sensitivity.input_units
+                else:
+                    scale = scale_freq = scale_units = None
+
+                if channel.sensor:
+                    sensor_description = channel.sensor.description
+                else:
+                    sensor_description = None
+
+                channel_info = {
+                    "Network": network.code,
+                    "Station": station.code,
+                    "Location": channel.location_code,
+                    "Channel": channel.code,
+                    "Latitude": station.latitude,
+                    "Longitude": station.longitude,
+                    "Elevation": station.elevation,
+                    "Depth": channel.depth,
+                    #"Azimuth": channel.azimuth,
+                    #"Dip": channel.dip,
+                    #"SensorDescription": sensor_description,
+                    #"Scale": scale,
+                    #"ScaleFreq": scale_freq,
+                    #"ScaleUnits": scale_units,
+                    "SampleRate": channel.sample_rate,
+                    "StartTime": station.start_date,
+                    "EndTime": station.end_date,
+                }
+                # Ajouter les informations du canal à la liste
+                channels_info.append(channel_info)
+
+    # Créer un DataFrame pandas à partir de la liste de dictionnaires
+    df = pd.DataFrame(channels_info, dtype=str)
+    if df.empty:
+        return df
+
+    df["SampleRate"] = df["SampleRate"].apply(np.float32)
+    df = df.fillna("")
+    df["Latitude"] = df["Latitude"].apply(np.float32)
+    df["Longitude"] = df["Longitude"].apply(np.float32)
+    df["Elevation"] = df["Elevation"].apply(np.float32)
+    df["Location"] = df["Location"].astype(str)
+    df["Channel"] = df["Channel"].astype(str)
+
+    df = df.drop_duplicates()
+
+    return df
+
+
+def get_missing_info_from_df(df: pd.DataFrame, loc: str, chan: str) -> List[str]:
+    if loc is not None and chan is not None:
+        df.loc[df["Location"] == loc, :]
+        # channel is specified: use it to filter
+        re_chan = f"^{chan}"
+        df = df[df["Channel"].str.contains(re_chan, regex=True)]
+    else:
+        # Try to guess the channels choosing the highest sampling rate
+        max_sample_rate = df["SampleRate"].max()
+        df = df[df["SampleRate"] == max_sample_rate]
+        df = df.sort_values(by="StartTime")[:3]
+
+    df = df.sort_values(by=["StartTime", "Channel"])
+    #ic(df)
+
+    if len(df) == 0:
+        return [None] * 5
+    elif len(df) < 3:
+        rows = df["Channel"].iloc[0]
+        new_chans = [rows]
+    else:
+        rows = df["Channel"].iloc[:3]
+        new_chans = rows.tolist()
+
+    new_loc = df["Location"].iloc[0]
+
+    return (
+        df.iloc[0]["Latitude"],
+        df.iloc[0]["Longitude"],
+        df.iloc[0]["Elevation"],
+        new_loc,
+        new_chans,
+    )
+
+
 def get_station_info_from_inventory(
     network: str,
     station: str,
@@ -159,10 +264,13 @@ def get_station_info_from_inventory(
     """
     logger.debug(f"Getting station info from inventory: {network}.{station}")
 
-    if chan:
+    if chan is not None:
         re_chan = chan[:2] + "?"
     else:
-        re_chan = '*'
+        re_chan = "*"
+
+    if loc is None:
+        loc = "*"
 
     inv = inventory.select(
         network=network,
@@ -172,14 +280,12 @@ def get_station_info_from_inventory(
         starttime=time_search_begin,
         endtime=time_search_end,
     )
-    channels = inv.get_contents()["channels"]
-    if len(channels) == 0:
-        return [None] * 4
 
-    my_chan = sorted(set([c.split(".")[3] for c in channels]))
-    coords = inv.get_coordinates(channels[0])
-    # elevation is in meters
-    return coords["latitude"], coords["longitude"], coords["elevation"], my_chan
+    df = inventory2df(inv)
+    if df.empty:
+        return [None] * 5
+
+    return get_missing_info_from_df(df, loc, chan)
 
 
 @functools.lru_cache(maxsize=None)
@@ -218,50 +324,26 @@ def get_station_info_from_fdsnws(
         f"format=text&"
         f"level=channel"
     )
-    # ic(url)
-    # print(url)
 
     try:
-        df = pd.read_csv(url, sep="|", skipinitialspace=True)
+        df = pd.read_csv(url, sep="|", skipinitialspace=True, dtype=str)
     except BaseException as e:
         # logger.error("The exception: {}".format(e))
         # logger.debug(url)
-        return [None] * 4
+        return [None] * 5
 
     # Network|Station|Location|Channel|Latitude|Longitude|Elevation|Depth|
     df.columns = df.columns.str.replace("#", "")
     df.columns = [x.strip() for x in df.columns]
+    df = df.fillna("")
     df["Latitude"] = df["Latitude"].apply(np.float32)
     df["Longitude"] = df["Longitude"].apply(np.float32)
     df["Elevation"] = df["Elevation"].apply(np.float32)
+    df["Location"] = df["Location"].astype(str)
     df["Channel"] = df["Channel"].astype(str)
+    df["SampleRate"] = df["SampleRate"].apply(np.float32)
 
-    df["Location"] = df["Location"].fillna("")
-    df.loc[df["Location"] == loc, :]
-
-    # get high sample rate first
-    # df.sort_values(by=["SampleRate", "StartTime"], ascending=False, inplace=True)
-
-    if chan:
-        re_chan = f"^{chan}"
-        df = df[df["Channel"].str.contains(re_chan, regex=True)]
-        if len(df) == 0:
-            return [None] * 4
-        elif len(df) < 3:
-            rows = df["Channel"].iloc[0]
-            new_chans = [rows]
-        else:
-            rows = df["Channel"].iloc[:3]
-            new_chans = rows.tolist()
-    else:
-        new_chans = [chan] * 3
-
-    return (
-        df.iloc[0]["Latitude"],
-        df.iloc[0]["Longitude"],
-        df.iloc[0]["Elevation"],
-        new_chans,
-    )
+    return get_missing_info_from_df(df, loc, chan)
 
 
 def import_phases(
@@ -284,7 +366,6 @@ def import_phases(
     phases = []
 
     if df is None or not isinstance(df, pd.DataFrame) or not len(df):
-        # ic(df)
         return None
 
     needed_columns = ["station_id", "phase_type", "phase_time", "phase_score"]
@@ -294,17 +375,15 @@ def import_phases(
             logger.error(df.columns)
             return None
 
+    df = df.fillna("")
     if "channel" in df.columns and df["channel"] is not df.empty:
         df["station_id"] = df["station_id"].str.cat(df["channel"], sep=".")
-
-    ic(df)
 
     # use phase score threshold filters
     df = df.loc[~((df["phase_type"] == "P") & (df["phase_score"] < P_proba_threshold))]
     df = df.loc[~((df["phase_type"] == "S") & (df["phase_score"] < S_proba_threshold))]
 
     for row in df.itertuples(index=False):
-        # ic(row)
         if "phase_evaluation" in df.columns and type(row.phase_evaluation) is str:
             evaluation = row.phase_evaluation
         else:
@@ -325,8 +404,6 @@ def import_phases(
         else:
             agency = None
 
-        ic(row.station_id)
-
         try:
             net, sta, loc, chan = row.station_id.split(".")[:4]
         except:
@@ -339,7 +416,7 @@ def import_phases(
                 network=net,
                 station=sta,
                 location=loc,
-                channel=chan,
+                channel=chan[:2] if chan else chan,
                 phase=row.phase_type,
                 time=row.phase_time,
                 proba=row.phase_score,
@@ -387,12 +464,14 @@ def _test_import(picks_file, info_sta):
 
 
 if __name__ == "__main__":
+    warnings.filterwarnings("ignore", category=UserWarning)
     logger.setLevel(logging.DEBUG)
     _test_import("../samples/renass.csv", "http://10.0.1.36:8080")
     _test_import("../samples/phasenet.csv", "http://10.0.1.36:8080")
+    _test_import("../samples/ldg.csv", "http://10.0.1.36:8080")
 
     inventory_files = [
-        "/Users/marc/Data/DBClust/france.2016.01/inventory/all_from_renass.inv.xml",
+        #"/Users/marc/Data/DBClust/france.2016.01/inventory/all_from_renass.inv.xml",
         "/Users/marc/Data/DBClust/france.2016.01/inventory/inventory-RENASS-LDG.xml",
     ]
     inventory = Inventory()
@@ -402,3 +481,4 @@ if __name__ == "__main__":
 
     _test_import("../samples/renass.csv", inventory)
     _test_import("../samples/phasenet.csv", inventory)
+    _test_import("../samples/ldg.csv", inventory)
