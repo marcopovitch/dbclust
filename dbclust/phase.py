@@ -153,7 +153,7 @@ def inventory2df(inventory: Inventory) -> pd.DataFrame:
         for station in network:
             for channel in station.channels:
 
-                if channel.response.instrument_sensitivity:
+                if channel.response and channel.response.instrument_sensitivity:
                     scale = channel.response.instrument_sensitivity.value
                     scale_freq = channel.response.instrument_sensitivity.frequency
                     scale_units = channel.response.instrument_sensitivity.input_units
@@ -174,12 +174,12 @@ def inventory2df(inventory: Inventory) -> pd.DataFrame:
                     "Longitude": station.longitude,
                     "Elevation": station.elevation,
                     "Depth": channel.depth,
-                    #"Azimuth": channel.azimuth,
-                    #"Dip": channel.dip,
-                    #"SensorDescription": sensor_description,
-                    #"Scale": scale,
-                    #"ScaleFreq": scale_freq,
-                    #"ScaleUnits": scale_units,
+                    # "Azimuth": channel.azimuth,
+                    # "Dip": channel.dip,
+                    # "SensorDescription": sensor_description,
+                    # "Scale": scale,
+                    # "ScaleFreq": scale_freq,
+                    # "ScaleUnits": scale_units,
                     "SampleRate": channel.sample_rate,
                     "StartTime": station.start_date,
                     "EndTime": station.end_date,
@@ -213,12 +213,16 @@ def get_missing_info_from_df(df: pd.DataFrame, loc: str, chan: str) -> List[str]
         df = df[df["Channel"].str.contains(re_chan, regex=True)]
     else:
         # Try to guess the channels choosing the highest sampling rate
-        max_sample_rate = df["SampleRate"].max()
-        df = df[df["SampleRate"] == max_sample_rate]
+        try:
+            # sometimes SampleRate is not defined
+            max_sample_rate = df["SampleRate"].max()
+        except:
+            pass
+        else:
+            df = df[df["SampleRate"] == max_sample_rate]
         df = df.sort_values(by="StartTime")[:3]
 
     df = df.sort_values(by=["StartTime", "Channel"])
-    #ic(df)
 
     if len(df) == 0:
         return [None] * 5
@@ -471,7 +475,7 @@ if __name__ == "__main__":
     _test_import("../samples/ldg.csv", "http://10.0.1.36:8080")
 
     inventory_files = [
-        #"/Users/marc/Data/DBClust/france.2016.01/inventory/all_from_renass.inv.xml",
+        # "/Users/marc/Data/DBClust/france.2016.01/inventory/all_from_renass.inv.xml",
         "/Users/marc/Data/DBClust/france.2016.01/inventory/inventory-RENASS-LDG.xml",
     ]
     inventory = Inventory()
