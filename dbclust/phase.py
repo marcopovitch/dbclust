@@ -17,12 +17,17 @@ from icecream import ic
 from obspy import Inventory
 from obspy import read_inventory
 from obspy import UTCDateTime
+from obspy.core.event import Comment
+from obspy.core.event import CreationInfo
+from obspy.core.event import Pick
+from obspy.core.event import ResourceIdentifier
+from obspy.core.event.base import WaveformStreamID
 
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("phase")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 @dataclass
@@ -39,6 +44,7 @@ class Phase:
     channel: str
     phase: str
     time: UTCDateTime
+    time_uncertainty: float
     proba: float
     info_sta: Union[Inventory, str]
     evaluation: Literal["automatic", "manual", None] = None
@@ -92,10 +98,33 @@ class Phase:
             self.location = loc
 
         # chans order is in lexicographic order
-        if "P" in self.phase:
+        if "P" in self.phase.upper():
             self.channel = chans[-1]
         else:
             self.channel = chans[0]
+
+    def to_pick(self) -> Pick:
+        """Export Phase object to Obspy Pick object
+
+        Returns:
+            Pick: the exported Pick object
+        """
+        waveform_id = WaveformStreamID(
+            self.network, self.station, self.location, self.channel
+        )
+        pick = Pick(
+            time=self.time,
+            waveform_id=waveform_id,
+            phase_hint=self.phase,
+            method_id=ResourceIdentifier(self.method) if self.method else None,
+        )
+        if self.evaluation:
+            pick.evaluation_mode = self.evaluation
+
+        pick.time_errors.uncertainty = self.time_uncertainty
+        pick.creation_info = CreationInfo(agencyID=self.agency)
+
+        return pick
 
     def __eq__(self, obj: object) -> bool:
         if self.__hash__() == obj.__hash__():
@@ -354,6 +383,8 @@ def import_phases(
     df: pd.DataFrame = None,
     P_proba_threshold: float = 0,
     S_proba_threshold: float = 0,
+    P_uncertainty: Optional[float] = 0.1,
+    S_uncertainty: Optional[float] = 0.2,
     info_sta: Optional[Union[Inventory, str]] = None,
 ) -> List[Phase]:
     """Read phaseNet dataframe picks
@@ -423,6 +454,7 @@ def import_phases(
                 channel=chan[:2] if chan else chan,
                 phase=row.phase_type,
                 time=row.phase_time,
+                time_uncertainty=P_uncertainty if "P" in row.phase_type.upper() else S_uncertainty,
                 proba=row.phase_score,
                 evaluation=evaluation,
                 method=method,
@@ -463,6 +495,8 @@ def _test_import(picks_file, info_sta):
         df,
         P_proba_threshold=0.8,
         S_proba_threshold=0.5,
+        P_uncertainty=0.1,
+        S_uncertainty=0.2,
         info_sta=info_sta,
     )
 
