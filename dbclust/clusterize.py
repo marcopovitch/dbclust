@@ -17,6 +17,7 @@ import hdbscan
 import numpy as np
 import pandas as pd
 import ray
+from icecream import ic
 from obspy import Catalog
 from obspy.core.event import Comment
 from obspy.core.event import CreationInfo
@@ -502,20 +503,7 @@ class Clusterize(object):
                     continue
 
             for p in cluster:
-                pick = Pick()
-                pick.creation_info = CreationInfo(agencyID=p.agency)
-                if p.evaluation in ["automatic", "manual"]:
-                    pick.evaluation_mode = p.evaluation
-                pick.method_id = p.method
-                pick.waveform_id = WaveformStreamID(
-                    network_code=f"{p.network}", station_code=f"{p.station}"
-                )
-                pick.phase_hint = p.phase
-                pick.time = p.time
-                if "P" in p.phase and self.P_uncertainty:
-                    pick.time_errors.uncertainty = self.P_uncertainty
-                elif "S" in p.phase and self.S_uncertainty:
-                    pick.time_errors.uncertainty = self.S_uncertainty
+                pick = p.to_pick()
                 event.picks.append(pick)
 
             cat.append(event)
@@ -543,7 +531,7 @@ class Clusterize(object):
 
                     # If preloc is too close from an polygon edge
                     # use the national velocity model
-                    # if min_dist_km < 100:
+                    # if min_dist and min_dist_km < 100:
                     #     logger.info(f"Preloc is close ({min_dist_km} km)"
                     #                 f" to '{zone['name']}' polygon edge ! Using 'world' zone")
                     #     zone = self.zones.get_zone_from_name("world")
@@ -602,9 +590,6 @@ class Clusterize(object):
         self.n_clusters = len(self.clusters)
         self.noise += clusters2.noise
         self.n_noise = len(self.noise)
-
-        # print(self.clusters_stability)
-        # print(clusters2.clusters_stability)
 
         # clusters_stability are ndarray ... not a list : should be fixed !
         self.clusters_stability = np.array(
