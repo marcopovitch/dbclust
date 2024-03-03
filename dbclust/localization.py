@@ -41,6 +41,7 @@ from obspy.core.event import Pick
 from obspy.core.event import ResourceIdentifier
 from obspy.core.event import WaveformStreamID
 from obspy.geodetics import gps2dist_azimuth
+from obspy.geodetics import kilometer2degrees
 from quakeml import remove_duplicated_picks
 from ray.util.multiprocessing import Pool
 
@@ -62,7 +63,6 @@ class NllLoc(object):
         nll_times_path,
         nll_template,
         nll_obs_file=None,
-        nll_channel_hint=None,
         nll_min_phase=4,
         nll_verbose=False,
         tmpdir="/tmp",
@@ -88,7 +88,6 @@ class NllLoc(object):
         self.nll_time_path = nll_times_path
         self.nll_template = nll_template
         self.nll_obs_file = nll_obs_file  # obs file to localize
-        self.nll_channel_hint = nll_channel_hint
         self.nll_min_phase = nll_min_phase
         self.nll_verbose = nll_verbose
         self.tmpdir = tmpdir
@@ -156,17 +155,10 @@ class NllLoc(object):
 
         show_event(myevent, "****", header=True)
         orig = myevent.preferred_origin()
-        channel_hint = io.StringIO()
         for arrival in orig.arrivals:
-            # res_id = ResourceIdentifier(prefix="smi:local")
-            # arrival.resource_id = res_id
             pick = next(
                 (p for p in myevent.picks if p.resource_id == arrival.pick_id), None
             )
-            # keep channel info in channel_hint
-            wfid = pick.waveform_id
-            string = f"{wfid.network_code}_{wfid.station_code}_{wfid.location_code}_{wfid.channel_code}\n"
-            channel_hint.write(string)
 
             if self.force_uncertainty:
                 if "P" in pick.phase_hint or "p" in pick.phase_hint:
@@ -174,7 +166,7 @@ class NllLoc(object):
                 elif "S" in pick.phase_hint or "s" in pick.phase_hint:
                     pick.time_errors.uncertainty = self.S_uncertainty
 
-            # do not use pick with desactivated arrival
+            # do not use pick with deactivated arrival
             if self.use_deactivated_arrivals == False and arrival.time_weight == 0:
                 myevent.picks.remove(pick)
             elif (self.dist_km_cutoff is not None) and (
@@ -182,15 +174,12 @@ class NllLoc(object):
             ):
                 myevent.picks.remove(pick)
 
-        channel_hint.seek(0)
-
         self.nll_obs_file = os.path.join(self.tmpdir, "nll_obs.txt")
         logger.debug(
             f"Writing nll_obs file to {self.nll_obs_file} in {self.tmpdir} directory."
         )
         myevent.write(self.nll_obs_file, format="NLLOC_OBS")
-        self.nll_channel_hint = channel_hint
-        cat = self.nll_localisation()
+        cat = self.nll_localisation(picks=myevent.picks)
         # Fixme: add previously removed picks
 
         # add previous origin back to this event
@@ -205,6 +194,7 @@ class NllLoc(object):
     def nll_localisation(
         self,
         nll_obs_file=None,
+        picks=None,
         double_pass=None,
         pass_count=0,
         force_model_id=None,
@@ -243,7 +233,8 @@ class NllLoc(object):
         # defined model_id
         if not force_model_id:
             if (
-                "model_id" in self.quakeml_settings
+                self.quakeml_settings
+                and "model_id" in self.quakeml_settings
                 and self.quakeml_settings["model_id"]
             ):
                 model_id = self.quakeml_settings["model_id"]
@@ -345,7 +336,8 @@ class NllLoc(object):
         # Read results
         nll_output = os.path.join(tmp_path, "last.hyp")
         try:
-            cat = read_events(nll_output)
+            # use picks to map picks information
+            cat = read_events(nll_output, picks=picks)
         except Exception as e:
             # No localization
             logger.debug(e)
@@ -390,18 +382,6 @@ class NllLoc(object):
             logger.debug("Found NaN value in uncertainty. Ignoring event !")
             return Catalog()
 
-        # nll_channel_hint allows to keep track of net, sta, loc, chan values
-        # and could be None, a file or a StringIO
-        if self.nll_channel_hint:
-            if isinstance(self.nll_channel_hint, io.StringIO):
-                self.nll_channel_hint.seek(0)
-                logger.debug("nll_channel_hint uses StringIO()")
-            else:
-                logger.debug(f"nll_channel_hint use {self.nll_channel_hint}")
-            cat = self.fix_wfid(cat, self.nll_channel_hint)
-        else:
-            logger.warning("No nll_channel_hint file provided !")
-
         if not self.quakeml_settings:
             o.creation_info.agency_id = "MyAgencyId"
             o.creation_info.author = "DBClust"
@@ -414,6 +394,8 @@ class NllLoc(object):
             o.evaluation_mode = self.quakeml_settings["evaluation_mode"]
             o.method_id = self.quakeml_settings["method_id"]
             o.earth_model_id = model_id
+        # to keep track of different origins
+        o.creation_info.version = pass_count+1
 
         if self.force_uncertainty:
             for pick in e.picks:
@@ -434,6 +416,7 @@ class NllLoc(object):
                 cat2.write(new_nll_obs_file, format="NLLOC_OBS")
                 cat2 = self.nll_localisation(
                     new_nll_obs_file,
+                    picks=picks,
                     double_pass=self.double_pass,
                     pass_count=1,
                     force_model_id=model_id,
@@ -448,7 +431,7 @@ class NllLoc(object):
                 # add this new origin to catalog and set it as preferred
                 e.origins.append(orig2)
                 e.preferred_origin_id = orig2.resource_id
-                e.picks += event2.picks
+                # e.picks += event2.picks
                 e = remove_duplicated_picks(e)
             else:
                 # can't relocate: set it to "not existing"
@@ -458,8 +441,8 @@ class NllLoc(object):
         if len(e.origins) == 1:
             e.preferred_origin_id = e.origins[0].resource_id
 
-        # add preloc origin to event # only on the first pass
-        if preloc_origin:
+        # add preloc origin to event at the end
+        if preloc_origin and self.double_pass and pass_count == 0:
             e.picks.extend(preloc_picks_list)
             e.origins.append(preloc_origin)
 
@@ -662,7 +645,7 @@ class NllLoc(object):
 
         return mycatalog
 
-    def get_localisations_from_nllobs_dir(self, OBS_PATH, append=True):
+    def get_localisations_from_nllobs_dir(self, OBS_PATH, picks=None, append=True):
         """nll localisation and export to quakeml
 
         warning : network and channel are lost since they are not used by nll
@@ -681,7 +664,9 @@ class NllLoc(object):
         cat_results = []
         for nll_obs_file in sorted(glob.glob(obs_files_pattern)):
             # localization
-            cat = self.nll_localisation(nll_obs_file, double_pass=self.double_pass)
+            cat = self.nll_localisation(
+                nll_obs_file, picks=picks, double_pass=self.double_pass
+            )
             if not cat:
                 logger.debug(f"No loc obtained for {nll_obs_file}:/")
                 continue
@@ -841,88 +826,6 @@ class NllLoc(object):
         df = df.drop_duplicates().fillna("")
         return df
 
-    def fix_wfid(self, cat, wfid_hint):
-        """
-        wfid_hint is a file with (net, sta, loc, chan) information
-        to be used as hint to populate quakeml from nll obs file
-        """
-
-        msi_cmd = str(
-            "wfid_hint is a file with (net, sta, loc, chan) information\n"
-            "to be used as a hint to populate quakeml from nll obs file.\n"
-        )
-
-        try:
-            df = self.read_chan(wfid_hint)
-        except Exception as e:
-            logger.error(
-                f"Something went wrong with {wfid_hint} file ... Nothing was done !"
-            )
-            logger.error(e)
-            logger.error(msi_cmd)
-            return cat
-
-        for e in cat.events:
-            for p in e.picks:
-                # use inventory or ws-event
-                # wfid = get_station_wfid()
-
-                sta = p.waveform_id.station_code
-
-                if p.waveform_id.network_code == "":
-                    net = df[df["sta"] == sta]["net"].drop_duplicates()
-                    if len(net) == 0:
-                        logger.warning(
-                            f"Network code not found for station {sta} (filtered ?)"
-                        )
-                        continue
-                    elif len(net) != 1:
-                        if logger.level == logging.DEBUG:
-                            logger.warning(
-                                f"[wfid_hint] Duplicated network code for station {sta}"
-                            )
-                            logger.warning(f"    using the first one {net.iloc[0]}")
-                    net = net.iloc[0]
-                    p.waveform_id.network_code = net
-
-                if (
-                    p.waveform_id.location_code is None
-                    or p.waveform_id.location_code == ""
-                ):
-                    loc = df[(df["sta"] == sta) & (df["net"] == net)][
-                        "loc"
-                    ].drop_duplicates()
-                    if len(loc) == 0:
-                        logger.warning("Location code not found for {net}.{sta}")
-                    if len(loc) != 1:
-                        if logger.level == logging.DEBUG:
-                            logger.warning(
-                                f"[wfid_hint] Duplicated location code for {net}.{sta}"
-                            )
-                            logger.warning(f"    using the first one {loc.iloc[0]}")
-                    loc = loc.iloc[0]
-                    p.waveform_id.location_code = loc
-
-                chan = df[(df["sta"] == sta) & (df["net"] == net) & (df["loc"] == loc)][
-                    "chan"
-                ].drop_duplicates()
-                if len(chan) == 0:
-                    logger.warning("Channel code not found for {net}.{sta}")
-                elif len(chan) != 1:
-                    if logger.level == logging.DEBUG:
-                        logger.warning(
-                            f"[wfid_hint] Duplicated channel code for {net}.{sta}.{loc}"
-                        )
-                        logger.warning(f"    using the first one {chan.iloc[0]}")
-                chan = chan.iloc[0]
-
-                if "P" in p.phase_hint or "p" in p.phase_hint:
-                    p.waveform_id.channel_code = f"{chan}Z"
-
-                if "S" in p.phase_hint or "s" in p.phase_hint:
-                    p.waveform_id.channel_code = f"{chan}N"
-        return cat
-
     def show_localizations(self):
         print("%d events in catalog:" % len(self.catalog))
         print("Text, T0, lat, lon, depth(m), RMS, sta_count, phase_count, gap1, gap2")
@@ -1066,6 +969,12 @@ def make_preloc_origin(
         author=author,
         creation_time=UTCDateTime.now(),
     )
+    preloc_origin.creation_info = CreationInfo(
+        creation_time=UTCDateTime(),
+        agency_id=preloc_origin.agency_id,
+        author=author,
+        version="0",
+    )
 
     # Read csv file and merge them on station column
     picks_df = pd.read_csv(picks_file)  # station, phase, time, residual
@@ -1081,7 +990,9 @@ def make_preloc_origin(
     preloc_origin.quality.associated_phase_count = (
         preloc_origin.quality.used_phase_count
     )
-    preloc_origin.quality.used_station_count = df["station"].nunique()
+    preloc_origin.quality.used_station_count = (
+        df["station"].apply(lambda x: ".".join(x.split(".")[:2])).nunique()
+    )
     preloc_origin.quality.associated_station_count = (
         preloc_origin.quality.used_station_count
     )
@@ -1097,8 +1008,20 @@ def make_preloc_origin(
         # pick.evaluation_mode = "automatic"
         # pick.method_id = p.method
         net, sta = row["station"].split(".")[:2]
+        try:
+            loc = row["station"].split(".")[2]
+        except:
+            loc = ""
+        try:
+            chan = row["station"].split(".")[3]
+        except:
+            chan = ""
+
         pick.waveform_id = WaveformStreamID(
-            network_code=f"{net}", station_code=f"{sta}"
+            network_code=net,
+            station_code=sta,
+            location_code=loc,
+            channel_code=chan,
         )
         pick.phase_hint = row["phase"]
         pick.time = row["time"]
@@ -1115,13 +1038,12 @@ def make_preloc_origin(
             row["longitude"],
         )
         # approx : convert to degres as distance is in meter
-        arrival.distance = arrival.distance / (1000 * 111.1)
+        arrival.distance = kilometer2degrees(arrival.distance / 1000.0)
         arrival.pick_id = pick.resource_id
         arrival.creation_info = CreationInfo(agencyID=preloc_origin.agency_id)
         preloc_origin.arrivals.append(arrival)
 
         # Fixme, add:
-        # - loc/chan
         # - pick manual|automatic
 
     distances = [a.distance for a in preloc_origin.arrivals]
@@ -1140,7 +1062,7 @@ if __name__ == "__main__":
     nlloc_bin = "NLLoc"
     scat2latlon_bin = "scat2latlon"
     nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
-    nlloc_template = "../nll_template/nll_haslach_template.conf"
+    nlloc_template = "../nll_template/nll_haslach-0.2_template.conf"
 
     # eventid = "smi:local/437618f7-9cfe-4616-8e23-fdf32f7155db"
     # fdsnws = "http://localhost:10003/fdsnws/event/1"
@@ -1153,22 +1075,6 @@ if __name__ == "__main__":
     P_uncertainty = 0.05
     S_uncertainty = 0.1
 
-    # nlloc_bin,
-    # nlloc_times_path,
-    # nlloc_template,
-    # nll_obs_file=None,
-    # nll_channel_hint=None,
-    # tmpdir="/tmp",
-    # double_pass=False,
-    # force_uncertainty=False,
-    # P_uncertainty=0.1,
-    # S_uncertainty=0.2,
-    # dist_km_cutoff = None,
-    # P_time_residual_threshold=None,
-    # S_time_residual_threshold=None,
-    # nll_min_phase=4,
-    # verbose=False,
-
     with tempfile.TemporaryDirectory() as tmpdir:
         locator = NllLoc(
             nlloc_bin,
@@ -1176,7 +1082,6 @@ if __name__ == "__main__":
             nlloc_times_path,
             nlloc_template,
             #
-            # nll_channel_hint=channel_hint,
             # nll_obs_file=obs.name,
             tmpdir=tmpdir,
             #
@@ -1196,5 +1101,5 @@ if __name__ == "__main__":
         for e in cat:
             show_event(e, "****", header=True)
 
-        # cat.write(f"{urllib.parse.quote(eventid, safe='')}.qml", format="QUAKEML")
-        # cat.write(f"{urllib.parse.quote(eventid, safe='')}.sc3ml", format="SC3ML")
+        cat.write(f"{urllib.parse.quote(eventid, safe='')}.qml", format="QUAKEML")
+        cat.write(f"{urllib.parse.quote(eventid, safe='')}.sc3ml", format="SC3ML")
