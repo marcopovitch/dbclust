@@ -5,9 +5,11 @@ from datetime import datetime
 from itertools import combinations
 
 import alphabetic_timestamp as ats
+from icecream import ic
 from obspy.core.event import Comment
 from obspy.core.event import ResourceIdentifier
 from obspy.geodetics import gps2dist_azimuth
+
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -94,17 +96,18 @@ def make_readable_id(cat, prefix, smi_base):
 
         # forge readable pick_id
         pick_lookup_table = {}
-        for p in e.picks:
+        for p in sorted(e.picks, key=lambda p: p.time):
             old_pick_id = p.resource_id.id
             pick_id = make_pick_id(e)
             p.resource_id = pick_id
-            pick_lookup_table[old_pick_id] = pick_id
+            pick_lookup_table[old_pick_id] = pick_id.id
             for c in p.comments:
                 comment_id = make_comment_id(p)
                 c.resource_id = comment_id
 
+        # ic(pick_lookup_table)
         # forge readable origin_id
-        for o in e.origins:
+        for o in sorted(e.origins, key=lambda o: o.creation_info.version):
             origin_id = make_origin_id(e)
             if o.resource_id == e.preferred_origin_id:
                 e.preferred_origin_id = origin_id.id
@@ -112,9 +115,15 @@ def make_readable_id(cat, prefix, smi_base):
 
             # forge readable arrival_id
             for a in o.arrivals:
+                old_arrival_id = a.resource_id
                 arrival_id = make_arrival_id(o)
                 a.resource_id = arrival_id
-                a.pick_id = pick_lookup_table[a.pick_id.id]
+                if a.pick_id.id in pick_lookup_table.keys():
+                    a.pick_id.id = pick_lookup_table[a.pick_id.id]
+                # else:
+                #     logger.error(
+                #         f"make_readable_id: arrival old:{old_arrival_id}/new:{a.resource_id} with unreferenced pick {a.pick_id.id}!!!"
+                #     )
     return cat
 
 
@@ -123,12 +132,22 @@ def remove_duplicated_picks(event):
     to_be_removed = []
     match_pick_id = {}
     for p1, p2 in combinations(picks, 2):
-        if p1.resource_id == p2.resource_id or (
+        # if p1.resource_id.id == p2.resource_id.id or (
+        if (
             p1.waveform_id.get_seed_string() == p2.waveform_id.get_seed_string()
             and p1.time == p2.time
             and p1.phase_hint == p2.phase_hint
         ):
-            match_pick_id[p2.resource_id] = p1.resource_id
+            if p1 is p2:
+                to_be_removed.append(p2)
+                # no mapping needed
+                continue
+
+            if p1 in to_be_removed or p2 in to_be_removed:
+                continue
+
+            # set the id mapping
+            match_pick_id[p2.resource_id.id] = p1.resource_id.id
             to_be_removed.append(p2)
 
     logger.info(f"Removed {len(to_be_removed)}/{len(picks)} duplicated picks.")
@@ -139,7 +158,7 @@ def remove_duplicated_picks(event):
     for origin in event.origins:
         for arrival in origin.arrivals:
             if arrival.pick_id in match_pick_id.keys():
-                arrival.pick_id = match_pick_id[arrival.pick_id]
+                arrival.pick_id.id = match_pick_id[arrival.pick_id]
     return event
 
 
