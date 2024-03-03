@@ -90,8 +90,8 @@ def dbclust2pyocto(
         #     picks["time"] = picks["time"].apply(lambda x: x.timestamp)
         #     picks.sort_values(["station", "phase"], inplace=True)
 
-        if logging.getLevelName(log_level) == "DEBUG":
-            ic(picks)
+        # if logging.getLevelName(log_level) == "DEBUG":
+        #    ic(picks)
 
         associator = pyocto.OctoAssociator.from_area(
             lat=(min_lat, max_lat),
@@ -313,7 +313,8 @@ def get_stations_from_cluster(cluster: List[Phase]) -> pd.DataFrame:
     elevation = []
 
     for p in cluster:
-        station.append(".".join([p.network, p.station]))
+        #station.append(".".join([p.network, p.station]))
+        station.append(".".join([p.network, p.station, p.location, p.channel]))
         latitude.append(p.coord["latitude"])
         longitude.append(p.coord["longitude"])
         elevation.append(p.coord["elevation"])
@@ -343,7 +344,7 @@ def get_picks_from_cluster(cluster: List[Phase]) -> pd.DataFrame:
     phase = []
     time = []
     for p in cluster:
-        station.append(".".join([p.network, p.station]))
+        station.append(".".join([p.network, p.station, p.location, p.channel]))
         phase.append(p.phase[0].upper())
         time.append(p.time)
 
