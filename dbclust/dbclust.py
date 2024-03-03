@@ -28,7 +28,6 @@ from dbclust2pyocto import dbclust2pyocto
 from icecream import ic
 from localization import NllLoc
 from localization import show_event
-from phase import import_eqt_phases
 from phase import import_phases
 from quakeml import feed_distance_from_preloc_to_pref_origin
 from quakeml import make_readable_id
@@ -87,7 +86,6 @@ def get_locator_from_config(cfg, log_level=logging.INFO):
         cfg.nll.scat2latlon_bin,
         cfg.nll.time_path,
         cfg.nll.template_path,
-        nll_channel_hint=cfg.nll.channel_hint,
         tmpdir=cfg.file.tmp_path,
         double_pass=cfg.relocation.double_pass,
         P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
@@ -243,6 +241,8 @@ def dbclust(
             df_subset,
             cfg.pick.P_proba_threshold,
             cfg.pick.S_proba_threshold,
+            cfg.pick.P_uncertainty,
+            cfg.pick.S_uncertainty,
             cfg.station.info_sta,
         )
         if logger.level == logging.DEBUG:
@@ -294,9 +294,16 @@ def dbclust(
 
         # Now, process previous_myclust and wait next round to process myclust
         # write each cluster to nll obs files
-        with MyTemporaryDirectory(dir=cfg.file.obs_path, delete=True) as TMP_OBS_PATH:
+        with MyTemporaryDirectory(
+            dir=cfg.file.obs_path, delete=cfg.file.automatic_cleanup_tmp
+        ) as TMP_OBS_PATH:
             my_obs_path = os.path.join(TMP_OBS_PATH, f"{i}")
             previous_myclust.generate_nllobs(my_obs_path)
+
+            # keep track of picks to be able to recover info after NonLinLoc
+            nll_picks = []
+            for cluster in previous_myclust.clusters:
+                nll_picks.extend([p.to_pick() for p in cluster])
 
             # localize each cluster
             # all locs are automatically appended to the locator's catalog
@@ -304,13 +311,13 @@ def dbclust(
             logger.info("Starting localization")
             with MyTemporaryDirectory(
                 dir=cfg.file.tmp_path,
-                delete=True,
+                delete=cfg.file.automatic_cleanup_tmp,
             ) as tmpdir_automaticaly_cleaned:
                 locator.tmpdir = tmpdir_automaticaly_cleaned
 
                 # sequential version
                 clustcat = locator.get_localisations_from_nllobs_dir(
-                    my_obs_path, append=True
+                    my_obs_path, picks=nll_picks, append=True
                 )
 
                 # multiproc  // version with pool
