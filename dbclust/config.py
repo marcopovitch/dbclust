@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import sys
+import warnings
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -48,6 +49,7 @@ class FilesConfig:
     data_path: str
     tmp_path: str
     obs_path: str
+    automatic_cleanup_tmp: bool
 
     def __post_init__(self):
         if not os.path.isdir(self.data_path):
@@ -226,7 +228,6 @@ class NonLinLocConfig:
     template_path: str
     default_velocity_profile: str
     velocity_profiles: List[NonLinLocVelocityProfile]
-    channel_hint: str
     verbose: bool
     enable_scatter: bool
     default_template_file: Optional[str] = None
@@ -238,9 +239,6 @@ class NonLinLocConfig:
 
         if not os.path.exists(self.scat2latlon_bin):
             raise FileNotFoundError(f"File {self.scat2latlon_bin} does not exist !")
-
-        if not os.path.exists(self.channel_hint):
-            raise FileNotFoundError(f"File {self.channel_hint} does not exist !")
 
         if not os.path.isdir(self.time_path):
             raise NotADirectoryError(f"{self.time_path} is not a directory")
@@ -383,6 +381,7 @@ class Zones:
         """
         point_shapely = Point(longitude, latitude)
         for index, row in self.polygons.iterrows():
+
             polygon = row["geometry"]
             if polygon.contains(point_shapely):
 
@@ -408,8 +407,15 @@ class Zones:
                     )
                     for i in range(len(polygon.exterior.coords))
                 ]
-                distances = [point_shapely.distance(line) for line in lines]
-                distance_km = min(distances) / 1000
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("error", category=RuntimeWarning)
+                    try:
+                        distances = [point_shapely.distance(line) for line in lines]
+                    except RuntimeWarning as rw:
+                        logger.debug(f"Can't compute distance(point, polygon): {row}")
+                        distance_km = None
+                    else:
+                        distance_km = min(distances) / 1000
                 return row, distance_km
         return gpd.GeoDataFrame(), None
 
