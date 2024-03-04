@@ -469,6 +469,7 @@ class Clusterize(object):
         export to obspy/NLL
         only 1 event/catalog (for NLL)
         """
+        picks_bundles = []
         for i, cluster in enumerate(self.clusters):
             cat = Catalog()
             event = Event()
@@ -505,6 +506,8 @@ class Clusterize(object):
             for p in cluster:
                 pick = p.to_pick()
                 event.picks.append(pick)
+            # to be returned !
+            picks_bundles.append(event.picks)
 
             cat.append(event)
             os.makedirs(OBS_PATH, exist_ok=True)
@@ -580,6 +583,7 @@ class Clusterize(object):
                         logger.warning(
                             f"Can't find a matched zone for (lat={hypo['latitude']},lon={hypo['longitude']})!"
                         )
+        return picks_bundles
 
     def merge(self, clusters2):
         logger.info(
