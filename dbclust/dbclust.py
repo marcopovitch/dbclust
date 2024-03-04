@@ -218,8 +218,11 @@ def dbclust(
             continue
 
         # remove blacklisted stations
-        for b in cfg.station.blacklist:
-            df_subset = df_subset[~df_subset["station_id"].str.contains(b, regex=True)]
+        if cfg.station.blacklist:
+            for b in cfg.station.blacklist:
+                df_subset = df_subset[
+                    ~df_subset["station_id"].str.contains(b, regex=True)
+                ]
 
         logger.info(f"[{job_index}] Starting clustering with {len(df_subset)} phases.")
 
@@ -298,12 +301,8 @@ def dbclust(
             dir=cfg.file.obs_path, delete=cfg.file.automatic_cleanup_tmp
         ) as TMP_OBS_PATH:
             my_obs_path = os.path.join(TMP_OBS_PATH, f"{i}")
-            previous_myclust.generate_nllobs(my_obs_path)
-
-            # keep track of picks to be able to recover info after NonLinLoc
-            nll_picks = []
-            for cluster in previous_myclust.clusters:
-                nll_picks.extend([p.to_pick() for p in cluster])
+            # nll_picks keeps track of picks to recover info after NonLinLoc
+            nll_picks = previous_myclust.generate_nllobs(my_obs_path)
 
             # localize each cluster
             # all locs are automatically appended to the locator's catalog
