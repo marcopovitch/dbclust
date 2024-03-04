@@ -6,6 +6,7 @@ import io
 import logging
 import multiprocessing
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -53,6 +54,15 @@ from ray.util.multiprocessing import Pool
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("localization")
 logger.setLevel(logging.INFO)
+
+
+def sort_by_cluster_file(filename: str) -> float:
+    match = re.search(r"cluster-(\d+)\.obs", filename)
+    if match:
+        # return the number to be used by sorted()
+        return int(match.group(1))
+    else:
+        return float('inf')
 
 
 class NllLoc(object):
@@ -395,7 +405,7 @@ class NllLoc(object):
             o.method_id = self.quakeml_settings["method_id"]
             o.earth_model_id = model_id
         # to keep track of different origins
-        o.creation_info.version = pass_count+1
+        o.creation_info.version = pass_count + 1
 
         if self.force_uncertainty:
             for pick in e.picks:
@@ -432,7 +442,7 @@ class NllLoc(object):
                 e.origins.append(orig2)
                 e.preferred_origin_id = orig2.resource_id
                 # e.picks += event2.picks
-                e = remove_duplicated_picks(e)
+                # e = remove_duplicated_picks(e)
             else:
                 # can't relocate: set it to "not existing"
                 e.event_type = "not existing"
@@ -446,6 +456,7 @@ class NllLoc(object):
             e.picks.extend(preloc_picks_list)
             e.origins.append(preloc_origin)
 
+        e = remove_duplicated_picks(e)
         return cat
 
     def get_catalog_from_results(self, cat_results: List[Catalog]) -> Catalog:
@@ -662,10 +673,13 @@ class NllLoc(object):
         logger.debug(f"Localization of {obs_files_pattern}")
 
         cat_results = []
-        for nll_obs_file in sorted(glob.glob(obs_files_pattern)):
+        #ic(sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file))
+        for i, nll_obs_file in enumerate(
+            sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file)
+        ):
             # localization
             cat = self.nll_localisation(
-                nll_obs_file, picks=picks, double_pass=self.double_pass
+                nll_obs_file, picks=picks[i], double_pass=self.double_pass
             )
             if not cat:
                 logger.debug(f"No loc obtained for {nll_obs_file}:/")
