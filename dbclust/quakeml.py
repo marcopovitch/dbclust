@@ -6,14 +6,21 @@ from itertools import combinations
 
 import alphabetic_timestamp as ats
 from icecream import ic
+from obspy import Catalog
+from obspy import read_events
 from obspy.core.event import Comment
+from obspy.core.event import CreationInfo
+from obspy.core.event import Event
+from obspy.core.event import Origin
 from obspy.core.event import ResourceIdentifier
+from obspy.core.event.base import WaveformStreamID
+from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
 
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger("clusterize")
+logger = logging.getLogger("quakeml")
 logger.setLevel(logging.INFO)
 
 
@@ -76,7 +83,7 @@ def make_arrival_id(origin):
     return ResourceIdentifier(arrival_id)
 
 
-def make_readable_id(cat, prefix, smi_base):
+def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
     """
     make object id more readable
     """
@@ -127,7 +134,7 @@ def make_readable_id(cat, prefix, smi_base):
     return cat
 
 
-def remove_duplicated_picks(event):
+def remove_duplicated_picks(event: Event) -> Event:
     picks = event.picks
     to_be_removed = []
     match_pick_id = {}
@@ -138,27 +145,23 @@ def remove_duplicated_picks(event):
             and p1.time == p2.time
             and p1.phase_hint == p2.phase_hint
         ):
-            if p1 is p2:
-                to_be_removed.append(p2)
-                # no mapping needed
-                continue
-
             if p1 in to_be_removed or p2 in to_be_removed:
                 continue
 
             # set the id mapping
-            match_pick_id[p2.resource_id.id] = p1.resource_id.id
+            match_pick_id[p2.resource_id] = p1.resource_id
             to_be_removed.append(p2)
+
+    for origin in event.origins:
+        for arrival in origin.arrivals:
+            if arrival.pick_id in match_pick_id.keys():
+                arrival.pick_id = match_pick_id[arrival.pick_id]
 
     logger.info(f"Removed {len(to_be_removed)}/{len(picks)} duplicated picks.")
     for p in to_be_removed:
         picks.remove(p)
     logger.info(f"Remaining {len(picks)} picks.")
 
-    for origin in event.origins:
-        for arrival in origin.arrivals:
-            if arrival.pick_id in match_pick_id.keys():
-                arrival.pick_id.id = match_pick_id[arrival.pick_id]
     return event
 
 
@@ -179,3 +182,21 @@ def feed_distance_from_preloc_to_pref_origin(cat):
                 break
         if distance != None:
             e.comments.append(Comment(text='{"preloc_distance_km": %.2f}' % (distance)))
+
+
+if __name__ == "__main__":
+
+    cat = read_events(
+        "/Users/marc/Data/DBClust/of/results.mars/of-2024.03.01-2024.03.03.qml"
+    )
+    new_cat = Catalog()
+    for e in cat.events:
+        new_e = remove_duplicated_picks(e)
+        new_cat.events.append(e)
+
+    new_cat = make_readable_id(new_cat, "sihex", "quakeml:franceseisme.fr")
+
+    new_cat.write(
+        "/Users/marc/Data/DBClust/of/results.mars/of-2024.03.01-2024.03.03-good-id.qml",
+        format="QUAKEML",
+    )
