@@ -28,6 +28,7 @@ from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
 from phase import import_phases
 from phase import Phase
+from quakeml import remove_duplicated_picks
 from tqdm import tqdm
 
 # default logger
@@ -467,14 +468,19 @@ class Clusterize(object):
     def generate_nllobs(self, OBS_PATH):
         """
         export to obspy/NLL
-        only 1 event/catalog (for NLL)
+        only 1 event/catalog (for NLL),
+        no duplicated pick !
         """
+        logger.info(f"Starting generate_nllobs()")
         picks_bundles = []
         for i, cluster in enumerate(self.clusters):
             cat = Catalog()
             event = Event()
             # count the number of stations
             stations_list = set([p.station for p in cluster])
+            logger.info(
+                f"Working on cluster {i} ({len(stations_list)} stations / {len(cluster)} picks)"
+            )
             if self.min_station_count:
                 if len(stations_list) < self.min_station_count:
                     logger.debug(
@@ -506,6 +512,8 @@ class Clusterize(object):
             for p in cluster:
                 pick = p.to_pick()
                 event.picks.append(pick)
+            event = remove_duplicated_picks(event)
+
             # to be returned !
             picks_bundles.append(event.picks)
 
