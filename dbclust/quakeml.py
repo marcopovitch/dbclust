@@ -1,5 +1,7 @@
 #!/usr/bin/env python
+import argparse
 import logging
+import os
 import sys
 from datetime import datetime
 from itertools import combinations
@@ -170,7 +172,7 @@ def feed_distance_from_preloc_to_pref_origin(cat):
         pref_o = e.preferred_origin()
         distance = None
         for o in e.origins:
-            if o.resource_id != pref_o.resource_id and "pyocto" in o.method_id.id:
+            if o.resource_id != pref_o.resource_id and "PyOcto" in o.method_id.id:
                 distance, az, baz = gps2dist_azimuth(
                     o.latitude,
                     o.longitude,
@@ -185,18 +187,46 @@ def feed_distance_from_preloc_to_pref_origin(cat):
 
 
 if __name__ == "__main__":
-
-    cat = read_events(
-        "/Users/marc/Data/DBClust/of/results.mars/of-2024.03.01-2024.03.03.qml"
+    parser = argparse.ArgumentParser(description="Make readable quakeml IDs")
+    parser.add_argument(
+        "-i",
+        "--input",
+        default=None,
+        dest="inputfile",
+        help="qml input file",
+        type=str,
+        required=True,
     )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        dest="outputfile",
+        help="quakeml output file",
+        type=str,
+        required=True,
+    )
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.inputfile):
+        print(f"File {args.inputfile} doesn't exist !")
+        exit(1)
+
+    if os.path.isfile(args.outputfile):
+        print(f"File {args.outputfile} already exist !")
+        exit(1)
+
+    logger.info("Reading catalog ...")
+    cat = read_events()
+
+    logger.info("Pick deduplication ...")
     new_cat = Catalog()
     for e in cat.events:
         new_e = remove_duplicated_picks(e)
         new_cat.events.append(e)
 
-    new_cat = make_readable_id(new_cat, "sihex", "quakeml:franceseisme.fr")
+    logger.info("Make readable ids ...")
+    new_cat = make_readable_id(cat, "sihex", "quakeml:franceseisme.fr")
 
-    new_cat.write(
-        "/Users/marc/Data/DBClust/of/results.mars/of-2024.03.01-2024.03.03-good-id.qml",
-        format="QUAKEML",
-    )
+    logger.info("Writing catalog ...")
+    new_cat.write(args.outputfile, format="QUAKEML")
