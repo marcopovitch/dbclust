@@ -419,6 +419,7 @@ class NllLoc(object):
             logger.debug("Starting double pass relocation.")
             cat2 = cat.copy()
             event2 = cat2.events[0]
+            # event2 = remove_duplicated_picks(event2)
 
             event2 = self.cleanup_pick_phase(event2, keep_manual_picks=True)
             if len(event2.picks):
@@ -677,9 +678,14 @@ class NllLoc(object):
         for i, nll_obs_file in enumerate(
             sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file)
         ):
+            if picks:
+                picks_set = picks[i]
+            else:
+                picks_set = None
+
             # localization
             cat = self.nll_localisation(
-                nll_obs_file, picks=picks[i], double_pass=self.double_pass
+                nll_obs_file, picks=picks_set, double_pass=self.double_pass
             )
             if not cat:
                 logger.debug(f"No loc obtained for {nll_obs_file}:/")
