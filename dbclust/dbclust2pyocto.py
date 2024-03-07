@@ -313,7 +313,6 @@ def get_stations_from_cluster(cluster: List[Phase]) -> pd.DataFrame:
     elevation = []
 
     for p in cluster:
-        #station.append(".".join([p.network, p.station]))
         station.append(".".join([p.network, p.station, p.location, p.channel]))
         latitude.append(p.coord["latitude"])
         longitude.append(p.coord["longitude"])
