@@ -217,16 +217,19 @@ if __name__ == "__main__":
         exit(1)
 
     logger.info("Reading catalog ...")
-    cat = read_events()
+    cat = read_events(args.inputfile)
+    print(cat)
 
     logger.info("Pick deduplication ...")
     new_cat = Catalog()
     for e in cat.events:
         new_e = remove_duplicated_picks(e)
-        new_cat.events.append(e)
+        new_cat.events.append(new_e)
+
 
     logger.info("Make readable ids ...")
-    new_cat = make_readable_id(cat, "sihex", "quakeml:franceseisme.fr")
+    new_cat = make_readable_id(new_cat, "sihex", "quakeml:franceseisme.fr")
+    print(new_cat)
 
     logger.info("Writing catalog ...")
     new_cat.write(args.outputfile, format="QUAKEML")
