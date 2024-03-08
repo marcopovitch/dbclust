@@ -196,10 +196,17 @@ def dbclust(
     picks_to_remove = []
 
     # start time looping
-    for i, (begin, end) in enumerate(zip(time_periods[:-1], time_periods[1:]), start=1):
+    overlap_timedelta = pd.Timedelta(cfg.time.overlap_window, "s")
+    for i, (begin, end) in enumerate(
+        zip(time_periods[:-1], time_periods[1:]),
+        start=1,
+    ):
         logger.debug("")
         logger.debug("================================================")
         logger.debug("")
+
+        # add the time overlap
+        end += overlap_timedelta
 
         logger.info(
             f"[{job_index}] Time window extraction #{i}/{len(time_periods)-1} picks from {begin} to {end}."
