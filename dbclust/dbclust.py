@@ -54,7 +54,7 @@ class MyTemporaryDirectory:
         if self.delete:
             shutil.rmtree(self.tmp_dir)
         else:
-            print(f"Warning undeleted directory: ", {self.tmp_dir})
+            logger.info(f"Warning undeleted directory: {self.tmp_dir}")
 
 
 def unload_picks_list(df1, picks):
