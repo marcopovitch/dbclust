@@ -220,12 +220,13 @@ if __name__ == "__main__":
     cat = read_events(args.inputfile)
     print(cat)
 
-    logger.info("Pick deduplication ...")
-    new_cat = Catalog()
-    for e in cat.events:
-        new_e = remove_duplicated_picks(e)
-        new_cat.events.append(new_e)
+    # logger.info("Pick deduplication ...")
+    # new_cat = Catalog()
+    # for e in cat.events:
+    #     new_e = remove_duplicated_picks(e)
+    #     new_cat.events.append(new_e)
 
+    new_cat = cat
 
     logger.info("Make readable ids ...")
     new_cat = make_readable_id(new_cat, "sihex", "quakeml:franceseisme.fr")
