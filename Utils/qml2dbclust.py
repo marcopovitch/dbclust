@@ -173,7 +173,11 @@ if __name__ == "__main__":
     for event in cat.events:
         origin = event.preferred_origin()
         picks_list = export_picks_to_phasenet_format(
-            event, origin, probability=args.probability, agency=args.agency
+            event,
+            origin,
+            evaluation=args.evaluation,
+            probability=args.probability,
+            agency=args.agency,
         )
         df = pd.concat([df, pd.DataFrame(picks_list)], ignore_index=True)
 
