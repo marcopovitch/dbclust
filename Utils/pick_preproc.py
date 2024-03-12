@@ -11,7 +11,7 @@ from pandas.core.groupby import GroupBy
 from sklearn.cluster import DBSCAN
 
 
-def get_index(group: GroupBy, debug=True) -> int:
+def get_index(group: GroupBy, debug=False) -> int:
     """Returns index of the max (only if one max value exists),
     else returns the index of the median picks (manual pick are privileged)
 
@@ -77,6 +77,9 @@ def unload_too_close_picks_clustering(
     df["channel"] = df["station_id"].map(lambda x: ".".join(x.split(".")[2:4]))
     df["station_id"] = df["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
     df["phase_time"] = pd.to_datetime(df["phase_time"], utc=True)
+
+    if "phase_evaluation" not in df.columns:
+        df["phase_evaluation"] = None
 
     df = df.sort_values(by=["station_id", "phase_type", "phase_time"])
 
