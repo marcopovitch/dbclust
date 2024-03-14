@@ -269,6 +269,7 @@ class NonLinLocConfig:
 @dataclass
 class RelocationConfig:
     double_pass: bool
+    keep_manual_picks: bool
     P_time_residual_threshold: float
     S_time_residual_threshold: float
     dist_km_cutoff: Optional[float] = None
