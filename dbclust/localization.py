@@ -43,6 +43,7 @@ from obspy.core.event import ResourceIdentifier
 from obspy.core.event import WaveformStreamID
 from obspy.geodetics import gps2dist_azimuth
 from obspy.geodetics import kilometer2degrees
+from prettytable import PrettyTable
 from quakeml import remove_duplicated_picks
 from ray.util.multiprocessing import Pool
 
@@ -62,7 +63,7 @@ def sort_by_cluster_file(filename: str) -> float:
         # return the number to be used by sorted()
         return int(match.group(1))
     else:
-        return float('inf')
+        return float("inf")
 
 
 class NllLoc(object):
@@ -83,6 +84,7 @@ class NllLoc(object):
         S_uncertainty=0.2,
         dist_km_cutoff=None,
         use_deactivated_arrivals=False,
+        keep_manual_picks=False,
         P_time_residual_threshold=None,
         S_time_residual_threshold=None,
         quakeml_settings=None,
@@ -108,6 +110,7 @@ class NllLoc(object):
         self.S_uncertainty = S_uncertainty
         self.dist_km_cutoff = dist_km_cutoff
         self.use_deactivated_arrivals = use_deactivated_arrivals
+        self.keep_manual_picks = keep_manual_picks
         self.P_time_residual_threshold = P_time_residual_threshold
         self.S_time_residual_threshold = S_time_residual_threshold
         self.quakeml_settings = quakeml_settings
@@ -421,7 +424,7 @@ class NllLoc(object):
             event2 = cat2.events[0]
             # event2 = remove_duplicated_picks(event2)
 
-            event2 = self.cleanup_pick_phase(event2, keep_manual_picks=True)
+            event2 = self.cleanup_pick_phase(event2)
             if len(event2.picks):
                 new_nll_obs_file = nll_obs_file + ".2nd_pass"
                 cat2.write(new_nll_obs_file, format="NLLOC_OBS")
@@ -674,7 +677,7 @@ class NllLoc(object):
         logger.debug(f"Localization of {obs_files_pattern}")
 
         cat_results = []
-        #ic(sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file))
+        # ic(sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file))
         for i, nll_obs_file in enumerate(
             sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file)
         ):
@@ -699,7 +702,7 @@ class NllLoc(object):
 
         return mycatalog
 
-    def cleanup_pick_phase(self, event, keep_manual_picks=True):
+    def cleanup_pick_phase(self, event):
         """
         Remove picks/arrivals with:
             - time weight set to 0
@@ -717,7 +720,7 @@ class NllLoc(object):
                 logger.error(f"Can't find pick for arrival {arrival.pick_id}")
                 continue
 
-            if keep_manual_picks and pick.evaluation_mode == "manual":
+            if self.keep_manual_picks and pick.evaluation_mode == "manual":
                 continue
 
             if "P" in arrival.phase.upper():
@@ -914,6 +917,42 @@ def show_origin(o, txt):
         )
     )
 
+
+def show_bulletin(event):
+    origin = event.preferred_origin()
+    table = PrettyTable()
+    table.field_names = [
+        "station",
+        "phase",
+        "weight",
+        "residual",
+        "distance",
+        "time",
+        "evaluation",
+    ]
+    # print("station phase weight residual distance time evaluation")
+    for arrival in origin.arrivals:
+        if hasattr(arrival, "time_weight") and arrival.time_weight == 0:
+            continue
+        pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
+        if not pick:
+            continue
+        wfid = pick.waveform_id
+        station_name = f"{wfid.network_code}.{wfid.station_code}"
+        phase_name = pick.phase_hint
+        table.add_row(
+            [
+                station_name,
+                phase_name,
+                arrival.time_weight,
+                arrival.time_residual,
+                arrival.distance,
+                pick.time,
+                pick.evaluation_mode,
+            ]
+        )
+        # print(f"{station_name} {phase_name} {arrival.time_weight} {arrival.time_residual} {arrival.distance} {pick.time} {pick.evaluation_mode}")
+    print(table)
 
 def reloc_fdsn_event(locator, eventid, fdsnws):
     link = f"{fdsnws}/query?eventid={urllib.parse.quote(eventid, safe='')}&includearrivals=true"
