@@ -10,8 +10,11 @@ from shutil import copyfile
 import yaml
 from localization import NllLoc
 from localization import reloc_fdsn_event
+from localization import show_bulletin
 from localization import show_event
 from obspy import read_events
+
+from dbclust import MyTemporaryDirectory
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -160,6 +163,7 @@ if __name__ == "__main__":
 
     P_uncertainty = parameters_conf["P_uncertainty"]
     S_uncertainty = parameters_conf["S_uncertainty"]
+    keep_manual_picks = parameters_conf["keep_manual_picks"]
     P_time_residual_threshold = parameters_conf["P_time_residual_threshold"]
     S_time_residual_threshold = parameters_conf["S_time_residual_threshold"]
 
@@ -198,7 +202,8 @@ if __name__ == "__main__":
         "model_id": default_velocity_profile,
     }
 
-    with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_path:
+    #with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_path:
+    with MyTemporaryDirectory(dir=tmpdir, delete=False) as tmp_path:
         locator = NllLoc(
             nlloc_bin,
             scat2latlon_bin,
@@ -216,7 +221,8 @@ if __name__ == "__main__":
             #
             dist_km_cutoff=dist_km_cutoff,
             use_deactivated_arrivals=use_deactivated_arrivals,
-
+            #
+            keep_manual_picks=keep_manual_picks,
             P_time_residual_threshold=P_time_residual_threshold,
             S_time_residual_threshold=S_time_residual_threshold,
             #
@@ -231,6 +237,7 @@ if __name__ == "__main__":
 
         for e in cat:
             show_event(e, "****", header=True)
+            show_bulletin(e)
 
         file_extension = output_format.lower()
         cat.write(
