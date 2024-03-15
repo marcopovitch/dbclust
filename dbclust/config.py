@@ -270,8 +270,8 @@ class NonLinLocConfig:
 class RelocationConfig:
     double_pass: bool
     keep_manual_picks: bool
-    P_time_residual_threshold: float
-    S_time_residual_threshold: float
+    P_time_residual_threshold: Union[float, None]
+    S_time_residual_threshold: Union[float, None]
     dist_km_cutoff: Optional[float] = None
 
 
