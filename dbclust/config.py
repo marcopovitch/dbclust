@@ -6,7 +6,7 @@ import os
 import sys
 import warnings
 from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import fields
 from datetime import datetime
 from typing import List
 from typing import Optional
@@ -73,8 +73,8 @@ class PickConfig:
     """
 
     # path: str
-    filename: str
-    type: str
+    filename: Union[str, None]
+    type: Union[str, None]
     P_uncertainty: float
     S_uncertainty: float
     P_proba_threshold: float
@@ -84,14 +84,17 @@ class PickConfig:
     df: Optional[pd.DataFrame] = None
 
     def __post_init__(self) -> None:
+        if self.type not in ["csv", "parquet", None]:
+            raise ValueError(f"Pick file format {self.type} is not recognized !")
+
+        if not self.type:
+            return
+
         if not os.path.exists(self.filename):
             raise FileNotFoundError(f"File {self.filename} does not exist !")
 
         if not os.access(self.filename, os.R_OK):
             raise PermissionError(f"{self.filename}.")
-
-        if self.type not in ["csv", "parquet"]:
-            raise ValueError(f"Pick file format {self.type} is not recognized !")
 
         if self.start:
             self.start = pd.to_datetime(self.start, utc=True).to_datetime64()
@@ -593,19 +596,36 @@ class DBClustConfig:
     zones: Zones
     parallel: ParallelConfig
 
-    def __init__(self, filename) -> None:
+    def __init__(self, filename, config_type="std") -> None:
         self.filename = filename
         logger.info(filename)
+        self.config_type = config_type
+
         if not os.path.exists(self.filename):
             raise FileNotFoundError(f"File {self.filename} does not exist !")
         self.yaml_data = read_config(self.filename)
 
         for key, data_class in self.__annotations__.items():
-            if key not in self.yaml_data.keys():
-                raise ValueError(f"Missing section '{key}' in yaml file !")
-            setattr(
-                self, key, from_dict(data_class=data_class, data=self.yaml_data[key])
-            )
+            if self.config_type == "reloc" and key in [
+                "parallel",
+                "time",
+                "cluster",
+                "pyocto",
+                "zones",
+                "catalog",
+            ]:
+                logger.warning(f"Missing section '{key}' in yaml file !")
+                continue
+            else:
+                if key not in self.yaml_data.keys():
+                    raise ValueError(f"Missing section '{key}' in yaml file !")
+                setattr(
+                    self,
+                    key,
+                    from_dict(data_class=data_class, data=self.yaml_data[key]),
+                )
+        if config_type == "reloc":
+            return
 
         # NLL will discard any location with number of phase < min_phase
         # take into account cluster parameters to set it accordingly
@@ -627,6 +647,15 @@ class DBClustConfig:
     def show(self):
         # debug
         for key, value in self.__annotations__.items():
+            if self.config_type == "reloc" and key in [
+                "parallel",
+                "time",
+                "cluster",
+                "pyocto",
+                "zones",
+                "catalog",
+            ]:
+                continue
             attribute_value = getattr(self, key)
             ic(key, attribute_value)
 
@@ -659,16 +688,26 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-c",
-        "--conf",
+        "--conf_file",
         default=None,
-        dest="configfile",
+        dest="config_file",
         help="yaml configuration file.",
         type=str,
     )
+
+    parser.add_argument(
+        "-t",
+        "--conf_type",
+        default=None,
+        dest="config_type",
+        help="std|reloc configuration type.",
+        type=str,
+    )
+
     args = parser.parse_args()
-    if not args.configfile:
+    if not args.config_file:
         parser.print_help()
         sys.exit(255)
 
-    myconf = DBClustConfig(args.configfile)
+    myconf = DBClustConfig(args.config_file, config_type=args.config_type)
     myconf.show()
