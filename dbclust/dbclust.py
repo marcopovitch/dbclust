@@ -391,7 +391,7 @@ def dbclust(
                     locator.nb_events = len(locator.catalog)
                     clustcat = locator.catalog
                 elif (
-                    event.event_type != "no existing"
+                    event.event_type != "not existing"
                     and not last_round
                     and first_pick_time < next_begin
                     and last_pick_time >= next_begin
@@ -427,9 +427,9 @@ def dbclust(
         feed_distance_from_preloc_to_pref_origin(clustcat)
 
         # transform ids to a more human readable thing !
-        clustcat = make_readable_id(
-            clustcat, cfg.quakeml.event_prefix, cfg.quakeml.smi_base
-        )
+        # clustcat = make_readable_id(
+        #     clustcat, cfg.quakeml.event_prefix, cfg.quakeml.smi_base
+        # )
 
         # prepare next round
         previous_myclust = myclust
