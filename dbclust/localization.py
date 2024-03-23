@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 import ray
 from gap import compute_gap
+from gap import get_arrival_with_distance_gap_greater_than
 from icecream import ic
 from jinja2 import Template
 from obspy import Catalog
@@ -36,6 +37,7 @@ from obspy import read_events
 from obspy.core import UTCDateTime
 from obspy.core.event import Arrival
 from obspy.core.event import CreationInfo
+from obspy.core.event import Event
 from obspy.core.event import Origin
 from obspy.core.event import OriginQuality
 from obspy.core.event import Pick
@@ -43,6 +45,7 @@ from obspy.core.event import ResourceIdentifier
 from obspy.core.event import WaveformStreamID
 from obspy.geodetics import gps2dist_azimuth
 from obspy.geodetics import kilometer2degrees
+from plot import plot_arrival_time
 from prettytable import PrettyTable
 from quakeml import remove_duplicated_picks
 from ray.util.multiprocessing import Pool
@@ -424,6 +427,7 @@ class NllLoc(object):
             event2 = cat2.events[0]
             # event2 = remove_duplicated_picks(event2)
 
+            event2 = self.unset_arrival(event2, 100)
             event2 = self.cleanup_pick_phase(event2)
             if len(event2.picks):
                 new_nll_obs_file = nll_obs_file + ".2nd_pass"
@@ -702,12 +706,53 @@ class NllLoc(object):
 
         return mycatalog
 
-    def cleanup_pick_phase(self, event):
+    def unset_arrival(self, event: Event, gap_dist_max_km) -> Event:
+        """Unset arrival with gap in distance > dist_max
+
+        Args:
+            event (Event): event to work on
+
+        Returns:
+            Event: modified event
         """
+        arrivals_to_unset = get_arrival_with_distance_gap_greater_than(
+            event, gap_dist_max_km
+        )
+        for a in arrivals_to_unset:
+            pick = next((p for p in event.picks if p.resource_id == a.pick_id), None)
+            assert pick, f"Can't find pick for arrival {a.pick_id}"
+
+            logger.debug(
+                f"Unset arrival time_weight {pick.waveform_id.get_seed_string()} {a.phase} {pick.time}"
+            )
+
+            # find the corresponding arrival and set the weight to 0
+            for arrival in event.preferred_origin().arrivals:
+                if arrival.pick_id == pick.resource_id:
+                    arrival.time_weight = 0
+                    break
+
+        return event
+
+    def cleanup_pick_phase(self, event: Event) -> Event:
+        """Remove picks/arrivals
+
         Remove picks/arrivals with:
             - time weight set to 0
             - bad residual
             - duplicated phases (remove the one with highest residual)
+            - distance > dist_km_cutoff (if defined)
+
+        Keep (forced):
+            - pick with evaluation_mode set "manual" if keep_manual_picks is True
+
+        Update "used_station_count" and "used_phase_count" in origin quality.
+
+        Args:
+            event (Event): event to work on
+
+        Returns:
+            Event: modified event
         """
         orig = event.preferred_origin()
         pick_to_delete = []
@@ -922,6 +967,7 @@ def show_bulletin(event):
     origin = event.preferred_origin()
     table = PrettyTable()
     table.field_names = [
+        "used",
         "station",
         "phase",
         "weight",
@@ -933,7 +979,10 @@ def show_bulletin(event):
     # print("station phase weight residual distance time evaluation")
     for arrival in origin.arrivals:
         if hasattr(arrival, "time_weight") and arrival.time_weight == 0:
-            continue
+            used = False
+            # continue
+        else:
+            used = True
         pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
         if not pick:
             continue
@@ -942,6 +991,7 @@ def show_bulletin(event):
         phase_name = pick.phase_hint
         table.add_row(
             [
+                used,
                 station_name,
                 phase_name,
                 arrival.time_weight,
@@ -953,6 +1003,12 @@ def show_bulletin(event):
         )
         # print(f"{station_name} {phase_name} {arrival.time_weight} {arrival.time_residual} {arrival.distance} {pick.time} {pick.evaluation_mode}")
     print(table)
+
+    # plot with plotext library arrival time with respect to distance
+    plot_arrival_time(event)
+
+
+
 
 def reloc_fdsn_event(locator, eventid, fdsnws):
     link = f"{fdsnws}/query?eventid={urllib.parse.quote(eventid, safe='')}&includearrivals=true"
