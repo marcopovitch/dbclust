@@ -2,6 +2,44 @@
 from typing import List
 from typing import Union
 
+from obspy.core.event import Event
+
+# from icecream import ic
+
+
+def get_arrival_with_distance_gap_greater_than(
+    event: Event, dist_max_km: float
+) -> Union[float, None]:
+    """Get arrival with distance greater than dist_max
+
+    Args:
+        event (Event): event to work on
+        dist_max (float): max distance allowed
+
+    Returns:
+        Union[float, None]: arrivals with distance greater than dist_max
+    """
+    origin = event.preferred_origin()
+
+    if not origin:
+        return None
+
+    # sort arrival by distance
+    sorted_arrivals = sorted(origin.arrivals, key=lambda x: x.distance)
+
+    # compute distance (in degrees) between consecutive arrivals
+    dist_list = [
+        sorted_arrivals[i].distance - sorted_arrivals[i - 1].distance
+        for i in range(1, len(sorted_arrivals))
+    ]
+    # get arrival with corresponding dist_list greater than dist_max
+    arrivals_to_unset = []
+    for i in range(len(dist_list)):
+        if dist_list[i] >= dist_max_km / 111.1:
+            arrivals_to_unset.append(sorted_arrivals[i+1])
+
+    return arrivals_to_unset
+
 
 def compute_gap(azimuth_list: List[float]) -> Union[float, None]:
     """Compute gap from azimuth list in degree
