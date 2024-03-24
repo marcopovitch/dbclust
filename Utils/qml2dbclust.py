@@ -3,9 +3,52 @@ import argparse
 import logging
 import os
 import sys
+from typing import Any
+from typing import Dict
+from typing import List
 
 import pandas as pd
 from obspy import read_events
+
+
+def filter_LDG_P_S(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    For each station, filter out all lines with phase_type P or S
+    if other lines contain Pn, Pg or Sn, Sg.
+
+    Args:
+        lines (List[Dict[str, Any]]): A list of dictionaries containing
+                                        pick information.
+
+    Returns:
+        List[Dict[str, Any]]: the filtered list.
+
+    """
+    filtered_lines = []
+    for line in lines:
+        station_id = line["station_id"]
+        phase_type = line["phase_type"]
+        if phase_type == "P":
+            contains_Pn = any(
+                l["phase_type"] == "Pn" for l in lines if l["station_id"] == station_id
+            )
+            contains_Pg = any(
+                l["phase_type"] == "Pg" for l in lines if l["station_id"] == station_id
+            )
+            if not (contains_Pn or contains_Pg):
+                filtered_lines.append(line)
+        elif phase_type == "S":
+            contains_Sn = any(
+                l["phase_type"] == "Sn" for l in lines if l["station_id"] == station_id
+            )
+            contains_Sg = any(
+                l["phase_type"] == "Sg" for l in lines if l["station_id"] == station_id
+            )
+            if not (contains_Sn or contains_Sg):
+                filtered_lines.append(line)
+        else:
+            filtered_lines.append(line)
+    return filtered_lines
 
 
 def export_picks_to_phasenet_format(
@@ -29,6 +72,7 @@ def export_picks_to_phasenet_format(
                     )
                 line = {
                     "station_id": pick.waveform_id.get_seed_string().rstrip(".."),
+                    "channel": "",
                     "phase_type": arrival.phase,
                     "phase_time": pick.time,
                     "phase_score": probability,
@@ -37,7 +81,7 @@ def export_picks_to_phasenet_format(
                     # "eventid": event.resource_id.id.split("/")[-1],
                     "event_id": event.resource_id.id,
                 }
-                # override
+                # override from command line args
                 if evaluation:
                     line["phase_evaluation"] = evaluation
                 if method:
@@ -45,6 +89,11 @@ def export_picks_to_phasenet_format(
                 if agency:
                     line["agency"] = agency
                 lines.append(line)
+
+    if agency == "LDG":
+        logger.info("Filtering out P and S phases for LDG")
+        lines = filter_LDG_P_S(lines)
+
     return lines
 
 
@@ -179,6 +228,13 @@ if __name__ == "__main__":
             probability=args.probability,
             agency=args.agency,
         )
-        df = pd.concat([df, pd.DataFrame(picks_list)], ignore_index=True)
+
+        #df = pd.concat([df, pd.DataFrame(picks_list)], ignore_index=True)
+        picks_df = pd.DataFrame(picks_list)
+        if not df.empty and not picks_df.empty:
+            df = pd.concat([df, picks_df], ignore_index=True)
+        elif not picks_df.empty:
+            #df = picks_df.copy()
+            df = picks_df
 
     df.to_csv(args.outputfile, index=False)
