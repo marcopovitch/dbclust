@@ -34,20 +34,24 @@ def get_index(group: GroupBy, debug=False) -> int:
         # multiple picks with max proba set
         manual_df = group[group["phase_evaluation"] == "manual"]
         if len(manual_df) >= 1:
+            # get the index of the phase_time median pick
+            median_index = manual_df["phase_time"].sort_values().index[len(manual_df) // 2]
             # use only manual picks to get the preferred pick (based on median index)
-            median_index = (
-                manual_df["phase_score"].sort_values().index[len(manual_df) // 2]
-            )
-            median_value = manual_df.loc[median_index, "phase_score"]
+            # median_index = (
+            #     manual_df["phase_score"].sort_values().index[len(manual_df) // 2]
+            # )
             if debug:
+                median_value = manual_df.loc[median_index, "phase_time"]
                 print(
                     f"cluster nb picks {len(group)}, median manual {len(manual_df)}: median_index={median_index} median_value={median_value}"
                 )
             return median_index
         else:
-            median_index = group["phase_score"].sort_values().index[len(manual_df) // 2]
-            median_value = group.loc[median_index, "phase_score"]
+            # no manual pick, get the index of the phase_time median pick
+            median_index = group["phase_time"].sort_values().index[len(group) // 2]
+            # median_index = group["phase_score"].sort_values().index[len(manual_df) // 2]
             if debug:
+                median_value = group.loc[median_index, "phase_time"]
                 print(
                     f"cluster nb picks {len(group)}, median other {len(group)}: median_index={median_index} median_value={median_value}"
                 )
@@ -141,7 +145,7 @@ def unload_too_close_picks_clustering(
             # idx = tmp_df.groupby(["cluster"])["phase_score", "phase_evaluation"].apply(get_index)
             # idx = tmp_df.groupby(["cluster"]).apply(lambda group: get_index(group[['phase_score', 'phase_evaluation']]))
             idx = tmp_df.groupby(["cluster"])[
-                ["phase_score", "phase_evaluation"]
+                ["phase_score", "phase_evaluation", "phase_time"]
             ].apply(get_index)
 
             tmp_df = tmp_df.loc[idx]
