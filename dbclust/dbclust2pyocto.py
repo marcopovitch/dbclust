@@ -181,6 +181,7 @@ def cluster_merge_one_pass(clusters: List[List[Phase]], preloc, min_com_phases: 
     merge_count = 0
     to_be_merged = []
 
+    # merge clusters with common picks or event_id
     for c1, c2 in combinations(clusters, 2):
         common_elements = (Counter(c1) & Counter(c2)).values()
         common_count = sum(common_elements)
@@ -193,20 +194,21 @@ def cluster_merge_one_pass(clusters: List[List[Phase]], preloc, min_com_phases: 
             to_be_merged.append([c1, c2])
 
     for c1, c2 in to_be_merged:
-        if c1 not in clusters or c2 not in clusters:
+        # check if c1 is still in clusters
+        if c1 not in clusters:
             continue
-
         c1_index = clusters.index(c1)
         preloc_c1 = preloc[c1_index]
         del clusters[c1_index]
         del preloc[c1_index]
-        # clusters.remove(c1)
 
+        # check if c2 is still in clusters
+        if c2 not in clusters:
+            continue
         c2_index = clusters.index(c2)
         preloc_c2 = preloc[c2_index]
         del clusters[c2_index]
         del preloc[c2_index]
-        # clusters.remove(c2)
 
         clusters.append(list(set(c1 + c2)))
         # keeps the preloc with the highest number of stations
