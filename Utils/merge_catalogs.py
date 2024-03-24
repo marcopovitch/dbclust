@@ -19,7 +19,7 @@ def yml_read_config(filename):
 if __name__ == "__main__":
     # default logger
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    logger = logging.getLogger("dbclust")
+    logger = logging.getLogger("merge_catalog")
     logger.setLevel(logging.INFO)
 
     parser = argparse.ArgumentParser()
@@ -52,7 +52,8 @@ if __name__ == "__main__":
 
     print(f"Reading merge catalogs information: {event_merge_info_file}")
     df = pd.read_csv(event_merge_info_file)
-    df["agencies_list"].fillna("", inplace=True)
+    #df["agencies_list"].fillna("", inplace=True)
+    df.fillna({"agencies_list": ""}, inplace=True)
 
     print(f"Reading merged catalog: {main_catalog}")
     mycat = read_events(main_catalog)
