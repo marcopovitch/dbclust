@@ -85,6 +85,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "-d", "--directory", type=str, help="Output directory for split files"
     )
+    parser.add_argument(
+        "-j", "--n_jobs", type=int, default=4, help="Number of parallel jobs"
+    )
     args = parser.parse_args()
 
     # Verify if catalog file exists
@@ -97,4 +100,4 @@ if __name__ == "__main__":
     else:
         os.makedirs(args.directory)
 
-    split(args.catalog, args.directory)
+    split(args.catalog, args.directory, args.n_jobs)
