@@ -8,7 +8,7 @@ from obspy.core.event import Event
 
 
 def get_arrival_with_distance_gap_greater_than(
-    event: Event, dist_max_km: float
+    event: Event, dist_max_km: float, apply_to_evaluation_mode: list = ["automatic"]
 ) -> Union[float, None]:
     """Get arrival with distance greater than dist_max
 
@@ -36,7 +36,8 @@ def get_arrival_with_distance_gap_greater_than(
     arrivals_to_unset = []
     for i in range(len(dist_list)):
         if dist_list[i] >= dist_max_km / 111.1:
-            arrivals_to_unset.append(sorted_arrivals[i+1])
+            if sorted_arrivals[i+1].evaluation_mode in apply_to_evaluation_mode:
+                arrivals_to_unset.append(sorted_arrivals[i+1])
 
     return arrivals_to_unset
 
