@@ -36,7 +36,9 @@ def get_arrival_with_distance_gap_greater_than(
     arrivals_to_unset = []
     for i in range(len(dist_list)):
         if dist_list[i] >= dist_max_km / 111.1:
-            if sorted_arrivals[i+1].evaluation_mode in apply_to_evaluation_mode:
+            # find corresponding pick to arrival
+            pick = next((p for p in event.picks if p.resource_id == sorted_arrivals[i+1].pick_id), None)
+            if pick.evaluation_mode in apply_to_evaluation_mode:
                 arrivals_to_unset.append(sorted_arrivals[i+1])
 
     return arrivals_to_unset
