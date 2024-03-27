@@ -28,7 +28,7 @@ from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
 from phase import import_phases
 from phase import Phase
-from quakeml import remove_duplicated_picks
+from quakeml import deduplicate_picks
 from tqdm import tqdm
 
 # default logger
@@ -512,7 +512,7 @@ class Clusterize(object):
             for p in cluster:
                 pick = p.to_pick()
                 event.picks.append(pick)
-            event = remove_duplicated_picks(event)
+            event = deduplicate_picks(event)
 
             # to be returned !
             picks_bundles.append(event.picks)
