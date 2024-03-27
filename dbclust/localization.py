@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 import concurrent.futures
 import copy
 import glob
@@ -47,7 +48,7 @@ from obspy.geodetics import gps2dist_azimuth
 from obspy.geodetics import kilometer2degrees
 from plot import plot_arrival_time
 from prettytable import PrettyTable
-from quakeml import remove_duplicated_picks
+from quakeml import deduplicate_picks
 from ray.util.multiprocessing import Pool
 
 # from dask import delayed
@@ -425,7 +426,7 @@ class NllLoc(object):
             logger.debug("Starting double pass relocation.")
             cat2 = cat.copy()
             event2 = cat2.events[0]
-            # event2 = remove_duplicated_picks(event2)
+            # event2 = deduplicate_picks(event2)
 
             event2 = self.unset_arrival(event2, 100)
             event2 = self.cleanup_pick_phase(event2)
@@ -450,7 +451,7 @@ class NllLoc(object):
                 e.origins.append(orig2)
                 e.preferred_origin_id = orig2.resource_id
                 # e.picks += event2.picks
-                # e = remove_duplicated_picks(e)
+                # e = deduplicate_picks(e)
             else:
                 # can't relocate: set it to "not existing"
                 e.event_type = "not existing"
@@ -464,7 +465,7 @@ class NllLoc(object):
             e.picks.extend(preloc_picks_list)
             e.origins.append(preloc_origin)
 
-        e = remove_duplicated_picks(e)
+        e = deduplicate_picks(e)
         return cat
 
     def get_catalog_from_results(self, cat_results: List[Catalog]) -> Catalog:
@@ -735,7 +736,8 @@ class NllLoc(object):
         return event
 
     def cleanup_pick_phase(self, event: Event) -> Event:
-        """Remove picks/arrivals
+        """
+        Remove picks/arrivals
 
         Remove picks/arrivals with:
             - time weight set to 0

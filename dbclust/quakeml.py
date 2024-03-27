@@ -136,12 +136,20 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
     return cat
 
 
-def remove_duplicated_picks(event: Event) -> Event:
+def deduplicate_picks(event: Event) -> Event:
+    """
+    Deduplicate picks from the given event.
+
+    Args:
+        event (Event): The event object containing picks.
+
+    Returns:
+        Event: The event object with deduplicated picks.
+    """
     picks = event.picks
     to_be_removed = []
     match_pick_id = {}
     for p1, p2 in combinations(picks, 2):
-        # if p1.resource_id.id == p2.resource_id.id or (
         if (
             p1.waveform_id.get_seed_string() == p2.waveform_id.get_seed_string()
             and p1.time == p2.time
@@ -159,11 +167,9 @@ def remove_duplicated_picks(event: Event) -> Event:
             if arrival.pick_id in match_pick_id.keys():
                 arrival.pick_id = match_pick_id[arrival.pick_id]
 
-    logger.info(f"Removed {len(to_be_removed)}/{len(picks)} duplicated picks.")
+    logger.info(f"Deduplicate picks: to remove:{len(to_be_removed)}, remaining:{len(picks)}.")
     for p in to_be_removed:
         picks.remove(p)
-    logger.info(f"Remaining {len(picks)} picks.")
-
     return event
 
 
@@ -223,7 +229,7 @@ if __name__ == "__main__":
     # logger.info("Pick deduplication ...")
     # new_cat = Catalog()
     # for e in cat.events:
-    #     new_e = remove_duplicated_picks(e)
+    #     new_e = deduplicate_picks(e)
     #     new_cat.events.append(new_e)
 
     new_cat = cat
