@@ -6,14 +6,17 @@ import sys
 
 import dask.dataframe as dd
 from obspy import UTCDateTime
-#import pandas as pd
+
+# import pandas as pd
+
 
 def convert_to_utc_datetime(series):
     return series.apply(lambda x: UTCDateTime(x))
 
+
 if __name__ == "__main__":
     # default logger
-    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
     logger = logging.getLogger("phasenet2dbclust")
     logger.setLevel(logging.INFO)
 
@@ -44,10 +47,11 @@ if __name__ == "__main__":
         logger.error(f"outputfile {args.outputfile} already exists !")
         sys.exit(255)
 
-#df = pd.read_csv(args.inputfile, parse_dates=["time"], low_memory=False)
+logger.info(f"Reading {args.inputfile} ...")
 df = dd.read_csv(args.inputfile)
+df = df.repartition(npartitions=6)
 
-# station_id,channel,phase_type,phase_time,phase_score,phase_evaluation,phase_method,event_id,agency
+logger.info("Starting processing ...")
 df = df.rename(
     columns={
         "seedid": "station_id",
@@ -57,20 +61,36 @@ df = df.rename(
     },
 )
 # needed to have the right time format when exporting to csv
-#schema = {'phase_time': 'object'}
-#df["phase_time"] = dd.to_datetime(df["phase_time"], utc=True).apply(lambda x: UTCDateTime(x), meta=schema)
-df["phase_time"] = df.map_partitions(lambda partition: convert_to_utc_datetime(partition["phase_time"]), meta=('phase_time', object))
+df["phase_time"] = df.map_partitions(
+    lambda partition: convert_to_utc_datetime(partition["phase_time"]),
+    meta=("phase_time", object),
+)
 
-
-df = df.sort_values(by=["phase_time"])
+df = df.sort_values(by=["phase_time"], npartitions=6)
 if "phase_index" in df.columns:
     # seems to be fake picks
     df = df[df["phase_index"] != 1]
-df = df.drop(columns=["begin_time", "phase_index", "file_name"], errors='ignore', axis=1)
+
+df = df.drop(
+    columns=["begin_time", "phase_index", "file_name"], errors="ignore", axis=1
+)
 
 df["phase_evaluation"] = "automatic"
 df["phase_method"] = "PHASENET"
 df["event_id"] = ""
 df["agency"] = "RENASS"
+df["channel"] = ""
 
-df.to_csv(args.outputfile, single_file=True, index=False)
+col_order = [
+    "station_id",
+    "channel",
+    "phase_type",
+    "phase_time",
+    "phase_score",
+    "phase_evaluation",
+    "phase_method",
+    "event_id",
+    "agency",
+]
+
+df.to_csv(args.outputfile, single_file=True, index=False, columns=col_order)
