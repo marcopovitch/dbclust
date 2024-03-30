@@ -55,14 +55,54 @@ def compute_tt(p1: Phase, p2: Phase, vmean) -> float:
 
 
 def cluster_share_eventid(c1: List[Phase], c2: List[Phase]) -> bool:
-    c1_evtids = set([p.event_id for p in c1 if p.event_id])
+    """
+    Check if two clusters share a common event ID.
+
+    Args:
+        c1 (List[Phase]): The first cluster.
+        c2 (List[Phase]): The second cluster.
+
+    Returns:
+        bool: True if the clusters share a common event ID, False otherwise.
+
+    Fixme:
+        sometimes a pick is not well associated with the right event
+        leading to a merge that would not be correct. This pick should be removed
+        based on the pick residual (threshold to be defined).
+        In the meantime, we can use the eventid count to avoid merging (> 1).
+    """
+    c1_evtids_list = [p.event_id for p in c1 if p.event_id]
+    c1_evtids = set(c1_evtids_list)
     logger.debug("cluster1 eventid: %s" % c1_evtids)
-    c2_evtids = set([p.event_id for p in c2 if p.event_id])
+
+    c2_evtids_list = [p.event_id for p in c2 if p.event_id]
+    c2_evtids = set(c2_evtids_list)
     logger.debug("cluster2 eventid: %s" % c2_evtids)
-    if c1_evtids.intersection(c2_evtids):
-        return True
-    else:
-        return False
+
+    common_eventid = Counter(c1_evtids) & Counter(c2_evtids)
+    for k, v in common_eventid.items():
+        # common_eventid[k] = min(c1_evtids_list.count(k), c2_evtids_list.count(k))
+        # use only on network.station
+        c1_sta = set([".".join([p.network, p.station]) for p in c1 if p.event_id == k])
+        c2_sta = set([".".join([p.network, p.station]) for p in c2 if p.event_id == k])
+
+        # change value to the number of common station, regardless of channel and phase
+        common_eventid[k] = min(len(c1_sta), len(c2_sta))
+
+    if common_eventid:
+        ic(common_eventid)
+
+    # check if there is a eventid in common_eventid with key > 1
+    for k, v in common_eventid.items():
+        if v > 1:
+            return True
+    return False
+
+    # temporary disable
+    # if c1_evtids.intersection(c2_evtids):
+    #     return True
+    # else:
+    #     return False
 
 
 def get_picks_from_event(event: Event, origin: Origin, time) -> List:
@@ -421,7 +461,7 @@ class Clusterize(object):
 
         return clusters, clusters_stability, noise
 
-    def cluster_merge_based_on_eventid(self):
+    def cluster_merge_based_on_eventid(self) -> None:
         """Merge clusters containing picks from the same eventid (if provided)."""
 
         # logger.error(f"n_clusters={self.n_clusters}, lens(clusters) = {len(self.clusters)}")
@@ -444,11 +484,11 @@ class Clusterize(object):
             logger.debug("Working on cluster %s with %d phases" % (c1, len(c1)))
             for i, c2 in enumerate(self.clusters):
                 if cluster_share_eventid(c1, c2):
-                    # logger.debug("Eventid shared.")
                     cluster_to_remove.append(c2)
                     clusters_to_merge.append(c2)
+                #     logger.info("Eventid shared.")
                 # else:
-                # logger.debug("No eventid shared.")
+                #     logger.info("No eventid shared.")
 
             # cleanup
             for c in cluster_to_remove:
