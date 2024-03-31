@@ -32,9 +32,9 @@ from quakeml import deduplicate_picks
 from tqdm import tqdm
 
 # default logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging.getLogger("clusterize")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 
 @functools.lru_cache(maxsize=None)
@@ -67,10 +67,15 @@ def cluster_share_eventid(c1: List[Phase], c2: List[Phase]) -> bool:
 
     Fixme:
         sometimes a pick is not well associated with the right event
-        leading to a merge that would not be correct. This pick should be removed
-        based on the pick residual (threshold to be defined).
-        In the meantime, we can use the eventid count to avoid merging (> 1).
+        leading to a merge that would not be correct.
+        This pick should have been removed based on the pick residual (threshold to be defined).
+
+        In the meantime, we can use for each common eventid the number of common station and phase.
+        (station, phase) = (2, 4) seems to be a good threshold to merge the clusters.
     """
+    station_threshold = 2
+    phase_threshold = 4
+
     c1_evtids_list = [p.event_id for p in c1 if p.event_id]
     c1_evtids = set(c1_evtids_list)
     logger.debug("cluster1 eventid: %s" % c1_evtids)
@@ -81,20 +86,25 @@ def cluster_share_eventid(c1: List[Phase], c2: List[Phase]) -> bool:
 
     common_eventid = Counter(c1_evtids) & Counter(c2_evtids)
     for k, v in common_eventid.items():
-        # common_eventid[k] = min(c1_evtids_list.count(k), c2_evtids_list.count(k))
-        # use only on network.station
+        # number of common station, regardless of channel and phase
         c1_sta = set([".".join([p.network, p.station]) for p in c1 if p.event_id == k])
         c2_sta = set([".".join([p.network, p.station]) for p in c2 if p.event_id == k])
 
-        # change value to the number of common station, regardless of channel and phase
-        common_eventid[k] = min(len(c1_sta), len(c2_sta))
+        # common_eventid[k] = min(c1_evtids_list.count(k), c2_evtids_list.count(k))
+        # common_eventid[k] = min(len(c1_sta), len(c2_sta))
 
-    if common_eventid:
-        ic(common_eventid)
+        nb_phases = min(c1_evtids_list.count(k), c2_evtids_list.count(k))
+        nb_sta = min(len(c1_sta), len(c2_sta))
+        common_eventid[k] = (nb_sta, nb_phases)
+
+    #if common_eventid:
+    #    ic(common_eventid)
 
     # check if there is a eventid in common_eventid with key > 1
     for k, v in common_eventid.items():
-        if v > 1:
+        sta, phase = v
+        if sta >=station_threshold and phase >= phase_threshold:
+            logger.info(f"cluster_share_eventid(): common_eventid: {k} with {v} station,phase")
             return True
     return False
 
