@@ -188,7 +188,7 @@ def cluster_merge_one_pass(clusters: List[List[Phase]], preloc, min_com_phases: 
 
         eventid_shared = cluster_share_eventid(c1, c2)
         if common_count >= min_com_phases or eventid_shared:
-            logger.debug(
+            logger.info(
                 f"merging 2 clusters: picks shared: {common_count}, eventid shared: {eventid_shared}"
             )
             to_be_merged.append([c1, c2])
