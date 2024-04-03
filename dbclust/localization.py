@@ -798,6 +798,7 @@ class NllLoc(object):
         logger.debug(
             f"cleanup: remove {len(arrival_to_delete)} phases and {len(pick_to_delete)} picks."
         )
+
         for a in arrival_to_delete:
             orig.arrivals.remove(a)
         for p in pick_to_delete:
