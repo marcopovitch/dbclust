@@ -73,8 +73,8 @@ def cluster_share_eventid(c1: List[Phase], c2: List[Phase]) -> bool:
         In the meantime, we can use for each common eventid the number of common station and phase.
         (station, phase) = (2, 4) seems to be a good threshold to merge the clusters.
     """
-    station_threshold = 2
-    phase_threshold = 4
+    station_threshold = 1  # 2
+    phase_threshold = 1  # 4
 
     c1_evtids_list = [p.event_id for p in c1 if p.event_id]
     c1_evtids = set(c1_evtids_list)
