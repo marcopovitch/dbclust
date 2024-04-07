@@ -248,6 +248,23 @@ def dbclust(
             )
             picks_to_remove = []
 
+        # remove picks in respect to the number of station per minutes in df_subset
+        if cfg.station.frequency_threshold:
+            total_duration_in_minutes = cfg.time.time_window
+            grouped = df_subset.groupby("station_id")
+            station_counts = grouped.size()
+            frequencies = station_counts / total_duration_in_minutes
+            station_ids_to_keep = frequencies[
+                frequencies <= cfg.station.frequency_threshold
+            ].index
+            df_subset = df_subset[df_subset["station_id"].isin(station_ids_to_keep)]
+            ic(
+                cfg.station.frequency_threshold,
+                frequencies[frequencies >= cfg.station.frequency_threshold],
+            )
+
+        logger.debug(f"test len(df_subset) after = {len(df_subset)}")
+
         # Import picks
         phases = import_phases(
             df_subset,
