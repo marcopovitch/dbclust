@@ -148,6 +148,7 @@ class StationConfig:
     fdsnws_url: Optional[str] = None
     inventory_files: Optional[List[str]] = None
     blacklist: Optional[List[str]] = None
+    frequency_threshold: Optional[float] = None
     inventory: Optional[Inventory] = None
     info_sta: Optional[Union[Inventory, str]] = None
 
