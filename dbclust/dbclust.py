@@ -237,7 +237,7 @@ def dbclust(
 
         # to prevents extra event, remove from current picks list,
         # picks previously associated with events on the previous iteration
-        logger.debug(f"test len(df_subset) before = {len(df_subset)}")
+        logger.info(f"Before unload_picks_list() len(df_subset) = {len(df_subset)}")
         if len(picks_to_remove):
             logger.info(
                 f"[{job_index}] before unload picks: pick length is {len(df_subset)}"
@@ -247,23 +247,30 @@ def dbclust(
                 f"[{job_index}] after unload picks: pick length is {len(df_subset)}"
             )
             picks_to_remove = []
+        logger.info(f"After unload_picks_list() len(df_subset) = {len(df_subset)}")
 
         # remove picks in respect to the number of station per minutes in df_subset
         if cfg.station.frequency_threshold:
-            total_duration_in_minutes = cfg.time.time_window
+            total_duration_in_minutes = (end - begin).total_seconds() / 60
             grouped = df_subset.groupby("station_id")
             station_counts = grouped.size()
+            # min_time = grouped["phase_time"].min()
+            # max_time = grouped["phase_time"].max()
+            # total_duration_in_minutes = (max_time - min_time).dt.total_seconds() / 60
             frequencies = station_counts / total_duration_in_minutes
             station_ids_to_keep = frequencies[
-                frequencies <= cfg.station.frequency_threshold
+                frequencies < cfg.station.frequency_threshold
             ].index
             df_subset = df_subset[df_subset["station_id"].isin(station_ids_to_keep)]
             ic(
-                cfg.station.frequency_threshold,
+                total_duration_in_minutes,
                 frequencies[frequencies >= cfg.station.frequency_threshold],
             )
 
-        logger.debug(f"test len(df_subset) after = {len(df_subset)}")
+        # rename station_id
+        if cfg.station.rename:
+            df_subset.loc[:, "station_id"] = df_subset["station_id"].replace(to_replace=cfg.station.rename)
+
 
         # Import picks
         phases = import_phases(
