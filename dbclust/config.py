@@ -137,26 +137,50 @@ class PickConfig:
 
 @dataclass
 class StationConfig:
-    """Manage how to get stations coordinates
+    """Manage how to get stations coordinates.
+
+    This class provides a configuration for fetching station coordinates.
+    It allows fetching coordinates either from an inventory file or from a FDSN web service.
+
+    Attributes:
+        fetch_method (str):
+            The method used to fetch station coordinates. Should be either "inventory" or "fdsnws".
+        fdsnws_url (Optional[str]):
+            The URL of the FDSN web service. Required if fetch_method is "fdsnws".
+        inventory_files (Optional[List[str]]):
+            A list of inventory file paths. Required if fetch_method is "inventory".
+        blacklist (Optional[List[str]]):
+            A list of station codes to be excluded from the fetched coordinates.
+        rename (Optional[List[dict]]):
+            A list of dictionaries specifying station code renaming rules.
+        frequency_threshold (Optional[float]):
+            A threshold value for filtering stations based on their frequency.
+        inventory (Optional[Inventory]):
+            An instance of the `Inventory` class containing station information.
+        info_sta (Optional[Union[Inventory, str]]):
+            Information about the stations, either an `Inventory` instance or a URL.
 
     Raises:
-        ValueError: allow only "inventory" or "fdsnws" to get stations coordinates
-        URLError: when fdsnws_url is not valid or is not joinable
+        ValueError: If fetch_method is not "inventory" or "fdsnws".
+        URLError: If fdsnws_url is not a valid URL or cannot be joined.
+
+    Methods:
+        __post_init__: A method automatically called after the object is initialized.
+
     """
 
     fetch_method: str
     fdsnws_url: Optional[str] = None
     inventory_files: Optional[List[str]] = None
     blacklist: Optional[List[str]] = None
+    rename: Optional[dict] = None
     frequency_threshold: Optional[float] = None
     inventory: Optional[Inventory] = None
     info_sta: Optional[Union[Inventory, str]] = None
 
     def __post_init__(self) -> None:
         if self.fetch_method not in ["inventory", "fdsnws"]:
-            raise ValueError(
-                "Invalid fetch_method: should be 'inventory' or 'fdsnws' !"
-            )
+            raise ValueError("Invalid fetch_method: should be 'inventory' or 'fdsnws'!")
 
         if self.fetch_method == "inventory":
             self.inventory = Inventory()
@@ -173,11 +197,12 @@ class StationConfig:
             else:
                 raise URLError(f"{self.fdsnws_url}")
 
-
 @dataclass
 class TimeConfig:
-    # window_length: int
-    # overlap_length: int
+    """
+    Configuration class for time settings.
+    """
+
     time_window: float = 7  # minutes
     overlap_window: float = 40  # seconds
 
