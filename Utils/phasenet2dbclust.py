@@ -4,10 +4,16 @@ import logging
 import os
 import sys
 
+import dask
+dask.config.set({'dataframe.query-planning-warning': False})
+dask.config.set({'dataframe.query-planning': False})
 import dask.dataframe as dd
-from obspy import UTCDateTime
 
-# import pandas as pd
+from obspy import UTCDateTime
+from icecream import ic
+
+import pyarrow as pa
+import pyarrow.csv as csv
 
 
 def convert_to_utc_datetime(series):
@@ -47,50 +53,52 @@ if __name__ == "__main__":
         logger.error(f"outputfile {args.outputfile} already exists !")
         sys.exit(255)
 
-logger.info(f"Reading {args.inputfile} ...")
-df = dd.read_csv(args.inputfile)
-df = df.repartition(npartitions=6)
+    logger.info(f"Reading {args.inputfile} ...")
+    df = dd.read_csv(args.inputfile)
 
-logger.info("Starting processing ...")
-df = df.rename(
-    columns={
-        "seedid": "station_id",
-        "phasename": "phase_type",
-        "time": "phase_time",
-        "probability": "phase_score",
-    },
-)
-# needed to have the right time format when exporting to csv
-df["phase_time"] = df.map_partitions(
-    lambda partition: convert_to_utc_datetime(partition["phase_time"]),
-    meta=("phase_time", object),
-)
+    df = df.repartition(npartitions=os.cpu_count())
 
-df = df.sort_values(by=["phase_time"], npartitions=6)
-if "phase_index" in df.columns:
-    # seems to be fake picks
-    df = df[df["phase_index"] != 1]
+    logger.info("Starting processing ...")
+    df = df.rename(
+        columns={
+            "seedid": "station_id",
+            "phasename": "phase_type",
+            "time": "phase_time",
+            "probability": "phase_score",
+        },
+    )
+    # needed to have the right time format when exporting to csv
+    df["phase_time"] = df.map_partitions(
+        lambda partition: convert_to_utc_datetime(partition["phase_time"]),
+        meta=("phase_time", object),
+    )
 
-df = df.drop(
-    columns=["begin_time", "phase_index", "file_name"], errors="ignore", axis=1
-)
+    df = df.sort_values(by=["phase_time"], npartitions=6)
 
-df["phase_evaluation"] = "automatic"
-df["phase_method"] = "PHASENET"
-df["event_id"] = ""
-df["agency"] = "RENASS"
-df["channel"] = ""
+    if "phase_index" in df.columns:
+        # seems to be fake picks
+        df = df[df["phase_index"] != 1]
 
-col_order = [
-    "station_id",
-    "channel",
-    "phase_type",
-    "phase_time",
-    "phase_score",
-    "phase_evaluation",
-    "phase_method",
-    "event_id",
-    "agency",
-]
+    df = df.drop(
+        columns=["begin_time", "phase_index", "file_name"], errors="ignore", axis=1
+    )
 
-df.to_csv(args.outputfile, single_file=True, index=False, columns=col_order)
+    df["phase_evaluation"] = "automatic"
+    df["phase_method"] = "PHASENET"
+    df["event_id"] = ""
+    df["agency"] = "RENASS"
+    df["channel"] = ""
+
+    col_order = [
+        "station_id",
+        "channel",
+        "phase_type",
+        "phase_time",
+        "phase_score",
+        "phase_evaluation",
+        "phase_method",
+        "event_id",
+        "agency",
+    ]
+
+    df.to_csv(args.outputfile, single_file=True, index=False, columns=col_order)
