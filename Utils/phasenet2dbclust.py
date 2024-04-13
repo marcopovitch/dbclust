@@ -12,10 +12,6 @@ import dask.dataframe as dd
 from obspy import UTCDateTime
 from icecream import ic
 
-import pyarrow as pa
-import pyarrow.csv as csv
-
-
 def convert_to_utc_datetime(series):
     return series.apply(lambda x: UTCDateTime(x))
 
