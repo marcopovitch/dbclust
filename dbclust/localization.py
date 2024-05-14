@@ -37,6 +37,7 @@ from obspy import Catalog
 from obspy import read_events
 from obspy.core import UTCDateTime
 from obspy.core.event import Arrival
+from obspy.core.event import Comment
 from obspy.core.event import CreationInfo
 from obspy.core.event import Event
 from obspy.core.event import Origin
@@ -346,6 +347,12 @@ class NllLoc(object):
                 why = " ".join(line.split()[3:]).replace('"', "")
                 logger.info(f"Localization was ABORTED|IGNORED|REJECTED: {why}")
                 return Catalog()
+            elif "scatter_volume" in line:
+                l = line.split("scatter_volume")
+                if len(l) > 1:
+                    scatter_volume = l[1].strip()
+                else:
+                    scatter_volume = None
 
         if self.nll_verbose:
             print(result.stdout)
@@ -413,6 +420,8 @@ class NllLoc(object):
             o.earth_model_id = model_id
         # to keep track of different origins
         o.creation_info.version = pass_count + 1
+
+        o.comments.append(Comment(text='{"scatter_volume": %s}' % (scatter_volume)))
 
         if self.force_uncertainty:
             for pick in e.picks:
@@ -1009,8 +1018,6 @@ def show_bulletin(event):
 
     # plot with plotext library arrival time with respect to distance
     plot_arrival_time(event)
-
-
 
 
 def reloc_fdsn_event(locator, eventid, fdsnws):
