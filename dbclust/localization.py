@@ -14,6 +14,7 @@ import sys
 import tempfile
 import urllib.parse
 import urllib.request
+import warnings
 from functools import partial
 from itertools import combinations
 from math import fabs
@@ -29,6 +30,7 @@ import dateparser
 import numpy as np
 import pandas as pd
 import ray
+from dask import delayed
 from gap import compute_gap
 from gap import get_arrival_with_distance_gap_greater_than
 from icecream import ic
@@ -52,9 +54,9 @@ from prettytable import PrettyTable
 from quakeml import deduplicate_picks
 from ray.util.multiprocessing import Pool
 
-# from dask import delayed
-# from tqdm import tqdm
-
+# Disable warnings from obspy
+# UserWarning: Setting attribute ... which is not a default attribute
+warnings.filterwarnings("ignore", category=UserWarning, module="obspy")
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
