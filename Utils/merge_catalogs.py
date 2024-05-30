@@ -6,6 +6,7 @@ import sys
 
 import pandas as pd
 import yaml
+from icecream import ic
 from obspy import Catalog
 from obspy import read_events
 
@@ -57,6 +58,7 @@ if __name__ == "__main__":
 
     print(f"Reading merged catalog: {main_catalog}")
     mycat = read_events(main_catalog)
+    ic(mycat.events)
 
     cat = Catalog()
     for f in files:
@@ -65,6 +67,7 @@ if __name__ == "__main__":
         cat.extend(tmpcat)
 
     print("starting merge ...")
+    ic(df)
     for index, row in df.iterrows():
         myevent_id = row["event_id"]
         print(myevent_id)
