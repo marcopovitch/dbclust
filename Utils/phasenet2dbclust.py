@@ -28,7 +28,7 @@ if __name__ == "__main__":
         "--input",
         default=None,
         dest="inputfile",
-        help="input file",
+        help="CSV input file",
         type=str,
     )
     parser.add_argument(
@@ -36,7 +36,7 @@ if __name__ == "__main__":
         "--output",
         default=None,
         dest="outputfile",
-        help="output file",
+        help="CSV output file",
         type=str,
     )
     args = parser.parse_args()
