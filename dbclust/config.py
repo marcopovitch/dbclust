@@ -6,8 +6,10 @@ import os
 import sys
 import warnings
 from dataclasses import dataclass
+from dataclasses import field
 from dataclasses import fields
 from datetime import datetime
+from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -197,6 +199,7 @@ class StationConfig:
             else:
                 raise URLError(f"{self.fdsnws_url}")
 
+
 @dataclass
 class TimeConfig:
     """
@@ -344,6 +347,7 @@ class Zone:
     name: str
     velocity_profile: str
     polygon: List[List[float]]
+    picks_delimiter: List[Dict[str, List[List[float]]]]
 
     def __str__(self) -> str:
         txt = f"zone:\n\tname: '{self.name}'\n\tprofile: '{self.velocity_profile}'\n\tpolygon: {self.polygon}"
@@ -354,6 +358,12 @@ class Zone:
 class Zones:
     zones: List[Zone]
     polygons: Optional[gpd.GeoDataFrame] = None
+    pick_delimiter: Optional[gpd.GeoDataFrame] = None
+
+    @staticmethod
+    def _merge_dict(d):
+        merged = {key: value for item in d for key, value in item.items()}
+        return merged
 
     def load_zones(self, nll_cfg: NonLinLocConfig) -> None:
         records = []
@@ -377,6 +387,19 @@ class Zones:
                     "geometry": polygon,
                 }
             )
+
+            # picks_delimiter
+            if z.picks_delimiter:
+                gdf = gpd.GeoDataFrame(self._merge_dict(z.picks_delimiter))
+                gdf["region"] = z.name
+                if self.pick_delimiter is None:
+                    self.pick_delimiter = gdf
+                else:
+                    self.pick_delimiter = pd.concat(
+                        [self.pick_delimiter, gdf],
+                        ignore_index=True,
+                    )
+
         if not len(records):
             raise ValueError(f"Zones defined ... but empty !")
 
