@@ -213,10 +213,10 @@ def inventory2df(inventory: Inventory) -> pd.DataFrame:
                     "StartTime": station.start_date,
                     "EndTime": station.end_date,
                 }
-                # Ajouter les informations du canal à la liste
+                # Add channel information to the list
                 channels_info.append(channel_info)
 
-    # Créer un DataFrame pandas à partir de la liste de dictionnaires
+    # Create a pandas DataFrame from the list of dictionaries
     df = pd.DataFrame(channels_info, dtype=str)
     if df.empty:
         return df
@@ -454,7 +454,9 @@ def import_phases(
                 channel=chan[:2] if chan else chan,
                 phase=row.phase_type,
                 time=row.phase_time,
-                time_uncertainty=P_uncertainty if "P" in row.phase_type.upper() else S_uncertainty,
+                time_uncertainty=(
+                    P_uncertainty if "P" in row.phase_type.upper() else S_uncertainty
+                ),
                 proba=row.phase_score,
                 evaluation=evaluation,
                 method=method,
