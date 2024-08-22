@@ -347,10 +347,15 @@ class Zone:
     name: str
     velocity_profile: str
     polygon: List[List[float]]
-    picks_delimiter: List[Dict[str, List[List[float]]]]
+    picks_delimiter: List[Dict[str, List[List[float]]]] = field(default_factory=list)
 
     def __str__(self) -> str:
         txt = f"zone:\n\tname: '{self.name}'\n\tprofile: '{self.velocity_profile}'\n\tpolygon: {self.polygon}"
+        txt += "\n\tpicks_delimiter:"
+        for item in self.picks_delimiter:
+            for key, value in item.items():
+                txt += f"\n\t\t{key}: {value}"
+
         return txt
 
 
@@ -358,16 +363,11 @@ class Zone:
 class Zones:
     zones: List[Zone]
     polygons: Optional[gpd.GeoDataFrame] = None
-    pick_delimiter: Optional[gpd.GeoDataFrame] = None
-
-    @staticmethod
-    def _merge_dict(d):
-        merged = {key: value for item in d for key, value in item.items()}
-        return merged
 
     def load_zones(self, nll_cfg: NonLinLocConfig) -> None:
         records = []
         for z in self.zones:
+            # sanity check
             found = False
             for vp in nll_cfg.velocity_profiles:
                 if z.velocity_profile == vp.name:
@@ -378,27 +378,40 @@ class Zones:
                     f"Can't find zone velocity profile {z.velocity_profile}"
                 )
 
+            # create shapely polygon zone from list of coordinates
             polygon = Polygon(z.polygon)
+
+            # get picks_delimiter polygons
+            gdf_pick_delimiter = gpd.GeoDataFrame()
+            if z.picks_delimiter:
+                picks_delimiter_polygons =  []
+                names = []  # pick family name (Pn, Pg, Sn, Sg, ...)
+
+                # iterate over Pg, Pn, Sg, Sn, ...
+                for item in z.picks_delimiter:
+                    for key, value in item.items():
+                        picks_delimiter_polygons.append(Polygon(value))
+                        names.append(key)
+
+                df = pd.DataFrame({"name": names, "geometry": picks_delimiter_polygons})
+                gdf = gpd.GeoDataFrame(df, geometry="geometry")
+                gdf["region"] = z.name
+                gdf_pick_delimiter = pd.concat(
+                    [gdf_pick_delimiter, gdf],
+                    ignore_index=True,
+                )
+
+            #ic(gdf_pick_delimiter)
+
             records.append(
                 {
                     "name": z.name,
                     "velocity_profile": vp.name,
                     "template": vp.template_file,
                     "geometry": polygon,
+                    "picks_delimiter": gdf_pick_delimiter,
                 }
             )
-
-            # picks_delimiter
-            if z.picks_delimiter:
-                gdf = gpd.GeoDataFrame(self._merge_dict(z.picks_delimiter))
-                gdf["region"] = z.name
-                if self.pick_delimiter is None:
-                    self.pick_delimiter = gdf
-                else:
-                    self.pick_delimiter = pd.concat(
-                        [self.pick_delimiter, gdf],
-                        ignore_index=True,
-                    )
 
         if not len(records):
             raise ValueError(f"Zones defined ... but empty !")
@@ -598,7 +611,7 @@ class ParallelConfig:
             self.n_workers = os.cpu_count()
 
     def get_time_partitions(self, time_cfg: TimeConfig, pick_cfg: PickConfig) -> List:
-        ic(pick_cfg.start, pick_cfg.end)
+        #ic(pick_cfg.start, pick_cfg.end)
         nb_periods = self.get_nb_of_divisions(
             pick_cfg.start, pick_cfg.end, self.partition_duration
         )
