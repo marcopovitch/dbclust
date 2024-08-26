@@ -10,6 +10,44 @@ from config import Zone
 from icecream import ic
 
 
+def pick_delimiter_plot_all(conf):
+    # Plotly figure
+    fig = go.Figure()
+
+    # iterate over all zones and plot all the polygons on the same figure
+    for z in conf.zones.zones:
+        zone = conf.zones.get_zone_from_name(z.name)
+        ic(zone)
+        poly_df = zone.picks_delimiter
+        ic(poly_df)
+
+        # Iterate over all polygons in the DataFrame
+        for idx, row in poly_df.iterrows():
+            polygon = row["geometry"]
+            x, y = polygon.exterior.xy
+
+            x_list = list(x)
+            y_list = list(y)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=x_list, y=y_list, fill="toself", name=f'{z.name}-{row["name"]}'
+                )
+            )
+
+    fig.update_layout(
+        title=f"zone: all",
+        xaxis_title="Distance (deg)",
+        yaxis_title="Time (s)",
+        showlegend=True,
+        #width=800,
+        #height=600,
+    )
+
+    #fig.write_image("pick_delimiter-all.png")
+    fig.show()
+
+
 def pick_delimiter_plot(conf, zone_name):
     zone = conf.zones.get_zone_from_name(zone_name)
     ic(zone)
@@ -21,24 +59,23 @@ def pick_delimiter_plot(conf, zone_name):
 
     # Iterate over all polygons in the DataFrame
     for idx, row in poly_df.iterrows():
-        polygon = row['geometry']
+        polygon = row["geometry"]
         x, y = polygon.exterior.xy
 
         x_list = list(x)
         y_list = list(y)
 
-        fig.add_trace(go.Scatter(x=x_list, y=y_list, fill='toself', name=row['name']))
+        fig.add_trace(go.Scatter(x=x_list, y=y_list, fill="toself", name=row["name"]))
 
     fig.update_layout(
         title=f"zone: {zone_name}",
         xaxis_title="Distance (deg)",
         yaxis_title="Time (s)",
-        showlegend=True
+        showlegend=True,
     )
 
     fig.write_image(f"pick_delimiter-{zone_name}.png")
-    #fig.show()
-
+    # fig.show()
 
 
 if __name__ == "__main__":
@@ -83,5 +120,6 @@ if __name__ == "__main__":
         pick_delimiter_plot(myconf, args.zone_name)
     else:
         # iterate over all zones
-        for zone in myconf.zones.zones:
-            pick_delimiter_plot(myconf, zone.name)
+        #for zone in myconf.zones.zones:
+        #    pick_delimiter_plot(myconf, zone.name)
+        pick_delimiter_plot_all(myconf)
