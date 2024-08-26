@@ -4,8 +4,6 @@ from typing import Union
 
 from obspy.core.event import Event
 
-# from icecream import ic
-
 
 def get_arrival_with_distance_gap_greater_than(
     event: Event, dist_max_km: float, apply_to_evaluation_mode: list = ["automatic"]
@@ -14,10 +12,11 @@ def get_arrival_with_distance_gap_greater_than(
 
     Args:
         event (Event): event to work on
-        dist_max (float): max distance allowed
+        dist_max_km (float): max distance in km allowed
+        apply_to_evaluation_mode (list, optional): list of evaluation mode to apply the selection.
 
     Returns:
-        Union[float, None]: arrivals with distance greater than dist_max
+        Union[float, None]: arrivals with distance greater than dist_max_km
     """
     origin = event.preferred_origin()
 
@@ -37,9 +36,16 @@ def get_arrival_with_distance_gap_greater_than(
     for i in range(len(dist_list)):
         if dist_list[i] >= dist_max_km / 111.1:
             # find corresponding pick to arrival
-            pick = next((p for p in event.picks if p.resource_id == sorted_arrivals[i+1].pick_id), None)
+            pick = next(
+                (
+                    p
+                    for p in event.picks
+                    if p.resource_id == sorted_arrivals[i + 1].pick_id
+                ),
+                None,
+            )
             if pick.evaluation_mode in apply_to_evaluation_mode:
-                arrivals_to_unset.append(sorted_arrivals[i+1])
+                arrivals_to_unset.append(sorted_arrivals[i + 1])
 
     return arrivals_to_unset
 
@@ -51,7 +57,7 @@ def compute_gap(azimuth_list: List[float]) -> Union[float, None]:
         azimuth_list (List[float]): azimuth list in degree
 
     Returns:
-        float: the max gap
+        float: the max gap in degree
     """
 
     if len(azimuth_list) <= 2:
@@ -115,3 +121,4 @@ if __name__ == "__main__":
     ]
 
     gap = compute_gap(az)
+    print(f"Gap = {gap} degrees")
