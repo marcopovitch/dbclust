@@ -167,7 +167,7 @@ def deduplicate_picks(event: Event) -> Event:
             if arrival.pick_id in match_pick_id.keys():
                 arrival.pick_id = match_pick_id[arrival.pick_id]
 
-    logger.info(f"Deduplicate picks: to remove:{len(to_be_removed)}, remaining:{len(picks)}.")
+    logger.debug(f"Deduplicate picks: to remove:{len(to_be_removed)}, remaining:{len(picks)}.")
     for p in to_be_removed:
         picks.remove(p)
     return event
