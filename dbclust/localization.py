@@ -30,6 +30,7 @@ import dateparser
 import numpy as np
 import pandas as pd
 import ray
+from config import Zones
 from dask import delayed
 from gap import compute_gap
 from gap import get_arrival_with_distance_gap_greater_than
@@ -53,6 +54,7 @@ from plot import plot_arrival_time
 from prettytable import PrettyTable
 from quakeml import deduplicate_picks
 from ray.util.multiprocessing import Pool
+from shapely.geometry import Point
 
 # Disable warnings from obspy
 # UserWarning: Setting attribute ... which is not a default attribute
@@ -97,6 +99,9 @@ class NllLoc(object):
         quakeml_settings=None,
         keep_scat=False,
         scat_file=None,
+        zones: Zones = None,  # zones (polygons) delimitation to keep picks
+        cleanup_pick_zone: bool = True,  # clean up pick outside of zone
+        relabel_pick_zone: bool = False,  # relabel pick within zone
         log_level=logging.INFO,
     ):
         logger.setLevel(log_level)
@@ -123,6 +128,9 @@ class NllLoc(object):
         self.quakeml_settings = quakeml_settings
         self.keep_scat = keep_scat
         self.scat_file = scat_file
+        self.zones = zones
+        self.cleanup_pick_zone = cleanup_pick_zone
+        self.relabel_pick_zone = relabel_pick_zone
 
         # keep track of cluster affiliation
         self.event_cluster_mapping = {}
@@ -439,8 +447,27 @@ class NllLoc(object):
             event2 = cat2.events[0]
             # event2 = deduplicate_picks(event2)
 
-            event2 = self.unset_arrival(event2, 100)
-            event2 = self.cleanup_pick_phase(event2)
+            # unset arrival with gap in distance > dist_max
+            event2 = self.unset_arrival(event2, 100)  # FIXME: hardcoded value
+
+            # Clean up picks outside of the polygons defined in zones
+            if self.zones and self.cleanup_pick_zone:
+                # To be done:
+                # 1. remove picks/arrivals with time_weight set to 0
+                # 2. remove picks/arrivals with duplicated phases
+                # 3. remove picks/arrivals with distance > dist_km_cutoff
+                # 4. relabel pick within zone
+                zone, dist = self.zones.find_zone(o.latitude, o.longitude)
+                ic(model_id, zone)
+                event2 = self.cleanup_picks_and_relabel_picks(event2, zone)
+            else:
+                # legacy code to clean up pick :
+                # 1. with bad residual
+                # 2. with time_weight set to 0
+                # 3. with distance > dist_km_cutoff
+                # 4. with duplicated phases
+                event2 = self.cleanup_pick_phase(event2)
+
             if len(event2.picks):
                 new_nll_obs_file = nll_obs_file + ".2nd_pass"
                 cat2.write(new_nll_obs_file, format="NLLOC_OBS")
@@ -859,6 +886,73 @@ class NllLoc(object):
         orig.quality.used_station_count = NllLoc.get_used_station_count(event, orig)
         return event
 
+    def cleanup_picks_and_relabel_picks(self, event: Event, zone: Zones) -> Event:
+        # ic(zone.picks_delimiter)
+        # dataframe with polygons, contains: name, region, geometry columns
+        df_polygons = zone.picks_delimiter
+        orig = event.preferred_origin()
+        pick_to_delete = []
+        arrival_to_delete = []
+
+        for arrival in orig.arrivals:
+            pick = next(
+                (p for p in event.picks if p.resource_id == arrival.pick_id), None
+            )
+            if pick is None:
+                logger.error(f"Can't find pick for arrival {arrival.pick_id}")
+                continue
+
+            if isclose(arrival.time_weight, 0, abs_tol=0.001):
+                logger.info(
+                    f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} with time_weight set to 0"
+                )
+                pick_to_delete.append(pick)
+                arrival_to_delete.append(arrival)
+                continue
+
+            if (
+                self.dist_km_cutoff is not None
+                and arrival.distance > self.dist_km_cutoff / 111.0
+            ):
+                logger.info(
+                    f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} with distance > {self.dist_km_cutoff} km"
+                )
+                pick_to_delete.append(pick)
+                arrival_to_delete.append(arrival)
+                continue
+
+            # check if pick is within zone
+            if arrival.phase in ["Pg", "Pn", "Sg", "Sn"]:
+                my_polygon = df_polygons[df_polygons["name"] == arrival.phase].iloc[0][
+                    "geometry"
+                ]
+                region_name = df_polygons[df_polygons["name"] == arrival.phase].iloc[0][
+                    "region"
+                ]
+                if my_polygon and not my_polygon.contains(
+                    Point(arrival.distance, pick.time - orig.time)
+                ):
+                    logger.info(
+                        f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} outside zone {region_name}"
+                    )
+                    pick_to_delete.append(pick)
+                    arrival_to_delete.append(arrival)
+                else:
+                    logger.debug(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} is within zone {region_name}"
+                    )
+            else:
+                logger.info(
+                    f"No polygon defined for phase {arrival.phase} in zone {zone.name}"
+                )
+
+        # update "stations used" with weight > 0
+        orig.quality.used_phase_count = len(
+            [a.time_weight for a in orig.arrivals if a.time_weight]
+        )
+        orig.quality.used_station_count = NllLoc.get_used_station_count(event, orig)
+        return event
+
     @staticmethod
     def get_used_station_count(event, origin):
         station_list = []
@@ -1191,16 +1285,40 @@ if __name__ == "__main__":
     nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
     nlloc_template = "../nll_template/nll_haslach-0.2_template.conf"
 
+    # Relabel picks with polygons
+    from config import DBClustConfig
+
+    conf = DBClustConfig(
+        "/Users/marc/Data/DBClust/france.2016.01/dbclust-france.2016.01.yml"
+    )
+    zones = conf.zones
+    relabel_pick_zone = False
+    cleanup_pick_zone = True
+
     # eventid = "smi:local/437618f7-9cfe-4616-8e23-fdf32f7155db"
     # fdsnws = "http://localhost:10003/fdsnws/event/1"
     # nlloc_template = "../nll_template/nll_auvergne_template.conf"
 
     fdsnws = "https://api.franceseisme.fr/fdsnws/event/1"
-    eventid = "fr2023lfhbcx"
+    eventid = "fr2023njqxnr"
+    # eventid = "fr2023lznjuc"  # Lalaigne
+
+    #fdsnws = "http://10.0.1.36:8080/fdsnws/event/1"
+    #eventid = "eost2023kttbirwk"
 
     force_uncertainty = True
     P_uncertainty = 0.05
     S_uncertainty = 0.1
+
+    # QuakeML settings: all must be defined
+    quakeml_settings = {
+        "agency_id": "RENASS",
+        "author": "test@renass",
+        "evaluation_mode": "automatic",
+        "method_id": "NonLinLoc",
+        #"model_id": "haslach-0.2",
+        "model_id": "hybrid-pyrenees",
+    }
 
     with tempfile.TemporaryDirectory() as tmpdir:
         locator = NllLoc(
@@ -1221,7 +1339,13 @@ if __name__ == "__main__":
             # P_time_residual_threshold=0.45,
             # S_time_residual_threshold=0.75,
             #
-            nll_verbose=True,
+            quakeml_settings=quakeml_settings,
+            #
+            nll_verbose=False,
+            #
+            zones=zones,
+            relabel_pick_zone=relabel_pick_zone,
+            cleanup_pick_zone=cleanup_pick_zone,
         )
 
         cat = reloc_fdsn_event(locator, eventid, fdsnws)
