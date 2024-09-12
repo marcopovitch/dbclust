@@ -4,6 +4,7 @@ import argparse
 import os
 import platform
 import subprocess
+import sys
 import warnings
 from multiprocessing import Pool
 
@@ -89,6 +90,10 @@ if __name__ == "__main__":
         "-j", "--n_jobs", type=int, default=4, help="Number of parallel jobs"
     )
     args = parser.parse_args()
+
+    if len(sys.argv) == 1:
+        parser.print_help(sys.stderr)
+        sys.exit(1)
 
     # Verify if catalog file exists
     if not os.path.isfile(args.catalog):
