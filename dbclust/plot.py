@@ -10,15 +10,17 @@ from plotly.subplots import make_subplots
 
 
 def plot_arrival_time(
-    event: Event, event_name: str = None, use_plotly: bool = True
+    event: Event, event_name: str = None, use_plotly: bool = True, zones=None
 ) -> None:
     origin = event.preferred_origin()
 
+    P_station_name = []
     P_arrival_time = []
     P_distance = []
     P_residual = []
     P_colors = []
 
+    S_station_name = []
     S_arrival_time = []
     S_distance = []
     S_residual = []
@@ -41,8 +43,11 @@ def plot_arrival_time(
         if not pick:
             continue
 
+        # get stream id
+
         # append the arrival time with respect to the earliest arrival time for P phase
         if "P" in arrival.phase:
+            P_station_name.append(pick.waveform_id.get_seed_string())
             P_arrival_time.append(pick.time - earliest_arrival_time)
             P_distance.append(arrival.distance * 111.1)
             P_residual.append(arrival.time_residual)
@@ -58,6 +63,7 @@ def plot_arrival_time(
                 P_colors.append("lightgray")
 
         elif "S" in arrival.phase:
+            S_station_name.append(pick.waveform_id.get_seed_string())
             S_arrival_time.append(pick.time - earliest_arrival_time)
             S_distance.append(arrival.distance * 111.1)
             S_residual.append(arrival.time_residual)
@@ -74,6 +80,7 @@ def plot_arrival_time(
 
     P_df = pd.DataFrame(
         {
+            "station": P_station_name,
             "P_arrival_time": P_arrival_time,
             "P_distance": P_distance,
             "P_residual": P_residual,
@@ -83,6 +90,7 @@ def plot_arrival_time(
 
     S_df = pd.DataFrame(
         {
+            "station": S_station_name,
             "S_arrival_time": S_arrival_time,
             "S_distance": S_distance,
             "S_residual": S_residual,
@@ -131,6 +139,13 @@ def make_plot_with_plotly(
                 line=dict(width=1, color="DarkSlateGrey"),
             ),
             name="P phase",
+            hovertemplate=(
+                "Distance: %{x} km<br>"
+                "Arrival time: %{y} s<br>"
+                "Info: %{customdata}<br>"
+                "<extra></extra>"
+            ),
+            customdata=P_df["station"],
         ),
         row=1,
         col=1,
@@ -148,6 +163,13 @@ def make_plot_with_plotly(
                 line=dict(width=1, color="DarkSlateGrey"),
             ),
             name="S phase",
+            hovertemplate=(
+                "Distance: %{x} km<br>"
+                "Arrival time: %{y} s<br>"
+                "Info: %{customdata}<br>"
+                "<extra></extra>"
+            ),
+            customdata=S_df["station"],
         ),
         row=1,
         col=1,
@@ -174,6 +196,13 @@ def make_plot_with_plotly(
                 line=dict(width=1, color="DarkSlateGrey"),
             ),
             name="P phase",
+            hovertemplate=(
+                "Distance: %{x} km<br>"
+                "Arrival time: %{y} s<br>"
+                "Info: %{customdata}<br>"
+                "<extra></extra>"
+            ),
+            customdata=P_df["station"],
         ),
         row=1,
         col=2,
@@ -191,6 +220,13 @@ def make_plot_with_plotly(
                 line=dict(width=1, color="DarkSlateGrey"),
             ),
             name="S phase",
+            hovertemplate=(
+                "Distance: %{x} km<br>"
+                "Arrival time: %{y} s<br>"
+                "Info: %{customdata}<br>"
+                "<extra></extra>"
+            ),
+            customdata=S_df["station"],
         ),
         row=1,
         col=2,
@@ -272,7 +308,10 @@ def make_plot_with_plotext(
         label="P|Pn|Pg",
     )
     plt.scatter(
-        S_df["S_distance"], S_df["S_residual"], color=list(S_df["S_colors"]), label="S|Sn|Sg"
+        S_df["S_distance"],
+        S_df["S_residual"],
+        color=list(S_df["S_colors"]),
+        label="S|Sn|Sg",
     )
     plt.xlabel("Distance (km)")
     plt.ylabel("Residual (s)")
@@ -291,7 +330,9 @@ if __name__ == "__main__":
     # Use argparse to get the event file
     parser = argparse.ArgumentParser()
     parser.add_argument("-e", "--event_file", help="Event file")
-    parser.add_argument("-p", "--plotly", help="Use Plotly", action="store_true", default=False)
+    parser.add_argument(
+        "-p", "--plotly", help="Use Plotly", action="store_true", default=False
+    )
     args = parser.parse_args()
 
     # check if the event file is provided
