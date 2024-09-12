@@ -154,16 +154,18 @@ class NllLoc(object):
         """
         count = {}
         for arrival in origin.arrivals:
-            if hasattr(arrival, "time_weight") and arrival.time_weight == 0:
+            if hasattr(arrival, "time_weight") and isclose(
+                arrival.time_weight, 0, abs_tol=0.001
+            ):
                 continue
             pick = next(
                 (p for p in event.picks if p.resource_id == arrival.pick_id), None
             )
-            if not pick:
+            if pick is None:
                 continue
             wfid = pick.waveform_id
             station_name = f"{wfid.network_code}.{wfid.station_code}"
-            phase_name = pick.phase_hint
+            phase_name = arrival.phase
 
             if station_name in count.keys():
                 count[station_name].append(phase_name)
@@ -188,14 +190,23 @@ class NllLoc(object):
                 (p for p in myevent.picks if p.resource_id == arrival.pick_id), None
             )
 
+            if pick is None:
+                continue
+
+            # Ensure pick phase_hint is the same as arrival phase
+            # in order to avoid phase mismatch in the nll_obs input file
+            pick.phase_hint = arrival.phase
+
             if self.force_uncertainty:
-                if "P" in pick.phase_hint or "p" in pick.phase_hint:
+                if "P" in arrival.phase.upper():
                     pick.time_errors.uncertainty = self.P_uncertainty
-                elif "S" in pick.phase_hint or "s" in pick.phase_hint:
+                elif "S" in arrival.phase.upper():
                     pick.time_errors.uncertainty = self.S_uncertainty
 
             # do not use pick with deactivated arrival
-            if self.use_deactivated_arrivals == False and arrival.time_weight == 0:
+            if self.use_deactivated_arrivals == False and isclose(
+                arrival.time_weight, 0, abs_tol=0.001
+            ):
                 myevent.picks.remove(pick)
             elif (self.dist_km_cutoff is not None) and (
                 arrival.distance > self.dist_km_cutoff / 111.0
@@ -208,7 +219,9 @@ class NllLoc(object):
         )
         myevent.write(self.nll_obs_file, format="NLLOC_OBS")
         cat = self.nll_localisation(picks=myevent.picks)
+
         # Fixme: add previously removed picks
+
 
         # add previous origin back to this event
         if cat:
@@ -289,7 +302,7 @@ class NllLoc(object):
             )
 
         if pass_count == 0:
-            # get info to create an full Origin for preliminary location
+            # get info to create a full Origin for preliminary location
             # (only on the first location iteration)
             picks_file = os.path.splitext(nll_obs_file)[0] + "-picks.csv"
             sta_file = os.path.splitext(nll_obs_file)[0] + "-sta.csv"
@@ -435,9 +448,9 @@ class NllLoc(object):
 
         if self.force_uncertainty:
             for pick in e.picks:
-                if "P" in pick.phase_hint or "p" in pick.phase_hint:
+                if "P" in pick.phase_hint.upper():
                     pick.time_errors.uncertainty = self.P_uncertainty
-                elif "S" in pick.phase_hint or "s" in pick.phase_hint:
+                elif "S" in pick.phase_hint.upper():
                     pick.time_errors.uncertainty = self.S_uncertainty
 
         # try a relocation
@@ -890,6 +903,8 @@ class NllLoc(object):
         # ic(zone.picks_delimiter)
         # dataframe with polygons, contains: name, region, geometry columns
         df_polygons = zone.picks_delimiter
+        region_name = df_polygons["region"].unique()[0]
+
         orig = event.preferred_origin()
         pick_to_delete = []
         arrival_to_delete = []
@@ -903,6 +918,8 @@ class NllLoc(object):
                 continue
 
             if isclose(arrival.time_weight, 0, abs_tol=0.001):
+                # remove pick with time_weight set to 0
+                # or relabel pick [to be done]
                 logger.info(
                     f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} with time_weight set to 0"
                 )
@@ -926,24 +943,26 @@ class NllLoc(object):
                 my_polygon = df_polygons[df_polygons["name"] == arrival.phase].iloc[0][
                     "geometry"
                 ]
-                region_name = df_polygons[df_polygons["name"] == arrival.phase].iloc[0][
-                    "region"
-                ]
+
+                # compute distance from Point to Polygon
+                distance = my_polygon.distance(Point(arrival.distance, pick.time - orig.time))
+                ic(Point(arrival.distance, pick.time - orig.time))
+
                 if my_polygon and not my_polygon.contains(
                     Point(arrival.distance, pick.time - orig.time)
                 ):
                     logger.info(
-                        f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} outside zone {region_name}"
+                        f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} outside zone {region_name} by {distance:.2f} km"
                     )
                     pick_to_delete.append(pick)
                     arrival_to_delete.append(arrival)
                 else:
-                    logger.debug(
-                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} is within zone {region_name}"
+                    logger.info(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} is within zone {region_name} by {distance:.2f} km"
                     )
             else:
                 logger.info(
-                    f"No polygon defined for phase {arrival.phase} in zone {zone.name}"
+                    f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} has no polygon defined in {region_name}"
                 )
 
         # update "stations used" with weight > 0
@@ -1071,7 +1090,7 @@ def show_origin(o, txt):
     )
 
 
-def show_bulletin(event):
+def show_bulletin(event, zones=None):
     origin = event.preferred_origin()
     table = PrettyTable()
     table.field_names = [
@@ -1086,17 +1105,19 @@ def show_bulletin(event):
     ]
     # print("station phase weight residual distance time evaluation")
     for arrival in origin.arrivals:
-        if hasattr(arrival, "time_weight") and arrival.time_weight == 0:
+        if hasattr(arrival, "time_weight") and isclose(
+            arrival.time_weight, 0, abs_tol=0.001
+        ):
             used = False
             # continue
         else:
             used = True
         pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
-        if not pick:
+        if pick is None:
             continue
         wfid = pick.waveform_id
         station_name = f"{wfid.network_code}.{wfid.station_code}"
-        phase_name = pick.phase_hint
+        phase_name = arrival.phase
         table.add_row(
             [
                 used,
@@ -1113,7 +1134,7 @@ def show_bulletin(event):
     print(table)
 
     # plot with plotext library arrival time with respect to distance
-    plot_arrival_time(event)
+    plot_arrival_time(event, zones=zones)
 
 
 def reloc_fdsn_event(locator, eventid, fdsnws):
@@ -1278,15 +1299,16 @@ def make_preloc_origin(
 
 
 if __name__ == "__main__":
+    from dbclust import MyTemporaryDirectory
+    from config import DBClustConfig
+
     logger.setLevel(logging.DEBUG)
 
     nlloc_bin = "NLLoc"
     scat2latlon_bin = "scat2latlon"
     nlloc_times_path = "/Users/marc/Dockers/routine/nll/data/times"
     nlloc_template = "../nll_template/nll_haslach-0.2_template.conf"
-
-    # Relabel picks with polygons
-    from config import DBClustConfig
+    tmpdir = "/tmp"
 
     conf = DBClustConfig(
         "/Users/marc/Data/DBClust/france.2016.01/dbclust-france.2016.01.yml"
@@ -1300,11 +1322,12 @@ if __name__ == "__main__":
     # nlloc_template = "../nll_template/nll_auvergne_template.conf"
 
     fdsnws = "https://api.franceseisme.fr/fdsnws/event/1"
-    eventid = "fr2023njqxnr"
+    eventid = "fr2023ldmjhn"  # eost2023dgdchbog
     # eventid = "fr2023lznjuc"  # Lalaigne
+    eventid = "fr2023lojktv"
 
     #fdsnws = "http://10.0.1.36:8080/fdsnws/event/1"
-    #eventid = "eost2023kttbirwk"
+    #eventid = "eost2023dgdchbog"
 
     force_uncertainty = True
     P_uncertainty = 0.05
@@ -1316,11 +1339,11 @@ if __name__ == "__main__":
         "author": "test@renass",
         "evaluation_mode": "automatic",
         "method_id": "NonLinLoc",
-        #"model_id": "haslach-0.2",
-        "model_id": "hybrid-pyrenees",
+        # "model_id": "haslach-0.2",
+        "model_id": "hybrid-alpes",
     }
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with MyTemporaryDirectory(dir=tmpdir, delete=False) as tmp_path:
         locator = NllLoc(
             nlloc_bin,
             scat2latlon_bin,
@@ -1328,7 +1351,7 @@ if __name__ == "__main__":
             nlloc_template,
             #
             # nll_obs_file=obs.name,
-            tmpdir=tmpdir,
+            tmpdir=tmp_path,
             #
             force_uncertainty=force_uncertainty,
             P_uncertainty=P_uncertainty,
@@ -1346,11 +1369,19 @@ if __name__ == "__main__":
             zones=zones,
             relabel_pick_zone=relabel_pick_zone,
             cleanup_pick_zone=cleanup_pick_zone,
+            log_level=logging.INFO,
         )
 
         cat = reloc_fdsn_event(locator, eventid, fdsnws)
-        for e in cat:
-            show_event(e, "****", header=True)
+
+        # check if there is only one event in the catalog
+        if len(cat) != 1:
+            logger.error("No event found or more than one event found !")
+            sys.exit()
+
+        event = cat[0]
+        show_event(event, "****", header=True)
+        show_bulletin(event, zones)
 
         cat.write(f"{urllib.parse.quote(eventid, safe='')}.qml", format="QUAKEML")
         cat.write(f"{urllib.parse.quote(eventid, safe='')}.sc3ml", format="SC3ML")
