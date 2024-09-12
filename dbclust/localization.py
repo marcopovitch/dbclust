@@ -30,6 +30,7 @@ import dateparser
 import numpy as np
 import pandas as pd
 import ray
+from config import Zone
 from config import Zones
 from dask import delayed
 from gap import compute_gap
@@ -899,7 +900,7 @@ class NllLoc(object):
         orig.quality.used_station_count = NllLoc.get_used_station_count(event, orig)
         return event
 
-    def cleanup_picks_and_relabel_picks(self, event: Event, zone: Zones) -> Event:
+    def cleanup_picks_and_relabel_picks(self, event: Event, zone: Zone) -> Event:
         # ic(zone.picks_delimiter)
         # dataframe with polygons, contains: name, region, geometry columns
         df_polygons = zone.picks_delimiter
@@ -1090,8 +1091,13 @@ def show_origin(o, txt):
     )
 
 
-def show_bulletin(event, zones=None):
+def show_bulletin(event: Event, zones: Zones = None):
     origin = event.preferred_origin()
+
+    # get the region name and polygon
+    zone, _ = zones.find_zone(origin.latitude, origin.longitude)
+    df_polygons = zone.picks_delimiter
+
     table = PrettyTable()
     table.field_names = [
         "used",
@@ -1134,7 +1140,7 @@ def show_bulletin(event, zones=None):
     print(table)
 
     # plot with plotext library arrival time with respect to distance
-    plot_arrival_time(event, zones=zones)
+    plot_arrival_time(event, df_polygons=df_polygons)
 
 
 def reloc_fdsn_event(locator, eventid, fdsnws):
@@ -1323,8 +1329,8 @@ if __name__ == "__main__":
 
     fdsnws = "https://api.franceseisme.fr/fdsnws/event/1"
     eventid = "fr2023ldmjhn"  # eost2023dgdchbog
-    # eventid = "fr2023lznjuc"  # Lalaigne
-    eventid = "fr2023lojktv"
+    eventid = "fr2023lznjuc"  # Lalaigne
+    #eventid = "fr2023lojktv"
 
     #fdsnws = "http://10.0.1.36:8080/fdsnws/event/1"
     #eventid = "eost2023dgdchbog"
