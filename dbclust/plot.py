@@ -10,9 +10,14 @@ from plotly.subplots import make_subplots
 
 
 def plot_arrival_time(
-    event: Event, event_name: str = None, use_plotly: bool = True, zones=None
+    event: Event,
+    event_name: str = None,
+    use_plotly: bool = True,
+    df_polygons=None,  # pick delimiter polygons for that region
 ) -> None:
+
     origin = event.preferred_origin()
+    ic(df_polygons)
 
     P_station_name = []
     P_arrival_time = []
@@ -99,13 +104,13 @@ def plot_arrival_time(
     )
 
     if use_plotly:
-        make_plot_with_plotly(P_df, S_df, event_name)
+        make_plot_with_plotly(P_df, S_df, event_name, df_polygons)
     else:
         make_plot_with_plotext(P_df, S_df, event_name)
 
 
 def make_plot_with_plotly(
-    P_df: pd.DataFrame, S_df: pd.DataFrame, event_name: str = None
+    P_df: pd.DataFrame, S_df: pd.DataFrame, event_name: str = None, df_polygons=None
 ) -> None:
     """
     Generate a plot using Plotly library to visualize the arrival time vs. distance and residual vs. distance
@@ -114,6 +119,7 @@ def make_plot_with_plotly(
         P_df (pd.DataFrame): DataFrame containing P phase data with columns 'distance', 'arrival_time', and 'colors'.
         S_df (pd.DataFrame): DataFrame containing S phase data with columns 'distance', 'arrival_time', and 'colors'.
         event_name (str, optional): Name of the event. Defaults to None.
+        df_polygons (pd.DataFrame, optional): DataFrame containing the polygons to plot. Defaults to None.
     Returns:
         None
     """
@@ -127,6 +133,17 @@ def make_plot_with_plotly(
     ###############
     # Graphic 1 #
     ###############
+
+    # Iterate over all polygons in the DataFrame and plot them
+    for idx, row in df_polygons.iterrows():
+        polygon = row["geometry"]
+        x, y = polygon.exterior.xy
+        # convert x to km
+        x = [i * 111.1 for i in x]
+        x_list = list(x)
+        y_list = list(y)
+        fig.add_trace(go.Scatter(x=x_list, y=y_list, fill="toself", name=row["name"]))
+
     fig.add_trace(
         go.Scatter(
             x=P_df["P_distance"],
@@ -179,6 +196,12 @@ def make_plot_with_plotly(
     fig.update_yaxes(title_text="Arrival time (s)", row=1, col=1)
     fig.update_xaxes(
         range=[0, math.ceil(max(P_df["P_distance"] + S_df["S_distance"]))], row=1, col=1
+    )
+    ymax = math.ceil(max(P_df["P_arrival_time"] + S_df["S_arrival_time"]))
+    fig.update_yaxes(
+        range=[0, ymax],
+        row=1,
+        col=1,
     )
 
     ###############
