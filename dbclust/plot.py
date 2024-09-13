@@ -24,12 +24,14 @@ def plot_arrival_time(
     P_distance = []
     P_residual = []
     P_colors = []
+    P_phase = []
 
     S_station_name = []
     S_arrival_time = []
     S_distance = []
     S_residual = []
     S_colors = []
+    S_phase = []
 
     tolerance = 0.001
 
@@ -48,11 +50,10 @@ def plot_arrival_time(
         if not pick:
             continue
 
-        # get stream id
-
         # append the arrival time with respect to the earliest arrival time for P phase
         if "P" in arrival.phase:
             P_station_name.append(pick.waveform_id.get_seed_string())
+            P_phase.append(arrival.phase)
             P_arrival_time.append(pick.time - earliest_arrival_time)
             P_distance.append(arrival.distance * 111.1)
             P_residual.append(arrival.time_residual)
@@ -69,6 +70,7 @@ def plot_arrival_time(
 
         elif "S" in arrival.phase:
             S_station_name.append(pick.waveform_id.get_seed_string())
+            S_phase.append(arrival.phase)
             S_arrival_time.append(pick.time - earliest_arrival_time)
             S_distance.append(arrival.distance * 111.1)
             S_residual.append(arrival.time_residual)
@@ -90,6 +92,7 @@ def plot_arrival_time(
             "P_distance": P_distance,
             "P_residual": P_residual,
             "P_colors": P_colors,
+            "P_phase": P_phase,
         }
     )
 
@@ -100,6 +103,7 @@ def plot_arrival_time(
             "S_distance": S_distance,
             "S_residual": S_residual,
             "S_colors": S_colors,
+            "S_phase": S_phase,
         }
     )
 
@@ -142,7 +146,11 @@ def make_plot_with_plotly(
         x = [i * 111.1 for i in x]
         x_list = list(x)
         y_list = list(y)
-        fig.add_trace(go.Scatter(x=x_list, y=y_list, fill="toself", name=row["name"]))
+        fig.add_trace(
+            go.Scatter(
+                x=x_list, y=y_list, fill="toself", name=f"{row['name']} {row['region']}"
+            )
+        )
 
     fig.add_trace(
         go.Scatter(
@@ -157,12 +165,13 @@ def make_plot_with_plotly(
             ),
             name="P phase",
             hovertemplate=(
+                "%{customdata[0]}<br>"
+                "%{customdata[1]}<br>"
                 "Distance: %{x} km<br>"
                 "Arrival time: %{y} s<br>"
-                "Info: %{customdata}<br>"
                 "<extra></extra>"
             ),
-            customdata=P_df["station"],
+            customdata=list(zip(P_df["station"], P_df["P_phase"])),
         ),
         row=1,
         col=1,
@@ -181,12 +190,13 @@ def make_plot_with_plotly(
             ),
             name="S phase",
             hovertemplate=(
+                "%{customdata[0]}<br>"
+                "%{customdata[1]}<br>"
                 "Distance: %{x} km<br>"
                 "Arrival time: %{y} s<br>"
-                "Info: %{customdata}<br>"
                 "<extra></extra>"
             ),
-            customdata=S_df["station"],
+            customdata=list(zip(S_df["station"], S_df["S_phase"])),
         ),
         row=1,
         col=1,
@@ -220,12 +230,13 @@ def make_plot_with_plotly(
             ),
             name="P phase",
             hovertemplate=(
+                "%{customdata[0]}<br>"
+                "%{customdata[1]}<br>"
                 "Distance: %{x} km<br>"
                 "Arrival time: %{y} s<br>"
-                "Info: %{customdata}<br>"
                 "<extra></extra>"
             ),
-            customdata=P_df["station"],
+            customdata=list(zip(P_df["station"], P_df["P_phase"])),
         ),
         row=1,
         col=2,
@@ -244,12 +255,13 @@ def make_plot_with_plotly(
             ),
             name="S phase",
             hovertemplate=(
+                "%{customdata[0]}<br>"
+                "%{customdata[1]}<br>"
                 "Distance: %{x} km<br>"
                 "Arrival time: %{y} s<br>"
-                "Info: %{customdata}<br>"
                 "<extra></extra>"
             ),
-            customdata=S_df["station"],
+            customdata=list(zip(S_df["station"], S_df["S_phase"])),
         ),
         row=1,
         col=2,
