@@ -55,6 +55,9 @@ from plot import plot_arrival_time
 from prettytable import PrettyTable
 from quakeml import deduplicate_picks
 from ray.util.multiprocessing import Pool
+from shapely import distance
+from shapely import prepare
+from shapely import within
 from shapely.geometry import Point
 
 # Disable warnings from obspy
@@ -190,7 +193,6 @@ class NllLoc(object):
             pick = next(
                 (p for p in myevent.picks if p.resource_id == arrival.pick_id), None
             )
-
             if pick is None:
                 continue
 
@@ -218,15 +220,15 @@ class NllLoc(object):
         logger.debug(
             f"Writing nll_obs file to {self.nll_obs_file} in {self.tmpdir} directory."
         )
+
+        # NLLoc format only uses picks information but not arrivals
         myevent.write(self.nll_obs_file, format="NLLOC_OBS")
         cat = self.nll_localisation(picks=myevent.picks)
 
-        # Fixme: add previously removed picks
-
-
         # add previous origin back to this event
         if cat:
-            cat.events[0].origins.append(orig)
+            ic(event.preferred_origin())
+            cat.events[0].origins.append(event.preferred_origin())
         else:
             logger.warning("relocation failed")
             logger.warning("fix me: should returns original location")
@@ -944,27 +946,30 @@ class NllLoc(object):
                 my_polygon = df_polygons[df_polygons["name"] == arrival.phase].iloc[0][
                     "geometry"
                 ]
+                my_point = Point(arrival.distance, pick.time - orig.time)
+                #ic(my_polygon, my_point)
 
-                # compute distance from Point to Polygon
-                distance = my_polygon.distance(Point(arrival.distance, pick.time - orig.time))
-                ic(Point(arrival.distance, pick.time - orig.time))
-
-                if my_polygon and not my_polygon.contains(
-                    Point(arrival.distance, pick.time - orig.time)
-                ):
+                # if my_polygon and not my_polygon.contains(
+                if my_polygon and not within(my_point, my_polygon):
                     logger.info(
-                        f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} outside zone {region_name} by {distance:.2f} km"
+                        f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} outside zone {region_name}."
                     )
                     pick_to_delete.append(pick)
                     arrival_to_delete.append(arrival)
                 else:
-                    logger.info(
-                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} is within zone {region_name} by {distance:.2f} km"
+                    logger.debug(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} is within zone {region_name}."
                     )
             else:
                 logger.info(
-                    f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} has no polygon defined in {region_name}"
+                    f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} has no polygon defined in {region_name}."
                 )
+
+        # remove picks and arrivals
+        for a in arrival_to_delete:
+            orig.arrivals.remove(a)
+        for p in pick_to_delete:
+            event.picks.remove(p)
 
         # update "stations used" with weight > 0
         orig.quality.used_phase_count = len(
@@ -1058,7 +1063,7 @@ def show_event(event, txt="", header=False):
 
 
 def show_origin(o, txt):
-    if o.quality.azimuthal_gap:
+    if hasattr(o, "quality") and o.quality.azimuthal_gap:
         azimuthal_gap = f"{o.quality.azimuthal_gap:.1f}"
     else:
         # logger.warning("No azimuthal_gap defined !")
@@ -1330,10 +1335,10 @@ if __name__ == "__main__":
     fdsnws = "https://api.franceseisme.fr/fdsnws/event/1"
     eventid = "fr2023ldmjhn"  # eost2023dgdchbog
     eventid = "fr2023lznjuc"  # Lalaigne
-    #eventid = "fr2023lojktv"
+    # eventid = "fr2023lojktv"
 
-    #fdsnws = "http://10.0.1.36:8080/fdsnws/event/1"
-    #eventid = "eost2023dgdchbog"
+    fdsnws = "http://10.0.1.36:8080/fdsnws/event/1"
+    eventid = "eost2023dgdchbog"
 
     force_uncertainty = True
     P_uncertainty = 0.05
@@ -1345,9 +1350,19 @@ if __name__ == "__main__":
         "author": "test@renass",
         "evaluation_mode": "automatic",
         "method_id": "NonLinLoc",
-        # "model_id": "haslach-0.2",
-        "model_id": "hybrid-alpes",
+        "model_id": "haslach-0.2",
+        #"model_id": "hybrid-alpes",
     }
+
+    cat = read_events("eost2023dgdchbog.qml")
+    e = cat[0]
+    for o in e.origins:
+        if o.resource_id.id == "smi:org.gfz-potsdam.de/geofon/Origin/20230220085556.092564.256303":
+            break
+    show_event(e, "****", header=True)
+    show_bulletin(e, zones)
+    sys.exit()
+
 
     with MyTemporaryDirectory(dir=tmpdir, delete=False) as tmp_path:
         locator = NllLoc(
@@ -1363,6 +1378,7 @@ if __name__ == "__main__":
             P_uncertainty=P_uncertainty,
             S_uncertainty=S_uncertainty,
             # dist_km_cutoff=None,  # KM
+            # use_deactivated_arrivals=False,
             #
             double_pass=True,
             # P_time_residual_threshold=0.45,
