@@ -13,7 +13,7 @@ def plot_arrival_time(
     event: Event,
     event_name: str = None,
     use_plotly: bool = True,
-    df_polygons=None,  # pick delimiter polygons for that region
+    df_polygons=None,  # Dataframe with pick delimiter polygons for a given region
 ) -> None:
 
     origin = event.preferred_origin()
@@ -35,16 +35,6 @@ def plot_arrival_time(
 
     tolerance = 0.001
 
-    earliest_arrival_time = None
-    for arrival in origin.arrivals:
-        pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
-        if not pick:
-            continue
-        if earliest_arrival_time is None:
-            earliest_arrival_time = pick.time
-        elif pick.time < earliest_arrival_time:
-            earliest_arrival_time = pick.time
-
     for arrival in origin.arrivals:
         pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
         if not pick:
@@ -54,7 +44,7 @@ def plot_arrival_time(
         if "P" in arrival.phase:
             P_station_name.append(pick.waveform_id.get_seed_string())
             P_phase.append(arrival.phase)
-            P_arrival_time.append(pick.time - earliest_arrival_time)
+            P_arrival_time.append(pick.time - origin.time)
             P_distance.append(arrival.distance * 111.1)
             P_residual.append(arrival.time_residual)
             if abs(arrival.time_weight) > tolerance:
@@ -71,7 +61,7 @@ def plot_arrival_time(
         elif "S" in arrival.phase:
             S_station_name.append(pick.waveform_id.get_seed_string())
             S_phase.append(arrival.phase)
-            S_arrival_time.append(pick.time - earliest_arrival_time)
+            S_arrival_time.append(pick.time - origin.time)
             S_distance.append(arrival.distance * 111.1)
             S_residual.append(arrival.time_residual)
             if abs(arrival.time_weight) > tolerance:
