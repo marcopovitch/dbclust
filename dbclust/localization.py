@@ -4,6 +4,7 @@ import concurrent.futures
 import copy
 import glob
 import io
+import json
 import logging
 import multiprocessing
 import os
@@ -179,10 +180,11 @@ class NllLoc(object):
         count = [len(count[k]) for k in count.keys()]
         return np.array([np.count_nonzero(x >= min_count) for x in count]).sum()
 
-    def reloc_event(self, event):
-        """
-        Event relocalisation using a locator
-        Returns a Catalog()
+    def reloc_event(self, event: Event) -> Catalog:
+        """Event re-localization using a locator
+
+        Returns:
+            Catalog
         """
 
         myevent = copy.deepcopy(event)
@@ -207,6 +209,8 @@ class NllLoc(object):
                     pick.time_errors.uncertainty = self.S_uncertainty
 
             # do not use pick with deactivated arrival
+            # as it is not yet handled by NLLoc,
+            # unless use_deactivated_arrivals is True by user.
             if self.use_deactivated_arrivals == False and isclose(
                 arrival.time_weight, 0, abs_tol=0.001
             ):
@@ -225,13 +229,16 @@ class NllLoc(object):
         myevent.write(self.nll_obs_file, format="NLLOC_OBS")
         cat = self.nll_localisation(picks=myevent.picks)
 
-        # add previous origin back to this event
+        # add previous event or origin back to this event
         if cat:
-            ic(event.preferred_origin())
-            cat.events[0].origins.append(event.preferred_origin())
+            # add origin, phase and piks to the event
+            new_loc = cat.events[0]
+            new_loc.origins.append(orig)
+            new_loc.picks += event.picks
         else:
+            cat = Catalog()
+            cat.append(event)
             logger.warning("relocation failed")
-            logger.warning("fix me: should returns original location")
 
         return cat
 
@@ -253,6 +260,8 @@ class NllLoc(object):
 
         Returns a multi-origin event in a Catalog()
         """
+        #ic(nll_obs_file, double_pass, pass_count, force_model_id, force_template)
+
         if not nll_obs_file:
             nll_obs_file = self.nll_obs_file
 
@@ -334,8 +343,9 @@ class NllLoc(object):
         try:
             self.replace(nll_template, conf_file, tags)
         except Exception as e:
-            logger.error(e)
-            return Catalog()
+            # logger.error(e)
+            # return Catalog()
+            raise e
 
         ####################
         # NLL Localization #
@@ -475,7 +485,9 @@ class NllLoc(object):
                 # 4. relabel pick within zone
                 zone, dist = self.zones.find_zone(o.latitude, o.longitude)
                 ic(model_id, zone)
-                event2 = self.cleanup_picks_and_relabel_picks(event2, zone)
+                # keep track of relabel for later user
+                # as info on the event will be lost
+                event2, relabel_dict = self.cleanup_picks_and_relabel_picks(event2, zone)
             else:
                 # legacy code to clean up pick :
                 # 1. with bad residual
@@ -489,7 +501,7 @@ class NllLoc(object):
                 cat2.write(new_nll_obs_file, format="NLLOC_OBS")
                 cat2 = self.nll_localisation(
                     new_nll_obs_file,
-                    picks=picks,
+                    picks=event2.picks,
                     double_pass=self.double_pass,
                     pass_count=1,
                     force_model_id=model_id,
@@ -499,8 +511,22 @@ class NllLoc(object):
                 cat2 = None
 
             if cat2:
+                # there is always only one event in the catalog
                 event2 = cat2.events[0]
                 orig2 = event2.preferred_origin()
+
+                # synchronize current event phase's comments with relabel_dict info
+                for arrival in orig2.arrivals:
+                    pick = next(
+                        (p for p in event2.picks if p.resource_id == arrival.pick_id),
+                        None,
+                    )
+                    if pick is None:
+                        continue
+                    key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
+                    if key in relabel_dict.keys():
+                        arrival.comments.append(relabel_dict[key])
+
                 # add this new origin to catalog and set it as preferred
                 e.origins.append(orig2)
                 e.preferred_origin_id = orig2.resource_id
@@ -509,6 +535,10 @@ class NllLoc(object):
             else:
                 # can't relocate: set it to "not existing"
                 e.event_type = "not existing"
+
+        else:
+            # pass_count > 0
+            pass
 
         # if there is only one origin, set it to the preferred
         if len(e.origins) == 1:
@@ -902,7 +932,7 @@ class NllLoc(object):
         orig.quality.used_station_count = NllLoc.get_used_station_count(event, orig)
         return event
 
-    def cleanup_picks_and_relabel_picks(self, event: Event, zone: Zone) -> Event:
+    def cleanup_picks_and_relabel_picks(self, event: Event, zone: Zone) -> tuple[Event, dict]:
         # ic(zone.picks_delimiter)
         # dataframe with polygons, contains: name, region, geometry columns
         df_polygons = zone.picks_delimiter
@@ -911,6 +941,7 @@ class NllLoc(object):
         orig = event.preferred_origin()
         pick_to_delete = []
         arrival_to_delete = []
+        relabel = {}
 
         for arrival in orig.arrivals:
             pick = next(
@@ -924,7 +955,8 @@ class NllLoc(object):
                 # remove pick with time_weight set to 0
                 # or relabel pick [to be done]
                 logger.info(
-                    f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} with time_weight set to 0"
+                    f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                    f"with time_weight set to 0"
                 )
                 pick_to_delete.append(pick)
                 arrival_to_delete.append(arrival)
@@ -935,7 +967,8 @@ class NllLoc(object):
                 and arrival.distance > self.dist_km_cutoff / 111.0
             ):
                 logger.info(
-                    f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} with distance > {self.dist_km_cutoff} km"
+                    f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                    f"with distance > {self.dist_km_cutoff} km"
                 )
                 pick_to_delete.append(pick)
                 arrival_to_delete.append(arrival)
@@ -947,22 +980,44 @@ class NllLoc(object):
                     "geometry"
                 ]
                 my_point = Point(arrival.distance, pick.time - orig.time)
-                #ic(my_polygon, my_point)
 
                 # if my_polygon and not my_polygon.contains(
                 if my_polygon and not within(my_point, my_polygon):
-                    logger.info(
-                        f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} outside zone {region_name}."
-                    )
-                    pick_to_delete.append(pick)
-                    arrival_to_delete.append(arrival)
+                    # relabel: check in which other zone the pick is
+                    for zone_id, zone_polygon in df_polygons.iterrows():
+                        if zone_polygon["geometry"].contains(my_point):
+                            # fixme: check multiple including zones
+                            logger.info(
+                                f"\tPick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                                f"is within {zone_polygon['name']} zone."
+                            )
+                            comment = Comment(
+                                text='{"relabel": {"%s": "%s"}}'
+                                % (arrival.phase, zone_polygon["name"])
+                            )
+                            arrival.comments.append(comment)
+                            arrival.phase = zone_polygon["name"]
+                            pick.phase_hint = zone_polygon["name"]
+                            key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
+                            relabel[key] = comment
+                            break
+                    else:
+                        logger.info(
+                            f"\tPick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                            f"has no polygon defined in {region_name}."
+                        )
+                        pick_to_delete.append(pick)
+                        arrival_to_delete.append(arrival)
+
                 else:
                     logger.debug(
-                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} is within zone {region_name}."
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                        f"is within zone {region_name}."
                     )
             else:
                 logger.info(
-                    f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} has no polygon defined in {region_name}."
+                    f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                    f"has no polygon defined in {region_name}."
                 )
 
         # remove picks and arrivals
@@ -976,7 +1031,7 @@ class NllLoc(object):
             [a.time_weight for a in orig.arrivals if a.time_weight]
         )
         orig.quality.used_station_count = NllLoc.get_used_station_count(event, orig)
-        return event
+        return event, relabel
 
     @staticmethod
     def get_used_station_count(event, origin):
@@ -1096,8 +1151,19 @@ def show_origin(o, txt):
     )
 
 
-def show_bulletin(event: Event, zones: Zones = None):
-    origin = event.preferred_origin()
+def show_bulletin(
+    event: Event, origin_id: ResourceIdentifier = None, zones: Zones = None
+):
+
+    if not origin_id:
+        origin = event.preferred_origin()
+    else:
+        for o in event.origins:
+            if o.resource_id == origin_id:
+                origin = o
+                break
+        else:
+            raise ValueError(f"Origin with id {origin_id} not found")
 
     # get the region name and polygon
     zone, _ = zones.find_zone(origin.latitude, origin.longitude)
@@ -1113,6 +1179,7 @@ def show_bulletin(event: Event, zones: Zones = None):
         "distance",
         "time",
         "evaluation",
+        "relabel",
     ]
     # print("station phase weight residual distance time evaluation")
     for arrival in origin.arrivals:
@@ -1120,7 +1187,6 @@ def show_bulletin(event: Event, zones: Zones = None):
             arrival.time_weight, 0, abs_tol=0.001
         ):
             used = False
-            # continue
         else:
             used = True
         pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
@@ -1129,6 +1195,19 @@ def show_bulletin(event: Event, zones: Zones = None):
         wfid = pick.waveform_id
         station_name = f"{wfid.network_code}.{wfid.station_code}"
         phase_name = arrival.phase
+
+        # Get relabel info from arrival comments
+        for c in arrival.comments:
+            try:
+                info = json.loads(c.text)
+            except:
+                continue
+            if "relabel" in info.keys():
+                relabel = info["relabel"]
+                break
+        else:
+            relabel = ""
+
         table.add_row(
             [
                 used,
@@ -1139,13 +1218,14 @@ def show_bulletin(event: Event, zones: Zones = None):
                 arrival.distance,
                 pick.time,
                 pick.evaluation_mode,
+                relabel,
             ]
         )
         # print(f"{station_name} {phase_name} {arrival.time_weight} {arrival.time_residual} {arrival.distance} {pick.time} {pick.evaluation_mode}")
     print(table)
 
     # plot with plotext library arrival time with respect to distance
-    plot_arrival_time(event, df_polygons=df_polygons)
+    plot_arrival_time(event=event, origin_id=origin_id, df_polygons=df_polygons)
 
 
 def reloc_fdsn_event(locator, eventid, fdsnws):
@@ -1156,12 +1236,10 @@ def reloc_fdsn_event(locator, eventid, fdsnws):
         with urllib.request.urlopen(link) as f:
             cat = read_events(f.read())
     except Exception as e:
-        logger.error(f"Error getting/reading eventid {eventid} ({e})")
-        sys.exit()
+        raise ValueError(f"Error with {link}, cant't get/read eventid {eventid} ({e})")
 
     if not cat:
-        logger.error("[%s] no such eventid or no origin !", eventid)
-        sys.exit()
+        raise ValueError(f"[{eventid}] no such eventid !")
 
     event = cat[0]
     cat = locator.reloc_event(event)
@@ -1333,12 +1411,12 @@ if __name__ == "__main__":
     # nlloc_template = "../nll_template/nll_auvergne_template.conf"
 
     fdsnws = "https://api.franceseisme.fr/fdsnws/event/1"
-    eventid = "fr2023ldmjhn"  # eost2023dgdchbog
-    eventid = "fr2023lznjuc"  # Lalaigne
+    eventid = "fr2023njqcnl"  # eost2023xcexglam : 6 relabels and a lot of automatic picks
+    #eventid = "fr2023lznjuc"  # Lalaigne
     # eventid = "fr2023lojktv"
 
-    fdsnws = "http://10.0.1.36:8080/fdsnws/event/1"
-    eventid = "eost2023dgdchbog"
+    #fdsnws = "http://10.0.1.36:8080/fdsnws/event/1"
+    #eventid = "eost2023dgdchbog"
 
     force_uncertainty = True
     P_uncertainty = 0.05
@@ -1351,18 +1429,17 @@ if __name__ == "__main__":
         "evaluation_mode": "automatic",
         "method_id": "NonLinLoc",
         "model_id": "haslach-0.2",
-        #"model_id": "hybrid-alpes",
+        # "model_id": "hybrid-alpes",
     }
 
-    cat = read_events("eost2023dgdchbog.qml")
-    e = cat[0]
-    for o in e.origins:
-        if o.resource_id.id == "smi:org.gfz-potsdam.de/geofon/Origin/20230220085556.092564.256303":
-            break
-    show_event(e, "****", header=True)
-    show_bulletin(e, zones)
-    sys.exit()
-
+    # cat = read_events("eost2023dgdchbog.qml")
+    # e = cat[0]
+    # for o in e.origins:
+    #     if o.resource_id.id == "smi:org.gfz-potsdam.de/geofon/Origin/20230220085556.092564.256303":
+    #         break
+    # show_event(e, "****", header=True)
+    # show_bulletin(e, zones)
+    # sys.exit()
 
     with MyTemporaryDirectory(dir=tmpdir, delete=False) as tmp_path:
         locator = NllLoc(
@@ -1378,7 +1455,7 @@ if __name__ == "__main__":
             P_uncertainty=P_uncertainty,
             S_uncertainty=S_uncertainty,
             # dist_km_cutoff=None,  # KM
-            # use_deactivated_arrivals=False,
+            use_deactivated_arrivals=True,
             #
             double_pass=True,
             # P_time_residual_threshold=0.45,
@@ -1403,7 +1480,11 @@ if __name__ == "__main__":
 
         event = cat[0]
         show_event(event, "****", header=True)
-        show_bulletin(event, zones)
+        show_bulletin(
+            event=event,
+            # origin_id="smi:org.gfz-potsdam.de/geofon/Origin/20230220085556.092564.256303",
+            zones=zones,
+        )
 
         cat.write(f"{urllib.parse.quote(eventid, safe='')}.qml", format="QUAKEML")
         cat.write(f"{urllib.parse.quote(eventid, safe='')}.sc3ml", format="SC3ML")
