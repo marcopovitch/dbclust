@@ -6,17 +6,29 @@ import plotext as plt
 import plotly.graph_objects as go
 from icecream import ic
 from obspy.core.event import Event
+from obspy.core.event import ResourceIdentifier
 from plotly.subplots import make_subplots
 
 
 def plot_arrival_time(
     event: Event,
+    origin_id: ResourceIdentifier = None,
     event_name: str = None,
     use_plotly: bool = True,
     df_polygons=None,  # Dataframe with pick delimiter polygons for a given region
 ) -> None:
 
-    origin = event.preferred_origin()
+    if not origin_id:
+        origin = event.preferred_origin()
+    else:
+        for o in event.origins:
+            if o.resource_id == origin_id:
+                origin = o
+                break
+        else:
+            raise ValueError(f"Origin with id {origin_id} not found")
+
+
     ic(df_polygons)
 
     P_station_name = []
@@ -381,4 +393,4 @@ if __name__ == "__main__":
     event_name = os.path.basename(args.event_file)
     event = cat[0]
 
-    plot_arrival_time(event, event_name, use_plotly=args.plotly)
+    plot_arrival_time(event=event, event_name=event_name, use_plotly=args.plotly)
