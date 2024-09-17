@@ -56,6 +56,7 @@ from plot import plot_arrival_time
 from prettytable import PrettyTable
 from quakeml import deduplicate_picks
 from ray.util.multiprocessing import Pool
+from relabel import get_best_polygon_for_point
 from shapely import distance
 from shapely import prepare
 from shapely import within
@@ -260,7 +261,7 @@ class NllLoc(object):
 
         Returns a multi-origin event in a Catalog()
         """
-        #ic(nll_obs_file, double_pass, pass_count, force_model_id, force_template)
+        # ic(nll_obs_file, double_pass, pass_count, force_model_id, force_template)
 
         if not nll_obs_file:
             nll_obs_file = self.nll_obs_file
@@ -487,7 +488,9 @@ class NllLoc(object):
                 ic(model_id, zone)
                 # keep track of relabel for later user
                 # as info on the event will be lost
-                event2, relabel_dict = self.cleanup_picks_and_relabel_picks(event2, zone)
+                event2, relabel_dict = self.cleanup_picks_and_relabel_picks(
+                    event2, zone
+                )
             else:
                 # legacy code to clean up pick :
                 # 1. with bad residual
@@ -932,7 +935,9 @@ class NllLoc(object):
         orig.quality.used_station_count = NllLoc.get_used_station_count(event, orig)
         return event
 
-    def cleanup_picks_and_relabel_picks(self, event: Event, zone: Zone) -> tuple[Event, dict]:
+    def cleanup_picks_and_relabel_picks(
+        self, event: Event, zone: Zone
+    ) -> Tuple[Event, dict]:
         # ic(zone.picks_delimiter)
         # dataframe with polygons, contains: name, region, geometry columns
         df_polygons = zone.picks_delimiter
@@ -951,9 +956,8 @@ class NllLoc(object):
                 logger.error(f"Can't find pick for arrival {arrival.pick_id}")
                 continue
 
+            # remove pick with time_weight set to 0
             if isclose(arrival.time_weight, 0, abs_tol=0.001):
-                # remove pick with time_weight set to 0
-                # or relabel pick [to be done]
                 logger.info(
                     f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
                     f"with time_weight set to 0"
@@ -962,6 +966,7 @@ class NllLoc(object):
                 arrival_to_delete.append(arrival)
                 continue
 
+            # remove pick with distance > dist_km_cutoff
             if (
                 self.dist_km_cutoff is not None
                 and arrival.distance > self.dist_km_cutoff / 111.0
@@ -975,50 +980,83 @@ class NllLoc(object):
                 continue
 
             # check if pick is within zone
-            if arrival.phase in ["Pg", "Pn", "Sg", "Sn"]:
-                my_polygon = df_polygons[df_polygons["name"] == arrival.phase].iloc[0][
-                    "geometry"
-                ]
-                my_point = Point(arrival.distance, pick.time - orig.time)
-
-                # if my_polygon and not my_polygon.contains(
-                if my_polygon and not within(my_point, my_polygon):
-                    # relabel: check in which other zone the pick is
-                    for zone_id, zone_polygon in df_polygons.iterrows():
-                        if zone_polygon["geometry"].contains(my_point):
-                            # fixme: check multiple including zones
-                            logger.info(
-                                f"\tPick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
-                                f"is within {zone_polygon['name']} zone."
-                            )
-                            comment = Comment(
-                                text='{"relabel": {"%s": "%s"}}'
-                                % (arrival.phase, zone_polygon["name"])
-                            )
-                            arrival.comments.append(comment)
-                            arrival.phase = zone_polygon["name"]
-                            pick.phase_hint = zone_polygon["name"]
-                            key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
-                            relabel[key] = comment
-                            break
-                    else:
-                        logger.info(
-                            f"\tPick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
-                            f"has no polygon defined in {region_name}."
-                        )
-                        pick_to_delete.append(pick)
-                        arrival_to_delete.append(arrival)
-
-                else:
-                    logger.debug(
-                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
-                        f"is within zone {region_name}."
-                    )
-            else:
-                logger.info(
-                    f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
-                    f"has no polygon defined in {region_name}."
+            if arrival.phase in ["P", "S", "Pg", "Pn", "Sg", "Sn"]:
+                key, score = get_best_polygon_for_point(
+                    Point(arrival.distance, pick.time - orig.time), df_polygons
                 )
+                # ic(pick.waveform_id.get_seed_string(), arrival.phase, key, score)
+
+                if key:
+                    if key == arrival.phase:
+                        logger.info(
+                            f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                            f"is within {key} zone. Noting to do."
+                        )
+                        continue
+
+                    logger.info(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                        f"is within {key} zone. Relabeling it."
+                    )
+                    comment = Comment(
+                        text='{"relabel": {"%s": "%s"}}' % (arrival.phase, key)
+                    )
+                    arrival.comments.append(comment)
+                    arrival.phase = key
+                    pick.phase_hint = key
+                    relabel_key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
+                    relabel[relabel_key] = comment
+                else:
+                    logger.info(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                        f"has no polygon defined in {region_name}. Removing it."
+                    )
+                    pick_to_delete.append(pick)
+                    arrival_to_delete.append(arrival)
+
+            # if arrival.phase in ["Pg", "Pn", "Sg", "Sn"]:
+            #     my_polygon = df_polygons[df_polygons["name"] == arrival.phase].iloc[0][
+            #         "geometry"
+            #     ]
+            #     my_point = Point(arrival.distance, pick.time - orig.time)
+
+            #     if my_polygon and not within(my_point, my_polygon):
+            #         # relabel: check in which other zone the pick is
+            #         for zone_id, zone_polygon in df_polygons.iterrows():
+            #             if zone_polygon["geometry"].contains(my_point):
+            #                 # fixme: check multiple including zones
+            #                 logger.info(
+            #                     f"\tPick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+            #                     f"is within {zone_polygon['name']} zone."
+            #                 )
+            #                 comment = Comment(
+            #                     text='{"relabel": {"%s": "%s"}}'
+            #                     % (arrival.phase, zone_polygon["name"])
+            #                 )
+            #                 arrival.comments.append(comment)
+            #                 arrival.phase = zone_polygon["name"]
+            #                 pick.phase_hint = zone_polygon["name"]
+            #                 key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
+            #                 relabel[key] = comment
+            #                 break
+            #         else:
+            #             logger.info(
+            #                 f"\tPick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+            #                 f"has no polygon defined in {region_name}."
+            #             )
+            #             pick_to_delete.append(pick)
+            #             arrival_to_delete.append(arrival)
+
+            #     else:
+            #         logger.debug(
+            #             f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+            #             f"is within zone {region_name}."
+            #         )
+            # else:
+            #     logger.info(
+            #         f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+            #         f"has no polygon defined in {region_name}."
+            #     )
 
         # remove picks and arrivals
         for a in arrival_to_delete:
@@ -1411,12 +1449,15 @@ if __name__ == "__main__":
     # nlloc_template = "../nll_template/nll_auvergne_template.conf"
 
     fdsnws = "https://api.franceseisme.fr/fdsnws/event/1"
-    eventid = "fr2023njqcnl"  # eost2023xcexglam : 6 relabels and a lot of automatic picks
-    #eventid = "fr2023lznjuc"  # Lalaigne
+    eventid = (
+        "fr2023njqcnl"  # eost2023xcexglam : 6 relabels and a lot of automatic picks
+    )
+    eventid = "fr2023lznjuc"  # Lalaigne
     # eventid = "fr2023lojktv"
+    # eventid = "fr2023mozdkg"  # 2 picks relabeled
 
-    #fdsnws = "http://10.0.1.36:8080/fdsnws/event/1"
-    #eventid = "eost2023dgdchbog"
+    # fdsnws = "http://10.0.1.36:8080/fdsnws/event/1"
+    # eventid = "eost2023dgdchbog"
 
     force_uncertainty = True
     P_uncertainty = 0.05
@@ -1429,7 +1470,7 @@ if __name__ == "__main__":
         "evaluation_mode": "automatic",
         "method_id": "NonLinLoc",
         "model_id": "haslach-0.2",
-        # "model_id": "hybrid-alpes",
+        #"model_id": "hybrid-pyrenees",
     }
 
     # cat = read_events("eost2023dgdchbog.qml")
@@ -1455,7 +1496,7 @@ if __name__ == "__main__":
             P_uncertainty=P_uncertainty,
             S_uncertainty=S_uncertainty,
             # dist_km_cutoff=None,  # KM
-            use_deactivated_arrivals=True,
+            #use_deactivated_arrivals=True,
             #
             double_pass=True,
             # P_time_residual_threshold=0.45,
