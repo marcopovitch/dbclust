@@ -1215,8 +1215,11 @@ def show_bulletin(
             raise ValueError(f"Origin with id {origin_id} not found")
 
     # get the region name and polygon
-    zone, _ = zones.find_zone(origin.latitude, origin.longitude)
-    df_polygons = zone.picks_delimiter
+    if zones:
+        zone, _ = zones.find_zone(origin.latitude, origin.longitude)
+        df_polygons = zone.picks_delimiter
+    else:
+        df_polygons = pd.DataFrame()
 
     table = PrettyTable()
     table.field_names = [
