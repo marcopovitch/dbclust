@@ -1,18 +1,18 @@
 #!/usr/bin/env python
 import argparse
 import logging
-import os
 import sys
-import tempfile
 import urllib.parse
+from dataclasses import asdict
 from shutil import copyfile
 
 import yaml
+from config import DBClustConfig
+from icecream import ic
 from localization import NllLoc
 from localization import reloc_fdsn_event
 from localization import show_bulletin
 from localization import show_event
-from obspy import read_events
 
 from dbclust import MyTemporaryDirectory
 
@@ -20,16 +20,6 @@ from dbclust import MyTemporaryDirectory
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("reloc_fdsn_event")
 logger.setLevel(logging.DEBUG)
-
-
-def load_config(conf_file):
-    with open(conf_file, "r") as stream:
-        try:
-            conf = yaml.safe_load(stream)
-        except yaml.YAMLError as e:
-            logger.error(e)
-            conf = None
-    return conf
 
 
 if __name__ == "__main__":
@@ -118,117 +108,49 @@ if __name__ == "__main__":
     else:
         logger.setLevel(numeric_level)
 
-    conf = load_config(args.profile_conf_file)
-    if not conf:
-        sys.exit()
+    cfg = DBClustConfig(args.profile_conf_file)
+    ic(cfg.zones)
 
-    nll_conf = conf["nll"]
-    parameters_conf = conf["parameters"]
-    fdsnws_conf = conf["fdsnws"]
-    velocity_profile_conf = conf["velocity_profile"]
-    if hasattr(args, "velocity_profile_name") and args.velocity_profile_name:
-        default_velocity_profile = args.velocity_profile_name
-    else:
-        default_velocity_profile = conf["default_velocity_profile"]
-    logger.info(f"Using {default_velocity_profile} profile")
-    quakeml_conf = conf["quakeml"]
+    ws_event_url = "https://api.franceseisme.fr/fdsnws/event/1"
+    output_format = "SC3ML"
 
-    # force fdsn ws
-    fdsnws_cfg = conf["fdsnws"]
-    if not args.fdsn_profile:
-        default_url_mapping = fdsnws_cfg["default_url_mapping"]
-    else:
-        default_url_mapping = args.fdsn_profile
-    fdsn_debug = fdsnws_cfg["fdsn_debug"]
-    url_mapping = fdsnws_cfg["url_mapping"]
-    if default_url_mapping not in fdsnws_cfg["url_mapping"]:
-        logger.error("unknown fdsn profile '%s'. Exiting !", default_url_mapping)
-        sys.exit(255)
-    ws_event_url = url_mapping[default_url_mapping]["ws_event_url"]
-
-    verbose = conf["verbose"]
-    tmpdir = conf["tmpdir"]
-    output_format = conf["output"]["format"]
-
-    # parameters
-    if args.single_pass:
-        double_pass = False
-    else:
-        double_pass = parameters_conf["double_pass"]
-
-    if args.force_uncertainty:
-        force_uncertainty = args.force_uncertainty
-    else:
-        force_uncertainty = parameters_conf["force_uncertainty"]
-
-    P_uncertainty = parameters_conf["P_uncertainty"]
-    S_uncertainty = parameters_conf["S_uncertainty"]
-    keep_manual_picks = parameters_conf["keep_manual_picks"]
-    P_time_residual_threshold = parameters_conf["P_time_residual_threshold"]
-    S_time_residual_threshold = parameters_conf["S_time_residual_threshold"]
-
-    if not args.dist_km_cutoff:
-        dist_km_cutoff = parameters_conf["dist_km_cutoff"]
-    else:
-        dist_km_cutoff = args.dist_km_cutoff
-
-    if not args.use_deactivated_arrivals:
-        use_deactivated_arrivals = parameters_conf["use_deactivated_arrivals"]
-    else:
-        use_deactivated_arrivals = args.use_deactivated_arrivals
-
-    # NonLinLoc
-    nlloc_bin = nll_conf["bin"]
-    scat2latlon_bin = nll_conf["scat2latlon_bin"]
-    nlloc_times_path = nll_conf["times_path"]
-    nlloc_template_path = nll_conf["template_path"]
-    template = None
-    for p in velocity_profile_conf:
-        if p["name"] == default_velocity_profile:
-            template = p["template"]
-    if not template:
-        logger.error(f"profile {default_velocity_profile} does not exist !")
-        sys.exit()
-    nlloc_template = os.path.join(nlloc_template_path, template)
-    nlloc_verbose = nll_conf["verbose"]
-    nlloc_min_phase = nll_conf["min_phase"]
-
-    # quakeml
     quakeml_settings = {
-        "agency_id": quakeml_conf["agency_id"],
-        "author": quakeml_conf["author"],
-        "evaluation_mode": quakeml_conf["evaluation_mode"],
-        "method_id": quakeml_conf["method_id"],
-        "model_id": default_velocity_profile,
+        "agency_id": "RENASS",
+        "author": "test@renass",
+        "evaluation_mode": "automatic",
+        "method_id": "NonLinLoc",
+        "model_id": "haslach-0.2",
+        # "model_id": "hybrid-pyrenees",
     }
 
-    #with tempfile.TemporaryDirectory(dir=tmpdir) as tmp_path:
-    with MyTemporaryDirectory(dir=tmpdir, delete=False) as tmp_path:
+    with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
         locator = NllLoc(
-            nlloc_bin,
-            scat2latlon_bin,
-            nlloc_times_path,
-            nlloc_template,
-            nll_min_phase=nlloc_min_phase,
+            cfg.nll.nlloc_bin,
+            cfg.nll.scat2latlon_bin,
+            cfg.nll.time_path,
+            # cfg.nll.template_path,
+            "../nll_template/nll_haslach-0.2_template.conf",
             #
             tmpdir=tmp_path,
+            double_pass=cfg.relocation.double_pass,
             #
-            force_uncertainty=force_uncertainty,
-            P_uncertainty=P_uncertainty,
-            S_uncertainty=S_uncertainty,
+            P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
+            S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
+            dist_km_cutoff=cfg.relocation.dist_km_cutoff,
+            use_deactivated_arrivals=False,  # to be added in the configuration file
             #
-            double_pass=double_pass,
+            keep_manual_picks=cfg.relocation.keep_manual_picks,
+            nll_min_phase=cfg.nll.min_phase,
+            min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
             #
-            dist_km_cutoff=dist_km_cutoff,
-            use_deactivated_arrivals=use_deactivated_arrivals,
-            #
-            keep_manual_picks=keep_manual_picks,
-            P_time_residual_threshold=P_time_residual_threshold,
-            S_time_residual_threshold=S_time_residual_threshold,
-            #
+            # quakeml_settings=asdict(cfg.quakeml),
             quakeml_settings=quakeml_settings,
-            nll_verbose=nlloc_verbose,
-            keep_scat=args.scat,
+            nll_verbose=cfg.nll.verbose,
+            keep_scat=cfg.nll.enable_scatter,
+            #
+            zones=cfg.zones,
+            relabel_pick_zone=True,  # to be added in the configuration file
+            cleanup_pick_zone=True,  # to be added in the configuration file
             #
             log_level=numeric_level,
         )
@@ -237,7 +159,10 @@ if __name__ == "__main__":
 
         for e in cat:
             show_event(e, "****", header=True)
-            show_bulletin(e)
+            show_bulletin(
+                e,
+                zones=cfg.zones,
+            )
 
         file_extension = output_format.lower()
         cat.write(
