@@ -489,7 +489,7 @@ class NllLoc(object):
                 # keep track of relabel for later user
                 # as info on the event will be lost
                 event2, relabel_dict = self.cleanup_picks_and_relabel_picks(
-                    event2, zone
+                    event2, zone, proba_threshold=0.90
                 )
             else:
                 # legacy code to clean up pick :
@@ -915,7 +915,8 @@ class NllLoc(object):
                     p = p1
                     a = a1
                 logger.info(
-                    f"Duplicated pick detected [{p.waveform_id.get_seed_string()}, {a.phase}, {p.time}]... removing the one with highest residual"
+                    f"Duplicated pick detected [{p.waveform_id.get_seed_string()}, {a.phase}, {p.time}]... "
+                    f"removing the one with highest residual"
                 )
                 if p not in pick_to_delete:
                     pick_to_delete.append(p)
@@ -936,7 +937,7 @@ class NllLoc(object):
         return event
 
     def cleanup_picks_and_relabel_picks(
-        self, event: Event, zone: Zone
+        self, event: Event, zone: Zone, proba_threshold: float = 0.9
     ) -> Tuple[Event, dict]:
         # ic(zone.picks_delimiter)
         # dataframe with polygons, contains: name, region, geometry columns
@@ -982,20 +983,30 @@ class NllLoc(object):
             # check if pick is within zone
             if arrival.phase in ["P", "S", "Pg", "Pn", "Sg", "Sn"]:
                 key, score = get_best_polygon_for_point(
-                    Point(arrival.distance, pick.time - orig.time), df_polygons
+                    Point(arrival.distance, pick.time - orig.time),
+                    df_polygons,
+                    proba_threshold=proba_threshold,
                 )
-                # ic(pick.waveform_id.get_seed_string(), arrival.phase, key, score)
+                ic(pick.waveform_id.get_seed_string(), arrival.phase, key, score)
+
+                if not key and not score:
+                    logger.info(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
+                        f"There are at least two polygons with proba > {proba_threshold}. "
+                        f"Noting to do."
+                    )
+                    continue
 
                 if key:
                     if key == arrival.phase:
                         logger.info(
-                            f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                            f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
                             f"is within {key} zone. Noting to do."
                         )
                         continue
 
                     logger.info(
-                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
                         f"is within {key} zone. Relabeling it."
                     )
                     comment = Comment(
@@ -1008,7 +1019,7 @@ class NllLoc(object):
                     relabel[relabel_key] = comment
                 else:
                     logger.info(
-                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
                         f"has no polygon defined in {region_name}. Removing it."
                     )
                     pick_to_delete.append(pick)
@@ -1440,6 +1451,7 @@ if __name__ == "__main__":
     conf = DBClustConfig(
         "/Users/marc/Data/DBClust/france.2016.01/dbclust-france.2016.01.yml"
     )
+
     zones = conf.zones
     relabel_pick_zone = False
     cleanup_pick_zone = True
@@ -1496,7 +1508,7 @@ if __name__ == "__main__":
             P_uncertainty=P_uncertainty,
             S_uncertainty=S_uncertainty,
             # dist_km_cutoff=None,  # KM
-            #use_deactivated_arrivals=True,
+            # use_deactivated_arrivals=True,
             #
             double_pass=True,
             # P_time_residual_threshold=0.45,
@@ -1509,6 +1521,7 @@ if __name__ == "__main__":
             zones=zones,
             relabel_pick_zone=relabel_pick_zone,
             cleanup_pick_zone=cleanup_pick_zone,
+            # polygon_proba_threshold=0.68,
             log_level=logging.INFO,
         )
 
