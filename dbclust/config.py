@@ -157,16 +157,17 @@ class FdsnConfig:
     def __post_init__(self) -> None:
         # check url validity for each service
         for key, value in self.hosts.items():
-            if not is_valid_url(value, syntax_only=True):
+            if not is_valid_url(value, syntax_only=False):
                 raise URLError(f"{key} URL {value} is not valid !")
-
-        # check default url fully (validity + joinable)
-        # add the FDSN service path to be able to join it
-        fdsnws_url = os.path.join(self.hosts[self.default], "fdsnws/event/1")
-        if not is_valid_url(fdsnws_url):
-            raise URLError(f"Default URL {fdsnws_url} is not valid fdsnws !")
-
         self.url = self.hosts[self.default]
+
+    def set_url_from_service_name(self, service: str) -> None:
+        if service not in self.hosts:
+            raise ValueError(f"Service {service} not found in FDSN hosts !")
+        self.url = self.hosts[service]
+
+    def get_url(self) -> str:
+        return self.url
 
 
 @dataclass
@@ -224,10 +225,8 @@ class StationConfig:
                 self.inventory.extend(read_inventory(f))
                 self.info_sta = self.inventory
         else:
-            logger.info(
-                f"Using fdsnws {self.fdsnws.url} to get station coordinates."
-            )
-            self.info_sta = self.fdsnws.url
+            logger.info(f"Using fdsnws {self.fdsnws.url} to get station coordinates.")
+            self.info_sta = self.fdsnws.get_url()
 
 
 @dataclass
