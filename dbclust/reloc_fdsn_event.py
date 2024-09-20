@@ -110,8 +110,28 @@ if __name__ == "__main__":
 
     cfg = DBClustConfig(args.profile_conf_file)
 
+    # update configuration
+    if args.dist_km_cutoff:
+        cfg.relocation.dist_km_cutoff = args.dist_km_cutoff
+    if args.use_deactivated_arrivals:
+        cfg.relocation.use_deactivated_arrivals = args.use_deactivated_arrivals
+    if args.force_uncertainty:
+        cfg.relocation.force_uncertainty = args.force_uncertainty
+    if args.single_pass:
+        cfg.relocation.double_pass = not args.single_pass
+    if args.scat:
+        cfg.nll.enable_scatter = args.scat
 
-    ws_event_url = "https://api.franceseisme.fr/fdsnws/event/1"
+    if args.velocity_profile_name:
+        cfg.quakeml.model_id = args.velocity_profile_name
+    else:
+        cfg.quakeml.model_id = None
+
+
+    if args.fdsn_profile:
+        cfg.station.fdsnws.set_url_from_service_name(args.fdsn_profile)
+        cfg.station.info_sta = cfg.station.fdsnws.get_url()
+
     output_format = "SC3ML"
 
     with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
@@ -145,7 +165,11 @@ if __name__ == "__main__":
             log_level=numeric_level,
         )
 
-        cat = reloc_fdsn_event(locator, args.event_id, ws_event_url)
+        try:
+            cat = reloc_fdsn_event(locator, args.event_id, cfg.station.fdsnws.get_url())
+        except Exception as e:
+            logger.error(f"Error with {args.event_id}: {e}")
+            sys.exit()
 
         for e in cat:
             show_event(e, "****", header=True)
