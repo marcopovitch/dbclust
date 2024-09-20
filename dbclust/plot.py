@@ -204,12 +204,21 @@ def make_plot_with_plotly(
         col=1,
     )
 
+    if P_df.empty:
+        max_distance = max(S_df["S_distance"])
+        ymax = math.ceil(S_df["S_arrival_time"])
+    elif S_df.empty:
+        max_distance = max(P_df["P_distance"])
+        ymax = math.ceil(max(P_df["P_arrival_time"]))
+    else:
+        max_distance = max(P_df["P_distance"] + S_df["S_distance"])
+        ymax = math.ceil(max(P_df["P_arrival_time"] + S_df["S_arrival_time"]))
+
     fig.update_xaxes(title_text="Distance (km)", row=1, col=1)
     fig.update_yaxes(title_text="Arrival time (s)", row=1, col=1)
     fig.update_xaxes(
-        range=[0, math.ceil(max(P_df["P_distance"] + S_df["S_distance"]))], row=1, col=1
+        range=[0, math.ceil(max_distance)], row=1, col=1
     )
-    ymax = math.ceil(max(P_df["P_arrival_time"] + S_df["S_arrival_time"]))
     fig.update_yaxes(
         range=[0, ymax],
         row=1,
@@ -269,14 +278,24 @@ def make_plot_with_plotly(
         col=2,
     )
 
+    if P_df.empty:
+        max_distance = max(S_df["S_distance"])
+        absmax = abs(max(S_df["S_residual"]))
+    elif S_df.empty:
+        max_distance = max(P_df["P_distance"])
+        absmax = abs(max(P_df["P_residual"]))
+    else:
+        max_distance = max(P_df["P_distance"] + S_df["S_distance"])
+        ymax = max(P_df["P_residual"] + S_df["S_residual"])
+        ymin = min(P_df["P_residual"] + S_df["S_residual"])
+        absmax = max(abs(ymax), abs(ymin))
+
     fig.update_xaxes(title_text="Distance (km)", row=1, col=2)
     fig.update_yaxes(title_text="Residual (s)", row=1, col=2)
     fig.update_xaxes(
-        range=[0, math.ceil(max(P_df["P_distance"] + S_df["S_distance"]))], row=1, col=2
+        range=[0, math.ceil(max_distance)], row=1, col=2
     )
-    ymax = max(P_df["P_residual"] + S_df["S_residual"])
-    ymin = min(P_df["P_residual"] + S_df["S_residual"])
-    absmax = max(abs(ymax), abs(ymin))
+
     fig.update_yaxes(range=[-1.0 * absmax, absmax], row=1, col=2)
 
     if event_name:
