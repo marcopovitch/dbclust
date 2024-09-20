@@ -138,6 +138,38 @@ class PickConfig:
 
 
 @dataclass
+class FdsnConfig:
+    """Manage different FDSN web services
+
+    Attributes:
+        debug (str): enable debug mode
+        default(str): default FDSN web service URL
+        url (str): FDSN web service URL dictionary
+
+    Raises:
+        URLError: if URL is not valid
+    """
+
+    default: str
+    hosts: Dict[str, str]
+    url: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        # check url validity for each service
+        for key, value in self.hosts.items():
+            if not is_valid_url(value, syntax_only=True):
+                raise URLError(f"{key} URL {value} is not valid !")
+
+        # check default url fully (validity + joinable)
+        # add the FDSN service path to be able to join it
+        fdsnws_url = os.path.join(self.hosts[self.default], "fdsnws/event/1")
+        if not is_valid_url(fdsnws_url):
+            raise URLError(f"Default URL {fdsnws_url} is not valid fdsnws !")
+
+        self.url = self.hosts[self.default]
+
+
+@dataclass
 class StationConfig:
     """Manage how to get stations coordinates.
 
@@ -173,6 +205,7 @@ class StationConfig:
 
     fetch_method: str
     fdsnws_url: Optional[str] = None
+    fdsnws: Optional[FdsnConfig] = None
     inventory_files: Optional[List[str]] = None
     blacklist: Optional[List[str]] = None
     rename: Optional[dict] = None
@@ -191,13 +224,10 @@ class StationConfig:
                 self.inventory.extend(read_inventory(f))
                 self.info_sta = self.inventory
         else:
-            if is_valid_url(self.fdsnws_url):
-                logger.info(
-                    f"Using fdsnws {self.fdsnws_url} to get station coordinates."
-                )
-                self.info_sta = self.fdsnws_url
-            else:
-                raise URLError(f"{self.fdsnws_url}")
+            logger.info(
+                f"Using fdsnws {self.fdsnws.url} to get station coordinates."
+            )
+            self.info_sta = self.fdsnws.url
 
 
 @dataclass
@@ -729,7 +759,7 @@ class DBClustConfig:
         ic(self.pick.df)
 
 
-def is_valid_url(url: str) -> bool:
+def is_valid_url(url: str, syntax_only: bool = False) -> bool:
     """Check if url syntax is valid, and url is joinable
 
     Args:
@@ -741,6 +771,8 @@ def is_valid_url(url: str) -> bool:
     try:
         parsed_url = urlparse(url)
         if parsed_url.scheme and parsed_url.netloc:
+            if syntax_only:
+                return True
             with urlopen(url):
                 pass
             return True
