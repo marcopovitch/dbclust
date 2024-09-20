@@ -489,7 +489,7 @@ class NllLoc(object):
                 # keep track of relabel for later user
                 # as info on the event will be lost
                 event2, relabel_dict = self.cleanup_picks_and_relabel_picks(
-                    event2, zone, proba_threshold=0.90
+                    event2, zone, proba_threshold=0.80
                 )
             else:
                 # legacy code to clean up pick :
@@ -997,11 +997,30 @@ class NllLoc(object):
                     )
                     continue
 
-                if key:
+                if key and self.relabel_pick_zone:
                     if key == arrival.phase:
                         logger.info(
                             f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
                             f"Selecting {key} zone (already set by user). Noting to do."
+                        )
+                        continue
+
+                    # check if the station has already Pn Pg set or Sn Sg set
+                    # if so, do not relabel it
+                    phases_list = []
+                    for a in orig.arrivals:
+                        p = get_pick_from_arrival(event, a)
+                        if (p.waveform_id.network_code, p.waveform_id.station_code) == (
+                            pick.waveform_id.network_code, pick.waveform_id.station_code,
+                        ):
+                            phases_list.append(a.phase)
+
+                    if ("Pn" in phases_list and "Pg" in phases_list) or (
+                        "Sn" in phases_list and "Sg" in phases_list
+                    ):
+                        logger.info(
+                            f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
+                            f"has already Pn,Pg or Sn,Sg set. Noting to do."
                         )
                         continue
 
@@ -1252,12 +1271,20 @@ def reloc_fdsn_event(locator, eventid, fdsnws):
     event = cat[0]
 
     # Find the zone and set the velocity model
-    if locator.zones:
-        zone, _ = locator.zones.find_zone(event.origins[0].latitude, event.origins[0].longitude)
+    if not locator.quakeml_settings["model_id"] and locator.zones:
+        zone, _ = locator.zones.find_zone(
+            event.origins[0].latitude, event.origins[0].longitude
+        )
         locator.quakeml_settings["model_id"] = zone.velocity_profile
-        logger.info(f"Using {zone.velocity_profile} for event {eventid}")
+        logger.info(f"Using {zone.velocity_profile} for event {eventid}.")
+    elif locator.quakeml_settings["model_id"]:
+        logger.info(
+            f"Forcing model_id to {locator.quakeml_settings['model_id']} for event {eventid}."
+        )
     else:
-        logger.warning(f'No zones defined, using default velocity model {locator.quakeml_settings["model_id"]}')
+        logger.warning(
+            f'No zones defined, using default velocity model {locator.quakeml_settings["model_id"]}.'
+        )
 
     cat = locator.reloc_event(event)
     return cat
@@ -1493,7 +1520,11 @@ if __name__ == "__main__":
             log_level=logging.INFO,
         )
 
-        cat = reloc_fdsn_event(locator, eventid, fdsnws)
+        try:
+            cat = reloc_fdsn_event(locator, eventid, fdsnws)
+        except Exception as e:
+            logger.error(f"Error with {eventid}: {e}")
+            sys.exit()
 
         # check if there is only one event in the catalog
         if len(cat) != 1:
