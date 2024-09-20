@@ -1001,7 +1001,7 @@ class NllLoc(object):
                     if key == arrival.phase:
                         logger.info(
                             f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
-                            f"is within {key} zone. Noting to do."
+                            f"Selecting {key} zone (already set by user). Noting to do."
                         )
                         continue
 
@@ -1024,50 +1024,6 @@ class NllLoc(object):
                     )
                     pick_to_delete.append(pick)
                     arrival_to_delete.append(arrival)
-
-            # if arrival.phase in ["Pg", "Pn", "Sg", "Sn"]:
-            #     my_polygon = df_polygons[df_polygons["name"] == arrival.phase].iloc[0][
-            #         "geometry"
-            #     ]
-            #     my_point = Point(arrival.distance, pick.time - orig.time)
-
-            #     if my_polygon and not within(my_point, my_polygon):
-            #         # relabel: check in which other zone the pick is
-            #         for zone_id, zone_polygon in df_polygons.iterrows():
-            #             if zone_polygon["geometry"].contains(my_point):
-            #                 # fixme: check multiple including zones
-            #                 logger.info(
-            #                     f"\tPick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
-            #                     f"is within {zone_polygon['name']} zone."
-            #                 )
-            #                 comment = Comment(
-            #                     text='{"relabel": {"%s": "%s"}}'
-            #                     % (arrival.phase, zone_polygon["name"])
-            #                 )
-            #                 arrival.comments.append(comment)
-            #                 arrival.phase = zone_polygon["name"]
-            #                 pick.phase_hint = zone_polygon["name"]
-            #                 key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
-            #                 relabel[key] = comment
-            #                 break
-            #         else:
-            #             logger.info(
-            #                 f"\tPick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
-            #                 f"has no polygon defined in {region_name}."
-            #             )
-            #             pick_to_delete.append(pick)
-            #             arrival_to_delete.append(arrival)
-
-            #     else:
-            #         logger.debug(
-            #             f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
-            #             f"is within zone {region_name}."
-            #         )
-            # else:
-            #     logger.info(
-            #         f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
-            #         f"has no polygon defined in {region_name}."
-            #     )
 
         # remove picks and arrivals
         for a in arrival_to_delete:
@@ -1294,6 +1250,15 @@ def reloc_fdsn_event(locator, eventid, fdsnws):
         raise ValueError(f"[{eventid}] no such eventid !")
 
     event = cat[0]
+
+    # Find the zone and set the velocity model
+    if locator.zones:
+        zone, _ = locator.zones.find_zone(event.origins[0].latitude, event.origins[0].longitude)
+        locator.quakeml_settings["model_id"] = zone.velocity_profile
+        logger.info(f"Using {zone.velocity_profile} for event {eventid}")
+    else:
+        logger.warning(f'No zones defined, using default velocity model {locator.quakeml_settings["model_id"]}')
+
     cat = locator.reloc_event(event)
     return cat
 
@@ -1485,7 +1450,7 @@ if __name__ == "__main__":
         "evaluation_mode": "automatic",
         "method_id": "NonLinLoc",
         "model_id": "haslach-0.2",
-        #"model_id": "hybrid-pyrenees",
+        # "model_id": "hybrid-pyrenees",
     }
 
     # cat = read_events("eost2023dgdchbog.qml")
