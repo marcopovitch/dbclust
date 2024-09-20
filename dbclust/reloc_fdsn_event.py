@@ -109,19 +109,10 @@ if __name__ == "__main__":
         logger.setLevel(numeric_level)
 
     cfg = DBClustConfig(args.profile_conf_file)
-    ic(cfg.zones)
+
 
     ws_event_url = "https://api.franceseisme.fr/fdsnws/event/1"
     output_format = "SC3ML"
-
-    quakeml_settings = {
-        "agency_id": "RENASS",
-        "author": "test@renass",
-        "evaluation_mode": "automatic",
-        "method_id": "NonLinLoc",
-        "model_id": "haslach-0.2",
-        # "model_id": "hybrid-pyrenees",
-    }
 
     with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
         locator = NllLoc(
@@ -143,8 +134,7 @@ if __name__ == "__main__":
             nll_min_phase=cfg.nll.min_phase,
             min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
             #
-            # quakeml_settings=asdict(cfg.quakeml),
-            quakeml_settings=quakeml_settings,
+            quakeml_settings=asdict(cfg.quakeml),
             nll_verbose=cfg.nll.verbose,
             keep_scat=cfg.nll.enable_scatter,
             #
