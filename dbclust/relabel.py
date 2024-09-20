@@ -119,8 +119,6 @@ def get_distance_between_longest_edges(
         Tuple[float, List[LineString]]: A tuple containing the distance between the longest edges and the longest edges.
     """
     coords = list(p.minimum_rotated_rectangle.exterior.coords)
-    ic(p, coords, name)
-
     edges = []
     for i in range(len(coords) - 1):
         edge = LineString([coords[i], coords[i + 1]])
@@ -131,7 +129,6 @@ def get_distance_between_longest_edges(
     longest_edges = edges[:2]
 
     distance_between_longest_edges = longest_edges[0][1].distance(longest_edges[1][1])
-    # ic(longest_edges[0][1], longest_edges[1][1])
 
     edges_only = [edge for length, edge in edges]
 
