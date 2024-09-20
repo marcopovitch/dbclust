@@ -315,7 +315,7 @@ class QuakemlConfig:
     author: str
     evaluation_mode: str
     method_id: str
-    # model_id: Optional[str] = None
+    model_id: Optional[str] = None
 
 
 @dataclass
@@ -384,7 +384,7 @@ class Zones:
             # get picks_delimiter polygons
             gdf_pick_delimiter = gpd.GeoDataFrame()
             if z.picks_delimiter:
-                picks_delimiter_polygons =  []
+                picks_delimiter_polygons = []
                 names = []  # pick family name (Pn, Pg, Sn, Sg, ...)
 
                 # iterate over Pg, Pn, Sg, Sn, ...
@@ -401,7 +401,7 @@ class Zones:
                     ignore_index=True,
                 )
 
-            #ic(gdf_pick_delimiter)
+            # ic(gdf_pick_delimiter)
 
             records.append(
                 {
@@ -611,7 +611,7 @@ class ParallelConfig:
             self.n_workers = os.cpu_count()
 
     def get_time_partitions(self, time_cfg: TimeConfig, pick_cfg: PickConfig) -> List:
-        #ic(pick_cfg.start, pick_cfg.end)
+        # ic(pick_cfg.start, pick_cfg.end)
         nb_periods = self.get_nb_of_divisions(
             pick_cfg.start, pick_cfg.end, self.partition_duration
         )
@@ -703,6 +703,10 @@ class DBClustConfig:
 
         # Finalize zones
         self.zones.load_zones(self.nll)
+
+        # Set default velocity model
+        self.quakeml.model_id = self.nll.default_velocity_profile
+        ic(self.quakeml)
 
         assert len(self.parallel.time_partitions)
 
