@@ -485,11 +485,11 @@ class NllLoc(object):
                 # 3. remove picks/arrivals with distance > dist_km_cutoff
                 # 4. relabel pick within zone
                 zone, dist = self.zones.find_zone(o.latitude, o.longitude)
-                ic(model_id, zone)
+                # ic(model_id, zone)
                 # keep track of relabel for later user
                 # as info on the event will be lost
                 event2, relabel_dict = self.cleanup_picks_and_relabel_picks(
-                    event2, zone, proba_threshold=0.80
+                    event2, zone, eval_threshold=0.04
                 )
             else:
                 # legacy code to clean up pick :
@@ -937,7 +937,7 @@ class NllLoc(object):
         return event
 
     def cleanup_picks_and_relabel_picks(
-        self, event: Event, zone: Zone, proba_threshold: float = 0.9
+        self, event: Event, zone: Zone, eval_threshold: float = 0.10
     ) -> Tuple[Event, dict]:
         # ic(zone.picks_delimiter)
         # dataframe with polygons, contains: name, region, geometry columns
@@ -982,67 +982,99 @@ class NllLoc(object):
 
             # check if pick is within zone
             if arrival.phase in ["P", "S", "Pg", "Pn", "Sg", "Sn"]:
-                key, score = get_best_polygon_for_point(
-                    Point(arrival.distance, pick.time - orig.time),
-                    df_polygons,
-                    proba_threshold=proba_threshold,
+                key, score, polygons_score, evaluation_score = (
+                    get_best_polygon_for_point(
+                        Point(arrival.distance, pick.time - orig.time),
+                        arrival.phase,
+                        df_polygons,
+                        eval_threshold=eval_threshold,
+                    )
                 )
-                ic(pick.waveform_id.get_seed_string(), arrival.phase, key, score)
+                ic(
+                    pick.waveform_id.get_seed_string(),
+                    arrival.phase,
+                    key,
+                    score,
+                    evaluation_score,
+                    polygons_score,
+                )
 
-                if not key and not score:
-                    logger.info(
-                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
-                        f"There are at least two polygons with proba > {proba_threshold}. "
-                        f"Noting to do."
-                    )
-                    continue
-
-                if key and self.relabel_pick_zone:
-                    if key == arrival.phase:
-                        logger.info(
-                            f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
-                            f"Selecting {key} zone (already set by user). Noting to do."
-                        )
-                        continue
-
-                    # check if the station has already Pn Pg set or Sn Sg set
-                    # if so, do not relabel it
-                    phases_list = []
-                    for a in orig.arrivals:
-                        p = get_pick_from_arrival(event, a)
-                        if (p.waveform_id.network_code, p.waveform_id.station_code) == (
-                            pick.waveform_id.network_code, pick.waveform_id.station_code,
-                        ):
-                            phases_list.append(a.phase)
-
-                    if ("Pn" in phases_list and "Pg" in phases_list) or (
-                        "Sn" in phases_list and "Sg" in phases_list
-                    ):
-                        logger.info(
-                            f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
-                            f"has already Pn,Pg or Sn,Sg set. Noting to do."
-                        )
-                        continue
-
-                    logger.info(
-                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
-                        f"is within {key} zone. Relabeling it."
-                    )
-                    comment = Comment(
-                        text='{"relabel": {"%s": "%s"}}' % (arrival.phase, key)
-                    )
-                    arrival.comments.append(comment)
-                    arrival.phase = key
-                    pick.phase_hint = key
-                    relabel_key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
-                    relabel[relabel_key] = comment
-                else:
+                # Check if pick is not within a polygon: remove it
+                if len(polygons_score) == 0:
                     logger.info(
                         f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
                         f"has no polygon defined in {region_name}. Removing it."
                     )
                     pick_to_delete.append(pick)
                     arrival_to_delete.append(arrival)
+                    continue
+
+                # User does not want to relabel pick
+                if not self.relabel_pick_zone:
+                    continue
+
+                # Can't decide what to do
+                if not key and not score:
+                    logger.info(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
+                        f"Can't decide what to do (proba threshold is set to {eval_threshold}). "
+                        f"Noting to do."
+                    )
+                    continue
+
+                # Already set by user in accordance with the polygon found (do not relabel it)
+                if key == arrival.phase:
+                    logger.info(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
+                        f"Selecting {key} zone (already set by user). Noting to do."
+                    )
+                    continue
+
+                # Check if the station has already Pn Pg set or Sn Sg set
+                # if so, do not relabel it
+                phases_list = []
+                for a in orig.arrivals:
+                    p = get_pick_from_arrival(event, a)
+                    if (p.waveform_id.network_code, p.waveform_id.station_code) == (
+                        pick.waveform_id.network_code,
+                        pick.waveform_id.station_code,
+                    ):
+                        phases_list.append(a.phase)
+
+                if ("P" in key and "Pn" in phases_list and "Pg" in phases_list) or (
+                    "S" in key and "Sn" in phases_list and "Sg" in phases_list
+                ):
+                    logger.info(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
+                        f"has already Pn,Pg or Sn,Sg set. Noting to do."
+                    )
+                    continue
+
+                # Relabel pick
+                logger.info(
+                    f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
+                    f"is within {key} zone. Relabeling it."
+                )
+
+                # json format
+                comment_dict = {
+                    "relabel": {
+                        "evaluation_score": evaluation_score,
+                        "relabel_score": polygons_score,
+                    }
+                }
+                format_floats(comment_dict)
+                comment = Comment(
+                    # text='{"relabel": {"%s": "%s"}}' % (arrival.phase, key)
+                    text=json.dumps(comment_dict)
+                )
+                arrival.comments.append(comment)
+                arrival.phase = key
+                pick.phase_hint = key
+                relabel_key = (
+                    f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
+                )
+                relabel[relabel_key] = comment
 
         # remove picks and arrivals
         for a in arrival_to_delete:
@@ -1230,7 +1262,11 @@ def show_bulletin(
             except:
                 continue
             if "relabel" in info.keys():
-                relabel = info["relabel"]
+                phases_info = ""
+                for k, v in info["relabel"]["relabel_score"].items():
+                    phases_info += f"{k}={v}, "
+
+                relabel = f'score: {info["relabel"]["evaluation_score"]}, {phases_info}'
                 break
         else:
             relabel = ""
@@ -1252,7 +1288,13 @@ def show_bulletin(
     print(table)
 
     # plot with plotext library arrival time with respect to distance
-    plot_arrival_time(event=event, origin_id=origin_id, df_polygons=df_polygons)
+    title = f"lat={origin.latitude:.3f}, lon={origin.longitude:.3f}, depth={origin.depth/1000.:.1f} km"
+    if zones:
+        title += f", {zone.velocity_profile} velocity model"
+
+    plot_arrival_time(
+        event=event, event_name=title, origin_id=origin_id, df_polygons=df_polygons
+    )
 
 
 def reloc_fdsn_event(locator, eventid, fdsnws):
@@ -1429,6 +1471,21 @@ def make_preloc_origin(
     preloc_origin.quality.azimuthal_gap = compute_gap(azimuths)
 
     return preloc_origin, picks_list
+
+
+def format_floats(d: dict) -> None:
+    """Format floats in a dictionary to 4 decimal"""
+    for key, value in d.items():
+        if isinstance(value, dict):
+            format_floats(value)
+        elif isinstance(value, float):
+            d[key] = f"{value:.4f}"
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                if isinstance(item, float):
+                    value[i] = f"{item:.4f}"
+                elif isinstance(item, dict):
+                    format_floats(item)
 
 
 if __name__ == "__main__":
