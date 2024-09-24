@@ -331,6 +331,8 @@ class NonLinLocConfig:
 class RelocationConfig:
     double_pass: bool
     keep_manual_picks: bool
+    use_deactivated_arrivals: bool
+    use_pick_zone: bool
     P_time_residual_threshold: Union[float, None]
     S_time_residual_threshold: Union[float, None]
     dist_km_cutoff: Optional[float] = None
@@ -430,8 +432,6 @@ class Zones:
                     ignore_index=True,
                 )
 
-            # ic(gdf_pick_delimiter)
-
             records.append(
                 {
                     "name": z.name,
@@ -514,6 +514,11 @@ class Zones:
                 return row, distance_km
         return gpd.GeoDataFrame(), None
 
+    def show_zones(self):
+        print("Zone name: velocity profile")
+        for index, row in self.polygons.iterrows():
+            print(f'\t{row["name"]}: {row["velocity_profile"]}')
+        print()
 
 @dataclass
 class Associator:
@@ -735,8 +740,7 @@ class DBClustConfig:
 
         # Set default velocity model
         self.quakeml.model_id = self.nll.default_velocity_profile
-        ic(self.quakeml)
-
+        #ic(self.quakeml)
         assert len(self.parallel.time_partitions)
 
     def show(self):
