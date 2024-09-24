@@ -17,9 +17,9 @@ def pick_delimiter_plot_all(conf):
     # iterate over all zones and plot all the polygons on the same figure
     for z in conf.zones.zones:
         zone = conf.zones.get_zone_from_name(z.name)
-        ic(zone)
+        # ic(zone)
         poly_df = zone.picks_delimiter
-        ic(poly_df)
+        # ic(poly_df)
 
         # Iterate over all polygons in the DataFrame
         for idx, row in poly_df.iterrows():
@@ -50,9 +50,9 @@ def pick_delimiter_plot_all(conf):
 
 def pick_delimiter_plot(conf, zone_name):
     zone = conf.zones.get_zone_from_name(zone_name)
-    ic(zone)
+    # ic(zone)
     poly_df = zone.picks_delimiter
-    ic(poly_df)
+    # ic(poly_df)
 
     # Plotly figure
     fig = go.Figure()
