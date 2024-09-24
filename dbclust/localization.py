@@ -993,20 +993,20 @@ class NllLoc(object):
                 key, score, polygons_score, evaluation_score = (
                     get_best_polygon_for_point(
                         Point(arrival.distance, pick.time - orig.time),
-                        arrival.phase,
+                        f'{pick.waveform_id.get_seed_string()} {arrival.phase}',
                         df_polygons,
                         eval_threshold=eval_threshold,
                     )
                 )
-                # if logger.level == logging.DEBUG:
-                #     ic(
-                #         pick.waveform_id.get_seed_string(),
-                #         arrival.phase,
-                #         key,
-                #         score,
-                #         evaluation_score,
-                #         polygons_score,
-                #     )
+                if logger.level == logging.DEBUG:
+                    ic(
+                        pick.waveform_id.get_seed_string(),
+                        arrival.phase,
+                        key,
+                        score,
+                        evaluation_score,
+                        polygons_score,
+                    )
 
                 # Check if pick is not within a polygon: remove it
                 if len(polygons_score) == 0:
@@ -1037,6 +1037,26 @@ class NllLoc(object):
                         f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
                         f"Selecting {key} zone (already set by user). Noting to do."
                     )
+                    continue
+
+                # Check if the new label will not be
+                # in conflict with an already existing one
+                conflict = False
+                for a in orig.arrivals:
+                    if a == arrival:
+                        continue
+                    p = get_pick_from_arrival(event, a)
+                    if (p.waveform_id.network_code, p.waveform_id.station_code) == (
+                        pick.waveform_id.network_code, pick.waveform_id.station_code,
+                    ):
+                        if key == a.phase:
+                            logger.info(
+                                f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
+                                f"has a conflict with an arrival already set. Noting to do."
+                            )
+                            conflict = True
+                            break
+                if conflict:
                     continue
 
                 # Check if the station has already Pn Pg set or Sn Sg set
@@ -1217,8 +1237,17 @@ def show_origin(o, txt):
 
 
 def show_bulletin(
-    event: Event, origin_id: ResourceIdentifier = None, zones: Zones = None
+    event: Event, origin_id: ResourceIdentifier = None, zones: Zones = None, plot=False
 ):
+    """
+    Display a bulletin containing information about event origins and arrivals.
+
+    Parameters:
+        event (Event): The event object.
+        origin_id (ResourceIdentifier, optional): The ID of the origin. Defaults to None.
+        zones (Zones, optional): The zones object. Defaults to None.
+        plot (bool, optional): Whether to plot the arrival time. Defaults to False.
+    """
 
     if not origin_id:
         origin = event.preferred_origin()
@@ -1301,9 +1330,10 @@ def show_bulletin(
     if zones:
         title += f", {zone.velocity_profile} velocity model"
 
-    plot_arrival_time(
-        event=event, event_name=title, origin_id=origin_id, df_polygons=df_polygons
-    )
+    if plot:
+        plot_arrival_time(
+            event=event, event_name=title, origin_id=origin_id, df_polygons=df_polygons
+        )
 
 
 def reloc_fdsn_event(locator, eventid, fdsnws):
