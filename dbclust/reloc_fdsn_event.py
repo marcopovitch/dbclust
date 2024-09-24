@@ -2,6 +2,7 @@
 import argparse
 import logging
 import sys
+import traceback
 import urllib.parse
 from dataclasses import asdict
 from shutil import copyfile
@@ -57,7 +58,7 @@ if __name__ == "__main__":
         type=float,
     )
     parser.add_argument(
-        "--use-deactivated-arrivals",
+        "-u", "--use-deactivated-arrivals",
         default=False,
         dest="use_deactivated_arrivals",
         help="force deactivated arrivals use",
@@ -139,8 +140,9 @@ if __name__ == "__main__":
             cfg.nll.nlloc_bin,
             cfg.nll.scat2latlon_bin,
             cfg.nll.time_path,
-            # cfg.nll.template_path,
-            "../nll_template/nll_haslach-0.2_template.conf",
+            #cfg.nll.template_path,
+            #"../nll_template/nll_haslach-0.2_template.conf",
+            #"../nll_template/nll_rittershoffen_template.conf",
             #
             tmpdir=tmp_path,
             double_pass=cfg.relocation.double_pass,
@@ -148,7 +150,7 @@ if __name__ == "__main__":
             P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
             S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
             dist_km_cutoff=cfg.relocation.dist_km_cutoff,
-            use_deactivated_arrivals=False,  # to be added in the configuration file
+            use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,  # to be added in the configuration file
             #
             keep_manual_picks=cfg.relocation.keep_manual_picks,
             nll_min_phase=cfg.nll.min_phase,
@@ -169,6 +171,7 @@ if __name__ == "__main__":
             cat = reloc_fdsn_event(locator, args.event_id, cfg.station.fdsnws.get_url())
         except Exception as e:
             logger.error(f"Error with {args.event_id}: {e}")
+            traceback.print_exc()
             sys.exit()
 
         for e in cat:
