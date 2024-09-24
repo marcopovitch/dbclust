@@ -88,6 +88,13 @@ if __name__ == "__main__":
         type=str,
     )
     parser.add_argument(
+        "--plot",
+        default=False,
+        dest="enable_plot",
+        help="enable plot",
+        action="store_true",
+    )
+    parser.add_argument(
         "-l",
         "--loglevel",
         default="INFO",
@@ -133,7 +140,7 @@ if __name__ == "__main__":
         cfg.station.fdsnws.set_url_from_service_name(args.fdsn_profile)
         cfg.station.info_sta = cfg.station.fdsnws.get_url()
 
-    output_format = "SC3ML"
+    output_format = "QUAKEML"
 
     with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
         locator = NllLoc(
@@ -179,6 +186,7 @@ if __name__ == "__main__":
             show_bulletin(
                 e,
                 zones=cfg.zones,
+                plot=args.enable_plot,
             )
 
         file_extension = output_format.lower()
