@@ -11,6 +11,7 @@ from typing import Union
 
 import pandas as pd
 from icecream import ic
+from obspy.core.event import Arrival
 from scipy.stats import norm
 from shapely.geometry import LineString
 from shapely.geometry import Point
@@ -23,7 +24,7 @@ logger.setLevel(logging.INFO)
 
 
 def get_best_polygon_for_point(
-    point: Point, phase: str, df_polygons: pd.DataFrame, eval_threshold: float = 0.05
+    point: Point, phase_info: str, df_polygons: pd.DataFrame, eval_threshold: float = 0.05
 ) -> Tuple[Union[str, None], Union[float, None], OrderedDict, float]:
     """
     Finds the best polygon for a given point within a DataFrame of polygons.
@@ -93,7 +94,7 @@ def get_best_polygon_for_point(
 
         if evaluation_score < eval_threshold:
             logger.info(
-                f"Point {point} is in a complex zone. "
+                f"{phase_info}: {point} is in a complex zone. "
                 f"The evaluation score between the two max probabilities is {evaluation_score:.4f} < {eval_threshold}."
             )
             return None, None, polygon_score, evaluation_score
