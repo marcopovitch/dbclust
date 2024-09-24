@@ -28,6 +28,7 @@ from typing import Union
 import dask
 import dask.bag as db
 import dateparser
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import ray
@@ -87,7 +88,7 @@ class NllLoc(object):
         nll_bin,
         scat2latlon_bin,
         nll_times_path,
-        nll_template,
+        nll_template=None,
         nll_obs_file=None,
         nll_min_phase=4,
         nll_verbose=False,
@@ -193,9 +194,7 @@ class NllLoc(object):
         show_event(myevent, "****", header=True)
         orig = myevent.preferred_origin()
         for arrival in orig.arrivals:
-            pick = next(
-                (p for p in myevent.picks if p.resource_id == arrival.pick_id), None
-            )
+            pick = get_pick_from_arrival(myevent, arrival)
             if pick is None:
                 continue
 
@@ -216,7 +215,10 @@ class NllLoc(object):
                 arrival.time_weight, 0, abs_tol=0.001
             ):
                 myevent.picks.remove(pick)
-            elif (self.dist_km_cutoff is not None) and (
+                continue
+
+            # filter out station's arrivals if distance > dist_max
+            if (self.dist_km_cutoff is not None) and (
                 arrival.distance > self.dist_km_cutoff / 111.0
             ):
                 myevent.picks.remove(pick)
@@ -245,12 +247,12 @@ class NllLoc(object):
 
     def nll_localisation(
         self,
-        nll_obs_file=None,
-        picks=None,
-        double_pass=None,
-        pass_count=0,
-        force_model_id=None,
-        force_template=None,
+        nll_obs_file: str = None,
+        picks: List[Pick] = None,
+        double_pass: bool = None,
+        pass_count: int = 0,
+        force_model_id: str = None,
+        force_template: str = None,
     ):
         """
         Do the NLL stuff to localize event phases in nll_obs_file
@@ -942,7 +944,10 @@ class NllLoc(object):
         # ic(zone.picks_delimiter)
         # dataframe with polygons, contains: name, region, geometry columns
         df_polygons = zone.picks_delimiter
-        region_name = df_polygons["region"].unique()[0]
+        if df_polygons.empty:
+            logger.warning("No polygon defined in zone. Can't cleanup picks.")
+        else:
+            region_name = df_polygons["region"].unique()[0]
 
         orig = event.preferred_origin()
         pick_to_delete = []
@@ -980,6 +985,9 @@ class NllLoc(object):
                 arrival_to_delete.append(arrival)
                 continue
 
+            if df_polygons.empty:
+                continue
+
             # check if pick is within zone
             if arrival.phase in ["P", "S", "Pg", "Pn", "Sg", "Sn"]:
                 key, score, polygons_score, evaluation_score = (
@@ -990,14 +998,15 @@ class NllLoc(object):
                         eval_threshold=eval_threshold,
                     )
                 )
-                ic(
-                    pick.waveform_id.get_seed_string(),
-                    arrival.phase,
-                    key,
-                    score,
-                    evaluation_score,
-                    polygons_score,
-                )
+                # if logger.level == logging.DEBUG:
+                #     ic(
+                #         pick.waveform_id.get_seed_string(),
+                #         arrival.phase,
+                #         key,
+                #         score,
+                #         evaluation_score,
+                #         polygons_score,
+                #     )
 
                 # Check if pick is not within a polygon: remove it
                 if len(polygons_score) == 0:
@@ -1298,6 +1307,24 @@ def show_bulletin(
 
 
 def reloc_fdsn_event(locator, eventid, fdsnws):
+    """
+    Retrieves earthquake event information from a FDSN web service
+    and performs relocation using a locator object.
+
+    Args:
+        locator (Locator): The locator object used for event relocation.
+        eventid (str): The ID of the earthquake event.
+        fdsnws (str): The URL of the FDSN web service.
+
+    Returns:
+        Catalog: A catalog object containing the relocated earthquake event.
+
+    Raises:
+        ValueError: If there is an error retrieving or reading the event information.
+        ValueError: If the specified event ID does not exist.
+        ValueError: If the specified model ID or template is not found.
+    """
+
     link = f"{fdsnws}/query?eventid={urllib.parse.quote(eventid, safe='')}&includearrivals=true"
     logger.debug(link)
 
@@ -1312,23 +1339,49 @@ def reloc_fdsn_event(locator, eventid, fdsnws):
 
     event = cat[0]
 
-    # Find the zone and set the velocity model
-    if not locator.quakeml_settings["model_id"] and locator.zones:
-        zone, _ = locator.zones.find_zone(
-            event.origins[0].latitude, event.origins[0].longitude
-        )
-        locator.quakeml_settings["model_id"] = zone.velocity_profile
-        logger.info(f"Using {zone.velocity_profile} for event {eventid}.")
-    elif locator.quakeml_settings["model_id"]:
-        logger.info(
-            f"Forcing model_id to {locator.quakeml_settings['model_id']} for event {eventid}."
-        )
+    if locator.zones:
+        if locator.quakeml_settings["model_id"]:
+            # Force the model_id if defined in the settings
+            logger.info(
+                f"Forcing model_id to {locator.quakeml_settings['model_id']} for event {eventid}."
+            )
+
+            # get the corresponding template
+            zone = locator.zones.get_zone_from_name(
+                locator.quakeml_settings["model_id"]
+            )
+
+            if zone is gpd.GeoDataFrame():
+                locator.zones.show_zones()
+                raise ValueError(
+                    f"Model {locator.quakeml_settings['model_id']} not found."
+                )
+        else:
+            # Find the zone and set the velocity model and the nll template
+            zone, _ = locator.zones.find_zone(
+                event.origins[0].latitude, event.origins[0].longitude
+            )
+            locator.quakeml_settings["model_id"] = zone.velocity_profile
+            logger.info(f"Using {zone.velocity_profile} for event {eventid}.")
+
+        # Set the nll template according to the zone
+        if zone.empty:
+            locator.zones.show_zones()
+            raise ValueError(
+                f'No template defined for zone {locator.quakeml_settings["model_id"]} !'
+            )
+        locator.nll_template = zone["template"]
+
     else:
         logger.warning(
             f'No zones defined, using default velocity model {locator.quakeml_settings["model_id"]}.'
         )
 
+        # get the default template
+
+
     cat = locator.reloc_event(event)
+
     return cat
 
 
