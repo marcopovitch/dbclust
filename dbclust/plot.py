@@ -29,7 +29,7 @@ def plot_arrival_time(
             raise ValueError(f"Origin with id {origin_id} not found")
 
 
-    ic(df_polygons)
+    #ic(df_polygons)
 
     P_station_name = []
     P_arrival_time = []
