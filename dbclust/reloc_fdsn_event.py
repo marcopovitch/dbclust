@@ -34,11 +34,19 @@ if __name__ == "__main__":
         type=str,
     )
     parser.add_argument(
-        "-p",
-        "--profile",
+        "-d",
+        "--dist-km-cutoff",
         default=None,
-        dest="velocity_profile_name",
-        help="velocity profile name to use",
+        dest="dist_km_cutoff",
+        help="cut off distance in km",
+        type=float,
+    )
+    parser.add_argument(
+        "-e",
+        "--eventid",
+        default=None,
+        dest="event_id",
+        help="event id",
         type=str,
     )
     parser.add_argument(
@@ -50,18 +58,43 @@ if __name__ == "__main__":
         type=str,
     )
     parser.add_argument(
-        "-d",
-        "--dist-km-cutoff",
-        default=None,
-        dest="dist_km_cutoff",
-        help="cut off distance in km",
-        type=float,
+        "-l",
+        "--loglevel",
+        default="INFO",
+        dest="loglevel",
+        help="loglevel (debug,warning,info,error)",
+        type=str,
     )
     parser.add_argument(
-        "-u", "--use-deactivated-arrivals",
+        "-p",
+        "--profile",
+        default=None,
+        dest="velocity_profile_name",
+        help="velocity profile name to use",
+        type=str,
+    )
+    parser.add_argument(
+        "-u",
+        "--use-deactivated-arrivals",
         default=False,
         dest="use_deactivated_arrivals",
         help="force deactivated arrivals use",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-r",
+        "--relabel",
+        default=False,
+        dest="relabel",
+        help="enable relabeling",
+        action="store_true",
+    )
+    parser.add_argument("-s", "--scat", help="get xyz scat file", action="store_true")
+    parser.add_argument(
+        "--plot",
+        default=False,
+        dest="enable_plot",
+        help="enable plot",
         action="store_true",
     )
     parser.add_argument(
@@ -71,36 +104,12 @@ if __name__ == "__main__":
         help="force phase uncertainty (see conf.yml file)",
         action="store_true",
     )
-    parser.add_argument("-s", "--scat", help="get xyz scat file", action="store_true")
     parser.add_argument(
         "--single-pass",
         default=False,
         dest="single_pass",
         help="Nonlinloc single or double pass",
         action="store_true",
-    )
-    parser.add_argument(
-        "-e",
-        "--eventid",
-        default=None,
-        dest="event_id",
-        help="event id",
-        type=str,
-    )
-    parser.add_argument(
-        "--plot",
-        default=False,
-        dest="enable_plot",
-        help="enable plot",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-l",
-        "--loglevel",
-        default="INFO",
-        dest="loglevel",
-        help="loglevel (debug,warning,info,error)",
-        type=str,
     )
 
     args = parser.parse_args()
@@ -135,6 +144,10 @@ if __name__ == "__main__":
     else:
         cfg.quakeml.model_id = None
 
+    if args.relabel:
+        enable_relabel = True
+    else:
+        enable_relabel = False
 
     if args.fdsn_profile:
         cfg.station.fdsnws.set_url_from_service_name(args.fdsn_profile)
@@ -147,9 +160,9 @@ if __name__ == "__main__":
             cfg.nll.nlloc_bin,
             cfg.nll.scat2latlon_bin,
             cfg.nll.time_path,
-            #cfg.nll.template_path,
-            #"../nll_template/nll_haslach-0.2_template.conf",
-            #"../nll_template/nll_rittershoffen_template.conf",
+            # cfg.nll.template_path,
+            # "../nll_template/nll_haslach-0.2_template.conf",
+            # "../nll_template/nll_rittershoffen_template.conf",
             #
             tmpdir=tmp_path,
             double_pass=cfg.relocation.double_pass,
@@ -168,7 +181,7 @@ if __name__ == "__main__":
             keep_scat=cfg.nll.enable_scatter,
             #
             zones=cfg.zones,
-            relabel_pick_zone=True,  # to be added in the configuration file
+            relabel_pick_zone=enable_relabel,  # to be added in the configuration file
             cleanup_pick_zone=True,  # to be added in the configuration file
             #
             log_level=numeric_level,
