@@ -379,6 +379,8 @@ class Zone:
     velocity_profile: str
     polygon: List[List[float]]
     picks_delimiter: List[Dict[str, List[List[float]]]] = field(default_factory=list)
+    mu: Optional[List[Dict[str, float]]] = None
+    sigma: Optional[List[Dict[str, float]]] = None
 
     def __str__(self) -> str:
         txt = f"zone:\n\tname: '{self.name}'\n\tprofile: '{self.velocity_profile}'\n\tpolygon: {self.polygon}"
@@ -427,6 +429,8 @@ class Zones:
                 df = pd.DataFrame({"name": names, "geometry": picks_delimiter_polygons})
                 gdf = gpd.GeoDataFrame(df, geometry="geometry")
                 gdf["region"] = z.name
+                gdf["mu"] = z.mu
+                gdf["sigma"] = z.sigma
                 gdf_pick_delimiter = pd.concat(
                     [gdf_pick_delimiter, gdf],
                     ignore_index=True,
@@ -438,6 +442,8 @@ class Zones:
                     "velocity_profile": vp.name,
                     "template": vp.template_file,
                     "geometry": polygon,
+                    "mu": z.mu,
+                    "sigma": z.sigma,
                     "picks_delimiter": gdf_pick_delimiter,
                 }
             )
@@ -519,6 +525,7 @@ class Zones:
         for index, row in self.polygons.iterrows():
             print(f'\t{row["name"]}: {row["velocity_profile"]}')
         print()
+
 
 @dataclass
 class Associator:
@@ -740,7 +747,7 @@ class DBClustConfig:
 
         # Set default velocity model
         self.quakeml.model_id = self.nll.default_velocity_profile
-        #ic(self.quakeml)
+        # ic(self.quakeml)
         assert len(self.parallel.time_partitions)
 
     def show(self):
