@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+import json
 import logging
 import math
 import sys
 from collections import OrderedDict
 from functools import lru_cache
+from typing import Dict
 from typing import List
 from typing import Tuple
 from typing import Union
@@ -12,6 +14,8 @@ from typing import Union
 import pandas as pd
 from icecream import ic
 from obspy.core.event import Arrival
+from obspy.core.event import Comment
+from obspy.core.event import Pick
 from scipy.stats import norm
 from shapely.geometry import LineString
 from shapely.geometry import Point
@@ -23,8 +27,99 @@ logger = logging.getLogger("relabel")
 logger.setLevel(logging.INFO)
 
 
+def get_value_from_key_in_list_of_dict(
+    key: str, array: List[Dict[str, float]]
+) -> Union[str, None]:
+    #ic(key, array)
+    for i in array:
+        if key in i:
+            return i[key]
+    return None
+
+
+def format_floats(d: dict) -> None:
+    """Format floats in a dictionary to 4 decimal"""
+    for key, value in d.items():
+        if isinstance(value, dict):
+            format_floats(value)
+        elif isinstance(value, float):
+            d[key] = f"{value:.4f}"
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                if isinstance(item, float):
+                    value[i] = f"{item:.4f}"
+                elif isinstance(item, dict):
+                    format_floats(item)
+
+
+def add_relabel_comment_to_arrival(
+    arrival: Arrival,
+    pick: Pick,
+    key: str,
+    evaluation_score: float,
+    polygons_score: OrderedDict,
+    force_status: str = None,
+) -> Union[str, str]:
+    """
+    Adds a relabel comment to the arrival object.
+    Parameters:
+        arrival (Arrival): The arrival object to add the comment to.
+        pick (Pick): The pick object associated with the arrival.
+        key (str): The phase key.
+        evaluation_score (float): The evaluation score.
+        polygons_score (OrderedDict): The scores of the phase in polygons.
+        force_status (str, optional): Force status. Defaults to None.
+    Returns:
+        Tuple[str, Comment]: A tuple containing the relabel key and the comment object.
+
+    Example: json format of the comment:
+        {
+            "relabel": {
+                "action": "set by user",
+                "eval_score": "0.9970",
+                "scores": {
+                    "Pn": "0.0003",
+                    "Sg": "0.9083",
+                    "Sn": "0.0028"
+                }
+            }
+        }
+    """
+
+    if not force_status:
+        force_status = "relabel"
+
+    # sort polygons_score by value
+    polygons_score = OrderedDict(
+        sorted(polygons_score.items(), key=lambda x: x[1], reverse=True)
+    )
+
+    # json format
+    comment_dict = {
+        "relabel": {
+            "action": force_status,
+            "eval_score": evaluation_score,
+            "scores": polygons_score,
+        }
+    }
+    format_floats(comment_dict)
+    comment = Comment(text=json.dumps(comment_dict))
+    arrival.comments.append(comment)
+    # relabel only if key is not None
+    if key:
+        arrival.phase = key
+        pick.phase_hint = key
+    relabel_key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
+
+    return relabel_key, comment
+
+
 def get_best_polygon_for_point(
-    point: Point, phase_info: str, df_polygons: pd.DataFrame, eval_threshold: float = 0.05
+    point: Point,
+    phase_info: str,
+    df_polygons: pd.DataFrame,
+    sigma_list: List[Dict[str, float]],
+    eval_threshold: float = 0.05,
 ) -> Tuple[Union[str, None], Union[float, None], OrderedDict, float]:
     """
     Finds the best polygon for a given point within a DataFrame of polygons.
@@ -32,17 +127,15 @@ def get_best_polygon_for_point(
         point (Point): The point to find the best polygon for.
         phase (str): The phase name of the point ("P", "S", "Pn", "Sn", "Pg", "Sg")
         df_polygons (pd.DataFrame): The DataFrame of polygons to search within.
+        sigma_list (List[Dict[str, float]]): The sigma values for each polygon.
         eval_threshold (float, optional): The threshold for the evaluation score. Defaults to 0.05.
     Returns:
-        Tuple[Union[str, None], Union[float, None]]: A tuple containing the name of
-        the best polygon and its probability, or None and None if the point is in a complex zone.
+        Tuple[Union[str, None], Union[float, None]]:
+        A tuple containing the name of the best polygon and its probability, or None and None if the point is in a complex zone.
         polygon_score (dict): A dictionary containing the probability of each polygon.,
         evaluation_score (float): A float quantifying the difference between the two best probabilities.
     """
     mu = 0
-    sigma = 1
-    # half_gaussian_mean = sigma * math.sqrt(2 / math.pi)
-
     polygon_score = OrderedDict()
     for zone_id, zone_polygon in df_polygons.iterrows():
         if zone_polygon["geometry"].contains(point):
@@ -62,11 +155,21 @@ def get_best_polygon_for_point(
 
             # Convert distance from the edge to the "center" to probability
             dist = 1 - dist / (distance_between_longest_edges / 2)
+
+            # Get the sigma value for the polygon
+            sigma = get_value_from_key_in_list_of_dict(zone_polygon["name"], sigma_list)
+            if not sigma:
+                logger.warning(
+                    f"Sigma value not found for polygon {zone_polygon['name']}. Using default value of 1."
+                )
+                sigma = 1
+            # Normalized probability
             proba = norm.pdf(dist, mu, sigma) / norm.pdf(0, mu, sigma)
+            #ic(dist, sigma, proba)
             polygon_score[zone_polygon["name"]] = proba
 
     if not polygon_score:
-        logger.info(f"Point {point} is not in any zone.")
+        logger.debug(f"Point {point} is not in any zone.")
         return None, None, polygon_score, 0
 
     # check key name for multiple polygons with the same phase Pg, Pn or Sg, Sn
@@ -93,7 +196,7 @@ def get_best_polygon_for_point(
         evaluation_score = (proba_values[0] - proba_values[1]) / proba_values[0]
 
         if evaluation_score < eval_threshold:
-            logger.info(
+            logger.debug(
                 f"{phase_info}: {point} is in a complex zone. "
                 f"The evaluation score between the two max probabilities is {evaluation_score:.4f} < {eval_threshold}."
             )
