@@ -109,8 +109,9 @@ class NllLoc(object):
         scat_file=None,
         zones: Zones = None,  # zones (polygons) delimitation to keep picks
         force_zone_name: str = None,  # force zone to use
-        cleanup_pick_zone: bool = True,  # clean up pick outside of zone
-        relabel_pick_zone: bool = False,  # relabel pick within zone
+        min_score_threshold_pick_zone=0.5,  # minimum score to relabel pick in zone
+        enable_cleanup_pick_zone: bool = True,  # clean up pick outside of zone
+        enable_relabel_pick_zone: bool = False,  # relabel pick within zone
         log_level=logging.INFO,
     ):
         logger.setLevel(log_level)
@@ -139,8 +140,9 @@ class NllLoc(object):
         self.scat_file = scat_file
         self.zones = zones
         self.force_zone_name = force_zone_name
-        self.cleanup_pick_zone = cleanup_pick_zone
-        self.relabel_pick_zone = relabel_pick_zone
+        self.min_score_threshold_pick_zone = min_score_threshold_pick_zone
+        self.enable_cleanup_pick_zone = enable_cleanup_pick_zone
+        self.enable_relabel_pick_zone = enable_relabel_pick_zone
 
         # keep track of cluster affiliation
         self.event_cluster_mapping = {}
@@ -485,7 +487,7 @@ class NllLoc(object):
             event2 = self.unset_arrival(event2, 100)  # FIXME: hardcoded value
 
             # Clean up picks outside of the polygons defined in zones
-            if self.zones and self.cleanup_pick_zone:
+            if self.zones and self.enable_cleanup_pick_zone:
                 # To be done:
                 # 1. remove picks/arrivals with time_weight set to 0
                 # 2. remove picks/arrivals with duplicated phases
@@ -499,7 +501,7 @@ class NllLoc(object):
                 # keep track of relabel for later user
                 # as info on the event will be lost
                 event2, relabel_dict = self.cleanup_picks_and_relabel_picks(
-                    event2, zone, eval_threshold=0.04
+                    event2, zone, eval_threshold=self.min_score_threshold_pick_zone
                 )
             else:
                 # legacy code to clean up pick :
@@ -529,16 +531,21 @@ class NllLoc(object):
                 orig2 = event2.preferred_origin()
 
                 # synchronize current event phase's comments with relabel_dict info
-                for arrival in orig2.arrivals:
-                    pick = next(
-                        (p for p in event2.picks if p.resource_id == arrival.pick_id),
-                        None,
-                    )
-                    if pick is None:
-                        continue
-                    key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
-                    if key in relabel_dict.keys():
-                        arrival.comments.append(relabel_dict[key])
+                if self.enable_cleanup_pick_zone:
+                    for arrival in orig2.arrivals:
+                        pick = next(
+                            (
+                                p
+                                for p in event2.picks
+                                if p.resource_id == arrival.pick_id
+                            ),
+                            None,
+                        )
+                        if pick is None:
+                            continue
+                        key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
+                        if key in relabel_dict.keys():
+                            arrival.comments.append(relabel_dict[key])
 
                 # add this new origin to catalog and set it as preferred
                 e.origins.append(orig2)
@@ -1014,8 +1021,6 @@ class NllLoc(object):
             if df_polygons.empty:
                 continue
 
-
-
             # check if pick is within zone
             if arrival.phase in ["P", "S", "Pg", "Pn", "Sg", "Sn"]:
                 key, score, polygons_score, evaluation_score = (
@@ -1051,7 +1056,7 @@ class NllLoc(object):
                     continue
 
                 # User wants to filter out not well tagged phases but does not want to relabel them
-                if not self.relabel_pick_zone:
+                if not self.enable_relabel_pick_zone:
                     continue
 
                 # Can't decide what to do
@@ -1214,19 +1219,6 @@ class NllLoc(object):
         with open(outfilename, "w") as out_fh:
             out_fh.write(t)
             logger.debug(f"Template {templatefile} rendered as {outfilename}")
-
-    @staticmethod
-    def read_chan(fname: str) -> pd.DataFrame:
-        df = pd.read_csv(
-            fname,
-            sep="_",
-            names=["net", "sta", "loc", "chan"],
-            header=None,
-            dtype=object,
-        )
-        df["chan"] = df["chan"].str[:-1]
-        df = df.drop_duplicates().fillna("")
-        return df
 
     def show_localizations(self) -> None:
         print("%d events in catalog:" % len(self.catalog))
@@ -1412,7 +1404,9 @@ def show_bulletin(
         )
 
 
-def reloc_fdsn_event(locator: NllLoc, eventid: str, fdsnws: str, zone_name: str) -> Catalog:
+def reloc_fdsn_event(
+    locator: NllLoc, eventid: str, fdsnws: str, zone_name: str
+) -> Catalog:
     """
     Retrieves earthquake event information from a FDSN web service
     and performs relocation using a locator object.
@@ -1448,7 +1442,7 @@ def reloc_fdsn_event(locator: NllLoc, eventid: str, fdsnws: str, zone_name: str)
 
     if locator.zones:
         if zone_name:
-            logger.info( f"Forcing zone to {zone_name}.")
+            logger.info(f"Forcing zone to {zone_name}.")
             zone = locator.zones.get_zone_from_name(zone_name)
         else:
             # Find the zone and set the velocity model and the nll template
@@ -1457,8 +1451,7 @@ def reloc_fdsn_event(locator: NllLoc, eventid: str, fdsnws: str, zone_name: str)
             )
         if zone.empty:
             locator.zones.show_zones()
-            raise ValueError( f"Zone {zone_name} not found.")
-
+            raise ValueError(f"Zone {zone_name} not found.")
 
         locator.quakeml_settings["model_id"] = zone.velocity_profile
         logger.info(
@@ -1643,8 +1636,8 @@ if __name__ == "__main__":
     )
 
     zones = conf.zones
-    relabel_pick_zone = False
-    cleanup_pick_zone = True
+    enable_relabel_pick_zone = False
+    enable_cleanup_pick_zone = True
 
     # eventid = "smi:local/437618f7-9cfe-4616-8e23-fdf32f7155db"
     # fdsnws = "http://localhost:10003/fdsnws/event/1"
@@ -1709,8 +1702,8 @@ if __name__ == "__main__":
             nll_verbose=False,
             #
             zones=zones,
-            relabel_pick_zone=relabel_pick_zone,
-            cleanup_pick_zone=cleanup_pick_zone,
+            enable_relabel_pick_zone=enable_relabel_pick_zone,
+            enable_cleanup_pick_zone=enable_cleanup_pick_zone,
             # polygon_proba_threshold=0.68,
             log_level=logging.INFO,
         )
