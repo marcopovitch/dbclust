@@ -66,14 +66,6 @@ if __name__ == "__main__":
         type=str,
     )
     parser.add_argument(
-        "-p",
-        "--profile",
-        default=None,
-        dest="velocity_profile_name",
-        help="velocity profile name to use",
-        type=str,
-    )
-    parser.add_argument(
         "-u",
         "--use-deactivated-arrivals",
         default=False,
@@ -111,6 +103,14 @@ if __name__ == "__main__":
         help="Nonlinloc single or double pass",
         action="store_true",
     )
+    parser.add_argument(
+        "-z",
+        "--zone",
+        default=None,
+        dest="zone_name",
+        help="force zone name to use",
+        type=str,
+    )
 
     args = parser.parse_args()
     if not args.profile_conf_file or not args.event_id:
@@ -130,18 +130,20 @@ if __name__ == "__main__":
     # update configuration
     if args.dist_km_cutoff:
         cfg.relocation.dist_km_cutoff = args.dist_km_cutoff
+
     if args.use_deactivated_arrivals:
         cfg.relocation.use_deactivated_arrivals = args.use_deactivated_arrivals
+
     if args.force_uncertainty:
         cfg.relocation.force_uncertainty = args.force_uncertainty
+
     if args.single_pass:
         cfg.relocation.double_pass = not args.single_pass
+
     if args.scat:
         cfg.nll.enable_scatter = args.scat
 
-    if args.velocity_profile_name:
-        cfg.quakeml.model_id = args.velocity_profile_name
-    else:
+    if not args.zone_name:
         cfg.quakeml.model_id = None
 
     if args.relabel:
@@ -181,6 +183,7 @@ if __name__ == "__main__":
             keep_scat=cfg.nll.enable_scatter,
             #
             zones=cfg.zones,
+            force_zone_name=args.zone_name,
             relabel_pick_zone=enable_relabel,  # to be added in the configuration file
             cleanup_pick_zone=True,  # to be added in the configuration file
             #
@@ -188,7 +191,9 @@ if __name__ == "__main__":
         )
 
         try:
-            cat = reloc_fdsn_event(locator, args.event_id, cfg.station.fdsnws.get_url())
+            cat = reloc_fdsn_event(
+                locator, args.event_id, cfg.station.fdsnws.get_url(), args.zone_name
+            )
         except Exception as e:
             logger.error(f"Error with {args.event_id}: {e}")
             traceback.print_exc()
