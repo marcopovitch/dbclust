@@ -51,10 +51,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-f",
-        "--fdsn-profile",
+        "--fdsn-event-profile",
         default=None,
-        dest="fdsn_profile",
-        help="fdsn profile",
+        dest="fdsn_event_profile",
+        help="fdsn event profile",
         type=str,
     )
     parser.add_argument(
@@ -151,9 +151,9 @@ if __name__ == "__main__":
     else:
         enable_relabel = False
 
-    if args.fdsn_profile:
-        cfg.station.fdsnws.set_url_from_service_name(args.fdsn_profile)
-        cfg.station.info_sta = cfg.station.fdsnws.get_url()
+    if args.fdsn_event_profile:
+        cfg.fdsnws_event.set_url_from_service_name(args.fdsn_event_profile)
+        ic(cfg.fdsnws_event.get_url())
 
     output_format = "QUAKEML"
 
@@ -162,9 +162,6 @@ if __name__ == "__main__":
             cfg.nll.nlloc_bin,
             cfg.nll.scat2latlon_bin,
             cfg.nll.time_path,
-            # cfg.nll.template_path,
-            # "../nll_template/nll_haslach-0.2_template.conf",
-            # "../nll_template/nll_rittershoffen_template.conf",
             #
             tmpdir=tmp_path,
             double_pass=cfg.relocation.double_pass,
@@ -184,15 +181,16 @@ if __name__ == "__main__":
             #
             zones=cfg.zones,
             force_zone_name=args.zone_name,
-            relabel_pick_zone=enable_relabel,  # to be added in the configuration file
-            cleanup_pick_zone=True,  # to be added in the configuration file
+            min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
+            enable_relabel_pick_zone=enable_relabel,
+            enable_cleanup_pick_zone=True,
             #
             log_level=numeric_level,
         )
 
         try:
             cat = reloc_fdsn_event(
-                locator, args.event_id, cfg.station.fdsnws.get_url(), args.zone_name
+                locator, args.event_id, cfg.fdsnws_event.get_url(), args.zone_name
             )
         except Exception as e:
             logger.error(f"Error with {args.event_id}: {e}")
