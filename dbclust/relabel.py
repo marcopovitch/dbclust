@@ -31,7 +31,7 @@ logger.setLevel(logging.INFO)
 def get_value_from_key_in_list_of_dict(
     key: str, array: List[Dict[str, float]]
 ) -> Union[str, None]:
-    #ic(key, array)
+    # ic(key, array)
     for i in array:
         if key in i:
             return i[key]
@@ -166,7 +166,7 @@ def get_best_polygon_for_point(
                 sigma = 1
             # Normalized probability
             proba = norm.pdf(dist, mu, sigma) / norm.pdf(0, mu, sigma)
-            #ic(dist, sigma, proba)
+            # ic(dist, sigma, proba)
             polygon_score[zone_polygon["name"]] = proba
 
     if not polygon_score:
@@ -234,7 +234,9 @@ def get_distance_between_longest_edges(
 
     # There is warning when computing the minimum rotated rectangle
     # but the result is correct regarding the distance between the longest edges
-    coords = list(p.minimum_rotated_rectangle.exterior.coords)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        coords = list(p.minimum_rotated_rectangle.exterior.coords)
 
     edges = []
     for i in range(len(coords) - 1):
