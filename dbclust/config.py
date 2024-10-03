@@ -157,7 +157,7 @@ class FdsnConfig:
     def __post_init__(self) -> None:
         # check url validity for each service
         for key, value in self.hosts.items():
-            if not is_valid_url(value, syntax_only=False):
+            if not is_valid_url(value, syntax_only=True):
                 raise URLError(f"{key} URL {value} is not valid !")
         self.url = self.hosts[self.default]
 
@@ -225,7 +225,7 @@ class StationConfig:
                 self.inventory.extend(read_inventory(f))
                 self.info_sta = self.inventory
         else:
-            logger.info(f"Using fdsnws {self.fdsnws.url} to get station coordinates.")
+            logger.debug(f"Using fdsnws {self.fdsnws.url} to get station coordinates.")
             self.info_sta = self.fdsnws.get_url()
 
 
@@ -452,6 +452,21 @@ class Zones:
             raise ValueError(f"Zones defined ... but empty !")
 
         self.polygons = gpd.GeoDataFrame(records)
+
+    def get_velocity_profile_name(self, zone_name: str) -> str:
+        """Get velocity profile name from zone name
+
+        Args:
+            zone_name (str): zone name
+
+        Returns:
+            str: velocity profile name
+        """
+        for zone in self.zones:
+            if zone.name == zone_name:
+                return zone.velocity_profile
+        return ""
+
 
     def get_zone_from_name(self, name: str) -> gpd.GeoDataFrame:
         """Get zone given it's name
