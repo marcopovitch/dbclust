@@ -329,13 +329,25 @@ class NonLinLocConfig:
 
 @dataclass
 class RelocationConfig:
+    P_time_residual_threshold: Union[float, None]
+    S_time_residual_threshold: Union[float, None]
     double_pass: bool
     keep_manual_picks: bool
     use_deactivated_arrivals: bool
     use_pick_zone: bool
-    P_time_residual_threshold: Union[float, None]
-    S_time_residual_threshold: Union[float, None]
     dist_km_cutoff: Optional[float] = None
+
+    # enable pick relabeling based on pick zone and score threshold
+    # supersed P and S time residual threshold
+    # the pick zone is defined in the zones section
+    use_pick_zone: Optional[bool] = False
+    # only used if use_pick_zone is True
+    # relabel pick if score is above this threshold
+    min_score_threshold_pick_zone: Optional[float] = 1
+    enable_relabel_pick_zone: Optional[bool] = False
+    # remove outliers from pick zone
+    enable_cleanup_pick_zone: Optional[bool] = False
+
 
 
 @dataclass
@@ -466,7 +478,6 @@ class Zones:
             if zone.name == zone_name:
                 return zone.velocity_profile
         return ""
-
 
     def get_zone_from_name(self, name: str) -> gpd.GeoDataFrame:
         """Get zone given it's name
@@ -700,6 +711,7 @@ class ParallelConfig:
         return math.ceil((end - start) / pd.Timedelta(freq))
 
 
+@dataclass
 class DBClustConfig:
     file: FilesConfig
     pick: PickConfig
@@ -713,6 +725,7 @@ class DBClustConfig:
     pyocto: PyoctoConfig
     zones: Zones
     parallel: ParallelConfig
+    fdsnws_event: FdsnConfig
 
     def __init__(self, filename, config_type="std") -> None:
         self.filename = filename
