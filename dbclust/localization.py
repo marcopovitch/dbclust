@@ -108,6 +108,7 @@ class NllLoc(object):
         keep_scat=False,
         scat_file=None,
         zones: Zones = None,  # zones (polygons) delimitation to keep picks
+        force_zone_name: str = None,  # force zone to use
         cleanup_pick_zone: bool = True,  # clean up pick outside of zone
         relabel_pick_zone: bool = False,  # relabel pick within zone
         log_level=logging.INFO,
@@ -137,6 +138,7 @@ class NllLoc(object):
         self.keep_scat = keep_scat
         self.scat_file = scat_file
         self.zones = zones
+        self.force_zone_name = force_zone_name
         self.cleanup_pick_zone = cleanup_pick_zone
         self.relabel_pick_zone = relabel_pick_zone
 
@@ -489,7 +491,10 @@ class NllLoc(object):
                 # 2. remove picks/arrivals with duplicated phases
                 # 3. remove picks/arrivals with distance > dist_km_cutoff
                 # 4. relabel pick within zone
-                zone, dist = self.zones.find_zone(o.latitude, o.longitude)
+                if self.force_zone_name:
+                    zone = self.zones.get_zone_from_name(self.force_zone_name)
+                else:
+                    zone, _ = self.zones.find_zone(o.latitude, o.longitude)
                 # ic(model_id, zone)
                 # keep track of relabel for later user
                 # as info on the event will be lost
@@ -966,6 +971,7 @@ class NllLoc(object):
 
         if df_polygons.empty:
             logger.warning("No polygon defined in zone. Can't cleanup picks.")
+            # ic(zone)
         else:
             region_name = df_polygons["region"].unique()[0]
 
@@ -1104,14 +1110,15 @@ class NllLoc(object):
                             conflict = True
                             break
                 if conflict:
+                    original_phase = arrival.phase
                     # add comment to arrival, and keep track of it
                     relabel_key, comment = add_relabel_comment_to_arrival(
                         arrival,
                         pick,
-                        key,
+                        original_phase,
                         evaluation_score,
                         polygons_score,
-                        "already set",
+                        "ignored: already set",
                     )
                     relabel[relabel_key] = comment
                     continue
@@ -1405,7 +1412,7 @@ def show_bulletin(
         )
 
 
-def reloc_fdsn_event(locator: NllLoc, eventid: str, fdsnws: str) -> Catalog:
+def reloc_fdsn_event(locator: NllLoc, eventid: str, fdsnws: str, zone_name: str) -> Catalog:
     """
     Retrieves earthquake event information from a FDSN web service
     and performs relocation using a locator object.
@@ -1414,6 +1421,7 @@ def reloc_fdsn_event(locator: NllLoc, eventid: str, fdsnws: str) -> Catalog:
         locator (Locator): The locator object used for event relocation.
         eventid (str): The ID of the earthquake event.
         fdsnws (str): The URL of the FDSN web service.
+        zone_name (str): The name of the zone to be used for relocation (forced).
 
     Returns:
         Catalog: A catalog object containing the relocated earthquake event.
@@ -1439,29 +1447,23 @@ def reloc_fdsn_event(locator: NllLoc, eventid: str, fdsnws: str) -> Catalog:
     event = cat[0]
 
     if locator.zones:
-        if locator.quakeml_settings["model_id"]:
-            # Force the model_id if defined in the settings
-            logger.info(
-                f"Forcing model_id to {locator.quakeml_settings['model_id']} for event {eventid}."
-            )
-
-            # get the corresponding template
-            zone = locator.zones.get_zone_from_name(
-                locator.quakeml_settings["model_id"]
-            )
-
-            if zone is gpd.GeoDataFrame():
-                locator.zones.show_zones()
-                raise ValueError(
-                    f"Model {locator.quakeml_settings['model_id']} not found."
-                )
+        if zone_name:
+            logger.info( f"Forcing zone to {zone_name}.")
+            zone = locator.zones.get_zone_from_name(zone_name)
         else:
             # Find the zone and set the velocity model and the nll template
             zone, _ = locator.zones.find_zone(
                 event.origins[0].latitude, event.origins[0].longitude
             )
-            locator.quakeml_settings["model_id"] = zone.velocity_profile
-            logger.info(f"Using {zone.velocity_profile} for event {eventid}.")
+        if zone.empty:
+            locator.zones.show_zones()
+            raise ValueError( f"Zone {zone_name} not found.")
+
+
+        locator.quakeml_settings["model_id"] = zone.velocity_profile
+        logger.info(
+            f"Using {zone['name']} zone, {locator.quakeml_settings['model_id']} model_id for event {eventid}."
+        )
 
         # Set the nll template according to the zone
         if zone.empty:
