@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import sys
+import warnings
 from collections import OrderedDict
 from functools import lru_cache
 from typing import Dict
@@ -224,8 +225,16 @@ def get_distance_between_longest_edges(
     Returns:
         Tuple[float, List[LineString]]: A tuple containing the distance between the longest edges and the longest edges.
     """
+    # warnings.filterwarnings("error")
+    # try:
+    #     coords = list(p.minimum_rotated_rectangle.exterior.coords)
+    # except Exception as e:
+    #     ic(e, name, p, p.minimum_rotated_rectangle)
+    # warnings.resetwarnings()
+
+    # There is warning when computing the minimum rotated rectangle
+    # but the result is correct regarding the distance between the longest edges
     coords = list(p.minimum_rotated_rectangle.exterior.coords)
-    # To be done: catch warning for minimum_rotated_rectangle
 
     edges = []
     for i in range(len(coords) - 1):
