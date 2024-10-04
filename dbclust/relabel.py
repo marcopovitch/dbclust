@@ -53,7 +53,7 @@ def format_floats(d: dict) -> None:
                     format_floats(item)
 
 
-def add_relabel_comment_to_arrival(
+def relabel_phase_and_comment_arrival(
     arrival: Arrival,
     pick: Pick,
     key: str,
@@ -62,7 +62,7 @@ def add_relabel_comment_to_arrival(
     force_status: str = None,
 ) -> Union[str, str]:
     """
-    Adds a relabel comment to the arrival object.
+    Relabel phase name and add comment to the arrival object.
     Parameters:
         arrival (Arrival): The arrival object to add the comment to.
         pick (Pick): The pick object associated with the arrival.
@@ -76,12 +76,13 @@ def add_relabel_comment_to_arrival(
     Example: json format of the comment:
         {
             "relabel": {
+                "prev_phase": "Sg"
                 "action": "set by user",
                 "eval_score": "0.9970",
                 "scores": {
-                    "Pn": "0.0003",
                     "Sg": "0.9083",
-                    "Sn": "0.0028"
+                    "Sn": "0.0028",
+                    "Pn": "0.0003"
                 }
             }
         }
@@ -98,6 +99,7 @@ def add_relabel_comment_to_arrival(
     # json format
     comment_dict = {
         "relabel": {
+            "prev_phase": arrival.phase,
             "action": force_status,
             "eval_score": evaluation_score,
             "scores": polygons_score,

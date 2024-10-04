@@ -57,8 +57,8 @@ from plot import plot_arrival_time
 from prettytable import PrettyTable
 from quakeml import deduplicate_picks
 from ray.util.multiprocessing import Pool
-from relabel import add_relabel_comment_to_arrival
 from relabel import get_best_polygon_for_point
+from relabel import relabel_phase_and_comment_arrival
 from shapely import distance
 from shapely import prepare
 from shapely import within
@@ -248,7 +248,11 @@ class NllLoc(object):
         else:
             cat = Catalog()
             cat.append(event)
+            #logger.warning("relocation failed")
+            # raise a warning
             logger.warning("relocation failed")
+            #warnings.simplefilter('always')
+            #warnings.warn("relocation failed", UserWarning)
 
         return cat
 
@@ -390,8 +394,8 @@ class NllLoc(object):
                 logger.error(line)
             elif any(k in line for k in ("ABORTED", "IGNORED", "REJECTED")):
                 # check if location was rejected
-                why = " ".join(line.split()[3:]).replace('"', "")
-                logger.info(f"Localization was ABORTED|IGNORED|REJECTED: {why}")
+                why = " ".join(line.split()[3:]).replace('"', "").replace("WARNING: ", "")
+                logger.warning(f"Localization was ABORTED|IGNORED|REJECTED: {why}")
                 return Catalog()
             elif "scatter_volume" in line:
                 l = line.split("scatter_volume")
@@ -1040,7 +1044,7 @@ class NllLoc(object):
                         f"has no polygon defined in {region_name}. Removing it."
                     )
                     # add comment to arrival, and keep track of it
-                    relabel_key, comment = add_relabel_comment_to_arrival(
+                    relabel_key, comment =relabel_phase_and_comment_arrival (
                         arrival,
                         pick,
                         key,
@@ -1067,7 +1071,7 @@ class NllLoc(object):
                         f"Nothing to do."
                     )
                     # add comment to arrival, and keep track of it
-                    relabel_key, comment = add_relabel_comment_to_arrival(
+                    relabel_key, comment = relabel_phase_and_comment_arrival(
                         arrival,
                         pick,
                         key,
@@ -1085,7 +1089,7 @@ class NllLoc(object):
                         f"Selecting {key} zone (already set by user). Noting to do."
                     )
                     # add comment to arrival, and keep track of it
-                    relabel_key, comment = add_relabel_comment_to_arrival(
+                    relabel_key, comment = relabel_phase_and_comment_arrival(
                         arrival,
                         pick,
                         key,
@@ -1117,7 +1121,7 @@ class NllLoc(object):
                 if conflict:
                     original_phase = arrival.phase
                     # add comment to arrival, and keep track of it
-                    relabel_key, comment = add_relabel_comment_to_arrival(
+                    relabel_key, comment = relabel_phase_and_comment_arrival(
                         arrival,
                         pick,
                         original_phase,
@@ -1135,7 +1139,7 @@ class NllLoc(object):
                 )
 
                 # add comment to arrival, and keep track of it
-                relabel_key, comment = add_relabel_comment_to_arrival(
+                relabel_key, comment = relabel_phase_and_comment_arrival(
                     arrival, pick, key, evaluation_score, polygons_score
                 )
                 relabel[relabel_key] = comment
