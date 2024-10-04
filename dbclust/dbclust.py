@@ -87,17 +87,25 @@ def get_locator_from_config(cfg, log_level=logging.INFO):
         cfg.nll.time_path,
         cfg.nll.template_path,
         tmpdir=cfg.file.tmp_path,
+        #
         double_pass=cfg.relocation.double_pass,
         P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
         S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
         dist_km_cutoff=cfg.relocation.dist_km_cutoff,
-        # use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,  ## not yet in config
+        use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,
         keep_manual_picks=cfg.relocation.keep_manual_picks,
         nll_min_phase=cfg.nll.min_phase,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         quakeml_settings=asdict(cfg.quakeml),
         nll_verbose=cfg.nll.verbose,
         keep_scat=cfg.nll.enable_scatter,
+        #
+        zones=cfg.zones,
+        force_zone_name=None,
+        min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
+        enable_relabel_pick_zone=cfg.relocation.enable_relabel_pick_zone,
+        enable_cleanup_pick_zone=cfg.relocation.enable_cleanup_pick_zone,
+        #
         log_level=log_level,
     )
     return locator
@@ -262,10 +270,10 @@ def dbclust(
                 frequencies < cfg.station.frequency_threshold
             ].index
             df_subset = df_subset[df_subset["station_id"].isin(station_ids_to_keep)]
-            ic(
-                total_duration_in_minutes,
-                frequencies[frequencies >= cfg.station.frequency_threshold],
-            )
+            # ic(
+            #     total_duration_in_minutes,
+            #     frequencies[frequencies >= cfg.station.frequency_threshold],
+            # )
 
         # rename station_id
         if cfg.station.rename:
