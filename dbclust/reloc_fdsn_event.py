@@ -7,13 +7,13 @@ import urllib.parse
 from dataclasses import asdict
 from shutil import copyfile
 
-import yaml
 from config import DBClustConfig
 from icecream import ic
 from localization import NllLoc
 from localization import reloc_fdsn_event
 from localization import show_bulletin
 from localization import show_event
+from obspy import read_events
 
 from dbclust import MyTemporaryDirectory
 
@@ -47,6 +47,13 @@ if __name__ == "__main__":
         default=None,
         dest="event_id",
         help="event id",
+        type=str,
+    )
+    parser.add_argument(
+        "--event",
+        default=None,
+        dest="event",
+        help="event in QuakeML format",
         type=str,
     )
     parser.add_argument(
@@ -113,8 +120,8 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    if not args.profile_conf_file or not args.event_id:
-        parser.print_help()
+    if not args.profile_conf_file:
+        logger.error("Please provide a profile configuration file")
         sys.exit()
 
     numeric_level = getattr(logging, args.loglevel.upper(), None)
@@ -151,9 +158,23 @@ if __name__ == "__main__":
     else:
         enable_relabel = False
 
+    if args.event_id and args.event:
+        logger.error("Please provide only one event source")
+        sys.exit()
+
     if args.fdsn_event_profile:
         cfg.fdsnws_event.set_url_from_service_name(args.fdsn_event_profile)
         ic(cfg.fdsnws_event.get_url())
+
+    if args.event:
+        cat = read_events(args.event)
+        if len(cat) == 0:
+            logger.error("No event found in QuakeML file")
+            sys.exit()
+        elif len(cat) > 1:
+            logger.error("More than one event found in QuakeML file")
+            sys.exit()
+        event = cat.events[0]
 
     output_format = "QUAKEML"
 
@@ -189,13 +210,21 @@ if __name__ == "__main__":
         )
 
         try:
-            cat = reloc_fdsn_event(
-                locator, args.event_id, cfg.fdsnws_event.get_url(), args.zone_name
-            )
+            if args.event:
+                cat = reloc_fdsn_event(locator, event=event, zone_name=args.zone_name)
+            else:
+                cat = reloc_fdsn_event(
+                    locator,
+                    args.event_id,
+                    cfg.fdsnws_event.get_url(),
+                    zone_name=args.zone_name,
+                )
         except Exception as e:
-            logger.error(f"Error with {args.event_id}: {e}")
+            logger.error(f"Error: {e}")
             traceback.print_exc()
             sys.exit()
+
+        event_id = cat[0].resource_id.id.split("/")[-1]
 
         for e in cat:
             show_event(e, "****", header=True)
@@ -207,14 +236,14 @@ if __name__ == "__main__":
 
         file_extension = output_format.lower()
         cat.write(
-            f"{urllib.parse.quote(args.event_id, safe='')}.{file_extension}",
+            f"{urllib.parse.quote(event_id, safe='')}.{file_extension}",
             format=output_format,
         )
         if locator.scat_file:
             try:
                 copyfile(
                     locator.scat_file,
-                    f"{urllib.parse.quote(args.event_id, safe='')}.scat",
+                    f"{urllib.parse.quote(event_id, safe='')}.scat",
                 )
             except Exception as e:
                 logger.error("Can't get nll scat file (%s)", e)
