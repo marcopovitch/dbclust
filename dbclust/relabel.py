@@ -86,6 +86,7 @@ def relabel_phase_and_comment_arrival(
                 }
             }
         }
+
     """
 
     if not force_status:
@@ -174,20 +175,6 @@ def get_best_polygon_for_point(
     if not polygon_score:
         logger.debug(f"Point {point} is not in any zone.")
         return None, None, polygon_score, 0
-
-    # check key name for multiple polygons with the same phase Pg, Pn or Sg, Sn
-    # if len([k for k in polygon_score.keys() if phase[0] in k]) > 1:
-    #     logger.info(f"Point {point} is in zone inside multiple polygons. ")
-    #     return None, None, polygon_score, 0
-
-    # Do not allow multiple polygons with proba > proba_threshold
-    # if len([p for p in polygon_score.values() if p >= proba_threshold]) > 1:
-    #     ic(polygon_score)
-    #     logger.info(
-    #         f"Point {point} is in a complex zone. "
-    #         f"There are at least two polygons with proba > {proba_threshold}."
-    #     )
-    #     return None, None, polygon_score
 
     # Quantify the difference (in %) between the two probabilities
     if len(polygon_score) > 1:
