@@ -248,11 +248,11 @@ class NllLoc(object):
         else:
             cat = Catalog()
             cat.append(event)
-            #logger.warning("relocation failed")
+            # logger.warning("relocation failed")
             # raise a warning
             logger.warning("relocation failed")
-            #warnings.simplefilter('always')
-            #warnings.warn("relocation failed", UserWarning)
+            # warnings.simplefilter('always')
+            # warnings.warn("relocation failed", UserWarning)
 
         return cat
 
@@ -394,7 +394,9 @@ class NllLoc(object):
                 logger.error(line)
             elif any(k in line for k in ("ABORTED", "IGNORED", "REJECTED")):
                 # check if location was rejected
-                why = " ".join(line.split()[3:]).replace('"', "").replace("WARNING: ", "")
+                why = (
+                    " ".join(line.split()[3:]).replace('"', "").replace("WARNING: ", "")
+                )
                 logger.warning(f"Localization was ABORTED|IGNORED|REJECTED: {why}")
                 return Catalog()
             elif "scatter_volume" in line:
@@ -534,7 +536,9 @@ class NllLoc(object):
                 event2 = cat2.events[0]
                 orig2 = event2.preferred_origin()
 
-                # synchronize current event phase's comments with relabel_dict info
+                # Synchronize current event phase's comments with relabel_dict info
+                # 1. add relabel phase according to relabel_dict
+                # 2. deactivate arrival if needed
                 if self.enable_cleanup_pick_zone:
                     for arrival in orig2.arrivals:
                         pick = next(
@@ -550,6 +554,11 @@ class NllLoc(object):
                         key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
                         if key in relabel_dict.keys():
                             arrival.comments.append(relabel_dict[key])
+                            c = relabel_dict[key].text
+                            info = json.loads(c)
+                            if "removed" in info["relabel"]["action"]:
+                                # deactivate arrival
+                                arrival.time_weight = 0
 
                 # add this new origin to catalog and set it as preferred
                 e.origins.append(orig2)
@@ -585,18 +594,16 @@ class NllLoc(object):
             # there is always only one event in the catalog
             e = cat.events[0]
             o = e.preferred_origin()
-            # nb_station_used = o.quality.used_station_count
             o.quality.used_station_count = self.get_used_station_count(e, o)
-            # nb_station_used = o.quality.used_station_count
-            nb_phase_used = o.quality.used_phase_count
-            # if nb_station_used >= self.nll_min_phase:
-            if nb_phase_used >= self.nll_min_phase:
+            o.quality.used_phase_count = self.get_used_phase_count(e, o)
+
+            if o.quality.used_phase_count >= self.nll_min_phase:
                 count = self.check_stations_with_P_and_S(
                     e, o, self.min_station_with_P_and_S
                 )
                 if count >= self.min_station_with_P_and_S:
                     logger.info(
-                        f"{nb_phase_used} phases, {o.quality.used_station_count} stations "
+                        f"{o.quality.used_phase_count} phases, {o.quality.used_station_count} stations "
                         f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
                     )
                     mycatalog += cat
@@ -607,7 +614,7 @@ class NllLoc(object):
                     )
             else:
                 logger.debug(
-                    f"Not enough phases ({nb_phase_used}/{self.nll_min_phase}) for event"
+                    f"Not enough phases ({o.quality.used_phase_count}/{self.nll_min_phase}) for event"
                     f" ... ignoring it !"
                 )
 
@@ -871,14 +878,24 @@ class NllLoc(object):
 
         Keep (forced):
             - pick with evaluation_mode set "manual" if keep_manual_picks is True
+            - bypass relabel steps
 
         Update "used_station_count" and "used_phase_count" in origin quality.
+
+        status set:
+            * 'relabel': relabel done (ie. no conflicts, score above threshold)
+            * 'set by user': already set by user in accordance with the polygon found (do not relabel it)
+            * 'score too low': score is too low, nothing done
+            * 'ignored: already set': pick is manual, conflicts with an already existing pick, do nothing
+            * "removed: already set": pick is automatic, conflicts with an already existing pick, remove it
+            * 'removed': pick is not within a polygon
 
         Args:
             event (Event): event to work on
 
         Returns:
             Event: modified event
+
         """
         orig = event.preferred_origin()
         pick_to_delete = []
@@ -967,10 +984,8 @@ class NllLoc(object):
 
         # update "stations used" with weight > 0
         orig = event.preferred_origin()
-        orig.quality.used_phase_count = len(
-            [a.time_weight for a in orig.arrivals if a.time_weight]
-        )
         orig.quality.used_station_count = NllLoc.get_used_station_count(event, orig)
+        orig.quality.used_phase_count = NllLoc.get_used_phase_count(event, orig)
         return event
 
     def cleanup_picks_and_relabel_picks(
@@ -1044,7 +1059,7 @@ class NllLoc(object):
                         f"has no polygon defined in {region_name}. Removing it."
                     )
                     # add comment to arrival, and keep track of it
-                    relabel_key, comment =relabel_phase_and_comment_arrival (
+                    relabel_key, comment = relabel_phase_and_comment_arrival(
                         arrival,
                         pick,
                         key,
@@ -1120,6 +1135,21 @@ class NllLoc(object):
                             break
                 if conflict:
                     original_phase = arrival.phase
+
+                    # if the current arrival corresponds to an automatic pick, we remove it
+                    # otherwise it is a manual so we just ignore it
+                    if pick.evaluation_mode in [
+                        "automatic",
+                        None,
+                    ] and arrival.phase in ["P", "S"]:
+                        # do not remove picks and arrivals here
+                        # but rather disable them later
+                        #pick_to_delete.append(pick)
+                        #arrival_to_delete.append(arrival)
+                        action = "removed: already set"
+                    else:
+                        action = "ignored: already set"
+
                     # add comment to arrival, and keep track of it
                     relabel_key, comment = relabel_phase_and_comment_arrival(
                         arrival,
@@ -1127,7 +1157,7 @@ class NllLoc(object):
                         original_phase,
                         evaluation_score,
                         polygons_score,
-                        "ignored: already set",
+                        force_status=action,
                     )
                     relabel[relabel_key] = comment
                     continue
@@ -1151,10 +1181,8 @@ class NllLoc(object):
             event.picks.remove(p)
 
         # update "stations used" with weight > 0
-        orig.quality.used_phase_count = len(
-            [a.time_weight for a in orig.arrivals if a.time_weight]
-        )
         orig.quality.used_station_count = NllLoc.get_used_station_count(event, orig)
+        orig.quality.used_phase_count = NllLoc.get_used_phase_count(event, orig)
         return event, relabel
 
     @staticmethod
@@ -1171,7 +1199,10 @@ class NllLoc(object):
         """
         station_list = []
         for arrival in origin.arrivals:
-            if arrival.time_weight and arrival.time_residual:
+            #if arrival.time_weight and arrival.time_residual:
+            if hasattr(arrival, "time_weight") and not isclose(
+                arrival.time_weight, 0, abs_tol=0.001
+            ):
                 pick = next(
                     (p for p in event.picks if p.resource_id == arrival.pick_id), None
                 )
@@ -1196,7 +1227,10 @@ class NllLoc(object):
         """
         nb_phase_used = 0
         for arrival in origin.arrivals:
-            if arrival.time_weight and arrival.time_residual:
+            #if arrival.time_weight and arrival.time_residual:
+            if hasattr(arrival, "time_weight") and not isclose(
+                arrival.time_weight, 0, abs_tol=0.001
+            ):
                 pick = next(
                     (p for p in event.picks if p.resource_id == arrival.pick_id), None
                 )
@@ -1409,7 +1443,11 @@ def show_bulletin(
 
 
 def reloc_fdsn_event(
-    locator: NllLoc, eventid: str, fdsnws: str, zone_name: str
+    locator: NllLoc,
+    eventid: str = None,
+    fdsnws: str = None,
+    event: Event = None,
+    zone_name: str = None,
 ) -> Catalog:
     """
     Retrieves earthquake event information from a FDSN web service
@@ -1430,19 +1468,27 @@ def reloc_fdsn_event(
         ValueError: If the specified model ID or template is not found.
     """
 
-    link = f"{fdsnws}/query?eventid={urllib.parse.quote(eventid, safe='')}&includearrivals=true"
-    logger.debug(link)
+    if eventid is None and event is None:
+        raise ValueError("No eventid or event provided.")
 
-    try:
-        with urllib.request.urlopen(link) as f:
-            cat = read_events(f.read())
-    except Exception as e:
-        raise ValueError(f"Error with {link}, cant't get/read eventid {eventid} ({e})")
+    if eventid:
+        link = f"{fdsnws}/query?eventid={urllib.parse.quote(eventid, safe='')}&includearrivals=true"
+        logger.debug(link)
 
-    if not cat:
-        raise ValueError(f"[{eventid}] no such eventid !")
+        try:
+            with urllib.request.urlopen(link) as f:
+                cat = read_events(f.read())
+        except Exception as e:
+            raise ValueError(
+                f"Error with {link}, cant't get/read eventid {eventid} ({e})"
+            )
 
-    event = cat[0]
+        if not cat:
+            raise ValueError(f"[{eventid}] no such eventid !")
+
+        event = cat[0]
+    else:
+        eventid = event.resource_id.id
 
     if locator.zones:
         if zone_name:
