@@ -9,6 +9,35 @@ from typing import List
 
 import pandas as pd
 from obspy import read_events
+from obspy.core.event import Event
+from obspy.core.event import Origin
+
+"""
+This script processes seismic event data from a QuakeML file and exports the picks to a CSV file in a format compatible with DBClust.
+
+Functions:
+    filter_LDG_P_S(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        Filters out P and S phase picks for LDG agency if Pn, Pg, Sn, or Sg phases are present for the same station.
+
+    export_picks_to_phasenet_format(
+        Exports picks from an event to a list of dictionaries in DBClust format.
+
+Usage:
+    Run the script with the following command-line arguments:
+        -i, --input: Input QuakeML file (required)
+        -o, --output: Output CSV file (required)
+        -p, --probability: Set probability (default: 1)
+        -e, --evaluation: Override pick evaluation mode (automatic|manual)
+        -m, --method: Override pick method_id (AIC|PHASENET|...)
+        -a, --agency: Agency name
+        --from: Select start time window
+        --to: Select end time window
+        -l, --loglevel: Set log level (debug, warning, info, error)
+
+Example:
+    python qml2dbclust.py -i inputfile.qml -o outputfile.csv -p 0.9 -e manual -m PHASENET -a RENASS --from 2023-01-01T00:00:00 --to 2023-12-31T23:59:59 -l info
+
+"""
 
 
 def filter_LDG_P_S(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -51,9 +80,14 @@ def filter_LDG_P_S(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return filtered_lines
 
 
-def export_picks_to_phasenet_format(
-    event, origin, probability=1, evaluation=None, method=None, agency=None
-):
+def export_picks_to_dbclust_format(
+    event: Event,
+    origin: Origin,
+    probability: float = 1,
+    evaluation: str = None,
+    method: str = None,
+    agency: str = None,
+) -> List[Dict[str, Any]]:
     # seedid,phasename,time,probability
     # 1K.OFAS0.00.EH.D,P,2023-02-13T18:30:58.558999Z,0.366400
     lines = []
@@ -109,7 +143,7 @@ if __name__ == "__main__":
         "--input",
         default=None,
         dest="inputfile",
-        help="input file",
+        help="input quakeml file",
         type=str,
     )
     parser.add_argument(
@@ -117,7 +151,7 @@ if __name__ == "__main__":
         "--output",
         default=None,
         dest="outputfile",
-        help="output file",
+        help="output csv file",
         type=str,
     )
     parser.add_argument(
@@ -125,7 +159,7 @@ if __name__ == "__main__":
         "--probability",
         default=1,
         dest="probability",
-        help="probability",
+        help="set probability",
         type=float,
     )
     parser.add_argument(
@@ -156,14 +190,14 @@ if __name__ == "__main__":
         "--from",
         default=None,
         dest="from_time",
-        help="select time window start",
+        help="select start time window",
         type=str,
     )
     parser.add_argument(
         "--to",
         default=None,
         dest="to_time",
-        help="select time window end",
+        help="select end time window",
         type=str,
     )
     parser.add_argument(
@@ -221,7 +255,7 @@ if __name__ == "__main__":
     )
     for event in cat.events:
         origin = event.preferred_origin()
-        picks_list = export_picks_to_phasenet_format(
+        picks_list = export_picks_to_dbclust_format(
             event,
             origin,
             evaluation=args.evaluation,
@@ -229,12 +263,12 @@ if __name__ == "__main__":
             agency=args.agency,
         )
 
-        #df = pd.concat([df, pd.DataFrame(picks_list)], ignore_index=True)
+        # df = pd.concat([df, pd.DataFrame(picks_list)], ignore_index=True)
         picks_df = pd.DataFrame(picks_list)
         if not df.empty and not picks_df.empty:
             df = pd.concat([df, picks_df], ignore_index=True)
         elif not picks_df.empty:
-            #df = picks_df.copy()
+            # df = picks_df.copy()
             df = picks_df
 
     df.to_csv(args.outputfile, index=False)
