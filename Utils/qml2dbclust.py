@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import argparse
+import glob
 import logging
 import os
 import sys
@@ -8,6 +9,7 @@ from typing import Dict
 from typing import List
 
 import pandas as pd
+from obspy import Catalog
 from obspy import read_events
 from obspy.core.event import Event
 from obspy.core.event import Origin
@@ -225,7 +227,14 @@ if __name__ == "__main__":
         sys.exit(255)
     logger.setLevel(numeric_level)
 
-    cat = read_events(args.inputfile)
+
+    cat = Catalog()
+    for f in glob.glob(args.inputfile):
+        if not os.path.exists(f):
+            logger.error(f"File {f} does not exist !")
+        else:
+            logger.info(f"Reading QuakeML file {f}")
+            cat += read_events(f)
 
     rqt = []
     if args.from_time:
