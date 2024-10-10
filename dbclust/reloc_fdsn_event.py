@@ -81,6 +81,14 @@ if __name__ == "__main__":
         action="store_true",
     )
     parser.add_argument(
+        "-t",
+        "--min-score-threshold-pick-zone",
+        default=None,
+        dest="min_score_threshold_pick_zone",
+        help="min score threshold pick zone",
+        type=float,
+    )
+    parser.add_argument(
         "-r",
         "--relabel",
         default=False,
@@ -157,6 +165,9 @@ if __name__ == "__main__":
         enable_relabel = True
     else:
         enable_relabel = False
+
+    if args.min_score_threshold_pick_zone:
+        cfg.relocation.min_score_threshold_pick_zone = args.min_score_threshold_pick_zone
 
     if args.event_id and args.event:
         logger.error("Please provide only one event source")
