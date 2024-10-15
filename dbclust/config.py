@@ -113,7 +113,7 @@ class PickConfig:
             except:
                 raise ValueError(f"{self.filename} is not parquet formated !")
             if os.path.isdir(self.filename):
-                self.filename = os.path.join(self.filename, "*")
+                self.filename = os.path.join(self.filename, "**", "*.parquet")
         else:
             # CSV
             try:
