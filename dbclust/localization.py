@@ -74,6 +74,21 @@ logger = logging.getLogger("localization")
 logger.setLevel(logging.INFO)
 
 
+# Define the preferred phase order
+phase_order = ['Pg', 'Sg', 'Pn', 'Sn', 'P', 'S']
+
+def sort_by_phase(arrival: Arrival) -> int:
+    """
+    Sorts an Arrival object by its phase.
+    Parameters:
+        arrival (Arrival)
+    Returns:
+        int: index of the phase in the predefined phase_order list. If not found returns the length of phase_order.
+    """
+    phase = arrival.phase  # Assuming the phase is stored in arrival.phase
+    return phase_order.index(phase) if phase in phase_order else len(phase_order)
+
+
 def sort_by_cluster_file(filename: str) -> float:
     match = re.search(r"cluster-(\d+)\.obs", filename)
     if match:
@@ -1006,10 +1021,9 @@ class NllLoc(object):
         arrival_to_delete = []
         relabel = {}
 
-        for arrival in orig.arrivals:
-            pick = next(
-                (p for p in event.picks if p.resource_id == arrival.pick_id), None
-            )
+        #for arrival in orig.arrivals:
+        for arrival in sorted(orig.arrivals, key=sort_by_phase):
+            pick = get_pick_from_arrival(event, arrival)
             if pick is None:
                 logger.error(f"Can't find pick for arrival {arrival.pick_id}")
                 continue
@@ -1158,6 +1172,25 @@ class NllLoc(object):
                         evaluation_score,
                         polygons_score,
                         force_status=action,
+                    )
+                    relabel[relabel_key] = comment
+                    continue
+
+                # Check if the station is too close to the epicenter
+                if arrival.distance < 0.3:  # FIXME: hardcoded value
+                    original_phase = arrival.phase
+                    logger.debug(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
+                        f"has a distance < 0.2 deg. Do nothing."
+                    )
+                    # add comment to arrival, and keep track of it
+                    relabel_key, comment = relabel_phase_and_comment_arrival(
+                        arrival,
+                        pick,
+                        original_phase,
+                        evaluation_score,
+                        polygons_score,
+                        "ignored: distance < 0.2 deg",
                     )
                     relabel[relabel_key] = comment
                     continue
