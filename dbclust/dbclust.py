@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import warnings
 from dataclasses import asdict
 from functools import partial
@@ -224,8 +225,29 @@ def dbclust(
 
         # Extract picks on this time period
         if con:
-            rqt = f"SELECT * FROM PICKS WHERE phase_time BETWEEN '{begin}' AND '{end}'"
+            begin_year = begin.year
+            begin_month = begin.month
+            end_year = end.year
+            end_month = end.month
+
+            rqt = f"""
+                SELECT * FROM PICKS
+                WHERE
+                (year > {begin_year} OR (year = {begin_year} AND month >= {begin_month}))
+                AND
+                (year < {end_year} OR (year = {end_year} AND month <= {end_month}))
+                AND
+                phase_time BETWEEN '{begin}' AND '{end}'
+            """
+
+            #rqt = f"SELECT * FROM PICKS WHERE phase_time BETWEEN '{begin}' AND '{end}'"
+
+            # Time meseaure of the query
+            start_time = time.time()
             df_subset = con.sql(rqt).fetchdf()
+            elapsed_time = time.time() - start_time
+            logger.infof("Query time: {elapsed_time:.2f} s")
+
             df_subset["phase_time"] = df_subset["phase_time"].dt.tz_localize("UTC")
         else:
             df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
