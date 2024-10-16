@@ -246,7 +246,7 @@ def dbclust(
             start_time = time.time()
             df_subset = con.sql(rqt).fetchdf()
             elapsed_time = time.time() - start_time
-            logger.infof("Query time: {elapsed_time:.2f} s")
+            logger.info(f"Query time: {elapsed_time:.2f} s")
 
             df_subset["phase_time"] = df_subset["phase_time"].dt.tz_localize("UTC")
         else:
