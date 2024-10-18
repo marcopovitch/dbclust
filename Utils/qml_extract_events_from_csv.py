@@ -67,15 +67,17 @@ if __name__ == "__main__":
         sys.exit(1)
 
     _, qml_ext = os.path.splitext(args.outputfile)
-    if qml_ext != ".qml":
-        print(f"'{args.qmlfile}' should have '.qml' extension !")
+    if qml_ext not in [".qml", ".sc3ml"]:
+        print(f"'{args.qmlfile}' should have '.qml' or 'sc3ml' extension !")
         sys.exit(1)
 
     if os.path.exists(args.outputfile):
         print(f"'{args.outputfile}' already exits !")
         sys.exit(1)
 
+    print(f"Reading '{args.csvfile}'")
     df = pd.read_csv(args.csvfile)
+    print(f"Reading '{args.qmlfile}'")
     cat = read_events(args.qmlfile)
 
     cat_keep = Catalog()
@@ -88,9 +90,11 @@ if __name__ == "__main__":
     cat_keep.events = to_keep
 
     # Write the output file to QML format
+    print(f"Writing to '{args.outputfile}'")
     cat_keep.write(args.outputfile, format="QUAKEML")
-    output_sc3ml = args.outputfile.replace(".qml", ".sc3ml")
 
     # Write the output file to SC3ML format
+    print(f"Writing to '{args.outputfile}'")
+    output_sc3ml = args.outputfile.replace(".qml", ".sc3ml")
     cat_keep.write(output_sc3ml, format="SC3ML")
     modify_sc3ml_version(output_sc3ml)
