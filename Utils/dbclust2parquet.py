@@ -199,7 +199,7 @@ def export_phasenet_to_parquet(
 
     # Ensure 'phase_time' / 'idxtime' is the index
     df["idxtime"] = df["phase_time"]
-    df = df.set_index("idxtime", sorted=True)
+    df = df.set_index("idxtime")
 
     # Check if the index is a datetime type
     if not pd.api.types.is_datetime64_any_dtype(df.index):
@@ -259,9 +259,12 @@ def export_dbclust_to_parquet(
     )
     df["phase_time"] = df["phase_time"].dt.round("0.0001s")
 
+    df = df.sort_values(by='phase_time').compute()
+
+
     # Ensure 'phase_time' / 'idxtime' is the index
     df["idxtime"] = df["phase_time"]
-    df = df.set_index("idxtime", sorted=True)
+    df = df.set_index("idxtime")
 
     # Check if the index is a datetime type
     if not pd.api.types.is_datetime64_any_dtype(df.index):
@@ -270,7 +273,7 @@ def export_dbclust_to_parquet(
     # handle the partition
     df["year"] = df["phase_time"].dt.year
     df["month"] = df["phase_time"].dt.month
-    df["day"] = df["phase_time"].dt.day
+    # df["day"] = df["phase_time"].dt.day
 
     col_order = [
         "station_id",
@@ -283,8 +286,11 @@ def export_dbclust_to_parquet(
         "event_id",
         "agency",
     ]
-    col_order += ["year", "month", "day"]
+    #col_order += ["year", "month", "day"]
+    col_order += ["year", "month"]
     df = df[col_order]
+
+    df = dd.from_pandas(df, npartitions=4)
 
     # Export the partitioned Dask DataFrame to a Parquet file
     df.to_parquet(
@@ -293,7 +299,7 @@ def export_dbclust_to_parquet(
         compression="snappy",
         append=True,
         write_index=False,
-        partition_on=["year", "month", "day"],
+        partition_on=["year", "month"],
     )
 
 
