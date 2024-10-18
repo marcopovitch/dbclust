@@ -13,7 +13,7 @@ from obspy import read_events
 from obspy import UTCDateTime
 
 
-def process_month(cat: Catalog, year: int, month: int, output_dir: str) -> None:
+def process_month(cat: Catalog, year: int, month: int, output_dir: str, split_by_event: bool=True) -> None:
     starttime = UTCDateTime(year, month, 1)
     if month == 12:
         endtime = UTCDateTime(year + 1, 1, 1)
@@ -23,12 +23,25 @@ def process_month(cat: Catalog, year: int, month: int, output_dir: str) -> None:
     if len(month_cat) == 0:
         return
 
-    # split filename
-    split_file = f"{output_dir}/{year}_{month}.sc3ml"
-    print(split_file)
-    # suppress the warning about the version of QuakeML
-    month_cat.write(split_file, format="SC3ML")
-    modify_sc3ml_version(split_file)
+    if split_by_event:
+        # split the catalog by events and write each event in year/month directory
+        for e in month_cat.events:
+            event_id = e.resource_id.id.split("/")[-1]
+            year = e.origins[0].time.year
+            # month zero padded
+            month = f"{e.origins[0].time.month:02d}"
+            os.makedirs(f"{output_dir}/{year}/{month}", exist_ok=True)
+            path = f"{output_dir}/{year}/{month}"
+            event_file = f"{path}/{event_id}.qml"
+            e.write(event_file, format="QUAKEML")
+    else:
+        # split catalog by year and month in a single sc3ml file
+        split_file = f"{output_dir}/{year}_{month}.sc3ml"
+        print(split_file)
+        # suppress the warning about the version of QuakeML
+        month_cat.write(split_file, format="SC3ML")
+        modify_sc3ml_version(split_file)
+
 
 
 def split(filename: str, output_dir: str, n_jobs: int = 4) -> None:
@@ -55,7 +68,7 @@ def split(filename: str, output_dir: str, n_jobs: int = 4) -> None:
         )
 
 
-def modify_sc3ml_version(filename: str):
+def modify_sc3ml_version(filename: str) -> None:
     # Substitute in filename using sed command
     # String to convert:
     # xmlns="http://geofon.gfz-potsdam.de/ns/seiscomp3-schema/0.12 by xmlns="http://geofon.gfz-potsdam.de/ns/seiscomp3-schema/0.11
@@ -100,9 +113,9 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"Catalog file '{args.catalog}' does not exist.")
 
     # Verify if directory does not exist
-    if os.path.exists(args.directory):
-        raise FileExistsError(f"Output directory '{args.directory}' already exists.")
-    else:
-        os.makedirs(args.directory)
+    # if os.path.exists(args.directory):
+    #     raise FileExistsError(f"Output directory '{args.directory}' already exists.")
+    # else:
+    #     os.makedirs(args.directory, exist_ok=True) )
 
     split(args.catalog, args.directory, args.n_jobs)
