@@ -13,7 +13,7 @@ from obspy import read_events
 from obspy import UTCDateTime
 
 
-def process_month(cat: Catalog, year: int, month: int, output_dir: str, split_by_event: bool=True) -> None:
+def process_month(cat: Catalog, year: int, month: int, output_dir: str, split_by_event: bool=False) -> None:
     starttime = UTCDateTime(year, month, 1)
     if month == 12:
         endtime = UTCDateTime(year + 1, 1, 1)
@@ -38,6 +38,7 @@ def process_month(cat: Catalog, year: int, month: int, output_dir: str, split_by
         # split catalog by year and month in a single sc3ml file
         split_file = f"{output_dir}/{year}_{month}.sc3ml"
         print(split_file)
+        os.makedirs(os.path.dirname(split_file), exist_ok=True)
         # suppress the warning about the version of QuakeML
         month_cat.write(split_file, format="SC3ML")
         modify_sc3ml_version(split_file)
