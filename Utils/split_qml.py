@@ -45,7 +45,7 @@ def process_month(cat: Catalog, year: int, month: int, output_dir: str, split_by
 
 
 
-def split(filename: str, output_dir: str, n_jobs: int = 4) -> None:
+def split(filename: str, output_dir: str, n_jobs: int = 4, split_by_event=False) -> None:
     # read quakeml
     print(f"Reading {filename} ...")
     cat = read_events(filename)
@@ -62,7 +62,7 @@ def split(filename: str, output_dir: str, n_jobs: int = 4) -> None:
         pool.starmap(
             process_month,
             [
-                (cat, year, month, output_dir)
+                (cat, year, month, output_dir, split_by_event)
                 for year in range(min_year, max_year + 1)
                 for month in range(1, 13)
             ],
@@ -103,6 +103,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "-j", "--n_jobs", type=int, default=4, help="Number of parallel jobs"
     )
+    # add option to split by event
+    parser.add_argument(
+        "-e",
+        "--split_by_event",
+        action="store_true",
+        help="Split catalog by event (default is by year and month)",
+    )
     args = parser.parse_args()
 
     if len(sys.argv) == 1:
@@ -119,4 +126,4 @@ if __name__ == "__main__":
     # else:
     #     os.makedirs(args.directory, exist_ok=True) )
 
-    split(args.catalog, args.directory, args.n_jobs)
+    split(args.catalog, args.directory, args.n_jobs, split_by_event=args.split_by_event)
