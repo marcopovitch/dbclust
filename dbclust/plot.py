@@ -9,6 +9,9 @@ from obspy.core.event import Event
 from obspy.core.event import ResourceIdentifier
 from plotly.subplots import make_subplots
 
+# set time_weight tolerance
+time_weight_tolerance = 0.01
+
 
 def plot_arrival_time(
     event: Event,
@@ -28,8 +31,7 @@ def plot_arrival_time(
         else:
             raise ValueError(f"Origin with id {origin_id} not found")
 
-
-    #ic(df_polygons)
+    # ic(df_polygons)
 
     P_station_name = []
     P_arrival_time = []
@@ -45,8 +47,6 @@ def plot_arrival_time(
     S_colors = []
     S_phase = []
 
-    tolerance = 0.001
-
     for arrival in origin.arrivals:
         pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
         if not pick:
@@ -59,7 +59,7 @@ def plot_arrival_time(
             P_arrival_time.append(pick.time - origin.time)
             P_distance.append(arrival.distance * 111.1)
             P_residual.append(arrival.time_residual)
-            if abs(arrival.time_weight) > tolerance:
+            if abs(arrival.time_weight) > time_weight_tolerance:
                 if arrival.phase == "Pg":
                     P_colors.append("red")
                 elif arrival.phase == "Pn":
@@ -76,7 +76,7 @@ def plot_arrival_time(
             S_arrival_time.append(pick.time - origin.time)
             S_distance.append(arrival.distance * 111.1)
             S_residual.append(arrival.time_residual)
-            if abs(arrival.time_weight) > tolerance:
+            if abs(arrival.time_weight) > time_weight_tolerance:
                 if arrival.phase == "Sg":
                     S_colors.append("green")
                 elif arrival.phase == "Sn":
@@ -216,9 +216,7 @@ def make_plot_with_plotly(
 
     fig.update_xaxes(title_text="Distance (km)", row=1, col=1)
     fig.update_yaxes(title_text="Arrival time (s)", row=1, col=1)
-    fig.update_xaxes(
-        range=[0, math.ceil(max_distance)], row=1, col=1
-    )
+    fig.update_xaxes(range=[0, math.ceil(max_distance)], row=1, col=1)
     fig.update_yaxes(
         range=[0, ymax],
         row=1,
@@ -292,9 +290,7 @@ def make_plot_with_plotly(
 
     fig.update_xaxes(title_text="Distance (km)", row=1, col=2)
     fig.update_yaxes(title_text="Residual (s)", row=1, col=2)
-    fig.update_xaxes(
-        range=[0, math.ceil(max_distance)], row=1, col=2
-    )
+    fig.update_xaxes(range=[0, math.ceil(max_distance)], row=1, col=2)
 
     fig.update_yaxes(range=[-1.0 * absmax, absmax], row=1, col=2)
 
