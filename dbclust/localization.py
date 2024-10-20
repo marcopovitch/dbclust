@@ -1477,6 +1477,8 @@ def show_bulletin(
             probability = ""
             if "probability" in info.keys():
                 probability = f"{info['probability']['value']}"
+        else:
+            probability = ""
 
         table.add_row(
             [
