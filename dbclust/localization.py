@@ -75,7 +75,11 @@ logger.setLevel(logging.INFO)
 
 
 # Define the preferred phase order
-phase_order = ['Pg', 'Sg', 'Pn', 'Sn', 'P', 'S']
+phase_order = ["Pg", "Sg", "Pn", "Sn", "P", "S"]
+
+# set time_weight tolerance
+time_weight_tolerance = 0.01
+
 
 def sort_by_phase(arrival: Arrival) -> int:
     """
@@ -184,12 +188,10 @@ class NllLoc(object):
         count = {}
         for arrival in origin.arrivals:
             if hasattr(arrival, "time_weight") and isclose(
-                arrival.time_weight, 0, abs_tol=0.001
+                arrival.time_weight, 0, abs_tol=time_weight_tolerance
             ):
                 continue
-            pick = next(
-                (p for p in event.picks if p.resource_id == arrival.pick_id), None
-            )
+            pick = get_pick_from_arrival(event, arrival)
             if pick is None:
                 continue
             wfid = pick.waveform_id
@@ -234,7 +236,7 @@ class NllLoc(object):
             # as it is not yet handled by NLLoc,
             # unless use_deactivated_arrivals is True by user.
             if self.use_deactivated_arrivals == False and isclose(
-                arrival.time_weight, 0, abs_tol=0.001
+                arrival.time_weight, 0, abs_tol=time_weight_tolerance
             ):
                 myevent.picks.remove(pick)
                 continue
@@ -463,6 +465,14 @@ class NllLoc(object):
         o = e.preferred_origin()
         o.quality.used_station_count = self.get_used_station_count(e, o)
         o.quality.used_phase_count = self.get_used_phase_count(e, o)
+
+        # set time_weight to 0 for arrival if time_weight < time_weight_tolerance
+        # to avoid any issue with seiscomp
+        for arrival in o.arrivals:
+            if hasattr(arrival, "time_weight") and isclose(
+                arrival.time_weight, 0, abs_tol=time_weight_tolerance
+            ):
+                arrival.time_weight = 0
 
         # check for nan value in uncertainty
         if "nan" in [
@@ -866,7 +876,7 @@ class NllLoc(object):
             event, gap_dist_max_km
         )
         for a in arrivals_to_unset:
-            pick = next((p for p in event.picks if p.resource_id == a.pick_id), None)
+            pick = get_pick_from_arrival(event, a)
             assert pick, f"Can't find pick for arrival {a.pick_id}"
 
             logger.debug(
@@ -941,7 +951,7 @@ class NllLoc(object):
             )
 
             if (
-                isclose(arrival.time_weight, 0, abs_tol=0.001)
+                isclose(arrival.time_weight, 0, abs_tol=time_weight_tolerance)
                 or bad_time_residual
                 or (
                     self.dist_km_cutoff is not None
@@ -1021,7 +1031,7 @@ class NllLoc(object):
         arrival_to_delete = []
         relabel = {}
 
-        #for arrival in orig.arrivals:
+        # for arrival in orig.arrivals:
         for arrival in sorted(orig.arrivals, key=sort_by_phase):
             pick = get_pick_from_arrival(event, arrival)
             if pick is None:
@@ -1029,7 +1039,7 @@ class NllLoc(object):
                 continue
 
             # remove pick with time_weight set to 0
-            if isclose(arrival.time_weight, 0, abs_tol=0.001):
+            if isclose(arrival.time_weight, 0, abs_tol=time_weight_tolerance):
                 logger.info(
                     f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
                     f"with time_weight set to 0"
@@ -1158,8 +1168,8 @@ class NllLoc(object):
                     ] and arrival.phase in ["P", "S"]:
                         # do not remove picks and arrivals here
                         # but rather disable them later
-                        #pick_to_delete.append(pick)
-                        #arrival_to_delete.append(arrival)
+                        # pick_to_delete.append(pick)
+                        # arrival_to_delete.append(arrival)
                         action = "removed: already set"
                     else:
                         action = "ignored: already set"
@@ -1232,13 +1242,11 @@ class NllLoc(object):
         """
         station_list = []
         for arrival in origin.arrivals:
-            #if arrival.time_weight and arrival.time_residual:
+            # if arrival.time_weight and arrival.time_residual:
             if hasattr(arrival, "time_weight") and not isclose(
-                arrival.time_weight, 0, abs_tol=0.001
+                arrival.time_weight, 0, abs_tol=time_weight_tolerance
             ):
-                pick = next(
-                    (p for p in event.picks if p.resource_id == arrival.pick_id), None
-                )
+                pick = get_pick_from_arrival(event, arrival)
                 if pick:
                     station_list.append(
                         f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
@@ -1260,13 +1268,11 @@ class NllLoc(object):
         """
         nb_phase_used = 0
         for arrival in origin.arrivals:
-            #if arrival.time_weight and arrival.time_residual:
+            # if arrival.time_weight and arrival.time_residual:
             if hasattr(arrival, "time_weight") and not isclose(
-                arrival.time_weight, 0, abs_tol=0.001
+                arrival.time_weight, 0, abs_tol=time_weight_tolerance
             ):
-                pick = next(
-                    (p for p in event.picks if p.resource_id == arrival.pick_id), None
-                )
+                pick = get_pick_from_arrival(event, arrival)
                 if pick:
                     nb_phase_used += 1
         return nb_phase_used
@@ -1303,6 +1309,16 @@ class NllLoc(object):
 
 
 def get_pick_from_arrival(event: Event, arrival: Arrival) -> Pick:
+    """
+    Retrieve a Pick object from given Arrival in a given Event.
+    This function searches through the picks associated with the given event
+    and returns the pick that matches the resource ID specified in the arrival.
+    Args:
+        event (Event): The event containing a list of picks.
+        arrival (Arrival): The arrival containing the pick ID to search for.
+    Returns:
+        Pick: The pick that matches the arrival's pick ID, or None if no match is found.
+    """
     pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
     return pick
 
@@ -1400,6 +1416,7 @@ def show_bulletin(
         "dist(deg)",
         "time",
         "evaluation",
+        "probability",
         "relabel",
     ]
     table.align["station"] = "l"
@@ -1409,19 +1426,21 @@ def show_bulletin(
     # print("station phase weight residual distance time evaluation")
     for arrival in origin.arrivals:
         if hasattr(arrival, "time_weight") and isclose(
-            arrival.time_weight, 0, abs_tol=0.001
+            arrival.time_weight, 0, abs_tol=time_weight_tolerance
         ):
             used = False
+            print(f"arrival {arrival.pick_id} time_weight is {arrival.time_weight}")
         else:
             used = True
-        pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
+        pick = get_pick_from_arrival(event, arrival)
         if pick is None:
             continue
         wfid = pick.waveform_id
         station_name = f"{wfid.network_code}.{wfid.station_code}"
         phase_name = arrival.phase
 
-        # Get relabel info from arrival comments
+        # Get from arrival comments:
+        #  - relabel info
         # {
         #   "relabel": {
         #     "action": "set by user",
@@ -1433,20 +1452,31 @@ def show_bulletin(
         #     }
         #   }
         # }
+
+        # Get from pick comments:
+        #  - pick probability
+        # {"probability": {"name": "RENASS", "value": 0.92}}
+
         for c in arrival.comments:
             try:
                 info = json.loads(c.text)
             except:
                 continue
+            relabel = ""
             if "relabel" in info.keys():
                 phases_info = ""
                 for k, v in info["relabel"]["scores"].items():
                     phases_info += f"{k}={v}, "
-
                 relabel = f'action: {info["relabel"]["action"]}, score: {info["relabel"]["eval_score"]}, {phases_info}'
-                break
-        else:
-            relabel = ""
+
+        for c in pick.comments:
+            try:
+                info = json.loads(c.text)
+            except:
+                continue
+            probability = ""
+            if "probability" in info.keys():
+                probability = f"{info['probability']['value']}"
 
         table.add_row(
             [
@@ -1458,6 +1488,7 @@ def show_bulletin(
                 f"{arrival.distance:.3f}",
                 pick.time,
                 pick.evaluation_mode,
+                probability,
                 relabel,
             ]
         )
