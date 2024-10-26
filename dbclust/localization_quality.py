@@ -8,7 +8,27 @@ from obspy.core.event import Event
 from obspy.core.event import Origin
 
 
-def classify_event(event: Event, origin_id: str = None) -> Tuple[str, str, str]:
+def classify_event(
+    event: Event, origin_id: str = None, debug: bool = False
+) -> Tuple[str, str, str, str]:
+    """
+    Classify the quality of an event's origin.
+
+    Parameters:
+        event (Event): The event to classify.
+        origin_id (str, optional): The ID of the origin to classify. If None, the preferred origin of the event is used.
+
+    Returns:
+        Tuple[str, str, str, str]: A tuple containing :
+            - the overall quality,
+            - epicentral quality,
+            - depth quality,
+            - and a textual representation of the classification.
+
+    Raises:
+        ValueError: If the specified origin_id is not found in the event.
+    """
+
     if origin_id is None:
         origin = event.preferred_origin()
     else:
@@ -17,24 +37,41 @@ def classify_event(event: Event, origin_id: str = None) -> Tuple[str, str, str]:
                 origin = o
                 break
         else:
-            raise ValueError(f"Origin {origin_id} not found in event {event.resource_id.id}")
+            raise ValueError(
+                f"Origin {origin_id} not found in event {event.resource_id.id}"
+            )
 
     erh, erz, error_method = get_erh_erz(origin)
-    ic(erh, erz)
 
+    # TBD: compute minimal distance between stations and the event with the formula real coordinates
+    # rather than the 111.1 km/deg approximation
 
     quality, qs, qd = classify(
         origin.quality.standard_error,  # in seconds
         erh,  # in km
         erz,  # in km
         origin.quality.used_station_count,
-        origin.quality.azimuthal_gap, # in degrees
-        origin.quality.minimum_distance / 111.1,  # convert distance from degres to km
-        origin.depth * 1000. # depth in km
+        origin.quality.azimuthal_gap,  # in degrees
+        origin.quality.minimum_distance * 111.1,  # convert distance from degres to km
+        origin.depth / 1000.0,  # depth in km
     )
 
-    return quality, qs, qd, error_method
+    if debug:
+        ic(
+            origin.quality.standard_error,
+            erh,
+            erz,
+            origin.quality.used_station_count,
+            origin.quality.azimuthal_gap,
+            origin.quality.minimum_distance * 111.1,
+            origin.depth / 1000.0,
+            quality,
+            qs,
+            qd,
+            error_method,
+        )
 
+    return quality, qs, qd, get_classification_text(quality)
 
 
 def classify(
@@ -42,6 +79,7 @@ def classify(
 ) -> Tuple[str, str, str]:
     """
     Hypo71 Quality Classification
+    from: https://www.usgs.gov/publications/hypo71-earthquake-location-program
     -----------------------------
 
     Input Attributes:
@@ -52,7 +90,7 @@ def classify(
         - GAP (maximum azimuthal gap)
         - DMIN (minimum distance to the nearest station)
 
-        Classify QS (Epicenter Quality):
+    Classify QS (Epicenter Quality):
         Using the following thresholds:
         - A:  RMS < 0.15 s, ERH <= 1.0 km, ERZ <= 2.0 km
         - B:  RMS < 0.30 s, ERH <= 2.5 km, ERZ <= 5.0 km
@@ -90,9 +128,9 @@ def classify(
         qs = "D"
 
     # Classify QD (Focal Depth Quality)
-    if no >= 6 and gap < 90 and dmin <= min(depth, 5):
+    if no >= 6 and gap < 90 and dmin <= max(depth, 5):
         qd = "A"
-    elif no >= 6 and gap < 135 and dmin <= min(2 * depth, 10):
+    elif no >= 6 and gap < 135 and dmin <= max(2 * depth, 10):
         qd = "B"
     elif no >= 6 and gap < 180 and dmin <= 50:
         qd = "C"
@@ -116,3 +154,20 @@ def classify(
             q = k
 
     return q, qs, qd
+
+
+def get_classification_text(classification: str) -> str:
+    """
+    Class A: Excellent (epicenter) / Good (depth)
+    Class B: Good (epicenter) / Fair (depth)
+    Class C: Fair (epicenter) / Poor (depth)
+    Class D: Poor (epicenter and depth)
+    """
+    classification_text = {
+        "A": "Excellent (epicenter) / Good (depth)",
+        "B": "Good (epicenter) / Fair (depth)",
+        "C": "Fair (epicenter) / Poor (depth)",
+        "D": "Poor (epicenter and depth)",
+    }
+
+    return classification_text[classification]
