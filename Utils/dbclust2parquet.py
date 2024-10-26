@@ -71,7 +71,7 @@ def read_and_modify(file: str) -> dd.DataFrame:
             return df
 
     # Read the CSV file
-    df = dd.read_csv(file)
+    df = dd.read_csv(file, dtype={"event_id": str})
     if len(df) == 0:
         logger.warning(f"No data found in file {file}, skipping ...")
         return df
@@ -246,7 +246,7 @@ def export_dbclust_to_parquet(
         outputfile (str): The output Parquet file path.
     """
     # Read the CSV file
-    df = dd.read_csv(inputfile)
+    df = dd.read_csv(inputfile, dtype={"event_id": str})
     if len(df) == 0:
         logger.warning(f"No data found in file {inputfile}, skipping ...")
         return df

@@ -82,8 +82,8 @@ def unload_too_close_picks_clustering(
     df = pd.read_csv(csv_file_in, dtype=col_types)
 
     # Use only network_code.station_code
-    df["channel"] = df["station_id"].map(lambda x: ".".join(x.split(".")[2:4]))
-    df["station_id"] = df["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
+    #df["channel"] = df["station_id"].map(lambda x: ".".join(x.split(".")[2:4]))
+    #df["station_id"] = df["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
     df["phase_time"] = pd.to_datetime(df["phase_time"], utc=True)
 
     if "phase_evaluation" not in df.columns:
