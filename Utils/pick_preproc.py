@@ -28,14 +28,18 @@ def get_index(group: GroupBy, debug=False) -> int:
         max_index = max_value_indices[0]
         max_value = group.loc[max_index, "phase_score"]
         if debug:
-            print(f"cluster nb picks {len(group)}, proba max {len(group)}: max_index={max_index} max_value={max_value}")
+            print(
+                f"cluster nb picks {len(group)}, proba max {len(group)}: max_index={max_index} max_value={max_value}"
+            )
         return max_index
     else:
         # multiple picks with max proba set
         manual_df = group[group["phase_evaluation"] == "manual"]
         if len(manual_df) >= 1:
             # get the index of the phase_time median pick
-            median_index = manual_df["phase_time"].sort_values().index[len(manual_df) // 2]
+            median_index = (
+                manual_df["phase_time"].sort_values().index[len(manual_df) // 2]
+            )
             # use only manual picks to get the preferred pick (based on median index)
             # median_index = (
             #     manual_df["phase_score"].sort_values().index[len(manual_df) // 2]
@@ -59,7 +63,7 @@ def get_index(group: GroupBy, debug=False) -> int:
 
 
 def unload_too_close_picks_clustering(
-    csv_file_in, csv_file_out, P_delta_time, S_delta_time
+    csv_file_in: str, csv_file_out: str, P_delta_time: float, S_delta_time: float
 ):
 
     col_types = {
