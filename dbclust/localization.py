@@ -39,6 +39,7 @@ from gap import compute_gap
 from gap import get_arrival_with_distance_gap_greater_than
 from icecream import ic
 from jinja2 import Template
+from localization_quality import classify_event
 from obspy import Catalog
 from obspy import read_events
 from obspy.core import UTCDateTime
@@ -1495,6 +1496,10 @@ def show_bulletin(
             ]
         )
         # print(f"{station_name} {phase_name} {arrival.time_weight} {arrival.time_residual} {arrival.distance} {pick.time} {pick.evaluation_mode}")
+
+    print(Event.__str__(event))
+    Q, QS, QD, classif_txt = classify_event(event, debug=True)
+    print(f"quality: {Q} ({classif_txt}), QS={QS}, QD={QD}")
     print(table)
 
     # plot with plotext library arrival time with respect to distance
