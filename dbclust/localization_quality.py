@@ -2,10 +2,33 @@
 # -*- coding: utf-8 -*-
 from typing import Tuple
 
+import numpy as np
 from icecream import ic
 from localization_error import get_erh_erz
 from obspy.core.event import Event
 from obspy.core.event import Origin
+
+
+def normalize_rms(
+    rms, num_stations, avg_distance, azimuthal_gap, alpha=0.01, beta=0.01
+):
+    """
+    Normalize the RMS to evaluate the localization quality.
+
+    Parameters:
+    - rms : float, the RMS of the localization.
+    - num_stations : int, the number of seismic stations used.
+    - avg_distance : float, the average or median distance of the stations to the epicenter (in km).
+    - azimuthal_gap : float, the azimuthal gap (in degrees).
+    - alpha : float, weighting factor for the distance.
+    - beta : float, weighting factor for the azimuthal gap.
+
+    Returns:
+    - float, the normalized RMS.
+    """
+    return rms / (
+        (num_stations ** (1/10)) * (1 + alpha * avg_distance) * (1 + beta * azimuthal_gap)
+    )
 
 
 def classify_event(
@@ -43,7 +66,7 @@ def classify_event(
 
     erh, erz, error_method = get_erh_erz(origin)
 
-    # TBD: compute minimal distance between stations and the event with the formula real coordinates
+    # TBD: compute minimal distance between stations and the event with the real coordinates
     # rather than the 111.1 km/deg approximation
 
     quality, qs, qd = classify(
@@ -118,21 +141,21 @@ def classify(
     """
 
     # Classify QS (Epicenter Quality)
-    if rms < 0.15 and erh <= 1.0 and erz <= 2.0:
+    if (rms < 0.15) and (erh <= 1.0) and (erz <= 2.0):
         qs = "A"
-    elif rms < 0.30 and erh <= 2.5 and erz <= 5.0:
+    elif (rms < 0.30) and (erh <= 2.5) and (erz <= 5.0):
         qs = "B"
-    elif rms < 0.50 and erh <= 5.0:
+    elif (rms < 0.50) and (erh <= 5.0):
         qs = "C"
     else:
         qs = "D"
 
     # Classify QD (Focal Depth Quality)
-    if no >= 6 and gap < 90 and dmin <= max(depth, 5):
+    if (no >= 6) and (gap < 90) and (dmin <= max(depth, 5)):
         qd = "A"
-    elif no >= 6 and gap < 135 and dmin <= max(2 * depth, 10):
+    elif (no >= 6) and (gap < 135) and (dmin <= max(2 * depth, 10)):
         qd = "B"
-    elif no >= 6 and gap < 180 and dmin <= 50:
+    elif (no >= 6) and (gap < 180) and (dmin <= 50):
         qd = "C"
     else:
         qd = "D"
