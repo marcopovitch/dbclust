@@ -127,9 +127,11 @@ if __name__ == "__main__":
 
     # overwrite input files with files from the directory
     if args.directory:
-        args.input = [
-            os.path.join(args.directory, f) for f in os.listdir(args.directory)
-        ]
+        args.input = []
+        for root, _, files in os.walk(args.directory):
+            for file in files:
+                if file.endswith(".csv"):
+                    args.input.append(os.path.join(root, file))
         print(f"Input files: {args.input}")
 
     # check if the output file already exists only if input was specified
