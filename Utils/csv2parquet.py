@@ -1,33 +1,33 @@
 #!/usr/bin/env python
 import argparse
 import os
+import sys
 from datetime import datetime
 from typing import List
 
 import dask.dataframe as dd
+import duckdb
 import numpy as np
 import pandas as pd
+import tqdm
 from dask.distributed import Client
 from dask.distributed import LocalCluster
-
-# from icecream import ic
-
-
-def is_valid_freq(freq: str) -> bool:
-    try:
-        pd.tseries.frequencies.to_offset(freq)
-        return True
-    except ValueError:
-        return False
 
 
 def convert_csv_to_parquet(
     csv_files: List[str],
     parquet_file: str,
-    time_name: str,
-    partition_duration: str,
 ) -> None:
-    cluster = LocalCluster(n_workers=4)
+    """
+    Convert CSV files to Parquet file
+
+    Args:
+        csv_files (List[str]): List of CSV files
+        parquet_file (str): Parquet output file
+    """
+    #print(f"Writing to {parquet_file} parquet file")
+    nb_procs = os.cpu_count()
+    cluster = LocalCluster(n_workers=nb_procs)
     client = Client(cluster)
 
     col_types = {
@@ -42,46 +42,62 @@ def convert_csv_to_parquet(
         "agency": "string",
     }
 
-    df_list = [dd.read_csv(f, dtype=col_types) for f in csv_files]
-    ddf = dd.concat(df_list)
+    # Chargement des CSV avec Dask
+    ddf = dd.read_csv(csv_files, dtype=col_types)
 
-    ddf[time_name] = dd.to_datetime(ddf[time_name])
+    # Conversion en datetime sans fuseau horaire pour 'phase_time' et arrondi
+    ddf["phase_time"] = dd.to_datetime(
+        ddf["phase_time"], errors="coerce"
+    ).dt.tz_localize(None)
+    ddf["phase_time"] = ddf["phase_time"].dt.round("1ms")
+    ddf = ddf.sort_values(by="phase_time").compute()
 
-    # remove what seems to be fake picks in phasenet
-    if "phase_index" in ddf.columns:
-        ddf = ddf[ddf["phase_index"] != 1]
+    # Définir l'index sans forcer de tri immédiat
+    ddf["idxtime"] = ddf["phase_time"]
+    ddf = ddf.set_index("idxtime")
 
-    # force phase_method and phase_evaluation
-    if "phase_method" not in ddf.columns:
-        ddf["phase_method"] = "PHASENET"
-    if "phase_evaluation" not in ddf.columns:
-        ddf["phase_evaluation"] = "automatic"
+    # handle the partition
+    ddf["year"] = ddf["phase_time"].dt.year
+    ddf["month"] = ddf["phase_time"].dt.month
 
-    # limits to 10^-4 seconds same as NLL
-    # (needed by dbclust to unload some picks)
-    ddf[time_name] = ddf[time_name].dt.round("0.0001s")
+    ddf = dd.from_pandas(ddf, npartitions=nb_procs)
 
-    # get rid off nan value when importing phases
-    # without event_id or station_id
-    ddf = ddf.dropna(subset=["station_id"])
-    ddf = ddf.replace({np.nan: ""})
-
-    # Create a SORTED time index for time partition
-    ddf["idxtime"] = ddf[time_name]
-    ddf = ddf.set_index("idxtime", sorted=True)
-
-    # Do the partitioning
-    ddf_partitioned = ddf.repartition(freq=partition_duration)
-
-    print("Writing parquet file")
-    ddf_partitioned.to_parquet(
+    #print("Writing parquet file")
+    ddf.to_parquet(
         parquet_file,
-        engine="pyarrow",
+        partition_on=["year", "month"],
         compression="snappy",
+        engine="pyarrow",
         write_index=False,
+        append=True,
     )
+
+    # Fermer le client et le cluster Dask
     client.close()
     cluster.close()
+
+
+def repartition_parquet(parquet_file_in: str, parquet_file_out: str) -> None:
+    """
+    Repartition a Parquet file using duckdb
+
+    Args:
+        parquet_file_in (str): Input Parquet file
+        parquet_file_out (str): Output Parquet file
+    """
+    print(f"Repartitioning {parquet_file_in} to {parquet_file_out}")
+
+    sql = f"""
+        COPY (SELECT * FROM read_parquet('{parquet_file_in}/**/*.parquet'))
+        TO '{parquet_file_out}'
+        (FORMAT 'parquet', PARTITION_BY (year, month));
+    """
+
+    conn = duckdb.connect()
+    try:
+        conn.execute(sql)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
@@ -91,28 +107,46 @@ if __name__ == "__main__":
         "--input",
         nargs="+",
         help="CSV input files (multiple files allowed)",
-        required=True,
     )
     parser.add_argument("-o", "--output", required=True, help="Parquet output")
     parser.add_argument(
-        "-t", "--time_name", required=True, help="Name of the time column"
-    )
-    parser.add_argument(
-        "--part_duration", required=True, type=str, help="Partition duration"
+        "-d",
+        "--directory",
+        type=str,
+        help="Input directory containing CSV files",
     )
     args = parser.parse_args()
 
-    for f in args.input:
-        if not os.path.exists(f):
-            print(f"File {f} does not exist !")
-            sys.exit(1)
+    if args.directory and args.input:
+        print("Cannot specify both input directory and input files")
+        sys.exit(1)
 
-    if not is_valid_freq(args.part_duration):
-        raise ValueError("This is not a legit pandas frequency !")
+    if args.output and os.path.exists(args.output):
+        print(f"Output directory {args.output} already exists")
+        sys.exit(1)
 
-    convert_csv_to_parquet(
-        args.input,
-        args.output,
-        args.time_name,
-        args.part_duration,
-    )
+    # overwrite input files with files from the directory
+    if args.directory:
+        args.input = [
+            os.path.join(args.directory, f) for f in os.listdir(args.directory)
+        ]
+        print(f"Input files: {args.input}")
+
+    # check if the output file already exists only if input was specified
+    if not args.directory:
+        for f in args.input:
+            if not os.path.exists(f):
+                print(f"File {f} does not exist !")
+                sys.exit(1)
+
+    # process the input files by batch
+    batch_size = 100
+    tmp_parquet = ".".join([args.output, "tmp.parquet"])
+    for i in tqdm.tqdm(range(0, len(args.input), batch_size)):
+        #print(f"Processing files {i} to {i+batch_size}")
+        convert_csv_to_parquet(
+            args.input[i : i + batch_size],
+            tmp_parquet,
+        )
+
+    repartition_parquet(tmp_parquet, args.output)
