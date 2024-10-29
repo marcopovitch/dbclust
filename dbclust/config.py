@@ -18,12 +18,13 @@ from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
+import fastparquet
 import geopandas as gpd
 import pandas as pd
-import pyarrow.parquet as pq
 import pyproj
 from dacite import from_dict
 from db import duckdb_init
+from db import duckdb_init_parquet
 from icecream import ic
 from obspy import Inventory
 from obspy import read_inventory
@@ -75,12 +76,14 @@ class PickConfig:
     """
 
     # path: str
-    filename: Union[str, None]
+    filenames: List[str]
     type: Union[str, None]
     P_uncertainty: float
     S_uncertainty: float
     P_proba_threshold: float
     S_proba_threshold: float
+    P_proximity_threshold: float
+    S_proximity_threshold: float
     start: Optional[Union[datetime, pd.Timestamp]] = None
     end: Optional[Union[datetime, pd.Timestamp]] = None
     df: Optional[pd.DataFrame] = None
@@ -92,11 +95,12 @@ class PickConfig:
         if not self.type:
             return
 
-        if not os.path.exists(self.filename):
-            raise FileNotFoundError(f"File {self.filename} does not exist !")
+        for f in self.filenames:
+            if not os.path.exists(f):
+                raise FileNotFoundError(f"File {f} does not exist !")
 
-        if not os.access(self.filename, os.R_OK):
-            raise PermissionError(f"{self.filename}.")
+            if not os.access(f, os.R_OK):
+                raise PermissionError(f"{f}.")
 
         if self.start:
             self.start = pd.to_datetime(self.start, utc=True).to_datetime64()
@@ -106,14 +110,18 @@ class PickConfig:
 
         # Check parquet or csv file
         if self.type == "parquet":
-            try:
-                table = pq.read_table(
-                    self.filename, columns=[], use_pandas_metadata=False
-                )
-            except:
-                raise ValueError(f"{self.filename} is not parquet formated !")
-            if os.path.isdir(self.filename):
-                self.filename = os.path.join(self.filename, "**", "*.parquet")
+            for f in self.filenames:
+                try:
+                    fastparquet.ParquetFile(f)
+                except:
+                    raise ValueError(f"{f} is not parquet formated !")
+
+            # add all parquet files in the directory and subdirectories for duckdb
+            self.filenames = [
+                os.path.join(f, "**", "*.parquet")
+                for f in self.filenames
+                if os.path.isdir(f)
+            ]
         else:
             # CSV
             try:
@@ -128,9 +136,20 @@ class PickConfig:
                 raise e
 
         # set min, max time from data
-        conn = duckdb_init(self.filename, self.type)
+        ic(self.filenames, self.type)
+
+        if self.type == "parquet":
+            conn = duckdb_init_parquet(self.filenames)
+        else:
+            conn = duckdb_init(self.filenames, self.type)
+
         rqt = "SELECT MIN(phase_time), MAX(phase_time) FROM PICKS"
         min, max = conn.sql(rqt).fetchall().pop()
+        conn.close()
+
+
+        ic(min, max)
+
         if not self.start:
             self.start = min
         if not self.end:
@@ -347,7 +366,6 @@ class RelocationConfig:
     enable_relabel_pick_zone: Optional[bool] = False
     # remove outliers from pick zone
     enable_cleanup_pick_zone: Optional[bool] = False
-
 
 
 @dataclass

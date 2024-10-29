@@ -8,7 +8,7 @@ from pandas.core.groupby import GroupBy
 from sklearn.cluster import DBSCAN
 
 logger = logging.getLogger("pick_preproc")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 def get_index(group: GroupBy, debug=False) -> int:
