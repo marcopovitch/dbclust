@@ -30,6 +30,7 @@ from icecream import ic
 from localization import NllLoc
 from localization import show_event
 from phase import import_phases
+from preprocessing_picks import deduplicate_picks_by_time
 from quakeml import feed_distance_from_preloc_to_pref_origin
 from quakeml import make_readable_id
 from ray.util.multiprocessing import Pool
@@ -181,7 +182,7 @@ def dbclust(
 
     if df is None or df.empty:
         # Uses duckdb
-        con = duckdb_init(cfg.pick.filename, cfg.pick.type)
+        con = duckdb_init(cfg.pick.filenames, cfg.pick.type)
     else:
         # Uses the pandas Dataframe given as function argument.
         con = None
@@ -240,7 +241,7 @@ def dbclust(
                 phase_time BETWEEN '{begin}' AND '{end}'
             """
 
-            #rqt = f"SELECT * FROM PICKS WHERE phase_time BETWEEN '{begin}' AND '{end}'"
+            # rqt = f"SELECT * FROM PICKS WHERE phase_time BETWEEN '{begin}' AND '{end}'"
 
             # Time meseaure of the query
             start_time = time.time()
@@ -263,10 +264,24 @@ def dbclust(
                     ~df_subset["station_id"].str.contains(b, regex=True)
                 ]
 
-        logger.info(f"[{job_index}] Starting clustering with {len(df_subset)} phases.")
+        # starting pick preprocessing to get rid of too close picks
+        # base on pick proximity and probability
+        logger.info(
+            f"[{job_index}] Starting pick preprocessing with {len(df_subset)} phases."
+        )
+        df_subset = deduplicate_picks_by_time(
+            df_subset,
+            cfg.pick.P_proximity_threshold,
+            cfg.pick.S_proximity_threshold,
+        )
+        df_subset.to_csv(f"df_subset_{job_index}_{i}.csv")
+        logger.info(
+            f"[{job_index}] End pick preprocessing with {len(df_subset)} phases."
+        )
 
-        # to prevents extra event, remove from current picks list,
+        # To prevents extra event, remove from current picks list,
         # picks previously associated with events on the previous iteration
+        logger.info(f"[{job_index}] Starting clustering with {len(df_subset)} phases.")
         logger.info(f"Before unload_picks_list() len(df_subset) = {len(df_subset)}")
         if len(picks_to_remove):
             logger.info(
@@ -299,8 +314,9 @@ def dbclust(
 
         # rename station_id
         if cfg.station.rename:
-            df_subset.loc[:, "station_id"] = df_subset["station_id"].replace(to_replace=cfg.station.rename)
-
+            df_subset.loc[:, "station_id"] = df_subset["station_id"].replace(
+                to_replace=cfg.station.rename
+            )
 
         # Import picks
         phases = import_phases(
