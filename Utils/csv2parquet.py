@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import argparse
 import os
+import shutil
 import sys
 from datetime import datetime
 from typing import List
@@ -25,10 +26,11 @@ def convert_csv_to_parquet(
         csv_files (List[str]): List of CSV files
         parquet_file (str): Parquet output file
     """
-    #print(f"Writing to {parquet_file} parquet file")
-    nb_procs = os.cpu_count()
-    cluster = LocalCluster(n_workers=nb_procs)
-    client = Client(cluster)
+    # print(f"Writing to {parquet_file} parquet file")
+    nb_procs = 1
+    # nb_procs = os.cpu_count()
+    # cluster = LocalCluster(n_workers=nb_procs)
+    # client = Client(cluster)
 
     col_types = {
         "station_id": "string",
@@ -62,7 +64,7 @@ def convert_csv_to_parquet(
 
     ddf = dd.from_pandas(ddf, npartitions=nb_procs)
 
-    #print("Writing parquet file")
+    # print("Writing parquet file")
     ddf.to_parquet(
         parquet_file,
         partition_on=["year", "month"],
@@ -73,8 +75,8 @@ def convert_csv_to_parquet(
     )
 
     # Fermer le client et le cluster Dask
-    client.close()
-    cluster.close()
+    # client.close()
+    # cluster.close()
 
 
 def repartition_parquet(parquet_file_in: str, parquet_file_out: str) -> None:
@@ -132,7 +134,7 @@ if __name__ == "__main__":
             for file in files:
                 if file.endswith(".csv"):
                     args.input.append(os.path.join(root, file))
-        print(f"Input files: {args.input}")
+        print(f"Input files: {len(args.input)}")
 
     # check if the output file already exists only if input was specified
     if not args.directory:
@@ -145,10 +147,13 @@ if __name__ == "__main__":
     batch_size = 100
     tmp_parquet = ".".join([args.output, "tmp.parquet"])
     for i in tqdm.tqdm(range(0, len(args.input), batch_size)):
-        #print(f"Processing files {i} to {i+batch_size}")
+        # print(f"Processing files {i} to {i+batch_size}")
         convert_csv_to_parquet(
             args.input[i : i + batch_size],
             tmp_parquet,
         )
 
     repartition_parquet(tmp_parquet, args.output)
+
+    # remove the temporary parquet file
+    shutil.rmtree(tmp_parquet)
