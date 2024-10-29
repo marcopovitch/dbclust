@@ -881,7 +881,8 @@ class NllLoc(object):
             assert pick, f"Can't find pick for arrival {a.pick_id}"
 
             logger.debug(
-                f"Unset arrival time_weight {pick.waveform_id.get_seed_string()} {a.phase} {pick.time}"
+                f"Unset arrival time_weight due to gap_dist_max_km >= ({gap_dist_max_km} km): "
+                f"{pick.waveform_id.get_seed_string()} {a.phase} {pick.time}"
             )
 
             # find the corresponding arrival and set the weight to 0
