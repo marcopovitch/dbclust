@@ -3,6 +3,7 @@
 import logging
 
 import pandas as pd
+from icecream import ic
 from pandas.core.groupby import GroupBy
 from sklearn.cluster import DBSCAN
 
@@ -83,7 +84,20 @@ def deduplicate_picks_by_time(
     """
 
     # empty dataframe
-    results = pd.DataFrame()
+    results = pd.DataFrame(
+        columns=[
+            "station_id",
+            "channel",
+            "phase_type",
+            "phase_time",
+            "phase_score",
+            "phase_evaluation",
+            "phase_method",
+            "event_id",
+            "agency",
+        ]
+    )
+
     df = df.sort_values(by=["station_id", "phase_type", "phase_time"])
 
     # run separately by phase type
@@ -136,10 +150,11 @@ def deduplicate_picks_by_time(
             after = len(tmp_df)
             logger.debug(f"length before: {before}, after: {after}")
 
-            # concatenate the results
+            # Concatenate the results
             if results.empty:
-                results = pd.concat([results, tmp_df], ignore_index=True)
-            else:
                 results = tmp_df.copy()
+            else:
+                results = pd.concat([results, tmp_df], ignore_index=True)
 
-    return results.sort_values(by=["phase_time", "station_id"], inplace=True)
+    results.sort_values(by=["phase_time", "station_id"], inplace=True)
+    return results
