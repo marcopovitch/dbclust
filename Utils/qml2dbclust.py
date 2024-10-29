@@ -18,10 +18,10 @@ from obspy.core.event import Origin
 This script processes seismic event data from a QuakeML file and exports the picks to a CSV file in a format compatible with DBClust.
 
 Functions:
-    filter_LDG_P_S(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    filter_LDG_P_S():
         Filters out P and S phase picks for LDG agency if Pn, Pg, Sn, or Sg phases are present for the same station.
 
-    export_picks_to_phasenet_format(
+    export_picks_to_phasenet_format():
         Exports picks from an event to a list of dictionaries in DBClust format.
 
 Usage:
@@ -107,8 +107,9 @@ def export_picks_to_dbclust_format(
                         "Using arrival phase."
                     )
                 line = {
-                    "station_id": pick.waveform_id.get_seed_string().rstrip(".."),
-                    "channel": "",
+                    #"station_id": pick.waveform_id.get_seed_string().rstrip(".."),
+                    "station_id": ".".join(pick.waveform_id.get_seed_string().split(".")[0:2]),
+                    "channel": ".".join(pick.waveform_id.get_seed_string().split(".")[2:4]),
                     "phase_type": arrival.phase,
                     "phase_time": pick.time,
                     "phase_score": probability,
