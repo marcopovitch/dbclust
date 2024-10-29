@@ -1418,7 +1418,7 @@ def show_bulletin(
         "dist(deg)",
         "time",
         "evaluation",
-        "probability",
+        "proba",
         "relabel",
     ]
     table.align["station"] = "l"
@@ -1469,7 +1469,10 @@ def show_bulletin(
                 phases_info = ""
                 for k, v in info["relabel"]["scores"].items():
                     phases_info += f"{k}={v}, "
-                relabel = f'action: {info["relabel"]["action"]}, score: {info["relabel"]["eval_score"]}, {phases_info}'
+                relabel = (
+                    f'action: {info["relabel"]["action"]} on {info["relabel"]["prev_phase"]},'
+                    f'score: {info["relabel"]["eval_score"]}, {phases_info}'
+                )
 
         for c in pick.comments:
             try:
