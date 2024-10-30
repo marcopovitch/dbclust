@@ -217,8 +217,11 @@ def dbclust(
         logger.debug("================================================")
         logger.debug("")
 
-        # add the time overlap
-        end += overlap_timedelta
+        # add the time overlap only if it is not the last round
+        if (end + overlap_timedelta) >= cfg.pick.end:
+            end = pd.to_datetime(cfg.pick.end)
+        else:
+            end += overlap_timedelta
 
         logger.info(
             f"[{job_index}] Time window extraction #{i}/{len(time_periods)-1} picks from {begin} to {end}."
@@ -274,7 +277,7 @@ def dbclust(
             cfg.pick.P_proximity_threshold,
             cfg.pick.S_proximity_threshold,
         )
-        df_subset.to_csv(f"df_subset_{job_index}_{i}.csv")
+        # df_subset.to_csv(f"df_subset_{job_index}_{i}.csv")
         logger.info(
             f"[{job_index}] End pick preprocessing with {len(df_subset)} phases."
         )
