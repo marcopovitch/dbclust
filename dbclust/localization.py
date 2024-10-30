@@ -395,8 +395,6 @@ class NllLoc(object):
             "LOC_METHOD": "GAU_ANALYTIC" if (double_pass and pass_count == 0) else self.loc_method,
         }
 
-        ic(tags)
-
         # Generate NLL configuration file
         try:
             self.replace(nll_template, conf_file, tags)
