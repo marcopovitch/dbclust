@@ -304,6 +304,7 @@ class NonLinLocConfig:
 
     nlloc_bin: str
     scat2latlon_bin: str
+    loc_method: str
     time_path: str
     template_path: str
     default_velocity_profile: str
