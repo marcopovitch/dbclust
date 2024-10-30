@@ -113,6 +113,7 @@ class NllLoc(object):
         nll_obs_file=None,
         nll_min_phase=4,
         nll_verbose=False,
+        loc_method="EDT_OT_WT_ML",
         tmpdir="/tmp",
         min_station_with_P_and_S=0,
         double_pass=False,
@@ -144,6 +145,7 @@ class NllLoc(object):
         self.nll_obs_file = nll_obs_file  # obs file to localize
         self.nll_min_phase = nll_min_phase
         self.nll_verbose = nll_verbose
+        self.loc_method = loc_method
         self.tmpdir = tmpdir
         self.min_station_with_P_and_S = min_station_with_P_and_S
         self.double_pass = double_pass
@@ -284,14 +286,34 @@ class NllLoc(object):
         force_template: str = None,
     ):
         """
-        Do the NLL stuff to localize event phases in nll_obs_file
+        Perform NonLinLoc localization for seismic events.
 
-        When double_pass is True, the localization is computed twice
-        with picks/phases clean_up step.
-        pass_count keeps track how many time relocation was done (do not modify this).
+        Parameters:
+        -----------
+        nll_obs_file : str, optional
+            Path to the NLL observation file. If not provided, uses the instance's default.
+        picks : List[Pick], optional
+            List of Pick objects to be used in localization.
+        double_pass : bool, optional
+            If True, perform a double pass localization.
+        pass_count : int, optional
+            Counter for the number of localization passes.
+        force_model_id : str, optional
+            Force the use of a specific model ID.
+        force_template : str, optional
+            Force the use of a specific template.
 
-        Returns a multi-origin event in a Catalog()
+        Returns:
+        --------
+        Catalog
+            A Catalog object containing the localized event(s).
+
+        Raises:
+        -------
+        Exception
+            If there is an error in generating the NLL configuration file or running the NLL binary.
         """
+
         # ic(nll_obs_file, double_pass, pass_count, force_model_id, force_template)
 
         if not nll_obs_file:
@@ -369,7 +391,11 @@ class NllLoc(object):
             "NLL_TIME_PATH": self.nll_time_path,
             "OUTPUT": output,
             "NLL_MIN_PHASE": self.nll_min_phase,
+            # Apply GAU_ANALYTIC only for the first pass if double_pass is enabled (to speed up the process)
+            "LOC_METHOD": "GAU_ANALYTIC" if (double_pass and pass_count == 0) else self.loc_method,
         }
+
+        ic(tags)
 
         # Generate NLL configuration file
         try:
@@ -402,7 +428,8 @@ class NllLoc(object):
         if result.returncode != 0:
             logger.error(
                 f"!!! Something went wrong using: {cmde}, "
-                "returned code is {result.returncode}"
+                f"returned code is {result.returncode}"
+                f"{result.stdout}"
             )
             return Catalog()
 
@@ -416,6 +443,9 @@ class NllLoc(object):
                     " ".join(line.split()[3:]).replace('"', "").replace("WARNING: ", "")
                 )
                 logger.warning(f"Localization was ABORTED|IGNORED|REJECTED: {why}")
+                return Catalog()
+            elif "ERROR" in line:
+                logger.error(line)
                 return Catalog()
             elif "scatter_volume" in line:
                 l = line.split("scatter_volume")
@@ -481,7 +511,7 @@ class NllLoc(object):
             str(o.longitude_errors.uncertainty),
             str(o.depth_errors.uncertainty),
         ]:
-            logger.debug("Found NaN value in uncertainty. Ignoring event !")
+            logger.warning("Found NaN value in uncertainty. Ignoring event !")
             return Catalog()
 
         if not self.quakeml_settings:
