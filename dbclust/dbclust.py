@@ -329,7 +329,7 @@ def dbclust(
             cfg.pick.P_uncertainty,
             cfg.pick.S_uncertainty,
             cfg.station.info_sta,
-            cfg.station.fallback_df
+            cfg.station.fallback_df,
         )
         if logger.level == logging.DEBUG:
             for p in phases:
@@ -599,7 +599,7 @@ def run_with_dask(cfg: DBClustConfig):
 
 
 # Ray tasks
-@ray.remote
+@ray.remote(num_cpus=1)
 def run_dbclust_task(cfg, job_index):
     return dbclust(cfg=cfg, job_index=job_index)
 
