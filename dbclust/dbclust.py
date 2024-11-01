@@ -321,7 +321,7 @@ def dbclust(
                 to_replace=cfg.station.rename
             )
 
-        # Import picks
+        # Import picks and get coordinates
         phases = import_phases(
             df_subset,
             cfg.pick.P_proba_threshold,
@@ -329,6 +329,7 @@ def dbclust(
             cfg.pick.P_uncertainty,
             cfg.pick.S_uncertainty,
             cfg.station.info_sta,
+            cfg.station.fallback_df
         )
         if logger.level == logging.DEBUG:
             for p in phases:
