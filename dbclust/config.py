@@ -28,6 +28,7 @@ from db import duckdb_init_parquet
 from icecream import ic
 from obspy import Inventory
 from obspy import read_inventory
+from obspy import UTCDateTime
 from pyocto.associator import VelocityModel1D
 from read_yml import read_config
 from shapely.geometry import LineString
@@ -147,7 +148,6 @@ class PickConfig:
         min, max = conn.sql(rqt).fetchall().pop()
         conn.close()
 
-
         ic(min, max)
 
         if not self.start:
@@ -227,11 +227,13 @@ class StationConfig:
     fdsnws_url: Optional[str] = None
     fdsnws: Optional[FdsnConfig] = None
     inventory_files: Optional[List[str]] = None
+    fallback: Optional[List[str]] = None
     blacklist: Optional[List[str]] = None
     rename: Optional[dict] = None
     frequency_threshold: Optional[float] = None
     inventory: Optional[Inventory] = None
     info_sta: Optional[Union[Inventory, str]] = None
+    fallback_df: Optional[pd.DataFrame] = None
 
     def __post_init__(self) -> None:
         if self.fetch_method not in ["inventory", "fdsnws"]:
@@ -246,6 +248,28 @@ class StationConfig:
         else:
             logger.debug(f"Using fdsnws {self.fdsnws.url} to get station coordinates.")
             self.info_sta = self.fdsnws.get_url()
+
+        if self.fallback:
+            for f in self.fallback:
+                logger.info(f"Reading fallback file {f}")
+                if not os.path.exists(f):
+                    raise FileNotFoundError(f"File {f} does not exist !")
+                try:
+                    df = pd.read_csv(f)
+                except Exception as e:
+                    raise e
+                # if "dateFrom" is empty, replace it with "1970-01-01"
+                df["starttime"] = df["starttime"].replace("", "1970-01-01T00:00:00Z")
+                # if "dateTo" is empty, replace it with "2100-01-01"
+                df["endtime"] = df["endtime"].replace("", "2100-01-01T00:00:00Z")
+                # Convert to UTCDateTime
+                df["starttime"] = df["starttime"].apply(lambda x: UTCDateTime(x))
+                df["endtime"] = df["endtime"].apply(lambda x: UTCDateTime(x))
+
+                if self.fallback_df is None:
+                    self.fallback_df = df
+                else:
+                    self.fallback_df = pd.concat([self.fallback_df, df], ignore_index=True)
 
 
 @dataclass
