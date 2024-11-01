@@ -426,9 +426,11 @@ class NllLoc(object):
         if result.returncode != 0:
             logger.error(
                 f"!!! Something went wrong using: {cmde}, "
-                f"returned code is {result.returncode}"
+                f"returned code is {result.returncode}\n"
                 f"{result.stdout}"
             )
+            for p in picks:
+                logger.error(p)
             return Catalog()
 
         # check from stdout if there is any missing station grid file
