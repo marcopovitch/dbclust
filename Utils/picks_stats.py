@@ -11,6 +11,8 @@ from obspy import read_events
 from obspy import read_inventory
 from obspy import UTCDateTime
 
+from dbclust.relabel_stats import export_phase_relabeling
+
 
 def get_pick_proba_info(outfile, cat, show_station_name=False):
     with open(outfile, "w") as f:
@@ -130,9 +132,15 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(255)
 
-    if os.path.isfile(args.outputfile):
-        logger.error(f"outputfile {args.outputfile} already exists !")
-        sys.exit(255)
+    proba_info_csv = args.outputfile + "_pick_proba.csv"
+    event_ids_info_csv = args.outputfile + "_events_merge_info.csv"
+    distance_km_info_csv = args.outputfile + "_preloc_distance.csv"
+    phase_relabeling_csv = args.outputfile + "_phase_relabeling.csv"
+
+    for f in [proba_info_csv, event_ids_info_csv, distance_km_info_csv, phase_relabeling_csv]:
+        if os.path.isfile(f):
+            logger.error(f"{f} already exists !")
+            sys.exit(255)
 
     numeric_level = getattr(logging, args.loglevel.upper(), None)
     if not numeric_level:
@@ -142,6 +150,9 @@ if __name__ == "__main__":
     logger.setLevel(numeric_level)
 
     cat = read_events(args.inputfile)
-    get_pick_proba_info(args.outputfile, cat, show_station_name=True)
-    get_event_ids_info("events_merge_info.csv", cat)
-    get_distance_km_info("preloc_distance.csv", cat)
+
+    get_pick_proba_info(proba_info_csv, cat, show_station_name=True)
+    get_event_ids_info(event_ids_info_csv, cat)
+    df = export_phase_relabeling(cat)
+    df.to_csv(phase_relabeling_csv, index=False)
+    # get_distance_km_info(event_ids_info_csv, cat)
