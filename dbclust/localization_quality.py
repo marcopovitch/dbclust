@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+from typing import List
 from typing import Tuple
 
 import numpy as np
@@ -7,6 +8,39 @@ from icecream import ic
 from localization_error import get_erh_erz
 from obspy.core.event import Event
 from obspy.core.event import Origin
+
+
+def chauvenet_filter(data: List[float]) -> np.ndarray:
+    """
+    Filters out data points that do not meet Chauvenet's criterion.
+
+    Args:
+        data (array-like): Array of RMS values.
+
+    Returns:
+        filtered_data (numpy.ndarray): Array of data points that meet Chauvenet's criterion.
+    """
+    # Convert to a numpy array for easier computation
+    data = np.array(data)
+
+    # Calculate mean and standard deviation
+    mean = np.mean(data)
+    std_dev = np.std(data)
+    N = len(data)
+
+    # Calculate the threshold probability
+    threshold_prob = 1.0 / (2 * N)
+
+    # Calculate Z-scores for each data point
+    z_scores = np.abs(data - mean) / std_dev
+
+    # Calculate the two-tailed probability for each Z-score
+    probs = 1 - (np.erf(z_scores / np.sqrt(2)))
+
+    # Apply Chauvenet's criterion
+    filtered_data = data[probs >= threshold_prob]
+
+    return filtered_data
 
 
 def normalize_rms(
@@ -27,7 +61,9 @@ def normalize_rms(
     - float, the normalized RMS.
     """
     return rms / (
-        (num_stations ** (1/10)) * (1 + alpha * avg_distance) * (1 + beta * azimuthal_gap)
+        (num_stations ** (1 / 10))
+        * (1 + alpha * avg_distance)
+        * (1 + beta * azimuthal_gap)
     )
 
 
