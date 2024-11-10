@@ -117,6 +117,14 @@ if __name__ == "__main__":
         type=str,
         help="Input directory containing CSV files",
     )
+    # add batch size
+    parser.add_argument(
+        "-b",
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Batch size for processing the input files",
+    )
     args = parser.parse_args()
 
     if args.directory and args.input:
@@ -144,12 +152,11 @@ if __name__ == "__main__":
                 sys.exit(1)
 
     # process the input files by batch
-    batch_size = 100
     tmp_parquet = ".".join([args.output, "tmp.parquet"])
-    for i in tqdm.tqdm(range(0, len(args.input), batch_size)):
-        # print(f"Processing files {i} to {i+batch_size}")
+    for i in tqdm.tqdm(range(0, len(args.input), args.batch_size)):
+        # print(f"Processing files {i} to {i+args.batch_size}")
         convert_csv_to_parquet(
-            args.input[i : i + batch_size],
+            args.input[i : i + args.batch_size],
             tmp_parquet,
         )
 
