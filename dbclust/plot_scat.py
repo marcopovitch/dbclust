@@ -1,13 +1,14 @@
 #!/usr/bin/env python
-import sys
 import argparse
-import pandas as pd
+import logging
+import sys
+import urllib.parse
+
 import numpy as np
+import pandas as pd
+import pygmt
 from obspy import read_events
 from obspy.geodetics import locations2degrees
-import pygmt
-import logging
-import urllib.parse
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -48,7 +49,7 @@ if __name__ == "__main__":
 
     # parameters
     scat_file = f"{args.event_id}.scat"
-    evt_file = f"{args.event_id}.sc3ml"
+    evt_file = f"{args.event_id}.*ml"
 
     # Loc from LocSAT event
     locsat = None

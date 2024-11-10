@@ -32,12 +32,6 @@ logger.setLevel(logging.INFO)
 
 @dataclass
 class Phase:
-    """_summary_
-
-    Returns:
-        _type_: _description_
-    """
-
     network: str
     station: str
     location: str
@@ -47,11 +41,43 @@ class Phase:
     time_uncertainty: float
     proba: float
     info_sta: Union[Inventory, str]
+    fallback_df: Optional[pd.DataFrame] = None
     evaluation: Literal["automatic", "manual", None] = None
     method: str = None
     event_id: str = None
     agency: str = None
     coord: Optional[dict] = None
+
+    """
+    Phase class represents a seismic phase with associated metadata and methods for processing.
+
+    Attributes:
+        network (str): Network code.
+        station (str): Station code.
+        location (str): Location code.
+        channel (str): Channel code.
+        phase (str): Phase type.
+        time (UTCDateTime): Time of the phase.
+        time_uncertainty (float): Uncertainty in the phase time.
+        proba (float): Probability associated with the phase.
+        info_sta (Union[Inventory, str]): Station information, either as an Inventory object or fdsnws url.
+        fallback_df (Optional[pd.DataFrame]): Fallback station info dataframe.
+        evaluation (Literal["automatic", "manual", None]): Evaluation mode of the phase.
+        method (str): Method used for phase determination.
+        event_id (str): Event identifier.
+        agency (str): Agency responsible for the phase.
+        coord (Optional[dict]): Coordinates of the station.
+
+    Methods:
+        show_all() -> None: Prints detailed information about the Phase object.
+        to_pick() -> Pick: Exports the Phase object to an Obspy Pick object.
+
+        __post_init__(): Initializes the Phase object, setting coordinates and other attributes.
+        __eq__(obj: object) -> bool: Checks equality between two Phase objects.
+        __hash__() -> int: Returns the hash value of the Phase object.
+        __repr__() -> str: Returns a string representation of the Phase object.
+        __lt__(obj: "Phase") -> bool: Compares two Phase objects based on time.
+    """
 
     def __post_init__(self) -> None:
         if self.coord:
@@ -88,10 +114,41 @@ class Phase:
             chan=self.channel,
         )
         if lat == None or lon == None:
-            raise ValueError(
-                f"Can't find coordinates for {self.network}.{self.station}.{self.location}.{self.channel} "
-                f"from {time_search_begin} to {time_search_end}."
-            )
+            # try to get coordinates from fallback_df if available
+            if self.fallback_df is not None:
+                df = self.fallback_df
+
+                #ic(self.network, self.station, self.location, self.channel, self.time)
+                df_filtered = df[
+                    (df["network"] == self.network)
+                    & (df["station"] == self.station)
+                    #& (df["channel"].str.contains(self.channel, na=False))
+                    #& (df["location"] == self.location)
+                    & (df["starttime"] <= self.time)
+                    & (df["endtime"] >= self.time)
+                ]
+                #ic(df_filtered)
+
+                if not df_filtered.empty:
+                    (lat, lon, elev, loc, chans) = df_filtered[
+                        ["latitude", "longitude", "elevation", "location", "channel"]
+                    ].iloc[0]
+                    # hack : create a list from df_filtered["channel"]
+                    chans = sorted(df_filtered["channel"].tolist())
+                else:
+                    (lat, lon, elev, loc, chans) = (None, None, None, None, None)
+
+            # if still no coordinates, raise an error
+            if lat == None or lon == None:
+                raise ValueError(
+                    f"Can't find coordinates for {self.network}.{self.station}.{self.location}.{self.channel} "
+                    f"from {time_search_begin} to {time_search_end}."
+                )
+            else:
+                logger.warning(
+                    f"Using fallback coordinates for {self.network}.{self.station}.{self.location}.{self.channel}"
+                )
+
         self.coord = {"latitude": lat, "longitude": lon, "elevation": elev}
 
         if self.location == None:
@@ -213,10 +270,10 @@ def inventory2df(inventory: Inventory) -> pd.DataFrame:
                     "StartTime": station.start_date,
                     "EndTime": station.end_date,
                 }
-                # Ajouter les informations du canal à la liste
+                # Add channel information to the list
                 channels_info.append(channel_info)
 
-    # Créer un DataFrame pandas à partir de la liste de dictionnaires
+    # Create a pandas DataFrame from the list of dictionaries
     df = pd.DataFrame(channels_info, dtype=str)
     if df.empty:
         return df
@@ -386,18 +443,26 @@ def import_phases(
     P_uncertainty: Optional[float] = 0.1,
     S_uncertainty: Optional[float] = 0.2,
     info_sta: Optional[Union[Inventory, str]] = None,
+    fallback_df: Optional[pd.DataFrame] = None,
 ) -> List[Phase]:
-    """Read phaseNet dataframe picks
+    """
+    Import phases from a DataFrame and filter them based on given thresholds.
 
-    Args:
-        df (pd.DataFrame, optional): _description_. Defaults to None.
-        P_proba_threshold (float, optional): P filter threshold. Defaults to 0 ie. no filter.
-        S_proba_threshold (float, optional): S filter threshold. Defaults to 0 ie. no filter.
-        info_sta (Optional[Union[Inventory, str]], optional): How to get stations information.
+    Parameters:
+        df (pd.DataFrame, optional): DataFrame containing phase information. Default is None.
+
+        P_proba_threshold (float, optional): Probability threshold for P phases. Default is 0.
+        S_proba_threshold (float, optional): Probability threshold for S phases. Default is 0.
+        P_uncertainty (Optional[float], optional): Uncertainty for P phases. Default is 0.1.
+        S_uncertainty (Optional[float], optional): Uncertainty for S phases. Default is 0.2.
+
+        info_sta (Optional[Union[Inventory, str]], optional): Station information. Default is None.
+        fallback_df (Optional[pd.DataFrame], optional): Fallback station information DataFrame. Default is None.
 
     Returns:
-        List[Phase]: returns a list of Phase objects
+        List[Phase]: List of Phase objects created from the DataFrame.
     """
+
     phases = []
 
     if df is None or not isinstance(df, pd.DataFrame) or not len(df):
@@ -454,13 +519,16 @@ def import_phases(
                 channel=chan[:2] if chan else chan,
                 phase=row.phase_type,
                 time=row.phase_time,
-                time_uncertainty=P_uncertainty if "P" in row.phase_type.upper() else S_uncertainty,
+                time_uncertainty=(
+                    P_uncertainty if "P" in row.phase_type.upper() else S_uncertainty
+                ),
                 proba=row.phase_score,
                 evaluation=evaluation,
                 method=method,
                 event_id=event_id,
                 agency=agency,
                 info_sta=info_sta,
+                fallback_df=fallback_df,
             )
         except ValueError as e:
             logger.error(e)

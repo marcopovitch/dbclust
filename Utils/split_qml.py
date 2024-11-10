@@ -4,6 +4,7 @@ import argparse
 import os
 import platform
 import subprocess
+import sys
 import warnings
 from multiprocessing import Pool
 
@@ -12,7 +13,7 @@ from obspy import read_events
 from obspy import UTCDateTime
 
 
-def process_month(cat: Catalog, year: int, month: int, output_dir: str) -> None:
+def process_month(cat: Catalog, year: int, month: int, output_dir: str, split_by_event: bool=False) -> None:
     starttime = UTCDateTime(year, month, 1)
     if month == 12:
         endtime = UTCDateTime(year + 1, 1, 1)
@@ -22,15 +23,29 @@ def process_month(cat: Catalog, year: int, month: int, output_dir: str) -> None:
     if len(month_cat) == 0:
         return
 
-    # split filename
-    split_file = f"{output_dir}/{year}_{month}.sc3ml"
-    print(split_file)
-    # suppress the warning about the version of QuakeML
-    month_cat.write(split_file, format="SC3ML")
-    modify_sc3ml_version(split_file)
+    if split_by_event:
+        # split the catalog by events and write each event in year/month directory
+        for e in month_cat.events:
+            event_id = e.resource_id.id.split("/")[-1]
+            year = e.origins[0].time.year
+            # month zero padded
+            month = f"{e.origins[0].time.month:02d}"
+            os.makedirs(f"{output_dir}/{year}/{month}", exist_ok=True)
+            path = f"{output_dir}/{year}/{month}"
+            event_file = f"{path}/{event_id}.qml"
+            e.write(event_file, format="QUAKEML")
+    else:
+        # split catalog by year and month in a single sc3ml file
+        split_file = f"{output_dir}/{year}_{month}.sc3ml"
+        print(split_file)
+        os.makedirs(os.path.dirname(split_file), exist_ok=True)
+        # suppress the warning about the version of QuakeML
+        month_cat.write(split_file, format="SC3ML")
+        modify_sc3ml_version(split_file)
 
 
-def split(filename: str, output_dir: str, n_jobs: int = 4) -> None:
+
+def split(filename: str, output_dir: str, n_jobs: int = 4, split_by_event=False) -> None:
     # read quakeml
     print(f"Reading {filename} ...")
     cat = read_events(filename)
@@ -47,14 +62,14 @@ def split(filename: str, output_dir: str, n_jobs: int = 4) -> None:
         pool.starmap(
             process_month,
             [
-                (cat, year, month, output_dir)
+                (cat, year, month, output_dir, split_by_event)
                 for year in range(min_year, max_year + 1)
                 for month in range(1, 13)
             ],
         )
 
 
-def modify_sc3ml_version(filename: str):
+def modify_sc3ml_version(filename: str) -> None:
     # Substitute in filename using sed command
     # String to convert:
     # xmlns="http://geofon.gfz-potsdam.de/ns/seiscomp3-schema/0.12 by xmlns="http://geofon.gfz-potsdam.de/ns/seiscomp3-schema/0.11
@@ -88,16 +103,27 @@ if __name__ == "__main__":
     parser.add_argument(
         "-j", "--n_jobs", type=int, default=4, help="Number of parallel jobs"
     )
+    # add option to split by event
+    parser.add_argument(
+        "-e",
+        "--split_by_event",
+        action="store_true",
+        help="Split catalog by event (default is by year and month)",
+    )
     args = parser.parse_args()
+
+    if len(sys.argv) == 1:
+        parser.print_help(sys.stderr)
+        sys.exit(1)
 
     # Verify if catalog file exists
     if not os.path.isfile(args.catalog):
         raise FileNotFoundError(f"Catalog file '{args.catalog}' does not exist.")
 
     # Verify if directory does not exist
-    if os.path.exists(args.directory):
-        raise FileExistsError(f"Output directory '{args.directory}' already exists.")
-    else:
-        os.makedirs(args.directory)
+    # if os.path.exists(args.directory):
+    #     raise FileExistsError(f"Output directory '{args.directory}' already exists.")
+    # else:
+    #     os.makedirs(args.directory, exist_ok=True) )
 
-    split(args.catalog, args.directory, args.n_jobs)
+    split(args.catalog, args.directory, args.n_jobs, split_by_event=args.split_by_event)

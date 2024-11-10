@@ -315,7 +315,8 @@ def get_stations_from_cluster(cluster: List[Phase]) -> pd.DataFrame:
     elevation = []
 
     for p in cluster:
-        station.append(".".join([p.network, p.station, p.location, p.channel]))
+        #station.append(".".join([p.network, p.station, p.location, p.channel]))
+        station.append(".".join(map(str, [p.network, p.station, p.location, p.channel])))
         latitude.append(p.coord["latitude"])
         longitude.append(p.coord["longitude"])
         elevation.append(p.coord["elevation"])
@@ -345,7 +346,8 @@ def get_picks_from_cluster(cluster: List[Phase]) -> pd.DataFrame:
     phase = []
     time = []
     for p in cluster:
-        station.append(".".join([p.network, p.station, p.location, p.channel]))
+        #station.append(".".join([p.network, p.station, p.location, p.channel]))
+        station.append(".".join(map(str, [p.network, p.station, p.location, p.channel])))
         phase.append(p.phase[0].upper())
         time.append(p.time)
 
