@@ -392,7 +392,9 @@ class NllLoc(object):
             "OUTPUT": output,
             "NLL_MIN_PHASE": self.nll_min_phase,
             # Apply GAU_ANALYTIC only for the first pass if double_pass is enabled (to speed up the process)
-            "LOC_METHOD": "GAU_ANALYTIC" if (double_pass and pass_count == 0) else self.loc_method,
+            # Warning: GAU_ANALYTIC do not always work as expected
+            #"LOC_METHOD": "GAU_ANALYTIC" if (double_pass and pass_count == 0) else self.loc_method,
+            "LOC_METHOD": self.loc_method,
         }
 
         # Generate NLL configuration file
