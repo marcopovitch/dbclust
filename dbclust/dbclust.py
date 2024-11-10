@@ -193,6 +193,8 @@ def dbclust(
         .to_list()
     )
     time_periods += [pd.to_datetime(stop)]
+    # get unique time_periods sorted
+    time_periods = sorted(list(set(time_periods)))
     logger.info(f"[{job_index}] Splitting dataset in {len(time_periods)-1} chunks.")
 
     # Instantiate a new tool (but empty) to get clusters
@@ -612,9 +614,9 @@ def run_with_ray(cfg: DBClustConfig):
     # Start Ray
     context = ray.init(
         num_cpus=cfg.parallel.n_workers,
-        # include_dashboard=True,
-        # dashboard_host="10.0.1.40",
-        # dashboard_port=8087,
+        dashboard_host="0.0.0.0",
+        dashboard_port=8265,
+        _tmp_dir=cfg.parallel._tmp_dir,
     )
     logger.info(f" http://{context.dashboard_url}")
 
