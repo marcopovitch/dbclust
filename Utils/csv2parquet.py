@@ -1,33 +1,36 @@
 #!/usr/bin/env python
 import argparse
 import os
+import shutil
+import sys
 from datetime import datetime
 from typing import List
 
 import dask.dataframe as dd
+import duckdb
 import numpy as np
 import pandas as pd
+import tqdm
 from dask.distributed import Client
 from dask.distributed import LocalCluster
-# from icecream import ic
-
-
-def is_valid_freq(freq):
-    try:
-        pd.tseries.frequencies.to_offset(freq)
-        return True
-    except ValueError:
-        return False
 
 
 def convert_csv_to_parquet(
     csv_files: List[str],
     parquet_file: str,
-    time_name: str,
-    partition_duration: str,
 ) -> None:
-    cluster = LocalCluster(n_workers=4)
-    client = Client(cluster)
+    """
+    Convert CSV files to Parquet file
+
+    Args:
+        csv_files (List[str]): List of CSV files
+        parquet_file (str): Parquet output file
+    """
+    # print(f"Writing to {parquet_file} parquet file")
+    nb_procs = 1
+    # nb_procs = os.cpu_count()
+    # cluster = LocalCluster(n_workers=nb_procs)
+    # client = Client(cluster)
 
     col_types = {
         "station_id": "string",
@@ -41,78 +44,123 @@ def convert_csv_to_parquet(
         "agency": "string",
     }
 
+    # Chargement des CSV avec Dask
+    ddf = dd.read_csv(csv_files, dtype=col_types)
 
-    df_list = [dd.read_csv(f, dtype=col_types) for f in csv_files]
-    ddf = dd.concat(df_list)
+    # Conversion en datetime sans fuseau horaire pour 'phase_time' et arrondi
+    ddf["phase_time"] = dd.to_datetime(
+        ddf["phase_time"], errors="coerce"
+    ).dt.tz_localize(None)
+    ddf["phase_time"] = ddf["phase_time"].dt.round("1ms")
+    ddf = ddf.sort_values(by="phase_time").compute()
 
-    ddf[time_name] = dd.to_datetime(ddf[time_name])
-
-    # remove what seems to be fake picks
-    if "phase_index" in ddf.columns:
-        ddf = ddf[ddf["phase_index"] != 1]
-
-    if "phase_method" not in ddf.columns:
-        ddf["phase_method"] = "PHASENET"
-
-    if "phase_evaluation" not in ddf.columns:
-        ddf["phase_evaluation"] = "automatic"
-
-
-
-
-    # limits to 10^-4 seconds same as NLL (needed by dbclust to unload some picks)
-    ddf["phase_time"] = ddf["phase_time"].dt.round("0.0001s")
-
-    ddf = ddf.dropna(subset=["station_id"])
-
-    # get rid off nan value when importing phases without event_id
-    ddf = ddf.replace({np.nan: ""})
-
-    # Needed for time partition
-    ddf["idxtime"] = ddf[time_name]
+    # Définir l'index sans forcer de tri immédiat
+    ddf["idxtime"] = ddf["phase_time"]
     ddf = ddf.set_index("idxtime")
 
-    ddf_partitioned = ddf.repartition(freq=partition_duration)
+    # handle the partition
+    ddf["year"] = ddf["phase_time"].dt.year
+    ddf["month"] = ddf["phase_time"].dt.month
 
-    print("Writing parquet file")
+    ddf = dd.from_pandas(ddf, npartitions=nb_procs)
 
-    ddf_partitioned.to_parquet(
+    # print("Writing parquet file")
+    ddf.to_parquet(
         parquet_file,
-        engine="pyarrow",
+        partition_on=["year", "month"],
         compression="snappy",
+        engine="pyarrow",
         write_index=False,
+        append=True,
     )
 
-    client.close()
-    cluster.close()
+    # Fermer le client et le cluster Dask
+    # client.close()
+    # cluster.close()
+
+
+def repartition_parquet(parquet_file_in: str, parquet_file_out: str) -> None:
+    """
+    Repartition a Parquet file using duckdb
+
+    Args:
+        parquet_file_in (str): Input Parquet file
+        parquet_file_out (str): Output Parquet file
+    """
+    print(f"Repartitioning {parquet_file_in} to {parquet_file_out}")
+
+    sql = f"""
+        COPY (SELECT * FROM read_parquet('{parquet_file_in}/**/*.parquet'))
+        TO '{parquet_file_out}'
+        (FORMAT 'parquet', PARTITION_BY (year, month));
+    """
+
+    conn = duckdb.connect()
+    try:
+        conn.execute(sql)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert CSV to Parquet file")
-    # parser.add_argument("-i", "--input", required=True, help="CSV input file")
     parser.add_argument(
-        "-i", "--input", nargs="+", help="CSV input files", required=True
+        "-i",
+        "--input",
+        nargs="+",
+        help="CSV input files (multiple files allowed)",
     )
-    parser.add_argument("-o", "--output", required=True, help="Parquet output file")
+    parser.add_argument("-o", "--output", required=True, help="Parquet output")
     parser.add_argument(
-        "-t", "--time_name", required=True, help="Name of the time column"
+        "-d",
+        "--directory",
+        type=str,
+        help="Input directory containing CSV files",
     )
+    # add batch size
     parser.add_argument(
-        "--part_duration", required=True, type=str, help="Partition duration"
+        "-b",
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Batch size for processing the input files",
     )
     args = parser.parse_args()
 
-    for f in args.input:
-        if not os.path.exists(f):
-            print(f"File {f} does not exist !")
-            exit()
+    if args.directory and args.input:
+        print("Cannot specify both input directory and input files")
+        sys.exit(1)
 
-    if not is_valid_freq(args.part_duration):
-        raise ValueError("This is not a legit pandas frequency !")
+    if args.output and os.path.exists(args.output):
+        print(f"Output directory {args.output} already exists")
+        sys.exit(1)
 
-    convert_csv_to_parquet(
-        args.input,
-        args.output,
-        args.time_name,
-        args.part_duration,
-    )
+    # overwrite input files with files from the directory
+    if args.directory:
+        args.input = []
+        for root, _, files in os.walk(args.directory):
+            for file in files:
+                if file.endswith(".csv"):
+                    args.input.append(os.path.join(root, file))
+        print(f"Input files: {len(args.input)}")
+
+    # check if the output file already exists only if input was specified
+    if not args.directory:
+        for f in args.input:
+            if not os.path.exists(f):
+                print(f"File {f} does not exist !")
+                sys.exit(1)
+
+    # process the input files by batch
+    tmp_parquet = ".".join([args.output, "tmp.parquet"])
+    for i in tqdm.tqdm(range(0, len(args.input), args.batch_size)):
+        # print(f"Processing files {i} to {i+args.batch_size}")
+        convert_csv_to_parquet(
+            args.input[i : i + args.batch_size],
+            tmp_parquet,
+        )
+
+    repartition_parquet(tmp_parquet, args.output)
+
+    # remove the temporary parquet file
+    shutil.rmtree(tmp_parquet)

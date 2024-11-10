@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import warnings
 from dataclasses import asdict
 from functools import partial
@@ -29,6 +30,7 @@ from icecream import ic
 from localization import NllLoc
 from localization import show_event
 from phase import import_phases
+from preprocessing_picks import deduplicate_picks_by_time
 from quakeml import feed_distance_from_preloc_to_pref_origin
 from quakeml import make_readable_id
 from ray.util.multiprocessing import Pool
@@ -87,17 +89,25 @@ def get_locator_from_config(cfg, log_level=logging.INFO):
         cfg.nll.time_path,
         cfg.nll.template_path,
         tmpdir=cfg.file.tmp_path,
+        #
         double_pass=cfg.relocation.double_pass,
         P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
         S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
         dist_km_cutoff=cfg.relocation.dist_km_cutoff,
-        # use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,  ## not yet in config
+        use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,
         keep_manual_picks=cfg.relocation.keep_manual_picks,
         nll_min_phase=cfg.nll.min_phase,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         quakeml_settings=asdict(cfg.quakeml),
         nll_verbose=cfg.nll.verbose,
         keep_scat=cfg.nll.enable_scatter,
+        #
+        zones=cfg.zones,
+        force_zone_name=None,
+        min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
+        enable_relabel_pick_zone=cfg.relocation.enable_relabel_pick_zone,
+        enable_cleanup_pick_zone=cfg.relocation.enable_cleanup_pick_zone,
+        #
         log_level=log_level,
     )
     return locator
@@ -172,7 +182,7 @@ def dbclust(
 
     if df is None or df.empty:
         # Uses duckdb
-        con = duckdb_init(cfg.pick.filename, cfg.pick.type)
+        con = duckdb_init(cfg.pick.filenames, cfg.pick.type)
     else:
         # Uses the pandas Dataframe given as function argument.
         con = None
@@ -183,6 +193,8 @@ def dbclust(
         .to_list()
     )
     time_periods += [pd.to_datetime(stop)]
+    # get unique time_periods sorted
+    time_periods = sorted(list(set(time_periods)))
     logger.info(f"[{job_index}] Splitting dataset in {len(time_periods)-1} chunks.")
 
     # Instantiate a new tool (but empty) to get clusters
@@ -207,8 +219,11 @@ def dbclust(
         logger.debug("================================================")
         logger.debug("")
 
-        # add the time overlap
-        end += overlap_timedelta
+        # add the time overlap only if it is not the last round
+        if (end + overlap_timedelta) >= cfg.pick.end:
+            end = pd.to_datetime(cfg.pick.end)
+        else:
+            end += overlap_timedelta
 
         logger.info(
             f"[{job_index}] Time window extraction #{i}/{len(time_periods)-1} picks from {begin} to {end}."
@@ -216,8 +231,29 @@ def dbclust(
 
         # Extract picks on this time period
         if con:
-            rqt = f"SELECT * FROM PICKS WHERE phase_time BETWEEN '{begin}' AND '{end}'"
+            begin_year = begin.year
+            begin_month = begin.month
+            end_year = end.year
+            end_month = end.month
+
+            rqt = f"""
+                SELECT * FROM PICKS
+                WHERE
+                (year > {begin_year} OR (year = {begin_year} AND month >= {begin_month}))
+                AND
+                (year < {end_year} OR (year = {end_year} AND month <= {end_month}))
+                AND
+                phase_time BETWEEN '{begin}' AND '{end}'
+            """
+
+            # rqt = f"SELECT * FROM PICKS WHERE phase_time BETWEEN '{begin}' AND '{end}'"
+
+            # Time meseaure of the query
+            start_time = time.time()
             df_subset = con.sql(rqt).fetchdf()
+            elapsed_time = time.time() - start_time
+            logger.info(f"Query time: {elapsed_time:.2f} s")
+
             df_subset["phase_time"] = df_subset["phase_time"].dt.tz_localize("UTC")
         else:
             df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
@@ -233,10 +269,24 @@ def dbclust(
                     ~df_subset["station_id"].str.contains(b, regex=True)
                 ]
 
-        logger.info(f"[{job_index}] Starting clustering with {len(df_subset)} phases.")
+        # starting pick preprocessing to get rid of too close picks
+        # base on pick proximity and probability
+        logger.info(
+            f"[{job_index}] Starting pick preprocessing with {len(df_subset)} phases."
+        )
+        df_subset = deduplicate_picks_by_time(
+            df_subset,
+            cfg.pick.P_proximity_threshold,
+            cfg.pick.S_proximity_threshold,
+        )
+        # df_subset.to_csv(f"df_subset_{job_index}_{i}.csv")
+        logger.info(
+            f"[{job_index}] End pick preprocessing with {len(df_subset)} phases."
+        )
 
-        # to prevents extra event, remove from current picks list,
+        # To prevents extra event, remove from current picks list,
         # picks previously associated with events on the previous iteration
+        logger.info(f"[{job_index}] Starting clustering with {len(df_subset)} phases.")
         logger.info(f"Before unload_picks_list() len(df_subset) = {len(df_subset)}")
         if len(picks_to_remove):
             logger.info(
@@ -262,17 +312,18 @@ def dbclust(
                 frequencies < cfg.station.frequency_threshold
             ].index
             df_subset = df_subset[df_subset["station_id"].isin(station_ids_to_keep)]
-            ic(
-                total_duration_in_minutes,
-                frequencies[frequencies >= cfg.station.frequency_threshold],
-            )
+            # ic(
+            #     total_duration_in_minutes,
+            #     frequencies[frequencies >= cfg.station.frequency_threshold],
+            # )
 
         # rename station_id
         if cfg.station.rename:
-            df_subset.loc[:, "station_id"] = df_subset["station_id"].replace(to_replace=cfg.station.rename)
+            df_subset.loc[:, "station_id"] = df_subset["station_id"].replace(
+                to_replace=cfg.station.rename
+            )
 
-
-        # Import picks
+        # Import picks and get coordinates
         phases = import_phases(
             df_subset,
             cfg.pick.P_proba_threshold,
@@ -280,6 +331,7 @@ def dbclust(
             cfg.pick.P_uncertainty,
             cfg.pick.S_uncertainty,
             cfg.station.info_sta,
+            cfg.station.fallback_df,
         )
         if logger.level == logging.DEBUG:
             for p in phases:
@@ -549,7 +601,7 @@ def run_with_dask(cfg: DBClustConfig):
 
 
 # Ray tasks
-@ray.remote
+@ray.remote(num_cpus=1)
 def run_dbclust_task(cfg, job_index):
     return dbclust(cfg=cfg, job_index=job_index)
 
@@ -562,9 +614,9 @@ def run_with_ray(cfg: DBClustConfig):
     # Start Ray
     context = ray.init(
         num_cpus=cfg.parallel.n_workers,
-        # include_dashboard=True,
-        # dashboard_host="10.0.1.40",
-        # dashboard_port=8087,
+        dashboard_host="0.0.0.0",
+        dashboard_port=8265,
+        _tmp_dir=cfg.parallel._tmp_dir,
     )
     logger.info(f" http://{context.dashboard_url}")
 

@@ -6,8 +6,10 @@ import os
 import sys
 import warnings
 from dataclasses import dataclass
+from dataclasses import field
 from dataclasses import fields
 from datetime import datetime
+from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -16,15 +18,17 @@ from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
+import fastparquet
 import geopandas as gpd
 import pandas as pd
-import pyarrow.parquet as pq
 import pyproj
 from dacite import from_dict
 from db import duckdb_init
+from db import duckdb_init_parquet
 from icecream import ic
 from obspy import Inventory
 from obspy import read_inventory
+from obspy import UTCDateTime
 from pyocto.associator import VelocityModel1D
 from read_yml import read_config
 from shapely.geometry import LineString
@@ -73,12 +77,14 @@ class PickConfig:
     """
 
     # path: str
-    filename: Union[str, None]
+    filenames: List[str]
     type: Union[str, None]
     P_uncertainty: float
     S_uncertainty: float
     P_proba_threshold: float
     S_proba_threshold: float
+    P_proximity_threshold: float
+    S_proximity_threshold: float
     start: Optional[Union[datetime, pd.Timestamp]] = None
     end: Optional[Union[datetime, pd.Timestamp]] = None
     df: Optional[pd.DataFrame] = None
@@ -90,11 +96,12 @@ class PickConfig:
         if not self.type:
             return
 
-        if not os.path.exists(self.filename):
-            raise FileNotFoundError(f"File {self.filename} does not exist !")
+        for f in self.filenames:
+            if not os.path.exists(f):
+                raise FileNotFoundError(f"File {f} does not exist !")
 
-        if not os.access(self.filename, os.R_OK):
-            raise PermissionError(f"{self.filename}.")
+            if not os.access(f, os.R_OK):
+                raise PermissionError(f"{f}.")
 
         if self.start:
             self.start = pd.to_datetime(self.start, utc=True).to_datetime64()
@@ -104,14 +111,18 @@ class PickConfig:
 
         # Check parquet or csv file
         if self.type == "parquet":
-            try:
-                table = pq.read_table(
-                    self.filename, columns=[], use_pandas_metadata=False
-                )
-            except:
-                raise ValueError(f"{self.filename} is not parquet formated !")
-            if os.path.isdir(self.filename):
-                self.filename = os.path.join(self.filename, "*")
+            for f in self.filenames:
+                try:
+                    fastparquet.ParquetFile(f)
+                except:
+                    raise ValueError(f"{f} is not parquet formated !")
+
+            # add all parquet files in the directory and subdirectories for duckdb
+            self.filenames = [
+                os.path.join(f, "**", "*.parquet")
+                for f in self.filenames
+                if os.path.isdir(f)
+            ]
         else:
             # CSV
             try:
@@ -126,13 +137,56 @@ class PickConfig:
                 raise e
 
         # set min, max time from data
-        conn = duckdb_init(self.filename, self.type)
+        ic(self.filenames, self.type)
+
+        if self.type == "parquet":
+            conn = duckdb_init_parquet(self.filenames)
+        else:
+            conn = duckdb_init(self.filenames, self.type)
+
         rqt = "SELECT MIN(phase_time), MAX(phase_time) FROM PICKS"
         min, max = conn.sql(rqt).fetchall().pop()
+        conn.close()
+
+        ic(min, max)
+
         if not self.start:
             self.start = min
         if not self.end:
             self.end = max
+
+
+@dataclass
+class FdsnConfig:
+    """Manage different FDSN web services
+
+    Attributes:
+        debug (str): enable debug mode
+        default(str): default FDSN web service URL
+        url (str): FDSN web service URL dictionary
+
+    Raises:
+        URLError: if URL is not valid
+    """
+
+    default: str
+    hosts: Dict[str, str]
+    url: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        # check url validity for each service
+        for key, value in self.hosts.items():
+            if not is_valid_url(value, syntax_only=True):
+                raise URLError(f"{key} URL {value} is not valid !")
+        self.url = self.hosts[self.default]
+
+    def set_url_from_service_name(self, service: str) -> None:
+        if service not in self.hosts:
+            raise ValueError(f"Service {service} not found in FDSN hosts !")
+        self.url = self.hosts[service]
+
+    def get_url(self) -> str:
+        return self.url
 
 
 @dataclass
@@ -171,12 +225,15 @@ class StationConfig:
 
     fetch_method: str
     fdsnws_url: Optional[str] = None
+    fdsnws: Optional[FdsnConfig] = None
     inventory_files: Optional[List[str]] = None
+    fallback: Optional[List[str]] = None
     blacklist: Optional[List[str]] = None
     rename: Optional[dict] = None
     frequency_threshold: Optional[float] = None
     inventory: Optional[Inventory] = None
     info_sta: Optional[Union[Inventory, str]] = None
+    fallback_df: Optional[pd.DataFrame] = None
 
     def __post_init__(self) -> None:
         if self.fetch_method not in ["inventory", "fdsnws"]:
@@ -189,13 +246,31 @@ class StationConfig:
                 self.inventory.extend(read_inventory(f))
                 self.info_sta = self.inventory
         else:
-            if is_valid_url(self.fdsnws_url):
-                logger.info(
-                    f"Using fdsnws {self.fdsnws_url} to get station coordinates."
-                )
-                self.info_sta = self.fdsnws_url
-            else:
-                raise URLError(f"{self.fdsnws_url}")
+            logger.debug(f"Using fdsnws {self.fdsnws.url} to get station coordinates.")
+            self.info_sta = self.fdsnws.get_url()
+
+        if self.fallback:
+            for f in self.fallback:
+                logger.info(f"Reading fallback file {f}")
+                if not os.path.exists(f):
+                    raise FileNotFoundError(f"File {f} does not exist !")
+                try:
+                    df = pd.read_csv(f)
+                except Exception as e:
+                    raise e
+                # if "dateFrom" is empty, replace it with "1970-01-01"
+                df["starttime"] = df["starttime"].replace("", "1970-01-01T00:00:00Z")
+                # if "dateTo" is empty, replace it with "2100-01-01"
+                df["endtime"] = df["endtime"].replace("", "2100-01-01T00:00:00Z")
+                # Convert to UTCDateTime
+                df["starttime"] = df["starttime"].apply(lambda x: UTCDateTime(x))
+                df["endtime"] = df["endtime"].apply(lambda x: UTCDateTime(x))
+
+                if self.fallback_df is None:
+                    self.fallback_df = df
+                else:
+                    self.fallback_df = pd.concat([self.fallback_df, df], ignore_index=True)
+
 
 @dataclass
 class TimeConfig:
@@ -253,6 +328,7 @@ class NonLinLocConfig:
 
     nlloc_bin: str
     scat2latlon_bin: str
+    loc_method: str
     time_path: str
     template_path: str
     default_velocity_profile: str
@@ -297,11 +373,24 @@ class NonLinLocConfig:
 
 @dataclass
 class RelocationConfig:
-    double_pass: bool
-    keep_manual_picks: bool
     P_time_residual_threshold: Union[float, None]
     S_time_residual_threshold: Union[float, None]
+    double_pass: bool
+    keep_manual_picks: bool
+    use_deactivated_arrivals: bool
+    use_pick_zone: bool
     dist_km_cutoff: Optional[float] = None
+
+    # enable pick relabeling based on pick zone and score threshold
+    # supersed P and S time residual threshold
+    # the pick zone is defined in the zones section
+    use_pick_zone: Optional[bool] = False
+    # only used if use_pick_zone is True
+    # relabel pick if score is above this threshold
+    min_score_threshold_pick_zone: Optional[float] = 1
+    enable_relabel_pick_zone: Optional[bool] = False
+    # remove outliers from pick zone
+    enable_cleanup_pick_zone: Optional[bool] = False
 
 
 @dataclass
@@ -312,7 +401,7 @@ class QuakemlConfig:
     author: str
     evaluation_mode: str
     method_id: str
-    # model_id: Optional[str] = None
+    model_id: Optional[str] = None
 
 
 @dataclass
@@ -344,9 +433,17 @@ class Zone:
     name: str
     velocity_profile: str
     polygon: List[List[float]]
+    picks_delimiter: List[Dict[str, List[List[float]]]] = field(default_factory=list)
+    mu: Optional[List[Dict[str, float]]] = None
+    sigma: Optional[List[Dict[str, float]]] = None
 
     def __str__(self) -> str:
         txt = f"zone:\n\tname: '{self.name}'\n\tprofile: '{self.velocity_profile}'\n\tpolygon: {self.polygon}"
+        txt += "\n\tpicks_delimiter:"
+        for item in self.picks_delimiter:
+            for key, value in item.items():
+                txt += f"\n\t\t{key}: {value}"
+
         return txt
 
 
@@ -358,6 +455,7 @@ class Zones:
     def load_zones(self, nll_cfg: NonLinLocConfig) -> None:
         records = []
         for z in self.zones:
+            # sanity check
             found = False
             for vp in nll_cfg.velocity_profiles:
                 if z.velocity_profile == vp.name:
@@ -368,19 +466,61 @@ class Zones:
                     f"Can't find zone velocity profile {z.velocity_profile}"
                 )
 
+            # create shapely polygon zone from list of coordinates
             polygon = Polygon(z.polygon)
+
+            # get picks_delimiter polygons
+            gdf_pick_delimiter = gpd.GeoDataFrame()
+            if z.picks_delimiter:
+                picks_delimiter_polygons = []
+                names = []  # pick family name (Pn, Pg, Sn, Sg, ...)
+
+                # iterate over Pg, Pn, Sg, Sn, ...
+                for item in z.picks_delimiter:
+                    for key, value in item.items():
+                        picks_delimiter_polygons.append(Polygon(value))
+                        names.append(key)
+
+                df = pd.DataFrame({"name": names, "geometry": picks_delimiter_polygons})
+                gdf = gpd.GeoDataFrame(df, geometry="geometry")
+                gdf["region"] = z.name
+                gdf["mu"] = z.mu
+                gdf["sigma"] = z.sigma
+                gdf_pick_delimiter = pd.concat(
+                    [gdf_pick_delimiter, gdf],
+                    ignore_index=True,
+                )
+
             records.append(
                 {
                     "name": z.name,
                     "velocity_profile": vp.name,
                     "template": vp.template_file,
                     "geometry": polygon,
+                    "mu": z.mu,
+                    "sigma": z.sigma,
+                    "picks_delimiter": gdf_pick_delimiter,
                 }
             )
+
         if not len(records):
             raise ValueError(f"Zones defined ... but empty !")
 
         self.polygons = gpd.GeoDataFrame(records)
+
+    def get_velocity_profile_name(self, zone_name: str) -> str:
+        """Get velocity profile name from zone name
+
+        Args:
+            zone_name (str): zone name
+
+        Returns:
+            str: velocity profile name
+        """
+        for zone in self.zones:
+            if zone.name == zone_name:
+                return zone.velocity_profile
+        return ""
 
     def get_zone_from_name(self, name: str) -> gpd.GeoDataFrame:
         """Get zone given it's name
@@ -448,6 +588,12 @@ class Zones:
                         distance_km = min(distances) / 1000
                 return row, distance_km
         return gpd.GeoDataFrame(), None
+
+    def show_zones(self):
+        print("Zone name: velocity profile")
+        for index, row in self.polygons.iterrows():
+            print(f'\t{row["name"]}: {row["velocity_profile"]}')
+        print()
 
 
 @dataclass
@@ -575,7 +721,7 @@ class ParallelConfig:
             self.n_workers = os.cpu_count()
 
     def get_time_partitions(self, time_cfg: TimeConfig, pick_cfg: PickConfig) -> List:
-        ic(pick_cfg.start, pick_cfg.end)
+        # ic(pick_cfg.start, pick_cfg.end)
         nb_periods = self.get_nb_of_divisions(
             pick_cfg.start, pick_cfg.end, self.partition_duration
         )
@@ -608,6 +754,7 @@ class ParallelConfig:
         return math.ceil((end - start) / pd.Timedelta(freq))
 
 
+@dataclass
 class DBClustConfig:
     file: FilesConfig
     pick: PickConfig
@@ -621,6 +768,7 @@ class DBClustConfig:
     pyocto: PyoctoConfig
     zones: Zones
     parallel: ParallelConfig
+    fdsnws_event: FdsnConfig
 
     def __init__(self, filename, config_type="std") -> None:
         self.filename = filename
@@ -668,6 +816,9 @@ class DBClustConfig:
         # Finalize zones
         self.zones.load_zones(self.nll)
 
+        # Set default velocity model
+        self.quakeml.model_id = self.nll.default_velocity_profile
+        # ic(self.quakeml)
         assert len(self.parallel.time_partitions)
 
     def show(self):
@@ -689,7 +840,7 @@ class DBClustConfig:
         ic(self.pick.df)
 
 
-def is_valid_url(url: str) -> bool:
+def is_valid_url(url: str, syntax_only: bool = False) -> bool:
     """Check if url syntax is valid, and url is joinable
 
     Args:
@@ -701,6 +852,8 @@ def is_valid_url(url: str) -> bool:
     try:
         parsed_url = urlparse(url)
         if parsed_url.scheme and parsed_url.netloc:
+            if syntax_only:
+                return True
             with urlopen(url):
                 pass
             return True
