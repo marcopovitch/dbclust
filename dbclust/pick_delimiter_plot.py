@@ -40,17 +40,17 @@ def pick_delimiter_plot_all(conf):
         xaxis_title="Distance (deg)",
         yaxis_title="Time (s)",
         showlegend=True,
-        #width=800,
-        #height=600,
+        # width=800,
+        # height=600,
     )
 
-    #fig.write_image("pick_delimiter-all.png")
+    # fig.write_image("pick_delimiter-all.png")
     fig.show()
 
 
 def pick_delimiter_plot(conf, zone_name):
     zone = conf.zones.get_zone_from_name(zone_name)
-    # ic(zone)
+    ic(zone)
     poly_df = zone.picks_delimiter
     # ic(poly_df)
 
@@ -72,6 +72,13 @@ def pick_delimiter_plot(conf, zone_name):
         xaxis_title="Distance (deg)",
         yaxis_title="Time (s)",
         showlegend=True,
+        legend=dict(
+            x=0.01,  # Position en x (0 = gauche)
+            y=0.99,  # Position en y (1 = en haut)
+            xanchor="left",
+            yanchor="top",
+            bgcolor="rgba(255, 255, 255, 0.8)",  # Fond blanc semi-transparent
+        ),
     )
 
     fig.write_image(f"pick_delimiter-{zone_name}.png")
@@ -120,6 +127,6 @@ if __name__ == "__main__":
         pick_delimiter_plot(myconf, args.zone_name)
     else:
         # iterate over all zones
-        #for zone in myconf.zones.zones:
-        #    pick_delimiter_plot(myconf, zone.name)
-        pick_delimiter_plot_all(myconf)
+        for zone in myconf.zones.zones:
+            pick_delimiter_plot(myconf, zone.name)
+        # pick_delimiter_plot_all(myconf)
