@@ -455,6 +455,14 @@ class NllLoc(object):
                     scatter_volume = l[1].strip()
                 else:
                     scatter_volume = None
+            elif "ExpectLat" in line:
+                # get expectation hypocenter
+                l = line.split()
+                if len(l) > 1:
+                    expect_lat = float(l[2])
+                    expect_lon = float(l[4])
+                    expect_depth = float(l[6])
+
 
         if self.nll_verbose:
             print(result.stdout)
@@ -531,7 +539,11 @@ class NllLoc(object):
         # to keep track of different origins
         o.creation_info.version = pass_count + 1
 
+        # store into comment scatter volume
         o.comments.append(Comment(text='{"scatter_volume": %s}' % (scatter_volume)))
+
+        # store into comment expectation hypocenter
+        o.comments.append(Comment(text='{"expectation": {"latitude": %s, "longitude": %s, "depth": %s}}' % (expect_lat, expect_lon, expect_depth)))
 
         if self.force_uncertainty:
             for pick in e.picks:
