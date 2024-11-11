@@ -616,7 +616,7 @@ def run_with_ray(cfg: DBClustConfig):
         num_cpus=cfg.parallel.n_workers,
         dashboard_host="0.0.0.0",
         dashboard_port=8265,
-        _tmp_dir=cfg.parallel._tmp_dir,
+        _temp_dir=cfg.parallel._temp_dir,
     )
     logger.info(f" http://{context.dashboard_url}")
 
