@@ -715,6 +715,7 @@ class ParallelConfig:
     partition_duration: str = "1D"
     nb_partitions: Optional[int] = None
     time_partitions: Optional[List] = None
+    _temp_dir: Optional[str] = "/tmp/ray"
 
     def __post_init__(self):
         if not self.n_workers:
