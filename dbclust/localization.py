@@ -573,12 +573,17 @@ class NllLoc(object):
                     zone = self.zones.get_zone_from_name(self.force_zone_name)
                 else:
                     zone, _ = self.zones.find_zone(o.latitude, o.longitude)
-                # ic(model_id, zone)
+
                 # keep track of relabel for later user
                 # as info on the event will be lost
-                event2, relabel_dict = self.cleanup_picks_and_relabel_picks(
-                    event2, zone, eval_threshold=self.min_score_threshold_pick_zone
-                )
+                if len(zone.picks_delimiter):
+                    event2, relabel_dict = self.cleanup_picks_and_relabel_picks(
+                        event2, zone, eval_threshold=self.min_score_threshold_pick_zone
+                    )
+                else:
+                    # no zone found: use default cleanup
+                    event2 = self.cleanup_pick_phase(event2)
+                    relabel_dict = {}
             else:
                 # legacy code to clean up pick :
                 # 1. with bad residual
@@ -586,6 +591,7 @@ class NllLoc(object):
                 # 3. with distance > dist_km_cutoff
                 # 4. with duplicated phases
                 event2 = self.cleanup_pick_phase(event2)
+                relabel_dict = {}
 
             if len(event2.picks):
                 new_nll_obs_file = nll_obs_file + ".2nd_pass"
@@ -609,7 +615,7 @@ class NllLoc(object):
                 # Synchronize current event phase's comments with relabel_dict info
                 # 1. add relabel phase according to relabel_dict
                 # 2. deactivate arrival if needed
-                if self.enable_cleanup_pick_zone:
+                if self.enable_cleanup_pick_zone and relabel_dict:
                     for arrival in orig2.arrivals:
                         pick = next(
                             (
@@ -953,13 +959,7 @@ class NllLoc(object):
 
         Update "used_station_count" and "used_phase_count" in origin quality.
 
-        status set:
-            * 'relabel': relabel done (ie. no conflicts, score above threshold)
-            * 'set by user': already set by user in accordance with the polygon found (do not relabel it)
-            * 'score too low': score is too low, nothing done
-            * 'ignored: already set': pick is manual, conflicts with an already existing pick, do nothing
-            * "removed: already set": pick is automatic, conflicts with an already existing pick, remove it
-            * 'removed': pick is not within a polygon
+
 
         Args:
             event (Event): event to work on
@@ -1062,6 +1062,32 @@ class NllLoc(object):
     def cleanup_picks_and_relabel_picks(
         self, event: Event, zone: Zone, eval_threshold: float = 0.10
     ) -> Tuple[Event, dict]:
+        """
+        Cleans up picks and relabels them based on the defined zone and evaluation threshold.
+
+        Parameters:
+        -----------
+        event : Event
+            The seismic event containing picks and arrivals.
+        zone : Zone
+            The zone containing polygon definitions and sigma value for evaluation.
+        eval_threshold : float, optional
+            The threshold for evaluation score to determine if a pick should be relabeled or removed (default is 0.10).
+
+        Returns:
+        --------
+        Tuple[Event, dict]
+            A tuple containing the updated event and a dictionary of relabeled picks with their comments.
+
+
+        List of status:
+            * 'relabel': relabel done (ie. no conflicts, score above threshold)
+            * 'set by user': already set by user in accordance with the polygon found (do not relabel it)
+            * 'score too low': score is too low, nothing done
+            * 'ignored: already set': pick is manual, conflicts with an already existing pick, do nothing
+            * "removed: already set": pick is automatic, conflicts with an already existing pick, remove it
+            * 'removed': pick is not within a polygon
+        """
 
         df_polygons = zone.picks_delimiter
         sigma = zone.sigma
