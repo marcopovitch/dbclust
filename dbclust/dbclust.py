@@ -27,10 +27,12 @@ from dask.distributed import LocalCluster
 from db import duckdb_init
 from dbclust2pyocto import dbclust2pyocto
 from icecream import ic
+from inject_spatialite import export_catalog_to_sqlite
 from localization import NllLoc
 from localization import show_event
 from phase import import_phases
 from preprocessing_picks import deduplicate_picks_by_time
+from quakeml import deduplicate_picks_and_make_readable_ids
 from quakeml import feed_distance_from_preloc_to_pref_origin
 from quakeml import make_readable_id
 from ray.util.multiprocessing import Pool
@@ -493,39 +495,60 @@ def dbclust(
                 else:
                     show_event(event, "****")
 
-        # write into qml/comments picks probabilities and event_ids where picks are coming from
+        # Write into qml/comments picks probabilities and event_ids where picks are coming from
         feed_picks_probabilities(clustcat, previous_myclust.clusters)
         feed_picks_event_ids(clustcat, previous_myclust.clusters)
 
-        # set to manual picks from agency
-        # set to automatic pick from phasenet
+        # Write into qml/comments distance from preferred origin and prelocalization
+        clustcat = feed_distance_from_preloc_to_pref_origin(clustcat)
+
+        # TODO
+        # Set to manual picks from agency and to automatic pick from phasenet
         # feed_picks_event_evaluation_mode(clustcat)
-
-        # write into qml/comments distance from preferred origin and prelocalization
-        feed_distance_from_preloc_to_pref_origin(clustcat)
-
-        # transform ids to a more human readable thing !
-        # clustcat = make_readable_id(
-        #     clustcat, cfg.quakeml.event_prefix, cfg.quakeml.smi_base
-        # )
 
         # prepare next round
         previous_myclust = myclust
 
-        # write partial qml file and clean catalog from memory
+        # Write partial qml file and clean catalog from memory
         if (last_saved_event_count) > cfg.catalog.event_flush_count:
+
+            # set file name
             if job_index != None:
                 partial_qml = os.path.join(
-                    cfg.catalog.path,
+                    cfg.catalog.qml_path,
                     f"{cfg.catalog.qml_base_filename}-{job_index}-{part}.qml",
                 )
             else:
                 partial_qml = os.path.join(
-                    cfg.catalog.path, f"{cfg.catalog.qml_base_filename}-{part}.qml"
+                    cfg.catalog.qml_path, f"{cfg.catalog.qml_base_filename}-{part}.qml"
                 )
 
-            logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
-            locator.catalog.write(partial_qml, format="QUAKEML")
+            # Deduplicate picks and make readable ids
+            locator.catalog = deduplicate_picks_and_make_readable_ids(
+                locator.catalog,
+                prefix=cfg.quakeml.event_prefix,
+                smi_base=cfg.quakeml.smi_base,
+            )
+
+            # Write to QuakeML file
+            if cfg.catalog.enable_quakeml_file:
+                logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
+                locator.catalog.write(partial_qml, format="QUAKEML")
+
+            # Write to SQLite database file
+            if cfg.catalog.enable_sqlite:
+                logger.info(
+                    f"Writing {len(locator.catalog)} events in {cfg.catalog.sqlite_db_fullpath}"
+                )
+                try:
+                    export_catalog_to_sqlite(
+                        cfg.catalog.sqlite_db_fullpath,
+                        locator.catalog,
+                        enable_quakeml=True,
+                    )
+                except Exception as e:
+                    logger.error(f"Writing catalog to sqlite3: {e}")
+
             locator.catalog.clear()
             last_saved_event_count = 0
             part += 1
@@ -533,21 +556,37 @@ def dbclust(
             # last_saved_event_count += len(clustcat)
             last_saved_event_count += len(locator.catalog)
 
-    # Write last events
+    # Write the last event
+    # set file name
     if job_index != None:
         partial_qml = os.path.join(
-            cfg.catalog.path,
+            cfg.catalog.qml_path,
             f"{cfg.catalog.qml_base_filename}-{job_index}-{part}.qml",
         )
     else:
         partial_qml = os.path.join(
-            cfg.catalog.path, f"{cfg.catalog.qml_base_filename}-{part}.qml"
+            cfg.catalog.qml_path, f"{cfg.catalog.qml_base_filename}-{part}.qml"
         )
-    logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
-    locator.catalog.write(partial_qml, format="QUAKEML")
 
-    # if con:
-    #    con.close()
+    # Deduplicate picks and make readable ids
+    locator.catalog = deduplicate_picks_and_make_readable_ids(
+        locator.catalog, prefix=cfg.quakeml.event_prefix, smi_base=cfg.quakeml.smi_base
+    )
+
+    # Write to QuakeML file
+    if cfg.catalog.enable_quakeml_file:
+        logger.info(f"Writing {len(locator.catalog)} events in {partial_qml}")
+        locator.catalog.write(partial_qml, format="QUAKEML")
+
+    # Write to SQLite database file
+    if cfg.catalog.enable_sqlite:
+        logger.info(
+            f"Writing {len(locator.catalog)} events in {cfg.catalog.sqlite_db_fullpath}"
+        )
+        try:
+            export_catalog_to_sqlite(cfg.catalog.sqlite_db_fullpath, locator.catalog, enable_quakeml=True)
+        except Exception as e:
+            logger.error(f"Writing catalog to sqlite3: {e}")
 
     return True
 
