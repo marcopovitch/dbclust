@@ -269,7 +269,9 @@ class StationConfig:
                 if self.fallback_df is None:
                     self.fallback_df = df
                 else:
-                    self.fallback_df = pd.concat([self.fallback_df, df], ignore_index=True)
+                    self.fallback_df = pd.concat(
+                        [self.fallback_df, df], ignore_index=True
+                    )
 
 
 @dataclass
@@ -413,19 +415,44 @@ class CatalogConfig:
         PermissionError: if path is not writable
     """
 
-    path: str
+    enable_quakeml_file: bool
+    qml_path: str
     qml_base_filename: str
     event_flush_count: int
+    #
+    enable_sqlite: bool
+    sqlite_db_path: str
+    sqlite_db_filename: str
+    sqlite_db_fullpath: Optional[str] = None
 
     def __post_init__(self) -> None:
-        if not os.path.exists(self.path) or not os.path.isdir(self.path):
-            try:
-                os.makedirs(self.path)
-            except OSError as e:
-                raise e(f"Can't create directory {self.path}")
+        if self.enable_quakeml_file:
+            if not os.path.exists(self.qml_path) or not os.path.isdir(self.qml_path):
+                try:
+                    os.makedirs(self.qml_path)
+                except OSError as e:
+                    raise e(f"Can't create directory {self.qml_path}")
 
-        if not os.access(self.path, os.W_OK):
-            raise PermissionError(f"Can't write in {self.path} directory.")
+            if not os.access(self.qml_path, os.W_OK):
+                raise PermissionError(f"Can't write in {self.qml_path} directory.")
+
+        if self.enable_sqlite:
+            if not os.path.exists(self.sqlite_db_path) or not os.path.isdir(
+                self.sqlite_db_path
+            ):
+                try:
+                    os.makedirs(self.sqlite_db_path)
+                except OSError as e:
+                    raise e(f"Can't create directory {self.sqlite_db_path}")
+
+            if not os.access(self.sqlite_db_path, os.W_OK):
+                raise PermissionError(
+                    f"Can't write in {self.sqlite_db_path} directory."
+                )
+            self.sqlite_db_fullpath = os.path.join(
+                self.sqlite_db_path, self.sqlite_db_filename
+            )
+
 
 
 @dataclass
