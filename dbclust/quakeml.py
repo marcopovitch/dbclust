@@ -5,11 +5,13 @@ import os
 import sys
 from datetime import datetime
 from itertools import combinations
+from typing import Dict
 
 import alphabetic_timestamp as ats
 from icecream import ic
 from obspy import Catalog
 from obspy import read_events
+from obspy import UTCDateTime
 from obspy.core.event import Comment
 from obspy.core.event import CreationInfo
 from obspy.core.event import Event
@@ -26,8 +28,18 @@ logger = logging.getLogger("quakeml")
 logger.setLevel(logging.INFO)
 
 
-def make_event_id(time, prefix, smi_base):
-    # set and readable event id
+def make_event_id(time: UTCDateTime, prefix: str, smi_base: str) -> ResourceIdentifier:
+    """
+    Generate a unique event identifier based on the provided time, prefix, and SMI base.
+
+    Args:
+        time (UTCDateTime): The time of the event.
+        prefix (str): A prefix to be added to the event ID.
+        smi_base (str): The base URL for the SMI (Seismological Metadata Identifier).
+
+    Returns:
+        ResourceIdentifier: A unique resource identifier for the event.
+    """
     dt = time.datetime
     year = time.year
     alphatime = ats.base36.from_datetime(dt, time_unit=ats.TimeUnit.milliseconds)
@@ -36,9 +48,20 @@ def make_event_id(time, prefix, smi_base):
     return event_resource_id
 
 
-def make_origin_id(event):
-    # create origin_id
-    origin_id_list = [o.resource_id.id for o in event.origins]
+def make_origin_id(event: Event) -> ResourceIdentifier:
+    """
+    Generate a unique origin ID for an event.
+    This function creates a unique origin ID for an event by iterating through
+    existing origin IDs and appending a number to the event's resource ID until
+    a unique ID is found.
+
+    Args:
+        event (Event): The event object containing origins and a resource ID.
+    Returns:
+        ResourceIdentifier: A unique resource identifier for the origin.
+    """
+
+    origin_id_list = {o.resource_id.id for o in event.origins}
     n_origins = 0
     while True:
         origin_id = f"{event.resource_id.id}/origin/{n_origins}"
@@ -48,8 +71,19 @@ def make_origin_id(event):
     return ResourceIdentifier(origin_id)
 
 
-def make_pick_id(event):
-    pick_id_list = [p.resource_id.id for p in event.picks]
+def make_pick_id(event: Event) -> ResourceIdentifier:
+    """
+    Generate a unique pick ID for an event.
+    This function creates a unique pick ID for an event by iterating through
+    existing pick IDs and appending a number to the event's resource ID until
+    a unique ID is found.
+
+    Args:
+        event (Event): The event object containing picks and a resource ID.
+    Returns:
+        ResourceIdentifier: A unique resource identifier for the pick.
+    """
+    pick_id_list = {p.resource_id.id for p in event.picks}
     n_picks = 0
     while True:
         pick_id = f"{event.resource_id.id}/pick/{n_picks}"
@@ -59,9 +93,17 @@ def make_pick_id(event):
     return ResourceIdentifier(pick_id)
 
 
-def make_comment_id(parent):
+def make_comment_id(parent) -> ResourceIdentifier:
     """
-    Replace comments id from parent (event, pick)
+    Generate a unique comment ID for a parent object.
+    This function creates a unique comment ID for a parent object by iterating
+    through existing comment IDs and appending a number to the parent's resource
+    ID until a unique ID is found.
+
+    Args:
+        parent: The parent object containing comments and a resource ID.
+    Returns:
+        ResourceIdentifier: A unique resource identifier for the comment.
     """
     comment_list = [c.resource_id.id for c in parent.comments if c.resource_id]
     n_comments = 0
@@ -73,8 +115,19 @@ def make_comment_id(parent):
     return ResourceIdentifier(comment_id)
 
 
-def make_arrival_id(origin):
-    arrival_id_list = [a.resource_id.id for a in origin.arrivals]
+def make_arrival_id(origin: Origin) -> ResourceIdentifier:
+    """
+    Generate a unique arrival ID for an origin.
+    This function creates a unique arrival ID for an origin by iterating through
+    existing arrival IDs and appending a number to the origin's resource ID until
+    a unique ID is found.
+
+    Args:
+        origin (Origin): The origin object containing arrivals and a resource ID.
+    Returns:
+        ResourceIdentifier: A unique resource identifier for the arrival.
+    """
+    arrival_id_list = {a.resource_id.id for a in origin.arrivals}
     n_arrival = 0
     while True:
         arrival_id = f"{origin.resource_id.id}/arrival/{n_arrival}"
@@ -87,58 +140,76 @@ def make_arrival_id(origin):
 
 def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
     """
-    make object id more readable
+    Make the IDs of the given catalog readable by replacing
+    the existing IDs with human-readable IDs based on the provided prefix and SMI base.
+
+    Args:
+        cat (Catalog): The catalog object to update.
+        prefix (str): A prefix to be added to the event ID.
+        smi_base (str): The base URL for the SMI (Seismological Metadata Identifier).
+    Returns:
+        Catalog: The catalog object with human-readable IDs.
     """
+    # Generate a readable catalog ID
     alphatime = ats.base36.from_datetime(
         datetime.now(), time_unit=ats.TimeUnit.milliseconds
     )
     catalog_id = "/".join([smi_base, "catalog", alphatime])
     cat.resource_id = ResourceIdentifier(catalog_id)
-    for e in cat.events:
-        o = e.preferred_origin()
-        event_id = make_event_id(o.time, prefix, smi_base)
-        e.resource_id.id = event_id.id
 
+    for e in cat.events:
+        # Generate a new ID for the event
+        o = e.preferred_origin()
+        if o is None:
+            raise ValueError(f"Event {e.resource_id} has no preferred origin.")
+        event_id = make_event_id(o.time, prefix, smi_base)
+        e.resource_id = event_id
+
+        # Generate readable IDs for associated comments
         for c in e.comments:
             comment_id = make_comment_id(e)
             c.resource_id = comment_id
 
-        # forge readable pick_id
-        pick_lookup_table = {}
+        # Create a lookup table for pick IDs
+        pick_lookup_table: Dict[str, str] = {}
         for p in sorted(e.picks, key=lambda p: p.time):
             old_pick_id = p.resource_id.id
             pick_id = make_pick_id(e)
             p.resource_id = pick_id
             pick_lookup_table[old_pick_id] = pick_id.id
+
             for c in p.comments:
                 comment_id = make_comment_id(p)
                 c.resource_id = comment_id
 
-        # ic(pick_lookup_table)
-        # forge readable origin_id
+        # Generate readable IDs for origins
         for o in sorted(e.origins, key=lambda o: o.creation_info.version):
             origin_id = make_origin_id(e)
             if o.resource_id == e.preferred_origin_id:
-                e.preferred_origin_id = origin_id.id
+                e.preferred_origin_id = origin_id
             o.resource_id = origin_id
 
-            # forge readable arrival_id
+            # Generate readable IDs for arrivals
             for a in o.arrivals:
-                old_arrival_id = a.resource_id
                 arrival_id = make_arrival_id(o)
                 a.resource_id = arrival_id
-                if a.pick_id.id in pick_lookup_table.keys():
-                    a.pick_id.id = pick_lookup_table[a.pick_id.id]
-                # else:
-                #     logger.error(
-                #         f"make_readable_id: arrival old:{old_arrival_id}/new:{a.resource_id} with unreferenced pick {a.pick_id.id}!!!"
-                #     )
+
+                # Link the pick ID if available in the lookup table
+                if a.pick_id.id in pick_lookup_table:
+                    a.pick_id = ResourceIdentifier(pick_lookup_table[a.pick_id.id])
+                else:
+                    logger.warning(
+                        f"Arrival {a.resource_id} references a missing pick {a.pick_id.id}."
+                    )
+
     return cat
 
 
-def deduplicate_picks(event: Event) -> Event:
+def deduplicate_picks_one_pass(event: Event) -> Event:
     """
-    Deduplicate picks from the given event.
+    Deduplicate picks from the given event by identifying and removing duplicate picks
+    based on waveform ID, time, and phase hint.
+    This function performs a single pass through the list of picks to identify and remove duplicates.
 
     Args:
         event (Event): The event object containing picks.
@@ -146,50 +217,131 @@ def deduplicate_picks(event: Event) -> Event:
     Returns:
         Event: The event object with deduplicated picks.
     """
-    picks = event.picks
+    # Ensure picks are accessed once
+    picks = list(event.picks)
     to_be_removed = []
     match_pick_id = {}
+
+    # Compare each pair of picks for potential duplicates
     for p1, p2 in combinations(picks, 2):
         if (
             p1.waveform_id.get_seed_string() == p2.waveform_id.get_seed_string()
             and p1.time == p2.time
             and p1.phase_hint == p2.phase_hint
         ):
-            if p1 in to_be_removed or p2 in to_be_removed:
+            if p2 in to_be_removed or p1 in to_be_removed:
                 continue
 
-            # set the id mapping
+            # Map the duplicate pick's ID to the retained pick's ID
             match_pick_id[p2.resource_id] = p1.resource_id
             to_be_removed.append(p2)
 
+    # Update arrival pick IDs in origins to point to the retained pick
     for origin in event.origins:
         for arrival in origin.arrivals:
-            if arrival.pick_id in match_pick_id.keys():
+            if arrival.pick_id in match_pick_id:
                 arrival.pick_id = match_pick_id[arrival.pick_id]
 
-    logger.debug(f"Deduplicate picks: to remove:{len(to_be_removed)}, remaining:{len(picks)}.")
+    # Log and remove duplicate picks
+    logger.debug(
+        f"Deduplicate picks: to remove={len(to_be_removed)}, remaining={len(picks) - len(to_be_removed)}."
+    )
     for p in to_be_removed:
-        picks.remove(p)
+        event.picks.remove(p)
+
     return event
 
 
-def feed_distance_from_preloc_to_pref_origin(cat):
-    for e in cat:
-        pref_o = e.preferred_origin()
+def deduplicate_picks(event: Event) -> Event:
+    """ "
+    Deduplicate picks from the given event by identifying and removing duplicate picks
+    based on waveform ID, time, and phase hint.
+    This function repeatedly deduplicates picks until no more duplicates are found.
+
+    Args:
+        event (Event): The event object containing picks.
+
+    Returns:
+        Event: The event object with deduplicated picks.
+    """
+    # Deduplicate picks until no more duplicates are found
+    while True:
+        event_nb_picks = len(event.picks)
+        new_event = deduplicate_picks_one_pass(event)
+        if len(new_event.picks) == event_nb_picks:
+            break
+        event = new_event
+
+    return event
+
+
+def feed_distance_from_preloc_to_pref_origin(cat: Catalog) -> Catalog:
+    """
+    Add a comment to each event in the catalog with the distance (in km) between the
+    preferred origin and a prelocation origin (if available).
+
+    Args:
+        cat (Catalog): The catalog containing events.
+
+    Returns:
+        Catalog: The updated catalog with distance comments added to events.
+    """
+    for event in cat:
+        # Get the preferred origin
+        pref_origin = event.preferred_origin()
+        if not pref_origin:
+            continue
+
+        # Find a prelocation origin and calculate the distance
         distance = None
-        for o in e.origins:
-            if o.resource_id != pref_o.resource_id and "PyOcto" in o.method_id.id:
-                distance, az, baz = gps2dist_azimuth(
-                    o.latitude,
-                    o.longitude,
-                    pref_o.latitude,
-                    pref_o.longitude,
+        for origin in event.origins:
+            if (
+                origin.resource_id != pref_origin.resource_id
+                and "PyOcto" in origin.method_id.id
+            ):
+                distance, _, _ = gps2dist_azimuth(
+                    origin.latitude,
+                    origin.longitude,
+                    pref_origin.latitude,
+                    pref_origin.longitude,
                 )
-                # distance in meters, convert it to km
+                # Convert distance from meters to kilometers
                 distance = distance / 1000.0
                 break
-        if distance != None:
-            e.comments.append(Comment(text='{"preloc_distance_km": %.2f}' % (distance)))
+
+        # Append the distance as a comment to the event
+        if distance is not None:
+            event.comments.append(
+                Comment(text=f'{{"preloc_distance_km": {distance:.2f}}}')
+            )
+
+    return cat
+
+
+# function to deduplicate picks and make readable ids for a catalog
+def deduplicate_picks_and_make_readable_ids(
+    cat: Catalog, prefix: str, smi_base: str
+) -> Catalog:
+    """
+    Deduplicate picks from the given catalog and make the IDs readable by replacing
+    the existing IDs with human-readable IDs based on the provided prefix and SMI base.
+
+    Args:
+        cat (Catalog): The catalog object to update.
+        prefix (str): A prefix to be added to the event ID.
+        smi_base (str): The base URL for the SMI (Seismological Metadata Identifier).
+
+    Returns:
+        Catalog: The catalog object with deduplicated picks and human-readable IDs.
+    """
+    # Deduplicate picks in each event
+    for e in cat.events:
+        e = deduplicate_picks(e)
+
+    # Make the IDs readable
+    cat = make_readable_id(cat, prefix, smi_base)
+
+    return cat
 
 
 if __name__ == "__main__":
@@ -225,18 +377,10 @@ if __name__ == "__main__":
     logger.info("Reading catalog ...")
     cat = read_events(args.inputfile)
     print(cat)
-
-    # logger.info("Pick deduplication ...")
-    # new_cat = Catalog()
-    # for e in cat.events:
-    #     new_e = deduplicate_picks(e)
-    #     new_cat.events.append(new_e)
-
-    new_cat = cat
-
-    logger.info("Make readable ids ...")
-    new_cat = make_readable_id(new_cat, "sihex", "quakeml:franceseisme.fr")
-    print(new_cat)
-
+    logger.info("Pick deduplication and make readable ids ...")
+    cat = deduplicate_picks_and_make_readable_ids(
+        cat, "sihex", "quakeml:franceseisme.fr"
+    )
+    print(cat)
     logger.info("Writing catalog ...")
-    new_cat.write(args.outputfile, format="QUAKEML")
+    cat.write(args.outputfile, format="QUAKEML")
