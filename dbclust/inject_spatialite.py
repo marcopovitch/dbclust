@@ -1,25 +1,198 @@
 #!/usr/bin/env python
+"""
+    Processes QuakeML files and stores the data in a SpatiaLite-enabled SQLite database.
+"""
 import argparse
+import csv
 import datetime
+import json
 import logging
+import math
+import re
 import sqlite3
+import sys
 import xml.etree.ElementTree as ET
 import zlib
+from collections import Counter
 from io import BytesIO
+from typing import List
+from typing import Tuple
 
-from icecream import ic
+import numpy as np
+from localization_quality import classify_Michele_mod
 from obspy import Catalog
 from obspy import read_events
 from obspy import UTCDateTime
 from obspy.core.event import Event
+from obspy.core.event import Origin
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("inject_spatialite")
 logger.setLevel(logging.INFO)
 
-"""
-Processes QuakeML files and stores the data in a SpatiaLite-enabled SQLite database.
-"""
+
+event_coordinates_view_definition = """
+    CREATE VIEW IF NOT EXISTS event_coordinates AS
+    SELECT
+        e.event_id,
+        o.time, o.latitude, o.longitude, o.depth,
+        o.rms, o.erh, o.erz, o.er_method,
+        o.used_station_count, o.used_phase_count, o.P_count, o.S_count,
+        o.minimum_distance, o.maximum_distance, o.median_distance,
+        o.azimuthal_gap, o.secondary_azimuthal_gap,
+        o.scatter_volume, e.dist_km_from_preloc,
+        e.nb_agencies, e.agencies_list,
+        o.evaluation_mode,
+        e.event_type, e.discrimination_probability, e.discrimination_station_count, e.discrimination_certainty,
+        o.quality, o.quality_factor,
+        o.geometry
+    FROM
+        events AS e
+    JOIN
+        origins as o ON e.event_id = o.event_id
+    WHERE
+        o.preferred = 1;
+    """
+
+
+def get_event_agencies_ids(event: Event) -> list:
+    """
+    Extracts and returns a list of event agency IDs from the comments of a given event.
+    Args:
+        event (Event): An event object containing comments with potential agency IDs.
+    Returns:
+        list: A list of agency IDs extracted from the event's comments.
+    """
+    ids = list()
+    for comment in event.comments:
+        try:
+            info = json.loads(comment.text)
+        except:
+            continue
+
+        if "event_ids" in info.keys():
+            ids.extend(info["event_ids"])
+    return ids
+
+
+def get_distance_km_info(event: Event) -> float:
+    """
+    Extracts from the event's comment the distance from preloc to preferred origin in kilometers.
+    Args:
+        event (Event): An event object containing comments with potential distance information.
+    Returns:
+        float or None: The distance in kilometers if found, otherwise None.
+    """
+    dist_km = None
+    for comment in event.comments:
+        try:
+            info = json.loads(comment.text)
+        except:
+            continue
+        if "preloc_distance_km" in info.keys():
+            dist_km = info["preloc_distance_km"]
+            break
+    return dist_km
+
+
+def get_scatter_volume(origin: Origin) -> float:
+    """
+    Extracts from the origin's comment the scatter volume.
+
+    Args:
+        origin (Origin): An origin object containing comments with potential scatter volume information.
+    Returns:
+        float or None: The scatter volume if found, otherwise None.
+    """
+    scatter_volume = None
+    for comment in origin.comments:
+        try:
+            info = json.loads(comment.text)
+        except:
+            continue
+        if "scatter_volume" in info.keys():
+            scatter_volume = info["scatter_volume"]
+            break
+    return scatter_volume
+
+
+def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
+    """
+    Calculate the values of erh (horizontal uncertainty) and erz (vertical uncertainty).
+
+    Parameters:
+        origin (Origin): The origin.
+
+    Returns:
+        Tuple[float, float, str]: The values of erh and erz, and the method used to compute them.
+    """
+    for comment in origin.comments:
+        text = comment.text
+        match = re.search(r"CovXX (\d+\.\d+) .* YY (\d+\.\d+) .* ZZ (\d+\.\d+)", text)
+        if text and match:
+            CovXX = float(match.group(1))
+            CovYY = float(match.group(2))
+            ZZ = float(match.group(3))
+
+            erz = np.sqrt(ZZ)
+            erh = np.sqrt(CovXX + CovYY)
+            method = "covariance"
+            return erh, erz, method
+
+    # compute erh and erz from origin errors
+    earth_radius = 6371.0
+    deg_latitude_km = earth_radius * math.pi / 180.0
+    deg_longitude_km = (
+        earth_radius * math.pi / 180.0 * math.cos(math.radians(origin.latitude))
+    )
+
+    try:
+        erh = np.sqrt(
+            (origin.latitude_errors.uncertainty * deg_latitude_km) ** 2
+            + (origin.longitude_errors.uncertainty * deg_longitude_km) ** 2
+        )
+        method = "origin_errors"
+    except:
+        try:
+            erh = origin.origin_uncertainty.horizontal_uncertainty / 1000.0
+            method = "origin_uncertainty"
+        except:
+            erh = None
+            method = "unknown"
+
+    try:
+        erz = origin.depth_errors.uncertainty / 1000.0
+        method = "origin_errors"
+    except:
+        try:
+            erz = origin.origin_uncertainty.depth_uncertainty / 1000.0
+            method = "origin_uncertainty"
+        except:
+            erz = None
+            method = "unknown"
+
+    return erh, erz, method
+
+
+def phase_count(event: Event, origin: Origin, phase_type: str) -> int:
+    """
+    Count the number of phase of a given type in an origin.
+
+    Parameters:
+        origin (Origin): The origin.
+        phase_type (str): The phase type "P" or "S".
+
+    Returns:
+        int: The number of phase of the given type.
+    """
+    count = 0
+    for arrival in origin.arrivals:
+        pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
+
+        if phase_type in pick.phase_hint.upper():
+            count += 1
+
+    return count
 
 
 def compress_quakeml_data(catalog: Catalog, format: str = "QUAKEML"):
@@ -79,7 +252,9 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
         # Start a transaction
         conn.execute("BEGIN TRANSACTION;")
 
-        # Insert full QuakeML data
+        ############################
+        # Insert full QuakeML data #
+        ############################
         conn.execute(
             """
             INSERT INTO quakeml (event_id, data)
@@ -87,69 +262,98 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
             """,
             (event.resource_id.id, quakeml),
         )
+        logger.debug(f"Quakeml {event.resource_id.id} inserted.")
 
-        # Insert event details
-        preferred_origin = event.preferred_origin()
+        ################
+        # Insert event #
+        ################
+        # convert to json
+        all_agencies_ids = get_event_agencies_ids(event)
+        agencies_list_str = json.dumps(all_agencies_ids)
+
         conn.execute(
             """
-            INSERT INTO events (id, time, latitude, longitude, depth, magnitude, geometry, event_type,
-                                latitude_uncertainty, longitude_uncertainty,
-                                depth_uncertainty, event_id)
-            VALUES (?, ?, ?, ?, ?, ?, ST_GeomFromText(?, 4326), ?, ?, ?, ?, ?)
+            INSERT INTO events (event_id, event_type, dist_km_from_preloc, nb_agencies, agencies_list)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 event.resource_id.id,
-                to_datetime(preferred_origin.time),
-                preferred_origin.latitude,
-                preferred_origin.longitude,
-                preferred_origin.depth,
-                event.magnitudes[0].mag if event.magnitudes else None,
-                f"POINT({preferred_origin.longitude} {preferred_origin.latitude})",  # Géométrie en WKT
-                event.event_type if hasattr(event, "event_type") else None,
-                (
-                    preferred_origin.latitude_errors.uncertainty
-                    if preferred_origin.latitude_errors
-                    else None
-                ),
-                (
-                    preferred_origin.longitude_errors.uncertainty
-                    if preferred_origin.longitude_errors
-                    else None
-                ),
-                (
-                    preferred_origin.depth_errors.uncertainty
-                    if preferred_origin.depth_errors
-                    else None
-                ),
-                event.resource_id.id,
+                event.event_type,
+                get_distance_km_info(event),
+                len(all_agencies_ids),
+                agencies_list_str,
             ),
         )
+        logger.debug(f"Event {event.resource_id.id} inserted.")
 
-        # Insert origins
         for origin in event.origins:
+            q = origin.quality
+            try:
+                rms = q.standard_error
+            except:
+                rms = None
+            P_count = phase_count(event, origin, "P")
+            S_count = phase_count(event, origin, "S")
+            used_phase_count = q.used_phase_count
+            used_station_count = q.used_station_count
+            erz, erh, err_method = get_erh_erz(origin)
+
+            ##################
+            # Insert origins #
+            ##################
             conn.execute(
                 """
-                INSERT INTO origins (id, event_id, time, latitude, longitude, depth, depth_type, evaluation_mode, preferred)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO origins (
+                    id, event_id, time, latitude, longitude, depth, depth_type,
+                    rms, erh, erz, er_method,
+                    used_station_count, used_phase_count, P_count, S_count,
+                    minimum_distance, maximum_distance, median_distance,
+                    azimuthal_gap, secondary_azimuthal_gap,
+                    scatter_volume,
+                    evaluation_mode, preferred, geometry)
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ST_GeomFromText(?, 4326)
+                )
                 """,
                 (
                     origin.resource_id.id,
                     event.resource_id.id,
+                    # set time to UTC datetime
                     to_datetime(origin.time),
                     origin.latitude,
                     origin.longitude,
                     origin.depth,
                     origin.depth_type,
+                    rms,
+                    erz,
+                    erh,
+                    err_method,
+                    used_station_count,
+                    used_phase_count,
+                    P_count,
+                    S_count,
+                    q.minimum_distance,
+                    q.maximum_distance,
+                    q.median_distance,
+                    q.azimuthal_gap,
+                    q.secondary_azimuthal_gap,
+                    get_scatter_volume(origin),
                     origin.evaluation_mode,
                     (
                         1
                         if origin.resource_id == event.preferred_origin().resource_id
                         else 0
                     ),
+                    f"POINT({origin.longitude} {origin.latitude})",
                 ),
             )
+            logger.debug(f"Origin {origin.resource_id.id} inserted.")
 
-        # Insert picks
+        ################
+        # Insert picks #
+        ################
         for pick in event.picks:
             conn.execute(
                 """
@@ -164,8 +368,11 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
                     pick.time_errors.uncertainty,
                 ),
             )
+            logger.debug(f"Pick {pick.resource_id.id} inserted.")
 
-        # Insert arrivals
+        ###################
+        # Insert arrivals #
+        ###################
         for origin in event.origins:
             for arrival in origin.arrivals:
                 pick_id = arrival.pick_id.id if arrival.pick_id else None
@@ -184,10 +391,11 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
                         arrival.distance,
                     ),
                 )
+                logger.debug(f"Arrival {arrival.resource_id.id} inserted.")
 
         # Commit the transaction
         conn.execute("COMMIT;")
-        logger.info(f"Event {event.resource_id.id} inserted.")
+        logger.debug(f"Event {event.resource_id.id} inserted.")
 
     except Exception as e:
         # Rollback the transaction if an error occurs
@@ -281,7 +489,13 @@ def create_schema(db_path: str) -> sqlite3.Connection:
 
     #  SpatiaLite metadata initialization
     conn.enable_load_extension(True)
-    conn.load_extension("mod_spatialite")
+
+    try:
+        conn.load_extension("mod_spatialite")
+    except sqlite3.OperationalError as e:
+        logger.error("Failed to load SpatiaLite extension: %s", e)
+        raise
+
     cursor = conn.cursor()
     cursor.execute(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spatial_ref_sys';"
@@ -304,33 +518,19 @@ def create_schema(db_path: str) -> sqlite3.Connection:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS events (
-            id TEXT PRIMARY KEY,
-            time TIMESTAMP,
-            latitude DOUBLE,
-            longitude DOUBLE,
-            depth DOUBLE,
-            magnitude DOUBLE,
+            event_id TEXT PRIMARY KEY REFERENCES quakeml(event_id),
             event_type TEXT,
-            latitude_uncertainty DOUBLE,
-            longitude_uncertainty DOUBLE,
-            depth_uncertainty DOUBLE,
-            event_id TEXT REFERENCES quakeml(event_id)
+            dist_km_from_preloc DOUBLE,
+            discrimination_probability DOUBLE,
+            discrimination_station_count INTEGER,
+            discrimination_certainty DOUBLE,
+            nb_agencies INTEGER,
+            agencies_list JSON,
+            agency_names TEXT,
+            multiple_same_agencies BOOLEAN
         );
         """
     )
-
-    # add geometry column to events table
-    # only if it does not already exist
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(events);")
-    columns = [row[1] for row in cursor.fetchall()]
-    if "geometry" not in columns:
-        logger.info("Adding geometry column to events table...")
-        conn.execute(
-            """
-            SELECT AddGeometryColumn('events', 'geometry', 4326, 'POINT', 'XY');
-        """
-        )
 
     # picks table
     conn.execute(
@@ -340,7 +540,9 @@ def create_schema(db_path: str) -> sqlite3.Connection:
             event_id TEXT REFERENCES events(id),
             station_name TEXT,
             pick_time TIMESTAMP,
-            uncertainty DOUBLE
+            uncertainty DOUBLE,
+            author TEXT,
+            probability DOUBLE
         );
         """
     )
@@ -356,11 +558,40 @@ def create_schema(db_path: str) -> sqlite3.Connection:
             longitude DOUBLE,
             depth DOUBLE,
             depth_type TEXT,
+            rms DOUBLE,
+            erh DOUBLE,
+            erz DOUBLE,
+            er_method TEXT,
+            used_station_count INTEGER,
+            used_phase_count INTEGER,
+            P_count INTEGER,
+            S_count INTEGER,
+            minimum_distance DOUBLE,
+            maximum_distance DOUBLE,
+            median_distance DOUBLE,
+            azimuthal_gap DOUBLE,
+            secondary_azimuthal_gap DOUBLE,
+            scatter_volume DOUBLE,
+            quality TEXT,
+            quality_factor REAL,
             evaluation_mode TEXT,
             preferred BOOLEAN
         );
         """
     )
+
+    # add geometry column to events table
+    # only if it does not already exist
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(origins);")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "geometry" not in columns:
+        logger.info("Adding geometry column to events table...")
+        conn.execute(
+            """
+            SELECT AddGeometryColumn('origins', 'geometry', 4326, 'POINT', 'XY');
+            """
+        )
 
     # arrivals table
     conn.execute(
@@ -377,11 +608,99 @@ def create_schema(db_path: str) -> sqlite3.Connection:
         """
     )
 
+    # create spatial index
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='idx_origins_geometry';"
+    )
+    if cursor.fetchone()[0] == 0:
+        try:
+            logger.info(
+                "Creating spatial index for 'geometry' column in 'origins' table..."
+            )
+            conn.execute("SELECT CreateSpatialIndex('origins', 'geometry');")
+        except sqlite3.OperationalError as e:
+            logger.error(f"Error creating spatial index: {e}")
+
+    # create a view to get the event with preferred origin coordinates
+    conn.execute(event_coordinates_view_definition)
+    conn.commit()
     return conn
 
 
-def export_catalog_to_sqlite(
-    database: str, catalog: Catalog, enable_quakeml: bool = False
+def refresh_event_coordinates_view(conn: sqlite3.Connection):
+    """
+    Refreshes event_coordinates view in SQLite by dropping and recreating it.
+
+    Args:
+        conn: SQLite connection object.
+    """
+    cursor = conn.cursor()
+
+    # Drop the view if it exists
+    cursor.execute(f"DROP VIEW IF EXISTS event_coordinates;")
+    conn.commit()
+
+    # Recreate the view
+    cursor.execute(event_coordinates_view_definition)
+    conn.commit()
+
+
+def register_geometry_for_view(
+    conn, view_name, geometry_column, srid=4326, geom_type=1, coord_dim=2
+):
+    """
+    Automatically register a geometry column for a view in SpatiaLite.
+
+    Args:
+        conn (sqlite3.Connection): Active connection to the SQLite database.
+        view_name (str): Name of the view.
+        geometry_column (str): Name of the geometry column in the view.
+        srid (int): Spatial reference ID (default: 4326).
+        geom_type (int): Geometry type (default: 1 for POINT).
+        coord_dim (int): Coordinate dimension (default: 2 for XY).
+    """
+    cursor = conn.cursor()
+
+    # Check if the view exists
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='view' AND name=?;", (view_name,)
+    )
+    if not cursor.fetchone():
+        raise ValueError(f"The view '{view_name}' does not exist.")
+
+    # Check if the geometry is already registered
+    cursor.execute(
+        "SELECT * FROM geometry_columns WHERE f_table_name=? AND f_geometry_column=?;",
+        (view_name, geometry_column),
+    )
+    if cursor.fetchone():
+        print(
+            f"Geometry column '{geometry_column}' is already registered for view '{view_name}' ... removing it."
+        )
+        cursor.execute(
+            """
+            SELECT DiscardGeometryColumn('event_coordinates', 'geometry');
+            """
+        )
+        # return
+
+    # Register the geometry column
+    print(f"Registering geometry column '{geometry_column}' for view '{view_name}'...")
+    cursor.execute(
+        """
+        INSERT INTO geometry_columns (
+            f_table_name, f_geometry_column, geometry_type, coord_dimension, srid, spatial_index_enabled
+        ) VALUES (?, ?, ?, ?, ?, 0);
+        """,
+        (view_name, geometry_column, geom_type, coord_dim, srid),
+    )
+    conn.commit()
+    print("Geometry column registered successfully.")
+
+
+def import_catalog_to_sqlite(
+    conn: sqlite3.Connection, catalog: Catalog, enable_quakeml: bool = False
 ) -> None:
     """
     Export a catalog of seismic events to an SQLite database.
@@ -405,9 +724,6 @@ def export_catalog_to_sqlite(
         None
     """
 
-    # Create schema
-    conn = create_schema(database)
-
     # Process events and insert into SQLite
     for event in catalog:
         # Serialize QuakeML content using format and compress it
@@ -420,7 +736,254 @@ def export_catalog_to_sqlite(
             inject_event(conn, event, quakeml_data)
         except Exception as e:
             logger.error(f"event {event.resource_id.id}: {e}")
+
+
+def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv: str):
+    """
+    Export a SQLite view to a CSV file, excluding the 'geometry' column.
+
+    Args:
+        db_path (str): Path to the SQLite database.
+        view_name (str): Name of the view to export.
+        output_csv (str): Path to the output CSV file.
+    """
+    print(f"Exporting view '{view_name}' to '{output_csv}' without 'geometry'...")
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Query the view excluding the geometry column
+    query = f"""
+    SELECT * FROM {view_name} WHERE 1=0;
+    """
+    cursor.execute(query)
+    column_names = [desc[0] for desc in cursor.description if desc[0] != "geometry"]
+    selected_columns = ", ".join(column_names)
+    query = f"SELECT {selected_columns} FROM {view_name};"
+
+    cursor.execute(query)
+
+    # Write to CSV
+    with open(output_csv, mode="w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(column_names)  # Write the header
+        writer.writerows(cursor.fetchall())  # Write the rows
+
+    print(
+        f"View '{view_name}' exported successfully to '{output_csv}' without 'geometry'."
+    )
+
     conn.close()
+
+
+def add_agency_names(conn: sqlite3.Connection) -> None:
+    """
+    Add a column to the 'events' table to store the names of the agencies
+    associated with each event based on the 'agencies_list' column.
+
+    Args:
+        conn (sqlite3.Connection): Active connection to the SQLite database.
+    """
+
+    # Define the agency patterns to match
+    agency_patterns = [
+        {"name": "Renass", "pattern": "smi:franceseisme.fr"},
+        {"name": "ISTerre", "pattern": "/ISTerre"},
+        {"name": "CEA", "pattern": "cea.ldg"},
+        {"name": "OCA", "pattern": "geofon/oca"},
+        {"name": "OMP", "pattern": "event/omp"},
+        {"name": "Renass/PhaseNet", "pattern": "PhaseNet"},
+    ]
+
+    # Define the mapping function
+    def map_agencies_to_json(agencies_list_json):
+        try:
+            # Load the list of agency IDs from the JSON string
+            event_ids = json.loads(agencies_list_json)
+            # Find the matching agencies based on the event IDs
+            matched_agencies = [
+                pattern["name"]
+                for pattern in agency_patterns
+                if any(pattern["pattern"] in event_id for event_id in event_ids)
+            ]
+            # Return the matched agencies as a JSON string
+            return json.dumps(matched_agencies)
+        except json.JSONDecodeError:
+            return json.dumps([])
+
+    # Register the mapping function in SQLite
+    conn.create_function("map_agencies_to_json", 1, map_agencies_to_json)
+
+    # Add a column to the 'events' table to store the agency names
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(events);")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "agency_names" not in columns:
+        cursor.execute("ALTER TABLE events ADD COLUMN agency_names JSON;")
+
+    # Update the 'agency_names' column based on the 'agencies_list' column
+    cursor.execute(
+        """
+        UPDATE events
+        SET agency_names = map_agencies_to_json(agencies_list)
+        WHERE agencies_list IS NOT NULL;
+        """
+    )
+
+    # Detect if any agency appears multiple times in the agency_names list
+    def has_duplicates(json_array):
+        """
+        Detect if there are duplicates in a JSON array.
+        Args:
+            json_array (str): JSON array as a string.
+        Returns:
+            bool: True if duplicates exist, False otherwise.
+        """
+        try:
+            items = json.loads(json_array)
+            return len(items) > len(set(items))
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+    conn.create_function("HAS_DUPLICATES", 1, has_duplicates)
+
+    if "multiple_same_agencies" not in columns:
+        cursor.execute("ALTER TABLE events ADD COLUMN multiple_same_agencies BOOLEAN;")
+
+    cursor.execute(
+        """
+        UPDATE events
+        SET multiple_same_agencies = HAS_DUPLICATES(agency_names);
+        """
+    )
+
+    conn.commit()
+
+
+def add_discrimination_info(db_path: str, csv_file: str) -> None:
+    """
+    Add discrimination info to the event table from a CSV file.
+
+    Args:
+        db_path (str): Path to the SQLite database.
+        csv_file (str): Path to the CSV file containing discrimination info.
+    """
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Read the CSV file containing discrimination info
+    with open(csv_file, mode="r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            event_id = row["event_id"]
+            probability = row["probability"]
+            station_count = row["station_count"]
+            certainty = row["certainty"]
+
+            # Update the event table with discrimination info
+            cursor.execute(
+                """
+                UPDATE events
+                SET discrimination_probability = ?,
+                    discrimination_station_count = ?,
+                    discrimination_certainty = ?
+                WHERE event_id = ?;
+                """,
+                (probability, station_count, certainty, event_id),
+            )
+    conn.commit()
+    conn.close()
+
+
+def add_compute_localization_quality(db_path: str) -> None:
+    """
+    Compute localization quality info and add it to the event table.
+
+    Args:
+        db_path (str): Path to the SQLite database.
+    """
+    try:
+        # Connect to the database
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+
+            # Check if the `quality` and `quality_factor` columns exist in the `origins` table
+            cursor.execute("PRAGMA table_info(origins);")
+            columns = [col[1] for col in cursor.fetchall()]
+
+            if "quality" not in columns:
+                cursor.execute("ALTER TABLE origins ADD COLUMN quality TEXT;")
+            if "quality_factor" not in columns:
+                cursor.execute("ALTER TABLE origins ADD COLUMN quality_factor REAL;")
+            conn.commit()
+
+            # Fetch data for quality computation
+            cursor.execute(
+                """
+                SELECT
+                    o.id,
+                    o.rms,
+                    o.erh,
+                    o.erz,
+                    o.used_phase_count,
+                    o.minimum_distance,
+                    o.median_distance,
+                    o.azimuthal_gap,
+                    o.secondary_azimuthal_gap,
+                    o.scatter_volume
+                FROM
+                    origins AS o;
+                """
+            )
+            rows = cursor.fetchall()
+
+            # Process each row and update localization quality and quality_factor
+            for row in rows:
+                (
+                    origin_id,
+                    rms,
+                    erh,
+                    erz,
+                    num_phases,
+                    min_distance,
+                    median_distance,
+                    azimuthal_gap,
+                    secondary_azimuthal_gap,
+                    scatter_volume,
+                ) = row
+
+                if None in row:
+                    continue
+
+                quality_factor, quality = classify_Michele_mod(
+                    rms,
+                    erh,
+                    erz,
+                    num_phases,
+                    min_distance,
+                    median_distance,
+                    azimuthal_gap,
+                    secondary_azimuthal_gap,
+                    scatter_volume,
+                )
+
+                # Update the database with the computed quality and quality_factor
+                cursor.execute(
+                    """
+                    UPDATE origins
+                    SET quality = ?, quality_factor = ?
+                    WHERE id = ?;
+                    """,
+                    (quality, quality_factor, origin_id),
+                )
+            conn.commit()
+    except sqlite3.Error as e:
+        print(f"SQLite error: {e}")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+
+    refresh_event_coordinates_view(conn)
+    conn.commit()
 
 
 if __name__ == "__main__":
@@ -429,26 +992,94 @@ if __name__ == "__main__":
         description="Process QuakeML files and store in SQLite."
     )
     parser.add_argument(
-        "-i", "--input", required=True, help="Path to the input QuakeML file."
-    )
-    parser.add_argument(
         "-d",
         "--database",
         default="seismic_data.sqlite",
         help="Path to the SQLite database.",
+    )
+
+    ############################
+    # Import catalog to sqlite #
+    ############################
+    parser.add_argument(
+        "-i", "--input", default=None, help="Path to the input QuakeML file."
     )
     parser.add_argument(
         "-q",
         "--enable-quakeml",
         action="store_true",
         default=False,
-        help="write full quakeml in the existing database file.",
+        help="import full quakeml in the database.",
+    )
+
+    #####################
+    # Add export to csv #
+    #####################
+    parser.add_argument(
+        "-c",
+        "--csv-output",
+        default=None,
+        help="export the view to a csv file.",
+    )
+
+    # Export QuakeML data to a file
+    parser.add_argument(
+        "--export-quakeml", required=False, help="Path to the output QuakeML file."
+    )
+
+    ###########################
+    # Add discrimination info #
+    ###########################
+    parser.add_argument(
+        "--add-discrimination",
+        default=None,
+        help="Add discrimination info from csv file to the event table.",
+    )
+
+    ############################
+    # Add localization quality #
+    ############################
+    parser.add_argument(
+        "--add-localization-quality",
+        action="store_true",
+        default=False,
+        help="Compute localization quality info to the event table.",
     )
     args = parser.parse_args()
 
-    # Read QuakeML file
-    # catalog = read_events(args.input)
-    # export_catalog_to_sqlite(args.database, catalog, args.enable_quakeml)
+    print(args)
 
-    # Export QuakeML data to a file
-    export_sqlite_to_quakeml(args.database, "output_quakeml.xml")
+    # check if -i is given
+    if args.input:
+        # Create schema
+        conn = create_schema(args.database)
+
+        # # Read QuakeML file
+        catalog = read_events(args.input)
+
+        # # Import the catalog into the SQLite database
+        import_catalog_to_sqlite(conn, catalog, args.enable_quakeml)
+
+        # extract agency names and stats to event table
+        add_agency_names(conn)
+
+        # Register the geometry column for the 'event_coordinates' view
+        register_geometry_for_view(conn, "event_coordinates", "geometry")
+        conn.close()
+    elif args.csv_output:
+        # Export the view to a CSV file
+        export_view_to_csv_exclude_geometry(
+            args.database, "event_coordinates", args.csv_output
+        )
+    elif args.export_quakeml:
+        # Export QuakeML data to a file
+        export_sqlite_to_quakeml(args.database, args.export_quakeml)
+    elif args.add_discrimination:
+        # Add discrimination info to the event table
+        add_discrimination_info(args.database, args.discrimination_file)
+    elif args.add_localization_quality:
+        # Add localisation quality info to the event table
+        add_compute_localization_quality(args.database)
+    else:
+        parser.print_help()
+        sys.exit(1)
