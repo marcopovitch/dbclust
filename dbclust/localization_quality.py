@@ -230,3 +230,104 @@ def get_classification_text(classification: str) -> str:
     }
 
     return classification_text[classification]
+
+
+def classify_Michele_mod(
+    rms: float,
+    erh: float,
+    erz: float,
+    nbpha: int,
+    dmin: float,
+    dmed: float,
+    gap: float,
+    gap2: float,
+    scatvol: float,
+) -> Tuple[float, str]:
+    """
+    Classify seismic event quality using a modified version of Michele et al. (2019).
+
+    This function computes a quality factor (qf) for seismic events based on normalized
+    input parameters. The quality factor determines the event's classification into one
+    of four quality categories: "A", "B", "C", or "D".
+
+    Parameters:
+    -----------
+    rms : float
+        Root mean square of residuals (seconds).
+    erh : float
+        Horizontal error (kilometers).
+    erz : float
+        Vertical error (kilometers).
+    nbpha : int
+        Number of phases used in the solution.
+    dmin : float
+        Minimum distance to the nearest station (degrees).
+    dmed : float
+        Median distance of the stations used (degrees).
+    gap : float
+        Maximum azimuthal gap (degrees).
+    gap2 : float
+        Secondary azimuthal gap (degrees).
+    scatvol : float
+        Scatter volume from NonLinLoc (unit ? mˆ3 ).
+
+    Returns:
+    --------
+    Tuple[float, str]
+        - `qf`: Quality factor, a float representing the normalized quality of the event.
+        - `q`: Quality category as a string ("A", "B", "C", or "D"):
+            - "A": High quality (qf <= 0.25).
+            - "B": Good quality (0.25 < qf <= 0.5).
+            - "C": Moderate quality (0.5 < qf <= 0.75).
+            - "D": Poor quality (qf > 0.75).
+
+    Notes:
+    ------
+    The quality factor is computed as:
+        qf = sqrt( sum(params_norm**2) / len(params_norm) )
+    where `params_norm` are the input parameters normalized using predefined thresholds.
+
+    Parameters like `nbpha` (number of phases) are inverted during normalization to reflect
+    their inverse contribution to quality (more phases = better quality).
+    """
+    params = {
+        "rms": rms,
+        "erh": erh,
+        "erz": erz,
+        "used_phase_count": nbpha,
+        "min_dist": dmin,
+        "med_dist": dmed,
+        "azgap": gap,
+        "azgap2": gap2,
+        "scat_vol": scatvol,
+    }
+    params2 = ["used_phase_count"]
+
+    # Normalized values (Chauvenet's) for quality parameters
+    normvalschauv = {
+        "rms": 1.8,
+        "erh": 16.0,
+        "erz": 9.0,
+        "used_phase_count": 21.0,
+        "min_dist": 0.8,
+        "med_dist": 3.0,
+        "azgap": 352.0,
+        "azgap2": 359.0,
+        "scat_vol": 13900.0,
+    }
+
+    qf = [
+        params[key] / normvalschauv[key] for key in params.keys() if key not in params2
+    ] + [normvalschauv[key] / params[key] for key in params2]
+    qf = np.sqrt(np.sum(np.array(qf) ** 2) / len(params))
+
+    if qf <= 0.25:
+        q = "A"
+    elif qf <= 0.5:
+        q = "B"
+    elif qf <= 0.75:
+        q = "C"
+    else:
+        q = "D"
+
+    return qf, q
