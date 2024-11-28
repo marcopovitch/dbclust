@@ -41,7 +41,7 @@ event_coordinates_view_definition = """
         o.minimum_distance, o.maximum_distance, o.median_distance,
         o.azimuthal_gap, o.secondary_azimuthal_gap,
         o.scatter_volume, e.dist_km_from_preloc,
-        e.nb_agencies, e.agencies_list,
+        e.nb_agencies, e.agencies_list, agency_names, multiple_same_agencies,
         o.evaluation_mode,
         e.event_type, e.discrimination_probability, e.discrimination_station_count, e.discrimination_certainty,
         o.quality, o.quality_factor,
@@ -1045,6 +1045,17 @@ if __name__ == "__main__":
         default=False,
         help="Compute localization quality info to the event table.",
     )
+
+    ####################
+    # Add agency names #
+    ####################
+    parser.add_argument(
+        "--add-agency-names",
+        action="store_true",
+        default=False,
+        help="Add agency names to the event table.",
+    )
+
     args = parser.parse_args()
 
     print(args)
@@ -1080,6 +1091,12 @@ if __name__ == "__main__":
     elif args.add_localization_quality:
         # Add localisation quality info to the event table
         add_compute_localization_quality(args.database)
+    elif args.add_agency_names:
+        # Add agency names to the event table
+        conn = sqlite3.connect(args.database)
+        add_agency_names(conn)
+        refresh_event_coordinates_view(conn)
+        conn.close()
     else:
         parser.print_help()
         sys.exit(1)
