@@ -721,10 +721,9 @@ def import_catalog_object_to_sqlite_from_file(
     import_catalog_to_sqlite(conn, catalog, enable_quakeml)
 
     # extract agency names and stats to event table
-    add_agency_names(conn)
+    #add_agency_names(conn)
+    #add_compute_localization_quality(conn)
 
-    # Register the geometry column for the 'event_coordinates' view
-    register_geometry_for_view(conn, "event_coordinates", "geometry")
     conn.close()
 
 
