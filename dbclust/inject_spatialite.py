@@ -699,6 +699,35 @@ def register_geometry_for_view(
     print("Geometry column registered successfully.")
 
 
+def import_catalog_object_to_sqlite_from_file(
+    db_path: str, catalog: Catalog, enable_quakeml: bool = False
+):
+    """
+    Import a catalog of seismic events to a SQLite database.
+
+    Args:
+        db_path (str): Path to the SQLite database file.
+        catalog (Catalog): A catalog of seismic events.
+        enable_quakeml (bool, optional): If True, serialize and compress QuakeML content for each event. Defaults to False.
+    """
+    # Create the database schema
+    try:
+        conn = create_schema(db_path)
+    except Exception as e:
+        logger.error(f"Error creating schema: {e}")
+        raise e
+
+    # Import the catalog into the SQLite database
+    import_catalog_to_sqlite(conn, catalog, enable_quakeml)
+
+    # extract agency names and stats to event table
+    add_agency_names(conn)
+
+    # Register the geometry column for the 'event_coordinates' view
+    register_geometry_for_view(conn, "event_coordinates", "geometry")
+    conn.close()
+
+
 def import_catalog_to_sqlite_from_file(
     db_path: str, catalog_file: str, enable_quakeml: bool = False
 ):
@@ -710,6 +739,7 @@ def import_catalog_to_sqlite_from_file(
         catalog_file (str): Path to the file containing the catalog of seismic events.
         enable_quakeml (bool, optional): If True, serialize and compress QuakeML content for each event. Defaults to False.
     """
+
     # Create the database schema
     try:
         conn = create_schema(db_path)
@@ -717,13 +747,17 @@ def import_catalog_to_sqlite_from_file(
         logger.error(f"Error creating schema: {e}")
         raise e
 
-    # Read the catalog from the file
+    # # Read QuakeML file
     catalog = read_events(catalog_file)
 
-    # Import the catalog to the database
+    # Import the catalog into the SQLite database
     import_catalog_to_sqlite(conn, catalog, enable_quakeml)
 
-    # Close the database connection
+    # extract agency names and stats to event table
+    add_agency_names(conn)
+
+    # Register the geometry column for the 'event_coordinates' view
+    register_geometry_for_view(conn, "event_coordinates", "geometry")
     conn.close()
 
 
@@ -1118,21 +1152,8 @@ if __name__ == "__main__":
 
     # check if -i is given
     if args.input:
-        # Create schema
-        conn = create_schema(args.database)
-
-        # # Read QuakeML file
-        catalog = read_events(args.input)
-
-        # # Import the catalog into the SQLite database
-        import_catalog_to_sqlite(conn, catalog, args.enable_quakeml)
-
-        # extract agency names and stats to event table
-        add_agency_names(conn)
-
-        # Register the geometry column for the 'event_coordinates' view
-        register_geometry_for_view(conn, "event_coordinates", "geometry")
-        conn.close()
+        # import quakeml file to sqlite
+        import_catalog_to_sqlite_from_file(args.database, args.input, args.enable_quakeml)
     elif args.csv_output:
         # Export the view to a CSV file
         export_view_to_csv_exclude_geometry(
