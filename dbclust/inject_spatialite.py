@@ -699,6 +699,30 @@ def register_geometry_for_view(
     print("Geometry column registered successfully.")
 
 
+def import_catalog_to_sqlite_from_file(
+    db_path: str, catalog_file: str, enable_quakeml: bool = False
+):
+    """
+    Import a catalog of seismic events from a file to a SQLite database.
+
+    Args:
+        db_path (str): Path to the SQLite database file.
+        catalog_file (str): Path to the file containing the catalog of seismic events.
+        enable_quakeml (bool, optional): If True, serialize and compress QuakeML content for each event. Defaults to False.
+    """
+    # Read the catalog from the file
+    catalog = read_events(catalog_file)
+
+    # Create the database schema
+    conn = create_schema(db_path)
+
+    # Import the catalog to the database
+    import_catalog_to_sqlite(conn, catalog, enable_quakeml)
+
+    # Close the database connection
+    conn.close()
+
+
 def import_catalog_to_sqlite(
     conn: sqlite3.Connection, catalog: Catalog, enable_quakeml: bool = False
 ) -> None:
@@ -820,6 +844,7 @@ def add_agency_names(conn: sqlite3.Connection) -> None:
     columns = [row[1] for row in cursor.fetchall()]
     if "agency_names" not in columns:
         cursor.execute("ALTER TABLE events ADD COLUMN agency_names JSON;")
+        logger.info("Added 'agency_names' column to the 'events' table.")
 
     # Update the 'agency_names' column based on the 'agencies_list' column
     cursor.execute(
@@ -1012,6 +1037,7 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
         )
     conn.commit()
 
+
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser(
@@ -1120,7 +1146,7 @@ if __name__ == "__main__":
     elif args.add_localization_quality:
         # Add localisation quality info to the event table
         conn = sqlite3.connect(args.database)
-        add_compute_localization_quality(args.database)
+        add_compute_localization_quality(conn)
         refresh_event_coordinates_view(conn)
         conn.close()
     elif args.add_agency_names:
