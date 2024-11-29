@@ -27,7 +27,7 @@ from dask.distributed import LocalCluster
 from db import duckdb_init
 from dbclust2pyocto import dbclust2pyocto
 from icecream import ic
-from inject_spatialite import import_catalog_to_sqlite
+from inject_spatialite import import_catalog_to_sqlite_from_file
 from localization import NllLoc
 from localization import show_event
 from phase import import_phases
@@ -541,7 +541,7 @@ def dbclust(
                     f"Writing {len(locator.catalog)} events in {cfg.catalog.sqlite_db_fullpath}"
                 )
                 try:
-                    import_catalog_to_sqlite(
+                    import_catalog_to_sqlite_from_file(
                         cfg.catalog.sqlite_db_fullpath,
                         locator.catalog,
                         enable_quakeml=True,
