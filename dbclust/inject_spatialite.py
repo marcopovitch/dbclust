@@ -710,11 +710,15 @@ def import_catalog_to_sqlite_from_file(
         catalog_file (str): Path to the file containing the catalog of seismic events.
         enable_quakeml (bool, optional): If True, serialize and compress QuakeML content for each event. Defaults to False.
     """
+    # Create the database schema
+    try:
+        conn = create_schema(db_path)
+    except Exception as e:
+        logger.error(f"Error creating schema: {e}")
+        raise e
+
     # Read the catalog from the file
     catalog = read_events(catalog_file)
-
-    # Create the database schema
-    conn = create_schema(db_path)
 
     # Import the catalog to the database
     import_catalog_to_sqlite(conn, catalog, enable_quakeml)
