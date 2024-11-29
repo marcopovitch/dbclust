@@ -860,7 +860,7 @@ def add_agency_names(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def add_discrimination_info(db_path: str, csv_file: str) -> None:
+def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
     """
     Add discrimination info to the event table from a CSV file.
 
@@ -868,123 +868,149 @@ def add_discrimination_info(db_path: str, csv_file: str) -> None:
         db_path (str): Path to the SQLite database.
         csv_file (str): Path to the CSV file containing discrimination info.
     """
-    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # Read the CSV file containing discrimination info
-    with open(csv_file, mode="r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            event_id = row["event_id"]
-            probability = row["probability"]
-            station_count = row["station_count"]
-            certainty = row["certainty"]
+    # Use pandas to read the CSV file
+    import pandas as pd
 
-            # Update the event table with discrimination info
-            cursor.execute(
-                """
-                UPDATE events
-                SET discrimination_probability = ?,
-                    discrimination_station_count = ?,
-                    discrimination_certainty = ?
-                WHERE event_id = ?;
-                """,
-                (probability, station_count, certainty, event_id),
-            )
+    try:
+        discrimination_df = pd.read_csv(csv_file)
+    except Exception as e:
+        print(f"Error reading CSV file '{csv_file}': {e}")
+        return
+
+    # check if the columns exist
+    if not all(
+        col in discrimination_df.columns
+        for col in [
+            "event_id",  # event_id
+            "predhdq50",  # event_type
+            "EqProbaPred hdq50",  # discrimination_probability
+            "proba_count",  # discrimination_station_count
+            "hdq50mad",  # discrimination_certainty
+        ]
+    ):
+        print(f"CSV file '{csv_file}' is missing required columns.")
+        return
+
+    # Update the event table with discrimination info
+    for index, row in discrimination_df.iterrows():
+        event_id = row["event_id"]
+        # hdq50mad is the median absolute deviation of hdq50,
+        # used as a measure of certainty,
+        # the lower the value the more certain the prediction
+        certainty = row["hdq50mad"]
+        probability = (
+            row["EqProbaPred hdq50"]
+            if row["EqProbaPred hdq50"] > 0.5
+            else 1 - row["EqProbaPred hdq50"]
+        )
+        station_count = row["proba_count"]
+        predhdq50 = row["predhdq50"]
+
+        # Determine the event type based on the probability
+        if predhdq50 == 0:
+            event_type = "earthquake"
+        elif predhdq50 == 1:
+            event_type = "quarry blast"
+        else:
+            # TODO: fix this in spectrocnn when station_count is very low
+            event_type = "unknown"
+
+        cursor.execute(
+            """
+            UPDATE events
+            SET event_type = ?,
+                discrimination_probability = ?,
+                discrimination_station_count = ?,
+                discrimination_certainty = ?
+            WHERE event_id = ?;
+            """,
+            (event_type, probability, station_count, certainty, event_id),
+        )
+
     conn.commit()
-    conn.close()
 
 
-def add_compute_localization_quality(db_path: str) -> None:
+def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
     """
     Compute localization quality info and add it to the event table.
 
     Args:
-        db_path (str): Path to the SQLite database.
+        conn (sqlite3.Connection): Active connection to the SQLite database.
     """
-    try:
-        # Connect to the database
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
+    cursor = conn.cursor()
 
-            # Check if the `quality` and `quality_factor` columns exist in the `origins` table
-            cursor.execute("PRAGMA table_info(origins);")
-            columns = [col[1] for col in cursor.fetchall()]
+    # Check if the `quality` and `quality_factor` columns exist in the `origins` table
+    cursor.execute("PRAGMA table_info(origins);")
+    columns = [col[1] for col in cursor.fetchall()]
 
-            if "quality" not in columns:
-                cursor.execute("ALTER TABLE origins ADD COLUMN quality TEXT;")
-            if "quality_factor" not in columns:
-                cursor.execute("ALTER TABLE origins ADD COLUMN quality_factor REAL;")
-            conn.commit()
-
-            # Fetch data for quality computation
-            cursor.execute(
-                """
-                SELECT
-                    o.id,
-                    o.rms,
-                    o.erh,
-                    o.erz,
-                    o.used_phase_count,
-                    o.minimum_distance,
-                    o.median_distance,
-                    o.azimuthal_gap,
-                    o.secondary_azimuthal_gap,
-                    o.scatter_volume
-                FROM
-                    origins AS o;
-                """
-            )
-            rows = cursor.fetchall()
-
-            # Process each row and update localization quality and quality_factor
-            for row in rows:
-                (
-                    origin_id,
-                    rms,
-                    erh,
-                    erz,
-                    num_phases,
-                    min_distance,
-                    median_distance,
-                    azimuthal_gap,
-                    secondary_azimuthal_gap,
-                    scatter_volume,
-                ) = row
-
-                if None in row:
-                    continue
-
-                quality_factor, quality = classify_Michele_mod(
-                    rms,
-                    erh,
-                    erz,
-                    num_phases,
-                    min_distance,
-                    median_distance,
-                    azimuthal_gap,
-                    secondary_azimuthal_gap,
-                    scatter_volume,
-                )
-
-                # Update the database with the computed quality and quality_factor
-                cursor.execute(
-                    """
-                    UPDATE origins
-                    SET quality = ?, quality_factor = ?
-                    WHERE id = ?;
-                    """,
-                    (quality, quality_factor, origin_id),
-                )
-            conn.commit()
-    except sqlite3.Error as e:
-        print(f"SQLite error: {e}")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-
-    refresh_event_coordinates_view(conn)
+    if "quality" not in columns:
+        cursor.execute("ALTER TABLE origins ADD COLUMN quality TEXT;")
+    if "quality_factor" not in columns:
+        cursor.execute("ALTER TABLE origins ADD COLUMN quality_factor REAL;")
     conn.commit()
 
+    # Fetch data for quality computation
+    cursor.execute(
+        """
+        SELECT
+            o.id,
+            o.rms,
+            o.erh,
+            o.erz,
+            o.used_phase_count,
+            o.minimum_distance,
+            o.median_distance,
+            o.azimuthal_gap,
+            o.secondary_azimuthal_gap,
+            o.scatter_volume
+        FROM
+            origins AS o;
+        """
+    )
+    rows = cursor.fetchall()
+
+    # Process each row and update localization quality and quality_factor
+    for row in rows:
+        (
+            origin_id,
+            rms,
+            erh,
+            erz,
+            num_phases,
+            min_distance,
+            median_distance,
+            azimuthal_gap,
+            secondary_azimuthal_gap,
+            scatter_volume,
+        ) = row
+
+        if None in row:
+            continue
+
+        quality_factor, quality = classify_Michele_mod(
+            rms,
+            erh,
+            erz,
+            num_phases,
+            min_distance,
+            median_distance,
+            azimuthal_gap,
+            secondary_azimuthal_gap,
+            scatter_volume,
+        )
+
+        # Update the database with the computed quality and quality_factor
+        cursor.execute(
+            """
+            UPDATE origins
+            SET quality = ?, quality_factor = ?
+            WHERE id = ?;
+            """,
+            (quality, quality_factor, origin_id),
+        )
+    conn.commit()
 
 if __name__ == "__main__":
     # Parse arguments
@@ -1087,10 +1113,16 @@ if __name__ == "__main__":
         export_sqlite_to_quakeml(args.database, args.export_quakeml)
     elif args.add_discrimination:
         # Add discrimination info to the event table
-        add_discrimination_info(args.database, args.discrimination_file)
+        conn = sqlite3.connect(args.database)
+        add_discrimination_info(conn, args.add_discrimination)
+        refresh_event_coordinates_view(conn)
+        conn.close()
     elif args.add_localization_quality:
         # Add localisation quality info to the event table
+        conn = sqlite3.connect(args.database)
         add_compute_localization_quality(args.database)
+        refresh_event_coordinates_view(conn)
+        conn.close()
     elif args.add_agency_names:
         # Add agency names to the event table
         conn = sqlite3.connect(args.database)
