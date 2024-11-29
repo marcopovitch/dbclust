@@ -584,7 +584,9 @@ def dbclust(
             f"Writing {len(locator.catalog)} events in {cfg.catalog.sqlite_db_fullpath}"
         )
         try:
-            export_catalog_to_sqlite(cfg.catalog.sqlite_db_fullpath, locator.catalog, enable_quakeml=True)
+            import_catalog_object_to_sqlite_from_file(
+                cfg.catalog.sqlite_db_fullpath, locator.catalog, enable_quakeml=True
+            )
         except Exception as e:
             logger.error(f"Writing catalog to sqlite3: {e}")
 
