@@ -11,6 +11,7 @@ from math import isnan
 from math import pow
 from math import sqrt
 from typing import List
+from typing import Tuple
 
 import dask.bag as db
 import hdbscan
@@ -54,65 +55,61 @@ def compute_tt(p1: Phase, p2: Phase, vmean) -> float:
     return tt
 
 
-def cluster_share_eventid(c1: List[Phase], c2: List[Phase]) -> bool:
+def cluster_share_eventid(
+    c1: List[Phase],
+    c2: List[Phase],
+    station_threshold: int = 1,
+    phase_threshold: int = 1,
+) -> bool:
     """
-    Check if two clusters share a common event ID.
+    Check if two clusters share a common event ID, considering station and phase thresholds.
 
     Args:
         c1 (List[Phase]): The first cluster.
         c2 (List[Phase]): The second cluster.
+        station_threshold (int): Minimum number of common stations to consider merging.
+        phase_threshold (int): Minimum number of common phases to consider merging.
 
     Returns:
-        bool: True if the clusters share a common event ID, False otherwise.
+        bool: True if the clusters share a common event ID meeting the thresholds, False otherwise.
 
     Fixme:
-        sometimes a pick is not well associated with the right event
-        leading to a merge that would not be correct.
-        This pick should have been removed based on the pick residual (threshold to be defined).
-
-        In the meantime, we can use for each common eventid the number of common station and phase.
-        (station, phase) = (2, 4) seems to be a good threshold to merge the clusters.
+        when event are overlapping a pick could be not well associated with the right event leading to a merge
+        that would not be correct. Using thresholds is a way to avoid this issue but it is not a perfect solution.
     """
-    station_threshold = 1  # 2
-    phase_threshold = 1  # 4
 
-    c1_evtids_list = [p.event_id for p in c1 if p.event_id]
-    c1_evtids = set(c1_evtids_list)
-    logger.debug("cluster1 eventid: %s" % c1_evtids)
+    # Extract event IDs for each cluster
+    c1_event_ids = [p.event_id for p in c1 if p.event_id]
+    c2_event_ids = [p.event_id for p in c2 if p.event_id]
 
-    c2_evtids_list = [p.event_id for p in c2 if p.event_id]
-    c2_evtids = set(c2_evtids_list)
-    logger.debug("cluster2 eventid: %s" % c2_evtids)
+    # Find common event IDs
+    common_event_ids = set(c1_event_ids) & set(c2_event_ids)
 
-    common_eventid = Counter(c1_evtids) & Counter(c2_evtids)
-    for k, v in common_eventid.items():
-        # number of common station, regardless of channel and phase
-        c1_sta = set([".".join([p.network, p.station]) for p in c1 if p.event_id == k])
-        c2_sta = set([".".join([p.network, p.station]) for p in c2 if p.event_id == k])
+    if not common_event_ids:
+        return False
 
-        # common_eventid[k] = min(c1_evtids_list.count(k), c2_evtids_list.count(k))
-        # common_eventid[k] = min(len(c1_sta), len(c2_sta))
+    # For each common event ID, calculate station and phase overlap
+    for event_id in common_event_ids:
+        c1_stations = {f"{p.network}.{p.station}" for p in c1 if p.event_id == event_id}
+        c2_stations = {f"{p.network}.{p.station}" for p in c2 if p.event_id == event_id}
 
-        nb_phases = min(c1_evtids_list.count(k), c2_evtids_list.count(k))
-        nb_sta = min(len(c1_sta), len(c2_sta))
-        common_eventid[k] = (nb_sta, nb_phases)
+        # Number of common stations and phases
+        common_stations = len(c1_stations & c2_stations)
+        common_phases = min(c1_event_ids.count(event_id), c2_event_ids.count(event_id))
 
-    #if common_eventid:
-    #    ic(common_eventid)
+        logger.debug(
+            f"Event ID {event_id}: common_stations={common_stations}, common_phases={common_phases}"
+        )
 
-    # check if there is a eventid in common_eventid with key > 1
-    for k, v in common_eventid.items():
-        sta, phase = v
-        if sta >=station_threshold and phase >= phase_threshold:
-            logger.info(f"cluster_share_eventid(): common_eventid: {k} with {v} station,phase")
+        # Check thresholds
+        if common_stations >= station_threshold and common_phases >= phase_threshold:
+            logger.info(
+                f"cluster_share_eventid(): Found common event_id {event_id} with "
+                f"{common_stations} stations and {common_phases} phases"
+            )
             return True
-    return False
 
-    # temporary disable
-    # if c1_evtids.intersection(c2_evtids):
-    #     return True
-    # else:
-    #     return False
+    return False
 
 
 def get_picks_from_event(event: Event, origin: Origin, time) -> List:
@@ -208,56 +205,67 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
 
 
 def merge_cluster_with_common_phases(
-    clusters1: List[Phase], clusters2: List[Phase], min_com_phases: int
-) -> (List[Phase], List[Phase], int):
+    clusters1, clusters2, min_com_phases: int
+) -> Tuple:
     """
-    Merge into clusters1 all clusters from clusters2 with common phases
-    or shared event id.
+    Merge into `clusters1` all clusters from `clusters2` with common phases
+    or shared event IDs.
 
-    Clusters are just a list of list(Phases).
-    Phase must implement __eq__() to use set intersection.
+    Args:
+        clusters1: Object containing `clusters1.clusters` (list of Phase lists).
+        clusters2: Object containing `clusters2.clusters` (list of Phase lists).
+        min_com_phases: Minimum number of shared phases required for merging.
 
-    Returns merged clusters1, remaining unmerged clusters in clusters2,
-    and the number of merge realized.
+    Returns:
+        Tuple: (updated clusters1, updated clusters2, number of merges performed).
     """
-    new_cluster2 = []
+    new_clusters2 = []
     merge_count = 0
+
     logger.debug(
-        "merge_cluster_with_common_phases: clusters1 contains %d clusters."
-        % len(clusters1.clusters)
+        "merge_cluster_with_common_phases: clusters1 contains %d clusters.",
+        len(clusters1.clusters),
     )
     logger.debug(
-        "merge_cluster_with_common_phases: clusters2 contains %d clusters."
-        % len(clusters2.clusters)
+        "merge_cluster_with_common_phases: clusters2 contains %d clusters.",
+        len(clusters2.clusters),
     )
 
-    for idx2, c2 in enumerate(clusters2.clusters):
-        merged_flag = False
-        for idx1, c1 in enumerate(clusters1.clusters):
-            common_elements = (Counter(c1) & Counter(c2)).values()
-            common_count = sum(common_elements)
+    for c2 in clusters2.clusters:
+        merged = False
+        for c1 in clusters1.clusters:
+            # Count common phases
+            common_count = sum((Counter(c1) & Counter(c2)).values())
 
+            # Check for shared event IDs
             eventid_shared = cluster_share_eventid(c1, c2)
+
+            # Merge clusters if conditions are met
             if common_count >= min_com_phases or eventid_shared:
                 logger.debug(
-                    f"merging c2[{idx2}] (myclust) into c1[{idx1}] (previous_myclust): "
-                    f"picks shared: {common_count}, eventid shares: {eventid_shared}"
+                    f"Merging cluster from clusters2 into clusters1: "
+                    f"picks shared: {common_count}, event ID shared: {eventid_shared}"
                 )
-                c1.extend(c2)
-                c1 = list(set(c1))
+                c1[:] = list(set(c1 + c2))  # Update in place
                 merge_count += 1
-                merged_flag = True
+                merged = True
                 break
-        if not merged_flag:
-            new_cluster2.append(c2)
 
-    clusters2.clusters = new_cluster2
-    clusters2.n_clusters = len(clusters2.clusters)
-    # generate "articifial" cluster stability information (but not used !)
-    clusters2.clusters_stability = np.full(clusters2.n_clusters, 1.0)
-    clusters1.clusters_stability = np.full(clusters1.n_clusters, 1.0)
+        if not merged:
+            new_clusters2.append(c2)
 
-    logger.debug("merge_cluster_with_common_phases: merge_count %d" % merge_count)
+    # Update clusters2 attributes
+    clusters2.clusters = new_clusters2
+    clusters2.n_clusters = len(new_clusters2)
+    clusters2.clusters_stability = np.ones(clusters2.n_clusters, dtype=float)
+
+    # Update clusters1 stability (not used but consistent with clusters2)
+    clusters1.n_clusters = len(clusters1.clusters)
+    clusters1.clusters_stability = np.ones(clusters1.n_clusters, dtype=float)
+
+    logger.debug(
+        "merge_cluster_with_common_phases: Total merges performed: %d", merge_count
+    )
 
     return clusters1, clusters2, merge_count
 
