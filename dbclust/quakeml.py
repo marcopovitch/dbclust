@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import argparse
+import base64
 import logging
 import os
 import sys
@@ -28,6 +29,34 @@ logger = logging.getLogger("quakeml")
 logger.setLevel(logging.INFO)
 
 
+def datetime_to_base64_timestamp(dt, precision="microsecond"):
+    # Convert the datetime object to a timestamp in seconds
+    timestamp = dt.timestamp()  # Returns the seconds with decimals
+    if precision == "microsecond":
+        fractional_part = int(dt.microsecond)
+    elif precision == "millisecond":
+        fractional_part = int(dt.microsecond / 1000)
+    elif precision == "centisecond":
+        fractional_part = int(dt.microsecond / 10000)
+    elif precision == "decisecond":
+        fractional_part = int(dt.microsecond / 100000)
+    else:
+        raise ValueError(
+            "Invalid precision. Use 'microsecond', 'millisecond', 'centisecond', or 'decisecond'."
+        )
+
+    # Create a combined integer from the integer and fractional parts
+    combined = int(timestamp) * (10**6) + fractional_part
+
+    # Encode in base64
+    base64_encoded = base64.urlsafe_b64encode(
+        combined.to_bytes((combined.bit_length() + 7) // 8, "big")
+    ).decode("utf-8")
+
+    # Return the timestamp
+    return base64_encoded.rstrip("=")  # Remove the '=' padding characters
+
+
 def make_event_id(time: UTCDateTime, prefix: str, smi_base: str) -> ResourceIdentifier:
     """
     Generate a unique event identifier based on the provided time, prefix, and SMI base.
@@ -43,6 +72,8 @@ def make_event_id(time: UTCDateTime, prefix: str, smi_base: str) -> ResourceIden
     dt = time.datetime
     year = time.year
     alphatime = ats.base36.from_datetime(dt, time_unit=ats.TimeUnit.milliseconds)
+    #alphatime = datetime_to_base64_timestamp(dt, precision="millisecond")
+    #ic(dt, alphatime)
     event_id = f"{prefix}{year}{alphatime}"
     event_resource_id = ResourceIdentifier("/".join([smi_base, "event", event_id]))
     return event_resource_id
