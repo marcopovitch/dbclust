@@ -48,7 +48,7 @@ class MultipleEventIDsWithSameAgencyError(Exception):
 
 
 def adjust_associator_tolerance(
-    myclust, cfg, min_tolerance=0.5, step=1, log_level=logging.INFO
+    myclust, cfg, tolerance_steps={1: 0.5, 0: 0.1}, min_tolerance=0.5, log_level=logging.INFO
 ):
     """
     Adjust associator.pick_match_tolerance using a linear decay search.
@@ -56,8 +56,9 @@ def adjust_associator_tolerance(
     Args:
         myclust (Clusterize): The cluster object to process.
         cfg: Configuration object containing associator and other settings.
+        tolerance_steps (dict): Dictionary with ranges and step sizes, e.g.,
+                                {1: 0.5, 0: 0.1}.
         min_tolerance (float): Minimum allowed pick match tolerance.
-        step (float): Step size for decreasing the pick match tolerance.
         log_level (int): Logging level for debug information.
 
     Returns:
@@ -83,7 +84,9 @@ def adjust_associator_tolerance(
             logger.info(f"Success with pick_match_tolerance: {tolerance}")
             return result_myclust
         except MultipleEventIDsWithSameAgencyError as e:
-            logger.warning(f"Failed with pick_match_tolerance: {tolerance}. Error: {e}")
+            logger.warning(f"Unsuccessful with pick_match_tolerance: {tolerance}. Error: {e}")
+            # Determine step size based on tolerance range
+            step = next((s for t, s in tolerance_steps.items() if tolerance > t), 0.5)
             tolerance -= step
 
     logger.error("Exhausted all tolerances. Skipping pyocto processing.")
