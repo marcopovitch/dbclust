@@ -32,6 +32,8 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("bdclust2pyocto")
 logger.setLevel(logging.INFO)
 
+ic.configureOutput(outputFunction=lambda msg: sys.stdout.write(msg + "\n"))
+
 
 class MultipleEventIDsWithSameAgencyError(Exception):
     """
@@ -48,7 +50,11 @@ class MultipleEventIDsWithSameAgencyError(Exception):
 
 
 def adjust_associator_tolerance(
-    myclust, cfg, tolerance_steps={1: 0.5, 0: 0.1}, min_tolerance=0.5, log_level=logging.INFO
+    myclust,
+    cfg,
+    tolerance_steps={1: 0.5, 0: 0.1},
+    min_tolerance=0.5,
+    log_level=logging.INFO,
 ):
     """
     Adjust associator.pick_match_tolerance using a linear decay search.
@@ -70,7 +76,7 @@ def adjust_associator_tolerance(
 
     logger.info(f"Starting linear decay for pick_match_tolerance: {tolerance}")
     while tolerance >= min_tolerance:
-        logger.info(f"Trying pick_match_tolerance: {tolerance}")
+        logger.info(f"Trying pick_match_tolerance: {tolerance:.2f}")
         associator.pick_match_tolerance = tolerance
         try:
             result_myclust = dbclust2pyocto(
@@ -81,10 +87,12 @@ def adjust_associator_tolerance(
                 cfg.cluster.min_picks_common,
                 log_level=log_level,
             )
-            logger.info(f"Success with pick_match_tolerance: {tolerance}")
+            logger.info(f"Success with pick_match_tolerance: {tolerance:.2f}")
             return result_myclust
         except MultipleEventIDsWithSameAgencyError as e:
-            logger.warning(f"Unsuccessful with pick_match_tolerance: {tolerance}. Error: {e}")
+            logger.warning(
+                f"Unsuccessful with pick_match_tolerance: {tolerance:.2f}. Error: {e}"
+            )
             # Determine step size based on tolerance range
             step = next((s for t, s in tolerance_steps.items() if tolerance > t), 0.5)
             tolerance -= step
@@ -189,7 +197,7 @@ def dbclust2pyocto(
             location_split_depth=6,  # default 6
             location_split_return=4,  # default 4
             refinement_iterations=3,  # default 3
-            #second_pass_overwrites={},  # default None
+            # second_pass_overwrites={},  # default None
         )
         associator.transform_stations(stations)
 
@@ -351,7 +359,8 @@ def aggregate_pick_to_cluster_with_common_event_id(
     for cluster in clusters:
         # Count the occurrences of event_id in the cluster
         event_id_counts = Counter([p.event_id for p in cluster if p.event_id])
-        ic(event_id_counts)
+        if event_id_counts:
+            ic(event_id_counts)
 
         # count the number of agency in each event_id in event_id_counts
         event_id_agency = {}
@@ -360,7 +369,8 @@ def aggregate_pick_to_cluster_with_common_event_id(
                 if p.event_id not in event_id_agency:
                     event_id_agency[p.event_id] = set()
                 event_id_agency[p.event_id].add(p.agency)
-        ic(event_id_agency)
+        # if event_id_agency:
+        #     ic(event_id_agency)
 
         # Invert the mapping to find agencies associated with multiple event_ids
         agency_event_map = {}
@@ -369,7 +379,8 @@ def aggregate_pick_to_cluster_with_common_event_id(
                 if agency not in agency_event_map:
                     agency_event_map[agency] = set()
                 agency_event_map[agency].add(event_id)
-        ic(agency_event_map)
+        if agency_event_map:
+            ic(agency_event_map)
 
         # Detect agencies associated with multiple event_ids
         duplicate_agency_event_ids = {
