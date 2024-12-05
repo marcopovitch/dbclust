@@ -25,7 +25,7 @@ from config import DBClustConfig
 from dask.distributed import Client
 from dask.distributed import LocalCluster
 from db import duckdb_init
-from dbclust2pyocto import dbclust2pyocto
+from dbclust2pyocto import adjust_associator_tolerance
 from icecream import ic
 from inject_spatialite import import_catalog_object_to_sqlite_from_file
 from localization import NllLoc
@@ -373,14 +373,18 @@ def dbclust(
             previous_myclust.merge(myclust)
 
         if cfg.pyocto.current_model:
-            previous_myclust = dbclust2pyocto(
+            result = adjust_associator_tolerance(
                 previous_myclust,
-                cfg.pyocto.default_model_name,
-                cfg.pyocto.current_model.associator,
-                cfg.pyocto.velocity_model,
-                cfg.cluster.min_picks_common,
+                cfg,
+                min_tolerance=0.5,
+                step=0.5,
                 log_level=logger.level,
             )
+            if result is None:
+                logger.error("Failed to process with any pick_match_tolerance.")
+                continue
+            else:
+                previous_myclust = result
 
         # Now, process previous_myclust and wait next round to process myclust
         # write each cluster to nll obs files
