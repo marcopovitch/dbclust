@@ -17,7 +17,6 @@ import dask.bag as db
 import hdbscan
 import numpy as np
 import pandas as pd
-import ray
 from icecream import ic
 from obspy import Catalog
 from obspy.core.event import Comment
@@ -56,10 +55,8 @@ def compute_tt(p1: Phase, p2: Phase, vmean) -> float:
 
 
 def cluster_share_eventid(
-    c1: List[Phase],
-    c2: List[Phase],
-    station_threshold: int = 1,
-    phase_threshold: int = 1,
+    c1: List[Phase], c2: List[Phase],
+    station_threshold: int = 1, phase_threshold: int = 1
 ) -> bool:
     """
     Check if two clusters share a common event ID, considering station and phase thresholds.
@@ -110,6 +107,7 @@ def cluster_share_eventid(
             return True
 
     return False
+
 
 
 def get_picks_from_event(event: Event, origin: Origin, time) -> List:
@@ -263,9 +261,7 @@ def merge_cluster_with_common_phases(
     clusters1.n_clusters = len(clusters1.clusters)
     clusters1.clusters_stability = np.ones(clusters1.n_clusters, dtype=float)
 
-    logger.debug(
-        "merge_cluster_with_common_phases: Total merges performed: %d", merge_count
-    )
+    logger.debug("merge_cluster_with_common_phases: Total merges performed: %d", merge_count)
 
     return clusters1, clusters2, merge_count
 
