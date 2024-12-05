@@ -376,8 +376,10 @@ def dbclust(
             result = adjust_associator_tolerance(
                 previous_myclust,
                 cfg,
+                # tolerance_steps=cfg.pyocto.tolerance_steps,
+                # {min_tolerance_threshold: pick_match_tolerance, ...}
+                tolerance_steps={1: 1, 0: 0.1},
                 min_tolerance=0.5,
-                step=0.5,
                 log_level=logger.level,
             )
             if result is None:
