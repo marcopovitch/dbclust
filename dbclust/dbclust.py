@@ -107,6 +107,7 @@ def get_locator_from_config(cfg, log_level=logging.INFO):
         zones=cfg.zones,
         force_zone_name=None,
         min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
+        use_pick_zone=cfg.relocation.use_pick_zone,
         enable_relabel_pick_zone=cfg.relocation.enable_relabel_pick_zone,
         enable_cleanup_pick_zone=cfg.relocation.enable_cleanup_pick_zone,
         #
@@ -378,15 +379,17 @@ def dbclust(
                 cfg,
                 # tolerance_steps=cfg.pyocto.tolerance_steps,
                 # {min_tolerance_threshold: pick_match_tolerance, ...}
-                tolerance_steps={1: 1, 0: 0.1},
-                min_tolerance=0.5,
+                tolerance_steps={1: 1, 0.5: 0.1, 0: 0.05},
+                min_tolerance=0.2,
                 log_level=logger.level,
             )
             if result is None:
+                # flush stdout and stderr to have the log in the right order
                 logger.error("Failed to process with any pick_match_tolerance.")
                 continue
             else:
                 previous_myclust = result
+
 
         # Now, process previous_myclust and wait next round to process myclust
         # write each cluster to nll obs files
