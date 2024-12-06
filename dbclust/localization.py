@@ -131,6 +131,7 @@ class NllLoc(object):
         zones: Zones = None,  # zones (polygons) delimitation to keep picks
         force_zone_name: str = None,  # force zone to use
         min_score_threshold_pick_zone=0.5,  # minimum score to relabel pick in zone
+        use_pick_zone: bool = True,  # use pick zones
         enable_cleanup_pick_zone: bool = True,  # clean up pick outside of zone
         enable_relabel_pick_zone: bool = False,  # relabel pick within zone
         log_level=logging.INFO,
@@ -163,6 +164,7 @@ class NllLoc(object):
         self.zones = zones
         self.force_zone_name = force_zone_name
         self.min_score_threshold_pick_zone = min_score_threshold_pick_zone
+        self.use_pick_zone = use_pick_zone
         self.enable_cleanup_pick_zone = enable_cleanup_pick_zone
         self.enable_relabel_pick_zone = enable_relabel_pick_zone
 
@@ -393,7 +395,7 @@ class NllLoc(object):
             "NLL_MIN_PHASE": self.nll_min_phase,
             # Apply GAU_ANALYTIC only for the first pass if double_pass is enabled (to speed up the process)
             # Warning: GAU_ANALYTIC do not always work as expected
-            #"LOC_METHOD": "GAU_ANALYTIC" if (double_pass and pass_count == 0) else self.loc_method,
+            # "LOC_METHOD": "GAU_ANALYTIC" if (double_pass and pass_count == 0) else self.loc_method,
             "LOC_METHOD": self.loc_method,
         }
 
@@ -462,7 +464,6 @@ class NllLoc(object):
                     expect_lat = float(l[2])
                     expect_lon = float(l[4])
                     expect_depth = float(l[6])
-
 
         if self.nll_verbose:
             print(result.stdout)
@@ -543,7 +544,12 @@ class NllLoc(object):
         o.comments.append(Comment(text='{"scatter_volume": %s}' % (scatter_volume)))
 
         # store into comment expectation hypocenter
-        o.comments.append(Comment(text='{"expectation": {"latitude": %s, "longitude": %s, "depth": %s}}' % (expect_lat, expect_lon, expect_depth)))
+        o.comments.append(
+            Comment(
+                text='{"expectation": {"latitude": %s, "longitude": %s, "depth": %s}}'
+                % (expect_lat, expect_lon, expect_depth)
+            )
+        )
 
         if self.force_uncertainty:
             for pick in e.picks:
@@ -563,7 +569,7 @@ class NllLoc(object):
             event2 = self.unset_arrival(event2, 100)  # FIXME: hardcoded value
 
             # Clean up picks outside of the polygons defined in zones
-            if self.zones and self.enable_cleanup_pick_zone:
+            if self.use_pick_zone and self.zones and self.enable_cleanup_pick_zone:
                 # To be done:
                 # 1. remove picks/arrivals with time_weight set to 0
                 # 2. remove picks/arrivals with duplicated phases
@@ -958,8 +964,6 @@ class NllLoc(object):
             - bypass relabel steps
 
         Update "used_station_count" and "used_phase_count" in origin quality.
-
-
 
         Args:
             event (Event): event to work on
