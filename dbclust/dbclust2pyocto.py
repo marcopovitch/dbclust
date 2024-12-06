@@ -90,9 +90,8 @@ def adjust_associator_tolerance(
             logger.info(f"Success with pick_match_tolerance: {tolerance:.2f}")
             return result_myclust
         except MultipleEventIDsWithSameAgencyError as e:
-            logger.warning(
-                f"Unsuccessful with pick_match_tolerance: {tolerance:.2f}. Error: {e}"
-            )
+            logger.warning(f"Unsuccessful with pick_match_tolerance: {tolerance:.2f}.")
+            logger.warning(f"{e}")
             # Determine step size based on tolerance range
             step = next((s for t, s in tolerance_steps.items() if tolerance > t), 0.5)
             tolerance -= step
