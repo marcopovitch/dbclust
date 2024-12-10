@@ -117,6 +117,27 @@ def get_scatter_volume(origin: Origin) -> float:
             break
     return scatter_volume
 
+def get_pick_probability(pick):
+    """
+    Extracts the probability of the pick from the pick's comment.
+
+    Args:
+        pick (Pick): A pick object containing comments with potential probability information.
+
+    Returns:
+        float or None: The probability if found, otherwise None.
+    """
+    probability = None
+    for comment in pick.comments:
+        try:
+            info = json.loads(comment.text)
+        except:
+            continue
+        if "probability" in info.keys():
+            probability = info["probability"]["value"]
+            break
+    return probability
+
 
 def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
     """
@@ -290,10 +311,18 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
             # Insert picks
             logger.debug(f"Inserting picks for event {event.resource_id.id}.")
             for pick in event.picks:
+                agency_id = (
+                    pick.creation_info.agency_id
+                    if pick.creation_info and hasattr(pick.creation_info, "agency_id")
+                    else None
+                )
+                probability = get_pick_probability(pick)
                 conn.execute(
                     """
-                    INSERT INTO picks (id, event_id, station_name, pick_time, uncertainty)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO picks (
+                        id, event_id, station_name, pick_time, uncertainty,
+                        evaluation_mode, phase_hint, agency_id, probability)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         pick.resource_id.id,
@@ -301,6 +330,10 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
                         pick.waveform_id.station_code,
                         to_datetime(pick.time),
                         pick.time_errors.uncertainty,
+                        pick.evaluation_mode,
+                        pick.phase_hint,
+                        agency_id,
+                        probability,
                     ),
                 )
 
@@ -340,7 +373,6 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     except Exception as e:
         quality_factor = None
         quality = None
-
 
     conn.execute(
         """
@@ -390,8 +422,6 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
         ),
     )
     logger.debug(f"Origin {origin.resource_id.id} inserted.")
-
-
 
 
 def insert_arrivals(conn: sqlite3.Connection, origin: Origin) -> None:
@@ -588,8 +618,10 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             event_id TEXT REFERENCES events(event_id),
             station_name TEXT,
             pick_time TIMESTAMP,
+            evaluation_mode TEXT,
             uncertainty DOUBLE,
-            author TEXT,
+            phase_hint TEXT,
+            agency_id TEXT,
             probability DOUBLE
         );
         """,
