@@ -117,6 +117,7 @@ def get_scatter_volume(origin: Origin) -> float:
             break
     return scatter_volume
 
+
 def get_pick_probability(pick):
     """
     Extracts the probability of the pick from the pick's comment.
@@ -446,7 +447,7 @@ def insert_arrivals(conn: sqlite3.Connection, origin: Origin) -> None:
         logger.debug(f"Arrival {arrival.resource_id.id} inserted.")
 
 
-def export_sqlite_to_quakeml(db_path: str, output_file: str):
+def export_sqlite_to_quakeml(db_path: str, output_file: str, event_ids: List[str] = None) -> None:
     """
     Concatenate multiple QuakeML streams stored in a database into a single XML file,
     minimizing memory usage by writing to the file incrementally.
@@ -474,7 +475,14 @@ def export_sqlite_to_quakeml(db_path: str, output_file: str):
         }
 
         # Iterate over the rows of QuakeML data in the database
-        for row in cursor.execute("SELECT data FROM quakeml;"):
+        if event_ids:
+            # join event_ids into a string
+            str_event_ids = ",".join([f"'{event_id}'" for event_id in event_ids])
+            query = f"SELECT data FROM quakeml WHERE event_id IN ({str_event_ids});"
+        else:
+            query = "SELECT data FROM quakeml;"
+
+        for row in cursor.execute(query):
             # Each row contains a compressed QuakeML
             compressed_quakeml_data = row[0]
             if compressed_quakeml_data is None:
@@ -837,11 +845,16 @@ def import_catalog_to_sqlite(
         else:
             quakeml_data = None
 
-        # try:
-        #     inject_event(conn, event, quakeml_data)
-        # except Exception as e:
-        #     logger.error(f"event {event.resource_id.id}: {e}")
-        inject_event(conn, event, quakeml_data)
+        try:
+            inject_event(conn, event, quakeml_data)
+        except sqlite3.IntegrityError as e:
+            # not unique exception
+            logger.warning(f"event {event.resource_id.id}: {e}")
+            continue
+        except Exception as e:
+            logger.error(f"event {event.resource_id.id}: {e}")
+            raise
+
 
 
 def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv: str):
@@ -1136,7 +1149,7 @@ if __name__ == "__main__":
     # Import catalog to sqlite #
     ############################
     parser.add_argument(
-        "-i", "--input", default=None, help="Path to the input QuakeML file."
+        "-i", "--input", nargs="+", default=None, help="Input QuakeML files."
     )
     parser.add_argument(
         "-q",
@@ -1156,9 +1169,16 @@ if __name__ == "__main__":
         help="export the view to a csv file.",
     )
 
-    # Export QuakeML data to a file
+    #################################
+    # Export QuakeML data to a file #
+    #################################
     parser.add_argument(
         "--export-quakeml", required=False, help="Path to the output QuakeML file."
+    )
+
+    # add -e to export quakeml only for a list of specific events (event_id)
+    parser.add_argument(
+        "-e", "--event-id", nargs="+", default=None, help="List of event_id to export."
     )
 
     ###########################
@@ -1197,9 +1217,8 @@ if __name__ == "__main__":
     # check if -i is given
     if args.input:
         # import quakeml file to sqlite
-        import_catalog_to_sqlite_from_file(
-            args.database, args.input, args.enable_quakeml
-        )
+        for files in args.input:
+            import_catalog_to_sqlite_from_file(args.database, files, args.enable_quakeml)
     elif args.csv_output:
         # Export the view to a CSV file
         export_view_to_csv_exclude_geometry(
@@ -1207,7 +1226,7 @@ if __name__ == "__main__":
         )
     elif args.export_quakeml:
         # Export QuakeML data to a file
-        export_sqlite_to_quakeml(args.database, args.export_quakeml)
+        export_sqlite_to_quakeml(args.database, args.export_quakeml, args.event_id)
     elif args.add_discrimination:
         # Add discrimination info to the event table
         conn = sqlite3.connect(args.database)
