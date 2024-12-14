@@ -4,6 +4,7 @@ import logging
 import multiprocessing
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import time
@@ -28,13 +29,13 @@ from db import duckdb_init
 from dbclust2pyocto import adjust_associator_tolerance
 from icecream import ic
 from inject_spatialite import import_catalog_object_to_sqlite_from_file
+from inject_spatialite import refresh_event_coordinates_view
 from localization import NllLoc
 from localization import show_event
 from phase import import_phases
 from preprocessing_picks import deduplicate_picks_by_time
 from quakeml import deduplicate_picks_and_make_readable_ids
 from quakeml import feed_distance_from_preloc_to_pref_origin
-from quakeml import make_readable_id
 from ray.util.multiprocessing import Pool
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -380,7 +381,7 @@ def dbclust(
                 # tolerance_steps=cfg.pyocto.tolerance_steps,
                 # {min_tolerance_threshold: pick_match_tolerance, ...}
                 tolerance_steps={1: 1, 0.5: 0.1, 0: 0.05},
-                min_tolerance=0.2,
+                min_tolerance=0.1,
                 log_level=logger.level,
             )
             if result is None:
@@ -739,5 +740,11 @@ if __name__ == "__main__":
         # results = run_with_dask(cfg)  # change the locator accordingly
         # results = run_with_ray_multiproc(cfg)
         results = run_with_ray(cfg)  # change the locator accordingly
+
+    # update spatialite view
+    if cfg.catalog.enable_sqlite:
+        conn = sqlite3.connect(cfg.catalog.sqlite_db_fullpath)
+        refresh_event_coordinates_view(conn)
+        conn.close()
 
     print(results)
