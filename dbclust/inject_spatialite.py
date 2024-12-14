@@ -447,7 +447,9 @@ def insert_arrivals(conn: sqlite3.Connection, origin: Origin) -> None:
         logger.debug(f"Arrival {arrival.resource_id.id} inserted.")
 
 
-def export_sqlite_to_quakeml(db_path: str, output_file: str, event_ids: List[str] = None) -> None:
+def export_sqlite_to_quakeml(
+    db_path: str, output_file: str, event_ids: List[str] = None
+) -> None:
     """
     Concatenate multiple QuakeML streams stored in a database into a single XML file,
     minimizing memory usage by writing to the file incrementally.
@@ -682,7 +684,8 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
 
 def refresh_event_coordinates_view(conn: sqlite3.Connection):
     """
-    Refreshes event_coordinates view in SQLite by dropping and recreating it.
+    Refreshes event_coordinates view in SQLite by dropping and recreating it,
+    and registers the geometry column in geometry_columns.
 
     Args:
         conn: SQLite connection object.
@@ -690,12 +693,22 @@ def refresh_event_coordinates_view(conn: sqlite3.Connection):
     cursor = conn.cursor()
 
     # Drop the view if it exists
-    cursor.execute(f"DROP VIEW IF EXISTS event_coordinates;")
+    cursor.execute("DROP VIEW IF EXISTS event_coordinates;")
     conn.commit()
 
     # Recreate the view
-    cursor.execute(event_coordinates_view_definition)
+    cursor.execute(EVENT_COORDINATES_VIEW)
     conn.commit()
+
+    # Register the geometry column
+    register_geometry_for_view(
+        conn=conn,
+        view_name="event_coordinates",
+        geometry_column="geometry",
+        srid=4326,
+        geom_type=1,  # POINT
+        coord_dim=2,  # XY
+    )
 
 
 def register_geometry_for_view(
@@ -859,7 +872,6 @@ def import_catalog_to_sqlite(
         except Exception as e:
             logger.error(f"event {event.resource_id.id}: {e}")
             raise
-
 
 
 def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv: str):
@@ -1223,7 +1235,9 @@ if __name__ == "__main__":
     if args.input:
         # import quakeml file to sqlite
         for files in args.input:
-            import_catalog_to_sqlite_from_file(args.database, files, args.enable_quakeml)
+            import_catalog_to_sqlite_from_file(
+                args.database, files, args.enable_quakeml
+            )
     elif args.csv_output:
         # Export the view to a CSV file
         export_view_to_csv_exclude_geometry(
