@@ -1533,6 +1533,7 @@ def show_bulletin(
         #  - pick probability
         # {"probability": {"name": "RENASS", "value": 0.92}}
 
+        relabel = ""
         for c in arrival.comments:
             try:
                 info = json.loads(c.text)
