@@ -763,10 +763,15 @@ def import_catalog_object_to_sqlite_from_file(
         enable_quakeml (bool, optional): If True, serialize and compress QuakeML content for each event. Defaults to False.
     """
     # Create the database schema
+    # try:
+    #     conn = create_schema(db_path)
+    # except Exception as e:
+    #     logger.error(f"Error creating schema: {e}")
+    #     raise e
     try:
-        conn = create_schema(db_path)
+        conn = sqlite3.connect(db_path)
     except Exception as e:
-        logger.error(f"Error creating schema: {e}")
+        logger.error(f"Error connecting to database: {e}")
         raise e
 
     # Import the catalog into the SQLite database
