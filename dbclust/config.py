@@ -26,6 +26,7 @@ from dacite import from_dict
 from db import duckdb_init
 from db import duckdb_init_parquet
 from icecream import ic
+from inject_spatialite import create_schema
 from obspy import Inventory
 from obspy import read_inventory
 from obspy import UTCDateTime
@@ -452,6 +453,12 @@ class CatalogConfig:
             self.sqlite_db_fullpath = os.path.join(
                 self.sqlite_db_path, self.sqlite_db_filename
             )
+            # init sqlite db with WAL mode and spatialite extension
+            try:
+                conn = create_schema(self.sqlite_db_fullpath)
+                conn.close()
+            except Exception as e:
+                raise e(f"Can't create sqlite db {self.sqlite_db_fullpath}")
 
 
 
