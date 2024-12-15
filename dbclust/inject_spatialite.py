@@ -19,6 +19,7 @@ from typing import List
 from typing import Tuple
 
 import numpy as np
+import pandas as pd
 from icecream import ic
 from localization_quality import classify_Michele_mod
 from obspy import Catalog
@@ -478,39 +479,20 @@ def export_sqlite_to_quakeml(
 
         # Iterate over the rows of QuakeML data in the database
         if event_ids:
-            # join event_ids into a string
-            str_event_ids = ",".join([f"'{event_id}'" for event_id in event_ids])
-            query = f"SELECT data FROM quakeml WHERE event_id IN ({str_event_ids});"
+            # Iterate through event IDs and query the database for each one
+            for event_id in event_ids:
+                query = "SELECT data FROM quakeml WHERE event_id = ?;"
+                cursor.execute(query, (event_id,))
+                rows = cursor.fetchall()
+                if not rows:
+                    print(f"No data found for event_id: {event_id}")
+                for row in rows:
+                    process_quakeml_row(row, f, namespaces)
         else:
+            # If no event_ids are provided, process all data in the table
             query = "SELECT data FROM quakeml;"
-
-        for row in cursor.execute(query):
-            # Each row contains a compressed QuakeML
-            compressed_quakeml_data = row[0]
-            if compressed_quakeml_data is None:
-                continue
-
-            # Decompress the QuakeML data
-            quakeml_data = zlib.decompress(compressed_quakeml_data).decode("utf-8")
-
-            try:
-                # Parse the decompressed QuakeML data
-                root = ET.fromstring(quakeml_data)
-
-                # Find all <event> elements and process them
-                for event in root.findall(".//event", namespaces):
-                    # Remove any namespace from the event element
-                    for elem in event.iter():
-                        if isinstance(elem.tag, str) and elem.tag.startswith("{"):
-                            elem.tag = elem.tag.split("}", 1)[
-                                1
-                            ]  # Remove namespace part
-
-                    # Write the event directly to the output file
-                    f.write(ET.tostring(event, encoding="utf-8"))
-
-            except ET.ParseError as e:
-                print(f"Error parsing QuakeML: {e}")
+            for row in cursor.execute(query):
+                process_quakeml_row(row, f, namespaces)
 
         # Close the eventParameters tag and the root tag
         f.write(b"  </eventParameters>\n")
@@ -519,6 +501,41 @@ def export_sqlite_to_quakeml(
     # Close the database connection
     conn.close()
     print(f"Concatenated QuakeML written to {output_file}")
+
+
+def process_quakeml_row(row, output_file, namespaces):
+    """
+    Process a single row of QuakeML data and write events to the output file.
+
+    Args:
+        row (tuple): Row containing compressed QuakeML data.
+        output_file (file): Open file object to write the events.
+        namespaces (dict): XML namespaces to handle in the QuakeML data.
+    """
+    # Each row contains a compressed QuakeML
+    compressed_quakeml_data = row[0]
+    if compressed_quakeml_data is None:
+        return
+
+    # Decompress the QuakeML data
+    quakeml_data = zlib.decompress(compressed_quakeml_data).decode("utf-8")
+
+    try:
+        # Parse the decompressed QuakeML data
+        root = ET.fromstring(quakeml_data)
+
+        # Find all <event> elements and process them
+        for event in root.findall(".//event", namespaces):
+            # Remove any namespace from the event element
+            for elem in event.iter():
+                if isinstance(elem.tag, str) and elem.tag.startswith("{"):
+                    elem.tag = elem.tag.split("}", 1)[1]  # Remove namespace part
+
+            # Write the event directly to the output file
+            output_file.write(ET.tostring(event, encoding="utf-8"))
+
+    except ET.ParseError as e:
+        print(f"Error parsing QuakeML: {e}")
 
 
 def create_schema(db_path: str) -> sqlite3.Connection:
@@ -743,12 +760,14 @@ def register_geometry_for_view(
         print(
             f"Geometry column '{geometry_column}' is already registered for view '{view_name}' ... removing it."
         )
+        # Remove the existing registration manually
         cursor.execute(
             """
-            SELECT DiscardGeometryColumn('event_coordinates', 'geometry');
-            """
+            DELETE FROM geometry_columns
+            WHERE f_table_name=? AND f_geometry_column=?;
+            """,
+            (view_name, geometry_column),
         )
-        # return
 
     # Register the geometry column
     print(f"Registering geometry column '{geometry_column}' for view '{view_name}'...")
@@ -1007,9 +1026,6 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
     """
     cursor = conn.cursor()
 
-    # Use pandas to read the CSV file
-    import pandas as pd
-
     try:
         discrimination_df = pd.read_csv(csv_file)
     except Exception as e:
@@ -1198,6 +1214,11 @@ if __name__ == "__main__":
         "-e", "--event-id", nargs="+", default=None, help="List of event_id to export."
     )
 
+    # use csv file to use event_id list
+    parser.add_argument(
+        "--event-id-csv", default=None, help="CSV file containing event_id list."
+    )
+
     ###########################
     # Add discrimination info #
     ###########################
@@ -1243,6 +1264,10 @@ if __name__ == "__main__":
         export_view_to_csv_exclude_geometry(
             args.database, "event_coordinates", args.csv_output
         )
+    elif args.event_id_csv:
+        # read event_id from csv file using pandas
+        event_ids = pd.read_csv(args.event_id_csv)["event_id"].tolist()
+        export_sqlite_to_quakeml(args.database, args.export_quakeml, event_ids)
     elif args.export_quakeml:
         # Export QuakeML data to a file
         export_sqlite_to_quakeml(args.database, args.export_quakeml, args.event_id)
