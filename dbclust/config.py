@@ -127,13 +127,14 @@ class PickConfig:
         else:
             # CSV
             try:
-                with open(self.filename, "r") as file:
-                    first_line = file.readline().strip()
-                    nbcol = first_line.count(",")
-                    if nbcol < 4:
-                        raise ValueError(
-                            f"{self.filename} is not a csv file or some columns are missing ({nbcol}) !"
-                        )
+                for f in self.filenames:
+                    with open(f, "r") as file:
+                        first_line = file.readline().strip()
+                        nbcol = first_line.count(",")
+                        if nbcol != 9-1:
+                            raise ValueError(
+                                f"{f} is not a csv file or some columns are missing ({nbcol}) !"
+                            )
             except Exception as e:
                 raise e
 
@@ -149,6 +150,9 @@ class PickConfig:
         min, max = conn.sql(rqt).fetchall().pop()
         conn.close()
 
+        # check min, max time exists
+        if not min or not max:  # pragma: no cover
+            raise ValueError(f"Can't find min, max time in {self.filenames}, no data ?")
         ic(min, max)
 
         if not self.start:
