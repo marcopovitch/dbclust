@@ -240,17 +240,23 @@ def dbclust(
             end_year = end.year
             end_month = end.month
 
-            rqt = f"""
-                SELECT * FROM PICKS
-                WHERE
-                (year > {begin_year} OR (year = {begin_year} AND month >= {begin_month}))
-                AND
-                (year < {end_year} OR (year = {end_year} AND month <= {end_month}))
-                AND
-                phase_time BETWEEN '{begin}' AND '{end}'
-            """
-
-            # rqt = f"SELECT * FROM PICKS WHERE phase_time BETWEEN '{begin}' AND '{end}'"
+            if cfg.pick.type == "parquet":
+                # benefit from parquet partitioning by year and month
+                rqt = f"""
+                    SELECT * FROM PICKS
+                    WHERE
+                    (year > {begin_year} OR (year = {begin_year} AND month >= {begin_month}))
+                    AND
+                    (year < {end_year} OR (year = {end_year} AND month <= {end_month}))
+                    AND
+                    phase_time BETWEEN '{begin}' AND '{end}'
+                """
+            else:
+                # csv
+                rqt = f"""
+                    SELECT * FROM PICKS
+                    WHERE phase_time BETWEEN '{begin}' AND '{end}'
+                """
 
             # Time meseaure of the query
             start_time = time.time()
