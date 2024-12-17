@@ -89,9 +89,14 @@ def export_picks_to_dbclust_format(
     evaluation: str = None,
     method: str = None,
     agency: str = None,
+    keep_manual_evaluation_only: bool = False,
 ) -> List[Dict[str, Any]]:
-    # seedid,phasename,time,probability
-    # 1K.OFAS0.00.EH.D,P,2023-02-13T18:30:58.558999Z,0.366400
+
+    """
+    station_id,channel,phase_type,phase_time,phase_score,phase_evaluation,phase_method,event_id,agency
+    FR.ARTF,00.HH,P,2024-12-16T04:49:37.060000Z,0.30040574,automatic,PHASENET,,RENASS
+    """
+
     lines = []
     for arrival in origin.arrivals:
         if arrival.time_weight:
@@ -118,6 +123,10 @@ def export_picks_to_dbclust_format(
                     # "eventid": event.resource_id.id.split("/")[-1],
                     "event_id": event.resource_id.id,
                 }
+
+                if keep_manual_evaluation_only and pick.evaluation_mode != "manual":
+                    continue
+
                 # override from command line args
                 if evaluation:
                     line["phase_evaluation"] = evaluation
@@ -172,6 +181,15 @@ if __name__ == "__main__":
         dest="evaluation",
         help="override pick evaluation mode (automatic|manual)",
         type=str,
+    )
+    # keep manual evaluation only
+    parser.add_argument(
+        "-k",
+        "--keep-manual",
+        default=False,
+        dest="keep_manual_evaluation_only",
+        help="keep picks with manual evaluation only",
+        action="store_true",
     )
     parser.add_argument(
         "-m",
@@ -271,6 +289,7 @@ if __name__ == "__main__":
             evaluation=args.evaluation,
             probability=args.probability,
             agency=args.agency,
+            keep_manual_evaluation_only=args.keep_manual_evaluation_only,
         )
 
         # df = pd.concat([df, pd.DataFrame(picks_list)], ignore_index=True)
