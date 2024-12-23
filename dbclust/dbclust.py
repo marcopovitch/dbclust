@@ -92,6 +92,7 @@ def get_locator_from_config(cfg, log_level=logging.INFO):
         cfg.nll.time_path,
         cfg.nll.template_path,
         tmpdir=cfg.file.tmp_path,
+        loc_method=cfg.nll.loc_method,
         #
         double_pass=cfg.relocation.double_pass,
         P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
