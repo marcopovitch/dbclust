@@ -480,8 +480,8 @@ def dbclust(
                     # remove this event and wait the next iteration
                     # as this event will be recreated.
                     show_event(event, "***D")
-                    logger.debug(
-                        f"Select event in overlapped zone to be (D)eleted ({event.resource_id.id})"
+                    logger.info(
+                        f"Found event in overlapped zone to be (D)eleted ({event.resource_id.id})"
                     )
                     locator.catalog.events.remove(event)
                     locator.nb_events = len(locator.catalog)
@@ -500,8 +500,8 @@ def dbclust(
                     # (event is kept, only picks are removed for the next round)
                     # if event.event_type != "not existing":
                     show_event(event, "***P")
-                    logger.debug(
-                        f"Select a real event between normal and overlapped zone where picks must be (P)runed ({event.resource_id.id})"
+                    logger.info(
+                        f"Found event between normal and overlapped zone where picks must be (P)runed ({event.resource_id.id})"
                     )
                     picks_to_remove = []
                     for origin in event.origins:
