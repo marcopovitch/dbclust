@@ -448,6 +448,10 @@ class NllLoc(object):
                 )
                 logger.warning(f"Localization was ABORTED|IGNORED|REJECTED: {why}")
                 return Catalog()
+            elif "x-sheet" in line:
+                l = line.split()
+                logger.warning(f"Station {l[2]} outside velocity bounding box coordinates: localization aborted by NonLinLoc !")
+                return Catalog()
             elif "ERROR" in line:
                 logger.error(line)
                 return Catalog()
