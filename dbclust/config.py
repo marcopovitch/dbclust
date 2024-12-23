@@ -248,13 +248,25 @@ class StationConfig:
             self.inventory = Inventory()
             for f in self.inventory_files:
                 logger.info(f"Reading inventory file {f}")
-                self.inventory.extend(read_inventory(f))
+                self.inventory.extend(read_inventory(f, ))
                 self.info_sta = self.inventory
         else:
             logger.debug(f"Using fdsnws {self.fdsnws.url} to get station coordinates.")
             self.info_sta = self.fdsnws.get_url()
 
         if self.fallback:
+            dtype_dict = {
+                    'network': 'str',
+                    'station': 'str',
+                    'location': 'str',
+                    'channel': 'str',
+                    'latitude': 'float64',
+                    'longitude': 'float64',
+                    'elevation': 'float64',
+                    'starttime': 'str',
+                    'endtime': 'str',
+                    'alias': 'str',
+            }
             for f in self.fallback:
                 logger.info(f"Reading fallback file {f}")
                 if not os.path.exists(f):
@@ -263,6 +275,16 @@ class StationConfig:
                     df = pd.read_csv(f)
                 except Exception as e:
                     raise e
+
+                # if no elevation defined set to 0.0
+                df['elevation'] = pd.to_numeric(df['elevation'], errors='coerce')
+                df['elevation'] = df['elevation'].fillna(0.0)
+                #  else set to empty string
+                df = df.fillna("")
+
+                # force columns type
+                df = df.astype(dtype_dict)
+
                 # if "dateFrom" is empty, replace it with "1970-01-01"
                 df["starttime"] = df["starttime"].replace("", "1970-01-01T00:00:00Z")
                 # if "dateTo" is empty, replace it with "2100-01-01"
