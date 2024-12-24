@@ -16,6 +16,7 @@ from typing import Optional
 import dask
 import numpy as np
 import pandas as pd
+import pyproj
 import ray
 from clusterize import Clusterize
 from clusterize import feed_picks_event_ids
@@ -382,15 +383,20 @@ def dbclust(
             previous_myclust.merge(myclust)
 
         if cfg.pyocto.current_model:
-            result = adjust_associator_tolerance(
-                previous_myclust,
-                cfg,
-                # tolerance_steps=cfg.pyocto.tolerance_steps,
-                # {min_tolerance_threshold: pick_match_tolerance, ...}
-                tolerance_steps={1: 1, 0.5: 0.1, 0: 0.05},
-                min_tolerance=0.1,
-                log_level=logger.level,
-            )
+            try:
+                result = adjust_associator_tolerance(
+                    previous_myclust,
+                    cfg,
+                    # tolerance_steps=cfg.pyocto.tolerance_steps,
+                    # {min_tolerance_threshold: pick_match_tolerance, ...}
+                    tolerance_steps={1: 1, 0.5: 0.1, 0: 0.05},
+                    min_tolerance=0.1,
+                    log_level=logger.level,
+                )
+            except pyproj.exceptions.CRSError as e:
+                logger.error(f"Aborting process adjust_associator_tolerance().")
+                continue
+
             if result is None:
                 # flush stdout and stderr to have the log in the right order
                 logger.error("Failed to process with any pick_match_tolerance.")

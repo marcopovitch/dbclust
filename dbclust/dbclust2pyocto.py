@@ -13,6 +13,7 @@ from typing import Union
 
 import pandas as pd
 import pyocto
+import pyproj
 from clusterize import cluster_share_eventid
 from clusterize import Clusterize
 from config import Associator
@@ -29,7 +30,7 @@ reference: https://pyocto.readthedocs.io
 """
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger("bdclust2pyocto")
+logger = logging.getLogger("dbclust2pyocto")
 logger.setLevel(logging.INFO)
 
 ic.configureOutput(outputFunction=lambda msg: sys.stdout.write(msg + "\n"))
@@ -89,6 +90,10 @@ def adjust_associator_tolerance(
             )
             logger.info(f"Success with pick_match_tolerance: {tolerance:.2f}")
             return result_myclust
+        except pyproj.exceptions.CRSError as e:
+            # Skip processing if CRS error occurs, likely due to too far away stations
+            logger.error("Skipping dbclust2pyocto() processing.")
+            raise
         except MultipleEventIDsWithSameAgencyError as e:
             logger.warning(f"Unsuccessful with pick_match_tolerance: {tolerance:.2f}.")
             logger.warning(f"{e}")
@@ -176,28 +181,36 @@ def dbclust2pyocto(
         lat_range = (stations["latitude"].min(), stations["latitude"].max())
         lon_range = (stations["longitude"].min(), stations["longitude"].max())
 
-        associator = pyocto.OctoAssociator.from_area(
-            lat=lat_range,
-            lon=lon_range,
-            zlim=associator_cfg.zlim,
-            time_before=associator_cfg.time_before,  # should be greater than dbclust time_window parameter
-            max_pick_overlap=associator_cfg.max_pick_overlap,
-            min_pick_fraction=associator_cfg.min_pick_fraction,
-            min_node_size=associator_cfg.min_node_size,  # default 10
-            min_node_size_location=associator_cfg.min_node_size_location,  # default 1.5
-            velocity_model=velocity_model,
-            pick_match_tolerance=associator_cfg.pick_match_tolerance,
-            min_interevent_time=0.5,  # default 3
-            n_picks=associator_cfg.n_picks,
-            n_p_picks=associator_cfg.n_p_picks,
-            n_s_picks=associator_cfg.n_s_picks,
-            n_p_and_s_picks=associator_cfg.n_p_and_s_picks,
-            exponential_edt=True,
-            location_split_depth=6,  # default 6
-            location_split_return=4,  # default 4
-            refinement_iterations=3,  # default 3
-            # second_pass_overwrites={},  # default None
-        )
+        try:
+            associator = pyocto.OctoAssociator.from_area(
+                lat=lat_range,
+                lon=lon_range,
+                zlim=associator_cfg.zlim,
+                time_before=associator_cfg.time_before,  # should be greater than dbclust time_window parameter
+                max_pick_overlap=associator_cfg.max_pick_overlap,
+                min_pick_fraction=associator_cfg.min_pick_fraction,
+                min_node_size=associator_cfg.min_node_size,  # default 10
+                min_node_size_location=associator_cfg.min_node_size_location,  # default 1.5
+                velocity_model=velocity_model,
+                pick_match_tolerance=associator_cfg.pick_match_tolerance,
+                min_interevent_time=0.5,  # default 3
+                n_picks=associator_cfg.n_picks,
+                n_p_picks=associator_cfg.n_p_picks,
+                n_s_picks=associator_cfg.n_s_picks,
+                n_p_and_s_picks=associator_cfg.n_p_and_s_picks,
+                exponential_edt=True,
+                location_split_depth=6,  # default 6
+                location_split_return=4,  # default 4
+                refinement_iterations=3,  # default 3
+                # second_pass_overwrites={},  # default None
+            )
+        except pyproj.exceptions.CRSError as e:
+            # Skip processing if CRS error occurs, likely due to too far away stations
+            logger.error(f"CRS error occurred. Skipping processing: {e}")
+            logger.error(f"Check stations coordinates ! lat_range: {lat_range}, lon_range: {lon_range}")
+            ic(picks)
+            raise
+
         associator.transform_stations(stations)
 
         # Associate picks and generate events
