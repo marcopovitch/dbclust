@@ -8,6 +8,7 @@ import datetime
 import json
 import logging
 import math
+import os
 import re
 import sqlite3
 import sys
@@ -1260,6 +1261,10 @@ if __name__ == "__main__":
                 args.database, files, args.enable_quakeml
             )
     elif args.csv_output:
+        # output file should not already exist
+        if os.path.exists(args.csv_output):
+            print(f"Output file '{args.csv_output}' already exists.")
+            sys.exit(1)
         # Export the view to a CSV file
         export_view_to_csv_exclude_geometry(
             args.database, "event_coordinates", args.csv_output
