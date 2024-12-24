@@ -16,6 +16,7 @@ from typing import Optional
 import dask
 import numpy as np
 import pandas as pd
+import psutil
 import pyproj
 import ray
 from clusterize import Clusterize
@@ -670,7 +671,7 @@ def run_dbclust_task(cfg, job_index):
     return dbclust(cfg=cfg, job_index=job_index)
 
 
-def run_with_ray(cfg: DBClustConfig):
+def run_with_ray_old(cfg: DBClustConfig):
 
     # os.environ["RAY_DEDUP_LOGS"] = "0"
     os.environ["RAY_COLOR_PREFIX"] = "1"
@@ -693,6 +694,59 @@ def run_with_ray(cfg: DBClustConfig):
     results = ray.get(ray_tasks)
     logger.info("DBClust completed !")
     return results
+
+
+def run_with_ray(cfg: DBClustConfig):
+    # os.environ["RAY_DEDUP_LOGS"] = "0"
+    os.environ["RAY_COLOR_PREFIX"] = "1"
+
+    # Start Ray
+    context = ray.init(
+        num_cpus=cfg.parallel.n_workers,
+        dashboard_host="0.0.0.0",
+        dashboard_port=8265,
+        _temp_dir=cfg.parallel._temp_dir,
+    )
+    logger.info(f"Dashboard URL: http://{context.dashboard_url}")
+
+    # Resource thresholds
+    memory_threshold = 80  # in percentage
+    cpu_threshold = 90     # in percentage
+    active_tasks = []
+    completed_results = []
+
+    # Launch tasks dynamically
+    for idx, (start, end) in enumerate(cfg.parallel.time_partitions, start=0):
+        while True:
+            # Monitor system resources
+            mem_usage = psutil.virtual_memory().percent
+            cpu_usage = psutil.cpu_percent(interval=1)
+
+            if mem_usage < memory_threshold and cpu_usage < cpu_threshold:
+                # Launch the task
+                logger.info(f"Launching task {idx} (Memory: {mem_usage}%, CPU: {cpu_usage}%)")
+                active_tasks.append(run_dbclust_task.remote(cfg, idx))
+                break
+            else:
+                logger.warning(f"High resource usage (Memory: {mem_usage}%, CPU: {cpu_usage}%) - Waiting...")
+                time.sleep(1)
+
+            # Check if tasks are completed
+            if len(active_tasks) >= cfg.parallel.n_workers:
+                ready, not_ready = ray.wait(active_tasks, num_returns=1)
+                results = ray.get(ready)
+                completed_results.extend(results)
+                active_tasks = not_ready
+
+    # Collect remaining tasks
+    while active_tasks:
+        ready, active_tasks = ray.wait(active_tasks, num_returns=1)
+        results = ray.get(ready)
+        completed_results.extend(results)
+
+    logger.info("DBClust completed!")
+    ray.shutdown()
+    return completed_results
 
 
 if __name__ == "__main__":
