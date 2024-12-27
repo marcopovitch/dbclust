@@ -785,36 +785,52 @@ def register_geometry_for_view(
 
 
 def import_catalog_object_to_sqlite_from_file(
-    db_path: str, catalog: Catalog, enable_quakeml: bool = False
+    db_path: str, catalog: Catalog, enable_quakeml: bool = False, retries: int = 5, delay: int = 1
 ):
     """
-    Import a catalog of seismic events to a SQLite database.
+    Import a catalog of seismic events to a SQLite database with conflict handling.
 
     Args:
         db_path (str): Path to the SQLite database file.
         catalog (Catalog): A catalog of seismic events.
         enable_quakeml (bool, optional): If True, serialize and compress QuakeML content for each event. Defaults to False.
+        retries (int, optional): Number of retry attempts in case of OperationalError. Defaults to 5.
+        delay (int, optional): Delay (in seconds) between retry attempts. Defaults to 1.
     """
-    # Create the database schema
-    # try:
-    #     conn = create_schema(db_path)
-    # except Exception as e:
-    #     logger.error(f"Error creating schema: {e}")
-    #     raise e
-    try:
-        conn = sqlite3.connect(db_path)
-    except Exception as e:
-        logger.error(f"Error connecting to database: {e}")
-        raise e
+    attempt = 0
+    while attempt < retries:
+        try:
+            # Connect to the database
+            conn = sqlite3.connect(db_path)
+            logger.info("Connected to the database successfully.")
 
-    # Import the catalog into the SQLite database
-    import_catalog_to_sqlite(conn, catalog, enable_quakeml)
+            # Import the catalog into the SQLite database
+            import_catalog_to_sqlite(conn, catalog, enable_quakeml)
 
-    # extract agency names and stats to event table
-    # add_agency_names(conn)
-    # add_compute_localization_quality(conn)
+            # Optional: Additional operations
+            # add_agency_names(conn)
+            # add_compute_localization_quality(conn)
 
-    conn.close()
+            conn.close()
+            logger.info("Catalog imported successfully.")
+            return  # Exit on success
+
+        except sqlite3.OperationalError as e:
+            logger.warning(
+                f"Database is locked or unavailable (attempt {attempt + 1}/{retries}): {e}"
+            )
+            attempt += 1
+            time.sleep(delay)  # Wait before retrying
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+            raise e  # Raise unexpected errors
+        finally:
+            if 'conn' in locals() and conn:
+                conn.close()
+
+    # If we exhausted retries
+    logger.error("Failed to import catalog after multiple attempts.")
+    raise sqlite3.OperationalError("Unable to access the database after several retries.")
 
 
 def import_catalog_to_sqlite_from_file(
