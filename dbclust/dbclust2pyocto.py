@@ -297,7 +297,7 @@ def cluster_merge_one_pass(
     Returns:
         Tuple: Updated clusters, updated preloc, and count of merges performed.
     """
-    logger.info(f"pyocto cluster_merge(): {len(clusters)} clusters")
+    logger.info(f"pyocto cluster_merge(): working on {len(clusters)} clusters")
 
     merge_count = 0
     to_be_merged = []
@@ -309,7 +309,7 @@ def cluster_merge_one_pass(
         common_count = sum((Counter(c1) & Counter(c2)).values())
 
         # Check if clusters share event IDs
-        eventid_shared = cluster_share_eventid(c1, c2, station_threshold=min_com_phases)
+        eventid_shared = cluster_share_eventid(c1, c2, shared_threshold=min_com_phases)
 
         if common_count >= min_com_phases or eventid_shared:
             logger.info(
