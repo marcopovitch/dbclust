@@ -681,11 +681,19 @@ def run_with_ray_old(cfg: DBClustConfig):
     logger.info("DBClust completed !")
     return results
 
-
+@ray.remote(num_cpus=1, max_retries=5)
 def run_with_ray(cfg: DBClustConfig):
-    os.environ["RAY_enable_oom_killer"] = "0"
+    # Ray initialization
     os.environ["RAY_DEDUP_LOGS"] = "0"
     os.environ["RAY_COLOR_PREFIX"] = "1"
+    os.environ["RAY_enable_oom_killer"] = "1"
+    os.environ["RAY_memory_usage_threshold"] = "0.95"
+
+    # Resource thresholds
+    memory_threshold = 85  # in percentage
+    cpu_threshold = 90  # in percentage
+    active_tasks = []
+    completed_results = []
 
     # Start Ray
     context = ray.init(
@@ -696,11 +704,6 @@ def run_with_ray(cfg: DBClustConfig):
     )
     logger.info(f"Dashboard URL: http://{context.dashboard_url}")
 
-    # Resource thresholds
-    memory_threshold = 95  # in percentage
-    cpu_threshold = 90  # in percentage
-    active_tasks = []
-    completed_results = []
 
     # Launch tasks dynamically
     for idx, (start, end) in enumerate(cfg.parallel.time_partitions, start=0):
