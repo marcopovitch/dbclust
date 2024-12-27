@@ -5,6 +5,7 @@ import sys
 import warnings
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Dict
 from typing import List
 from typing import Literal
 from typing import Optional
@@ -38,18 +39,18 @@ class Phase:
     channel: str
     phase: str
     time: UTCDateTime
-    time_uncertainty: float
+    time_uncertainty: Optional[float]
     proba: float
     info_sta: Union[Inventory, str]
     fallback_df: Optional[pd.DataFrame] = None
-    evaluation: Literal["automatic", "manual", None] = None
-    method: str = None
-    event_id: str = None
-    agency: str = None
-    coord: Optional[dict] = None
+    evaluation: Optional[Literal["automatic", "manual"]] = None
+    method: Optional[str] = None
+    event_id: Optional[str] = None
+    agency: Optional[str] = None
+    coord: Optional[Dict[str, float]] = None
 
     """
-    Phase class represents a seismic phase with associated metadata and methods for processing.
+    Represents a seismic phase with associated metadata and methods for processing.
 
     Attributes:
         network (str): Network code.
@@ -58,116 +59,130 @@ class Phase:
         channel (str): Channel code.
         phase (str): Phase type.
         time (UTCDateTime): Time of the phase.
-        time_uncertainty (float): Uncertainty in the phase time.
+        time_uncertainty (Optional[float]): Uncertainty in the phase time.
         proba (float): Probability associated with the phase.
-        info_sta (Union[Inventory, str]): Station information, either as an Inventory object or fdsnws url.
+        info_sta (Union[Inventory, str]): Station information, either as an Inventory object or FDSNWS URL.
         fallback_df (Optional[pd.DataFrame]): Fallback station info dataframe.
-        evaluation (Literal["automatic", "manual", None]): Evaluation mode of the phase.
-        method (str): Method used for phase determination.
-        event_id (str): Event identifier.
-        agency (str): Agency responsible for the phase.
-        coord (Optional[dict]): Coordinates of the station.
-
-    Methods:
-        show_all() -> None: Prints detailed information about the Phase object.
-        to_pick() -> Pick: Exports the Phase object to an Obspy Pick object.
-
-        __post_init__(): Initializes the Phase object, setting coordinates and other attributes.
-        __eq__(obj: object) -> bool: Checks equality between two Phase objects.
-        __hash__() -> int: Returns the hash value of the Phase object.
-        __repr__() -> str: Returns a string representation of the Phase object.
-        __lt__(obj: "Phase") -> bool: Compares two Phase objects based on time.
+        evaluation (Optional[Literal["automatic", "manual"]]): Evaluation mode of the phase.
+        method (Optional[str]): Method used for phase determination.
+        event_id (Optional[str]): Event identifier.
+        agency (Optional[str]): Agency responsible for the phase.
+        coord (Optional[Dict[str, float]]): Coordinates of the station.
     """
 
     def __post_init__(self) -> None:
-        if self.coord:
-            return
+        self.time = UTCDateTime(self.time)  # Ensure UTCDateTime type
 
-        self.time = UTCDateTime(self.time)
+        if not self.coord:
+            self._fetch_coordinates()
 
-        if type(self.info_sta) == Inventory:
+    def _fetch_coordinates(self) -> None:
+        """
+        Fetch coordinates and channel information for the station associated with this phase.
+        Uses either an Inventory object or FDSNWS service, with a fallback to a predefined DataFrame.
+
+        Raises:
+            ValueError: If coordinates cannot be fetched from any source.
+        """
+        # Determine the appropriate function and time range for fetching station info
+        if isinstance(self.info_sta, Inventory):
             get_station_info = get_station_info_from_inventory
-            time_search_begin = UTCDateTime(self.time)
-            time_search_end = UTCDateTime(self.time)
+            time_search_begin = time_search_end = self.time
         else:
             get_station_info = get_station_info_from_fdsnws
-            # Don't be too precise to benefit from lru_cache
-            # time_search_begin and time_search_begin type must be string
-            time_search = self.time
             time_search_begin = UTCDateTime(
-                time_search.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                self.time.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             )
             time_search_end = UTCDateTime(
-                # time_search_begin.replace(month=time_search_begin.month + 1, day=1)
                 time_search_begin.replace(year=time_search_begin.year + 1)
             )
-            time_search_begin = str(time_search_begin)
-            time_search_end = str(time_search_end)
 
-        (lat, lon, elev, loc, chans) = get_station_info(
-            self.network,
-            self.station,
-            time_search_begin,
-            time_search_end,
-            self.info_sta,
-            loc=self.location,
-            chan=self.channel,
-        )
-        if lat == None or lon == None:
-            # try to get coordinates from fallback_df if available
-            if self.fallback_df is not None:
-                df = self.fallback_df
+        # Fetch coordinates and channels from the primary source
+        try:
+            lat, lon, elev, loc, chans = get_station_info(
+                self.network,
+                self.station,
+                str(time_search_begin),
+                str(time_search_end),
+                self.info_sta,
+                loc=self.location,
+                chan=self.channel,
+            )
+        except ValueError as e:
+            logger.error(f"ValueError fetching coordinates: {e}")
+            lat, lon, elev, loc, chans = None, None, None, None, None
+        except Exception as e:
+            logger.exception(f"Unexpected error during station info fetch: {e}")
+            raise
 
-                #ic(self.network, self.station, self.location, self.channel, self.time)
-                df_filtered = df[
-                    (df["network"] == self.network)
-                    & (df["station"] == self.station)
-                    #& (df["channel"].str.contains(self.channel, na=False))
-                    #& (df["location"] == self.location)
-                    & (df["starttime"] <= self.time)
-                    & (df["endtime"] >= self.time)
-                ]
-                #ic(df_filtered)
+        # If the primary source failed, use the fallback method
+        if lat is None or lon is None:
+            try:
+                lat, lon, elev, loc, chans = self._fallback_coordinates(self.network, self.station, self.time, self.fallback_df)
+            except ValueError as e:
+                logger.warning(f"{e}")
+                raise
 
-                if not df_filtered.empty:
-                    (lat, lon, elev, loc, chans) = df_filtered[
-                        ["latitude", "longitude", "elevation", "location", "channel"]
-                    ].iloc[0]
-                    # hack : create a list from df_filtered["channel"]
-                    chans = sorted(df_filtered["channel"].tolist())
-                else:
-                    (lat, lon, elev, loc, chans) = (None, None, None, None, None)
-
-            # if still no coordinates, raise an error
-            if lat == None or lon == None:
-                raise ValueError(
-                    f"Can't find coordinates for {self.network}.{self.station}.{self.location}.{self.channel} "
-                    f"from {time_search_begin} to {time_search_end}."
-                )
-            else:
-                logger.warning(
-                    f"Using fallback coordinates for {self.network}.{self.station}.{self.location}.{self.channel}"
-                )
-
+        # Update instance attributes with the fetched data
         self.coord = {"latitude": lat, "longitude": lon, "elevation": elev}
+        self.location = loc or self.location
+        self.channel = chans[-1] if "P" in self.phase.upper() else chans[0]
 
-        if self.location == None:
-            self.location = loc
+    @staticmethod
+    def _fallback_coordinates(
+        network: str,
+        station: str,
+        time: UTCDateTime,
+        fallback_df: Optional[pd.DataFrame] = None,
+    ) -> tuple:
+        """
+        Fetch fallback coordinates (latitude, longitude, elevation, location, channels)
+        for a given station ID using a fallback DataFrame.
 
-        # chans order is in lexicographic order
-        if "P" in self.phase.upper():
-            self.channel = chans[-1]
-        else:
-            self.channel = chans[0]
-
-    def to_pick(self) -> Pick:
-        """Export Phase object to Obspy Pick object
+        Args:
+            network (str): Network code of the station.
+            station (str): Station code.
+            time (UTCDateTime): Time of the query.
+            fallback_df (Optional[pd.DataFrame]): Fallback DataFrame containing station information.
 
         Returns:
-            Pick: the exported Pick object
+            tuple: (latitude, longitude, elevation, location, channels) if found.
+
+        Raises:
+            ValueError: If no matching station information is found.
         """
+        if fallback_df is not None:
+            # Filter the DataFrame based on the station and time constraints
+            df_filtered = fallback_df[
+                (fallback_df["network"] == network)
+                & (fallback_df["station"] == station)
+                & (fallback_df["starttime"] <= time)
+                & (fallback_df["endtime"] >= time)
+            ]
+
+            # Check if filtered DataFrame is not empty
+            if not df_filtered.empty:
+                # Extract required information from the first matching row
+                lat, lon, elev, loc = df_filtered.iloc[0][
+                    ["latitude", "longitude", "elevation", "location"]
+                ]
+                # Extract all matching channels and sort them, ENZ order
+                chans = sorted(df_filtered["channel"].tolist())
+
+                return lat, lon, elev, loc, chans
+
+        # Raise an error if no matching data is found
+        raise ValueError(
+            f"Cannot find coordinates for {network}.{station} at time {time} in fallback dataframe."
+        )
+
+    def to_pick(self) -> Pick:
+        """Export the Phase object to an ObsPy Pick object."""
         waveform_id = WaveformStreamID(
-            self.network, self.station, self.location, self.channel
+            network_code=self.network,
+            station_code=self.station,
+            location_code=self.location,
+            channel_code=self.channel,
         )
         pick = Pick(
             time=self.time,
@@ -179,50 +194,40 @@ class Phase:
             pick.evaluation_mode = self.evaluation
 
         pick.time_errors.uncertainty = self.time_uncertainty
-        pick.creation_info = CreationInfo(agencyID=self.agency)
+        pick.creation_info = CreationInfo(agency_id=self.agency)
 
         return pick
 
     def __eq__(self, obj: object) -> bool:
-        if self.__hash__() == obj.__hash__():
-            return True
-        else:
-            return False
+        return isinstance(obj, Phase) and hash(self) == hash(obj)
 
     def __hash__(self) -> int:
-        return hash(
-            (self.network, self.station, self.phase, self.time.datetime, self.proba)
+        return int(
+            hash(
+                (self.network, self.station, self.phase, self.time.datetime, self.proba)
+            )
         )
 
     def __repr__(self) -> str:
         return f"{self.network}.{self.station}.{self.channel}: {self.phase} {self.time} {self.proba:.3f}"
 
-    # needed for lru_cache
     def __lt__(self, obj: "Phase") -> bool:
-        return (self.time) < (obj.time)
+        return self.time < obj.time
 
     def show_all(self) -> None:
-        if self.event_id:
-            print(
-                f"{self.network}.{self.station}.{self.location}.{self.channel}: from {self.event_id}"
-            )
-        else:
-            print(f"{self.network}.{self.station}.{self.location}.{self.channel}:")
-
         print(
-            f"    evaluation is {self.evaluation}, method: {self.method}, agency: {self.agency}"
+            f"{self.network}.{self.station}.{self.location}.{self.channel}: "
+            f"event_id={self.event_id or 'N/A'}, evaluation={self.evaluation or 'N/A'}, "
+            f"method={self.method or 'N/A'}, agency={self.agency or 'N/A'}"
         )
-        if (
-            self.coord["latitude"] is not None
-            and self.coord["longitude"] is not None
-            and self.coord["elevation"] is not None
-        ):
+        print(f"    Phase: {self.phase} at {self.time} with proba={self.proba:.3f}")
+        if self.coord:
             print(
-                f"    lat={self.coord['latitude']:.4f}, lon={self.coord['longitude']:.4f}, elev={self.coord['elevation']:.1f}"
+                f"    Coordinates: lat={self.coord['latitude']:.4f}, "
+                f"lon={self.coord['longitude']:.4f}, elev={self.coord['elevation']:.1f}"
             )
-            print(f"    phase={self.phase}, time={self.time} proba={self.proba:.3f}")
         else:
-            print("No coordinates found !")
+            print("    No coordinates found.")
 
 
 def inventory2df(inventory: Inventory) -> pd.DataFrame:
@@ -338,43 +343,55 @@ def get_station_info_from_inventory(
     inventory: Inventory,
     loc: Optional[str] = None,
     chan: Optional[str] = None,
-) -> list:
-    """Get station coordinates from inventory
+) -> List[Optional[float]]:
+    """
+    Get station coordinates and channel information from an inventory object.
 
     Args:
-        network (str): station's network
-        station (str): stations's name
-        time_search (Union[datetime, pd.Timestamp]): time
-        inventory (Inventory): stations inventory
-        loc (Optional[str], optional): location code. Defaults to None.
-        chan (Optional[str], optional): channel. Defaults to None.
+        network (str): Station's network code.
+        station (str): Station's name.
+        time_search_begin (str): Start time of the search in ISO format.
+        time_search_end (str): End time of the search in ISO format.
+        inventory (Inventory): ObsPy inventory object containing station data.
+        loc (Optional[str], optional): Location code. Defaults to None.
+        chan (Optional[str], optional): Channel code. Defaults to None.
 
     Returns:
-        list: station's latitude, longitude, elevation
+        List[Optional[float]]: A list containing:
+            - Latitude (float)
+            - Longitude (float)
+            - Elevation (float)
+            - Location code (str)
+            - List of channel codes (List[str])
     """
-    logger.debug(f"Getting station info from inventory: {network}.{station}")
+    logger.debug(f"Fetching station info from inventory for {network}.{station}...")
 
-    if chan is not None:
-        re_chan = chan[:2] + "?"
-    else:
-        re_chan = "*"
+    # Prepare regex pattern for channel and location
+    re_chan = chan[:2] + "?" if chan else "*"
+    loc = loc or "*"
 
-    if loc is None:
-        loc = "*"
+    try:
+        # Select matching station entries from the inventory
+        inv = inventory.select(
+            network=network,
+            station=station,
+            location=loc,
+            channel=re_chan,
+            starttime=time_search_begin,
+            # endtime=time_search_end,
+        )
+        # ic(network, station, loc, re_chan, time_search_begin, time_search_end)
+    except Exception as e:
+        logger.error(f"Error selecting data from inventory: {e}")
+        return [None, None, None, None, []]
 
-    inv = inventory.select(
-        network=network,
-        station=station,
-        location=loc,
-        channel=re_chan,
-        starttime=time_search_begin,
-        endtime=time_search_end,
-    )
-
+    # Convert inventory to a DataFrame for easier processing
     df = inventory2df(inv)
     if df.empty:
-        return [None] * 5
+        logger.warning(f"No matching data found in inventory for {network}.{station}.")
+        return [None, None, None, None, []]
 
+    # Use helper function to filter and extract required data
     return get_missing_info_from_df(df, loc, chan)
 
 
@@ -437,7 +454,7 @@ def get_station_info_from_fdsnws(
 
 
 def import_phases(
-    df: pd.DataFrame = None,
+    df: Optional[pd.DataFrame] = None,
     P_proba_threshold: float = 0,
     S_proba_threshold: float = 0,
     P_uncertainty: Optional[float] = 0.1,
@@ -450,73 +467,67 @@ def import_phases(
 
     Parameters:
         df (pd.DataFrame, optional): DataFrame containing phase information. Default is None.
-
         P_proba_threshold (float, optional): Probability threshold for P phases. Default is 0.
         S_proba_threshold (float, optional): Probability threshold for S phases. Default is 0.
         P_uncertainty (Optional[float], optional): Uncertainty for P phases. Default is 0.1.
         S_uncertainty (Optional[float], optional): Uncertainty for S phases. Default is 0.2.
-
         info_sta (Optional[Union[Inventory, str]], optional): Station information. Default is None.
         fallback_df (Optional[pd.DataFrame], optional): Fallback station information DataFrame. Default is None.
 
     Returns:
         List[Phase]: List of Phase objects created from the DataFrame.
     """
-
     phases = []
 
-    if df is None or not isinstance(df, pd.DataFrame) or not len(df):
-        return None
+    # Validate DataFrame
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        logger.error("Input DataFrame is either None, not a DataFrame, or empty.")
+        return []
 
-    needed_columns = ["station_id", "phase_type", "phase_time", "phase_score"]
-    for c in needed_columns:
-        if c not in df.columns:
-            logger.error("Missing columns in phase file !")
-            logger.error(df.columns)
-            return None
+    # Check required columns
+    required_columns = ["station_id", "phase_type", "phase_time", "phase_score"]
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        logger.error(f"Missing required columns: {missing_columns}")
+        logger.error(f"Available columns: {list(df.columns)}")
+        return []
 
+    # Handle optional "channel" column
     df = df.fillna("")
-    if "channel" in df.columns and df["channel"] is not df.empty:
-        df["station_id"] = df["station_id"].str.cat(df["channel"], sep=".")
+    if "channel" in df.columns and not df["channel"].empty:
+        df["station_id"] = df["station_id"] + "." + df["channel"]
 
-    # use phase score threshold filters
-    df = df.loc[~((df["phase_type"] == "P") & (df["phase_score"] < P_proba_threshold))]
-    df = df.loc[~((df["phase_type"] == "S") & (df["phase_score"] < S_proba_threshold))]
+    # Filter by phase score thresholds
+    df = df.loc[
+        ~((df["phase_type"] == "P") & (df["phase_score"] < P_proba_threshold))
+        & ~((df["phase_type"] == "S") & (df["phase_score"] < S_proba_threshold))
+    ]
 
+    # Iterate through filtered rows
     for row in df.itertuples(index=False):
-        if "phase_evaluation" in df.columns and type(row.phase_evaluation) is str:
-            evaluation = row.phase_evaluation
-        else:
-            evaluation = None
-
-        if "phase_method" in df.columns and type(row.phase_method) is str:
-            method = row.phase_method
-        else:
-            method = None
-
-        if "event_id" in df.columns and type(row.event_id) is str:
-            event_id = row.event_id
-        else:
-            event_id = None
-
-        if "agency" in df.columns and type(row.agency) is str:
-            agency = row.agency
-        else:
-            agency = None
-
         try:
-            net, sta, loc, chan = row.station_id.split(".")[:4]
-        except:
-            net, sta = row.station_id.split(".")[:2]
-            loc = None
-            chan = None
+            # Split station ID into components
+            components = row.station_id.split(".")
+            net, sta = components[:2]
+            loc = components[2] if len(components) > 2 else None
+            chan = components[3] if len(components) > 3 else None
+        except ValueError as e:
+            logger.error(f"Error parsing station_id: {row.station_id}. Error: {e}")
+            continue
 
+        # Extract optional fields
+        evaluation = getattr(row, "phase_evaluation", None)
+        method = getattr(row, "phase_method", None)
+        event_id = getattr(row, "event_id", None)
+        agency = getattr(row, "agency", None)
+
+        # Create Phase object
         try:
             myphase = Phase(
                 network=net,
                 station=sta,
                 location=loc,
-                channel=chan[:2] if chan else chan,
+                channel=chan[:2] if chan else None,
                 phase=row.phase_type,
                 time=row.phase_time,
                 time_uncertainty=(
@@ -531,60 +542,21 @@ def import_phases(
                 fallback_df=fallback_df,
             )
         except ValueError as e:
-            logger.error(e)
+            logger.debug(f"ValueError creating Phase object for row: {row}. Error: {e}")
             continue
         except Exception as e:
+            logger.exception(f"Unexpected error creating Phase object: {e}")
             raise
 
+        # Append phase outside try blocks
         phases.append(myphase)
+
+        # Optionally show phase details
         if logger.level == logging.DEBUG:
             myphase.show_all()
 
-    if type(info_sta) == str:
+    # Log cache information if applicable
+    if isinstance(info_sta, str):
         logger.info(get_station_info_from_fdsnws.cache_info())
+
     return phases
-
-
-def _test_import(picks_file, info_sta):
-    logger.info(f"Opening {picks_file} file.")
-    try:
-        df = pd.read_csv(picks_file, parse_dates=["phase_time"])
-    except Exception as e:
-        logger.error(e)
-        sys.exit()
-
-    # fixme: samples format are outdated ...
-    # df["channel"] = df["station_id"].map(lambda x: ".".join(x.split(".")[2:4]))
-    # df["station_id"] = df["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
-
-    logger.info(f"Read {len(df)} phases.")
-
-    phases = import_phases(
-        df,
-        P_proba_threshold=0.8,
-        S_proba_threshold=0.5,
-        P_uncertainty=0.1,
-        S_uncertainty=0.2,
-        info_sta=info_sta,
-    )
-
-
-if __name__ == "__main__":
-    warnings.filterwarnings("ignore", category=UserWarning)
-    logger.setLevel(logging.DEBUG)
-    _test_import("../samples/renass.csv", "http://10.0.1.36:8080")
-    _test_import("../samples/phasenet.csv", "http://10.0.1.36:8080")
-    _test_import("../samples/ldg.csv", "http://10.0.1.36:8080")
-
-    inventory_files = [
-        # "/Users/marc/Data/DBClust/france.2016.01/inventory/all_from_renass.inv.xml",
-        "/Users/marc/Data/DBClust/france.2016.01/inventory/inventory-RENASS-LDG.xml",
-    ]
-    inventory = Inventory()
-    for f in inventory_files:
-        logger.info(f"Reading inventory file {f}")
-        inventory.extend(read_inventory(f))
-
-    _test_import("../samples/renass.csv", inventory)
-    _test_import("../samples/phasenet.csv", inventory)
-    _test_import("../samples/ldg.csv", inventory)
