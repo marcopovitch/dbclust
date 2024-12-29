@@ -90,6 +90,7 @@ def export_picks_to_dbclust_format(
     method: str = None,
     agency: str = None,
     keep_manual_evaluation_only: bool = False,
+    keep_disabled_picks: bool = False,
 ) -> List[Dict[str, Any]]:
 
     """
@@ -99,42 +100,44 @@ def export_picks_to_dbclust_format(
 
     lines = []
     for arrival in origin.arrivals:
-        if arrival.time_weight:
-            # if arrival.time_weight and arrival.time_residual:
-            pick = next(
-                (p for p in event.picks if p.resource_id == arrival.pick_id), None
-            )
-            if pick:
-                if arrival.phase != pick.phase_hint:
-                    logger.warning(
-                        f"[{event.resource_id.id}] {pick.waveform_id.get_seed_string()}: "
-                        f"phase mismatch between arrival ({arrival.phase}) and pick ({pick.phase_hint}). "
-                        "Using arrival phase."
-                    )
-                line = {
-                    #"station_id": pick.waveform_id.get_seed_string().rstrip(".."),
-                    "station_id": ".".join(pick.waveform_id.get_seed_string().split(".")[0:2]),
-                    "channel": ".".join(pick.waveform_id.get_seed_string().split(".")[2:4]),
-                    "phase_type": arrival.phase,
-                    "phase_time": pick.time,
-                    "phase_score": probability,
-                    "phase_evaluation": pick.evaluation_mode,
-                    "phase_method": pick.method_id,
-                    # "eventid": event.resource_id.id.split("/")[-1],
-                    "event_id": event.resource_id.id,
-                }
+        if not arrival.time_weight and not keep_disabled_picks:
+            continue
 
-                if keep_manual_evaluation_only and pick.evaluation_mode != "manual":
-                    continue
+        # if arrival.time_weight and arrival.time_residual:
+        pick = next(
+            (p for p in event.picks if p.resource_id == arrival.pick_id), None
+        )
+        if pick:
+            if arrival.phase != pick.phase_hint:
+                logger.warning(
+                    f"[{event.resource_id.id}] {pick.waveform_id.get_seed_string()}: "
+                    f"phase mismatch between arrival ({arrival.phase}) and pick ({pick.phase_hint}). "
+                    "Using arrival phase."
+                )
+            line = {
+                #"station_id": pick.waveform_id.get_seed_string().rstrip(".."),
+                "station_id": ".".join(pick.waveform_id.get_seed_string().split(".")[0:2]),
+                "channel": ".".join(pick.waveform_id.get_seed_string().split(".")[2:4]),
+                "phase_type": arrival.phase,
+                "phase_time": pick.time,
+                "phase_score": probability,
+                "phase_evaluation": pick.evaluation_mode,
+                "phase_method": pick.method_id,
+                # "eventid": event.resource_id.id.split("/")[-1],
+                "event_id": event.resource_id.id,
+            }
 
-                # override from command line args
-                if evaluation:
-                    line["phase_evaluation"] = evaluation
-                if method:
-                    line["phase_method"] = method
-                if agency:
-                    line["agency"] = agency
-                lines.append(line)
+            if keep_manual_evaluation_only and pick.evaluation_mode != "manual":
+                continue
+
+            # override from command line args
+            if evaluation:
+                line["phase_evaluation"] = evaluation
+            if method:
+                line["phase_method"] = method
+            if agency:
+                line["agency"] = agency
+            lines.append(line)
 
     if agency == "LDG":
         logger.info("Filtering out P and S phases for LDG")
@@ -189,6 +192,15 @@ if __name__ == "__main__":
         default=False,
         dest="keep_manual_evaluation_only",
         help="keep picks with manual evaluation only",
+        action="store_true",
+    )
+    # add keep_disabled_picks
+    parser.add_argument(
+        "-d",
+        "--keep-disabled",
+        default=False,
+        dest="keep_disabled_picks",
+        help="keep disabled picks",
         action="store_true",
     )
     parser.add_argument(
@@ -290,6 +302,7 @@ if __name__ == "__main__":
             probability=args.probability,
             agency=args.agency,
             keep_manual_evaluation_only=args.keep_manual_evaluation_only,
+            keep_disabled_picks=args.keep_disabled_picks,
         )
 
         # df = pd.concat([df, pd.DataFrame(picks_list)], ignore_index=True)
