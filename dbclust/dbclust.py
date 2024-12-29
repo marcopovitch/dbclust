@@ -652,36 +652,10 @@ def run_with_dask(cfg: DBClustConfig):
 
 
 # Ray tasks
-@ray.remote(num_cpus=1)
+@ray.remote(max_calls=1, max_retries=5, num_cpus=1)
 def run_dbclust_task(cfg, job_index):
     return dbclust(cfg=cfg, job_index=job_index)
 
-
-def run_with_ray_old(cfg: DBClustConfig):
-    os.environ["RAY_enable_oom_killer"] = "0"
-    os.environ["RAY_DEDUP_LOGS"] = "0"
-    os.environ["RAY_COLOR_PREFIX"] = "1"
-
-    # Start Ray
-    context = ray.init(
-        num_cpus=cfg.parallel.n_workers,
-        dashboard_host="0.0.0.0",
-        dashboard_port=8265,
-        _temp_dir=cfg.parallel._temp_dir,
-    )
-    logger.info(f" http://{context.dashboard_url}")
-
-    ray_tasks = [
-        run_dbclust_task.remote(cfg, idx)
-        for idx, (start, end) in enumerate(cfg.parallel.time_partitions, start=0)
-    ]
-
-    # Get results
-    results = ray.get(ray_tasks)
-    logger.info("DBClust completed !")
-    return results
-
-@ray.remote(num_cpus=1, max_retries=5)
 def run_with_ray(cfg: DBClustConfig):
     # Ray initialization
     os.environ["RAY_DEDUP_LOGS"] = "0"
@@ -690,7 +664,7 @@ def run_with_ray(cfg: DBClustConfig):
     os.environ["RAY_memory_usage_threshold"] = "0.95"
 
     # Resource thresholds
-    memory_threshold = 85  # in percentage
+    memory_threshold = 90  # in percentage
     cpu_threshold = 90  # in percentage
     active_tasks = []
     completed_results = []
@@ -710,7 +684,7 @@ def run_with_ray(cfg: DBClustConfig):
         while True:
             # Monitor system resources
             mem_usage = psutil.virtual_memory().percent
-            cpu_usage = psutil.cpu_percent(interval=1)
+            cpu_usage = psutil.cpu_percent(interval=0.1)
 
             if mem_usage < memory_threshold and cpu_usage < cpu_threshold:
                 # Launch the task
