@@ -945,7 +945,7 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
 
             # Format the 'time' column using UTCDateTime
             if "time" in row_dict and row_dict["time"]:
-                row_dict["time"] = UTCDateTime(row_dict["time"]).isoformat()
+                row_dict["time"] = UTCDateTime(row_dict["time"]).isoformat(sep=" ")
 
             # Apply rounding to specific columns
             for col, precision in [
