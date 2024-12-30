@@ -912,8 +912,8 @@ def import_catalog_to_sqlite(
 
 def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv: str):
     """
-    Export a SQLite view to a CSV file, excluding the 'geometry' column.
-    The 'time' column is formatted as UTC datetime.
+    Export a SQLite view to a CSV file, excluding the 'geometry' column. Format the 'time'
+    column using UTCDateTime from ObsPy and apply rounding on specific numeric columns.
 
     Args:
         db_path (str): Path to the SQLite database.
@@ -925,46 +925,54 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    try:
-        # Get column names from the view, excluding 'geometry'
-        cursor.execute(f"SELECT * FROM {view_name} WHERE 1=0;")
-        column_names = [desc[0] for desc in cursor.description if desc[0] != "geometry"]
+    # Get column names from the view
+    cursor.execute(f"SELECT * FROM {view_name} WHERE 1=0;")
+    column_names = [desc[0] for desc in cursor.description if desc[0] != "geometry"]
 
-        if not column_names:
-            raise ValueError(f"The view '{view_name}' has no columns to export (or only 'geometry').")
+    # Query the view excluding the geometry column
+    selected_columns = ", ".join(column_names)
+    cursor.execute(f"SELECT {selected_columns} FROM {view_name} ORDER BY time;")
 
-        formatted_columns = [
-            "strftime('%Y-%m-%dT%H:%M:%fZ', time) AS time" if col == "time" else
-            f"ROUND({col}, 1) AS {col}" if col == "depth" else
-            f"ROUND({col}, 2) AS {col}" if col in [
-                "quality_factor", "scatter_volume", "azimuthal_gap", "secondary_azimuthal_gap",
-                "minimum_distance", "maximum_distance", "median_distance", "rms",
-                "erh", "erz", "uncertainty", "dist_km_from_preloc",
-                "discrimination_probability", "discrimination_certainty"
-            ] else
-            col
-            for col in column_names
-        ]
+    rows = cursor.fetchall()
 
-        selected_columns = ", ".join(formatted_columns)
+    # Write to CSV
+    with open(output_csv, mode="w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(column_names)  # Write the header
 
-        # Prepare and execute the query
-        query = f"SELECT {selected_columns} FROM {view_name} ORDER BY time;"
-        cursor.execute(query)
+        for row in rows:
+            row_dict = dict(zip(column_names, row))
 
-        # Write the data to CSV
-        with open(output_csv, mode="w", newline="", encoding="utf-8") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerow(column_names)  # Write the header
-            writer.writerows(cursor.fetchall())  # Write the rows
+            # Format the 'time' column using UTCDateTime
+            if "time" in row_dict and row_dict["time"]:
+                row_dict["time"] = UTCDateTime(row_dict["time"]).isoformat()
 
-        print(f"View '{view_name}' exported successfully to '{output_csv}' without 'geometry'.")
-    except sqlite3.OperationalError as e:
-        print(f"Error: Unable to export view '{view_name}'. {e}")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-    finally:
-        conn.close()
+            # Apply rounding to specific columns
+            for col, precision in [
+                ("depth", 1),
+                ("quality_factor", 2),
+                ("scatter_volume", 2),
+                ("azimuthal_gap", 2),
+                ("secondary_azimuthal_gap", 2),
+                ("minimum_distance", 2),
+                ("maximum_distance", 2),
+                ("median_distance", 2),
+                ("rms", 2),
+                ("erh", 2),
+                ("erz", 2),
+                ("uncertainty", 2),
+                ("dist_km_from_preloc", 2),
+                ("discrimination_probability", 2),
+                ("discrimination_certainty", 2),
+            ]:
+                if col in row_dict and row_dict[col] is not None:
+                    row_dict[col] = round(row_dict[col], precision)
+
+            # Write the row to CSV
+            writer.writerow([row_dict.get(col, "") for col in column_names])
+
+    print(f"View '{view_name}' exported successfully to '{output_csv}' without 'geometry'.")
+    conn.close()
 
 
 def add_agency_names(conn: sqlite3.Connection) -> None:
