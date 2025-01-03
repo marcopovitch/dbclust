@@ -118,7 +118,9 @@ class Phase:
         # If the primary source failed, use the fallback method
         if lat is None or lon is None:
             try:
-                lat, lon, elev, loc, chans = self._fallback_coordinates(self.network, self.station, self.time, self.fallback_df)
+                lat, lon, elev, loc, chans = self._fallback_coordinates(
+                    self.network, self.station, self.time, self.fallback_df
+                )
             except ValueError as e:
                 logger.warning(f"{e}")
                 raise
@@ -209,7 +211,7 @@ class Phase:
         )
 
     def __repr__(self) -> str:
-        return f"{self.network}.{self.station}.{self.channel}: {self.phase} {self.time} {self.proba:.3f}"
+        return f"{self.network}.{self.station}.{self.location}.{self.channel}: {self.phase} {self.time} {self.proba:.3f}"
 
     def __lt__(self, obj: "Phase") -> bool:
         return self.time < obj.time
@@ -380,7 +382,6 @@ def get_station_info_from_inventory(
             starttime=time_search_begin,
             # endtime=time_search_end,
         )
-        # ic(network, station, loc, re_chan, time_search_begin, time_search_end)
     except Exception as e:
         logger.error(f"Error selecting data from inventory: {e}")
         return [None, None, None, None, []]
@@ -388,7 +389,7 @@ def get_station_info_from_inventory(
     # Convert inventory to a DataFrame for easier processing
     df = inventory2df(inv)
     if df.empty:
-        logger.warning(f"No matching data found in inventory for {network}.{station}.")
+        logger.debug(f"No matching data found in inventory for {network}.{station}.")
         return [None, None, None, None, []]
 
     # Use helper function to filter and extract required data
