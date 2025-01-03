@@ -272,7 +272,7 @@ class StationConfig:
                 if not os.path.exists(f):
                     raise FileNotFoundError(f"File {f} does not exist !")
                 try:
-                    df = pd.read_csv(f)
+                    df = pd.read_csv(f, dtype=dtype_dict)
                 except Exception as e:
                     raise e
 
@@ -281,9 +281,6 @@ class StationConfig:
                 df['elevation'] = df['elevation'].fillna(0.0)
                 #  else set to empty string
                 df = df.fillna("")
-
-                # force columns type
-                df = df.astype(dtype_dict)
 
                 # if "dateFrom" is empty, replace it with "1970-01-01"
                 df["starttime"] = df["starttime"].replace("", "1970-01-01T00:00:00Z")
