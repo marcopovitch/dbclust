@@ -4,7 +4,6 @@
 """
 import argparse
 import csv
-import datetime
 import json
 import logging
 import math
@@ -15,6 +14,7 @@ import sys
 import xml.etree.ElementTree as ET
 import zlib
 from collections import Counter
+from datetime import datetime
 from io import BytesIO
 from typing import List
 from typing import Tuple
@@ -240,7 +240,7 @@ def compress_quakeml_data(catalog: Catalog, format: str = "QUAKEML"):
     return compressed_data
 
 
-def to_datetime(utc_datetime: UTCDateTime) -> datetime.datetime:
+def to_datetime(utc_datetime: UTCDateTime) -> datetime:
     """
     Convert a UTCDateTime object to a datetime object.
 
@@ -450,7 +450,11 @@ def insert_arrivals(conn: sqlite3.Connection, origin: Origin) -> None:
 
 
 def export_sqlite_to_quakeml(
-    db_path: str, output_file: str, event_ids: List[str] = None
+    db_path: str,
+    output_file: str,
+    event_ids: List[str] = None,
+    start_time: str = None,
+    end_time: str = None,
 ) -> None:
     """
     Concatenate multiple QuakeML streams stored in a database into a single XML file,
@@ -491,8 +495,30 @@ def export_sqlite_to_quakeml(
                     process_quakeml_row(row, f, namespaces)
         else:
             # If no event_ids are provided, process all data in the table
-            query = "SELECT data FROM quakeml;"
-            for row in cursor.execute(query):
+            # count the number of events
+            count_query = (
+                """
+                SELECT COUNT(*) FROM event_coordinates as e WHERE e.time >= ? AND e.time < ?;
+                """
+                if start_time and end_time
+                else "SELECT COUNT(*) FROM quakeml;"
+            )
+            cursor.execute(count_query, (start_time, end_time) if start_time and end_time else ())
+            count = cursor.fetchone()[0]
+            print(f"Processing {count} events from {start_time} to {end_time}")
+
+            query = (
+                """
+                SELECT q.data FROM quakeml q JOIN event_coordinates e ON q.event_id = e.event_id
+                WHERE e.time >= ? AND e.time < ?;
+                """
+                if start_time and end_time
+                else "SELECT q.data FROM quakeml;"
+            )
+
+            for row in cursor.execute(
+                query, (start_time, end_time) if start_time and end_time else ()
+            ):
                 process_quakeml_row(row, f, namespaces)
 
         # Close the eventParameters tag and the root tag
@@ -785,7 +811,11 @@ def register_geometry_for_view(
 
 
 def import_catalog_object_to_sqlite_from_file(
-    db_path: str, catalog: Catalog, enable_quakeml: bool = False, retries: int = 5, delay: int = 1
+    db_path: str,
+    catalog: Catalog,
+    enable_quakeml: bool = False,
+    retries: int = 5,
+    delay: int = 1,
 ):
     """
     Import a catalog of seismic events to a SQLite database with conflict handling.
@@ -825,12 +855,14 @@ def import_catalog_object_to_sqlite_from_file(
             logger.error(f"Unexpected error: {e}")
             raise e  # Raise unexpected errors
         finally:
-            if 'conn' in locals() and conn:
+            if "conn" in locals() and conn:
                 conn.close()
 
     # If we exhausted retries
     logger.error("Failed to import catalog after multiple attempts.")
-    raise sqlite3.OperationalError("Unable to access the database after several retries.")
+    raise sqlite3.OperationalError(
+        "Unable to access the database after several retries."
+    )
 
 
 def import_catalog_to_sqlite_from_file(
@@ -971,7 +1003,9 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
             # Write the row to CSV
             writer.writerow([row_dict.get(col, "") for col in column_names])
 
-    print(f"View '{view_name}' exported successfully to '{output_csv}' without 'geometry'.")
+    print(
+        f"View '{view_name}' exported successfully to '{output_csv}' without 'geometry'."
+    )
     conn.close()
 
 
@@ -1264,6 +1298,16 @@ if __name__ == "__main__":
     )
 
     ###########################
+    # export quakeml by month #
+    ###########################
+    parser.add_argument(
+        "--start-time", default=None, help="Start time for the export (YYYY-MM-DD)."
+    )
+    parser.add_argument(
+        "--end-time", default=None, help="End time for the export (YYYY-MM-DD)."
+    )
+
+    ###########################
     # Add discrimination info #
     ###########################
     parser.add_argument(
@@ -1314,11 +1358,80 @@ if __name__ == "__main__":
         )
     elif args.event_id_csv:
         # read event_id from csv file using pandas
+        print(f"Reading event_id from '{args.event_id_csv}'")
         event_ids = pd.read_csv(args.event_id_csv)["event_id"].tolist()
         export_sqlite_to_quakeml(args.database, args.export_quakeml, event_ids)
-    elif args.export_quakeml:
-        # Export QuakeML data to a file
+    elif args.event_id:
+        # export quakeml only for a list of specific events (event_id)
+        print(f"Exporting QuakeML for event_id: {args.event_id}")
         export_sqlite_to_quakeml(args.database, args.export_quakeml, args.event_id)
+    elif args.export_quakeml:
+        # Export QuakeML data to a files by year and month
+        print(f"Exporting QuakeML by year and month to {args.export_quakeml}")
+
+        # Ensure the database view is up-to-date
+        conn = sqlite3.connect(args.database)
+        refresh_event_coordinates_view(conn)
+        conn.close()
+
+        # Determine start_time and end_time
+        if not args.start_time:
+            conn = sqlite3.connect(args.database)
+            cursor = conn.cursor()
+            cursor.execute("SELECT MIN(time) FROM event_coordinates;")
+            start_time = cursor.fetchone()[0]
+            conn.close()
+            # Convert start_time to datetime, handling possible time components
+            start_time = datetime.strptime(start_time.split(" ")[0], "%Y-%m-%d")
+            ic(start_time, type(start_time))
+        else:
+            start_time = datetime.strptime(args.start_time, "%Y-%m-%d")
+
+        if not args.end_time:
+            conn = sqlite3.connect(args.database)
+            cursor = conn.cursor()
+            cursor.execute("SELECT MAX(time) FROM event_coordinates;")
+            end_time = cursor.fetchone()[0]
+            conn.close()
+            # Convert end_time to datetime and set it to the end of the month
+            end_time = pd.to_datetime(end_time.split(" ")[0]) + pd.offsets.MonthBegin(1)
+            end_time = end_time.to_pydatetime()
+        else:
+            # Adjust args.end_time to the end of the month if provided
+            end_time = pd.to_datetime(end_time.split(" ")[0]) + pd.offsets.MonthBegin(1)
+            end_time = end_time.to_pydatetime()
+
+        # Loop over months: each month starts on the 1st at 00:00:00
+        months = pd.date_range(start=start_time, end=end_time, freq="MS")
+        ic(months)
+
+        for i in range(len(months) - 1):  # Exclude the last interval
+            month_start = months[i]
+            month_end = months[i + 1]  # Start of the next month
+
+            # Ensure export directory exists
+            os.makedirs(args.export_quakeml, exist_ok=True)
+
+            # Define export file path
+            export_path = os.path.join(
+                args.export_quakeml,
+                f"{month_start:%Y-%m}.qml",
+            )
+
+            # Skip if the file already exists
+            if os.path.exists(export_path):
+                print(f"File '{export_path}' already exists.")
+                continue
+
+            # Log and export QuakeML for the month
+            ic(export_path, month_start, month_end)
+            export_sqlite_to_quakeml(
+                args.database,
+                export_path,
+                start_time=month_start.isoformat(),
+                end_time=month_end.isoformat(),
+            )
+
     elif args.add_discrimination:
         # Add discrimination info to the event table
         conn = sqlite3.connect(args.database)
