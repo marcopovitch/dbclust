@@ -39,6 +39,7 @@ from preprocessing_picks import deduplicate_picks_by_time
 from quakeml import deduplicate_picks_and_make_readable_ids
 from quakeml import feed_distance_from_preloc_to_pref_origin
 from ray.util.multiprocessing import Pool
+from rename import rename_waveform_id
 
 warnings.filterwarnings("ignore", category=UserWarning)
 ic.configureOutput(prefix="DBClust: ")
@@ -154,6 +155,9 @@ def dbclust_test(
     msg = "test started."
     ic(msg, job_index, start, stop, df)
     return True
+
+
+
 
 
 def dbclust(
@@ -329,12 +333,15 @@ def dbclust(
             #     frequencies[frequencies >= cfg.station.frequency_threshold],
             # )
 
-        # rename station_id by user request
-        if cfg.station.rename:
-            for k, v in cfg.station.rename.items():
-                df_subset.loc[df_subset["station_id"].str.contains(k), "station_id"] = v
+        # Rename station_id.channel by user request,
+        # as some agencies have different naming convention (mainly for old stations)
+        # witch are well formatted to get waveform data
+        df_subset = rename_waveform_id(df_subset, cfg.station.rename)
 
         # Import picks and get coordinates
+        # Warning: this function will modify the df_subset DataFrame in place
+        # So modification made by rename_waveform_id() could be lost
+        # due to metadata update in import_phases()
         phases = import_phases(
             df_subset,
             cfg.pick.P_proba_threshold,
@@ -656,6 +663,7 @@ def run_with_dask(cfg: DBClustConfig):
 def run_dbclust_task(cfg, job_index):
     return dbclust(cfg=cfg, job_index=job_index)
 
+
 def run_with_ray(cfg: DBClustConfig):
     # Ray initialization
     os.environ["RAY_DEDUP_LOGS"] = "0"
@@ -677,7 +685,6 @@ def run_with_ray(cfg: DBClustConfig):
         _temp_dir=cfg.parallel._temp_dir,
     )
     logger.info(f"Dashboard URL: http://{context.dashboard_url}")
-
 
     # Launch tasks dynamically
     for idx, (start, end) in enumerate(cfg.parallel.time_partitions, start=0):

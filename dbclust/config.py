@@ -131,7 +131,7 @@ class PickConfig:
                     with open(f, "r") as file:
                         first_line = file.readline().strip()
                         nbcol = first_line.count(",")
-                        if nbcol != 9-1:
+                        if nbcol != 9 - 1:
                             raise ValueError(
                                 f"{f} is not a csv file or some columns are missing ({nbcol}) !"
                             )
@@ -195,6 +195,48 @@ class FdsnConfig:
 
 
 @dataclass
+class RenameConfig:
+    """Manage renaming rules for station codes with time-based conditions.
+
+    example:
+
+        rename:
+            # Transformation à appliquer systématiquement avant les autres
+            before:
+            - r"^([^\.]+\.[^\.]+\.[^\.]+)\.[^\.]*ZNE$": r"\1.Z"
+
+            # Transformation à appliquer systématiquement après les autres
+            after:
+            - r"^([^\.]+\.[^\.]+\.[^\.]+)\.[^\.]*XXZ$": r"\1.SHZ"
+
+            # Transformations conditionnelles avec intervalles de dates
+            time_windows:
+            - time_window: "1970-01-01/2016-01-01"
+                regex:
+                - r"FR\.LBL\.00\.[H]SH.*": "FR.LBL..SH"
+            - time_window: null  # Transformation sans restriction temporelle
+                regex:
+                - r"FR\.AGO\.00\.[SE]H[ZNE]": "FR.AGO..SH"
+                - ...
+    """
+
+    before: Optional[List[Dict[str, str]]] = None  # List of regex pattern: replacement
+    after: Optional[List[Dict[str, str]]] = None  # Same for transformations after
+    time_windows: List[Dict[str, Union[str, Optional[List[Dict[str, str]]]]]] = None
+
+    def __post_init__(self):
+        # Ensures structure is validated if needed
+        for time_window in self.time_windows:
+            assert (
+                "regex" in time_window
+            ), "Each time_window entry must have a 'regex' key"
+            if "time_window" in time_window and time_window["time_window"] is not None:
+                assert (
+                    "/" in time_window["time_window"]
+                ), "Invalid time_window format, use 'YYYY-MM-DD/YYYY-MM-DD'"
+
+
+@dataclass
 class StationConfig:
     """Manage how to get stations coordinates.
 
@@ -234,7 +276,7 @@ class StationConfig:
     inventory_files: Optional[List[str]] = None
     fallback: Optional[List[str]] = None
     blacklist: Optional[List[str]] = None
-    rename: Optional[dict] = None
+    rename: Optional[RenameConfig] = None
     frequency_threshold: Optional[float] = None
     inventory: Optional[Inventory] = None
     info_sta: Optional[Union[Inventory, str]] = None
@@ -248,7 +290,11 @@ class StationConfig:
             self.inventory = Inventory()
             for f in self.inventory_files:
                 logger.info(f"Reading inventory file {f}")
-                self.inventory.extend(read_inventory(f, ))
+                self.inventory.extend(
+                    read_inventory(
+                        f,
+                    )
+                )
                 self.info_sta = self.inventory
         else:
             logger.debug(f"Using fdsnws {self.fdsnws.url} to get station coordinates.")
@@ -256,16 +302,16 @@ class StationConfig:
 
         if self.fallback:
             dtype_dict = {
-                    'network': 'str',
-                    'station': 'str',
-                    'location': 'str',
-                    'channel': 'str',
-                    'latitude': 'float64',
-                    'longitude': 'float64',
-                    'elevation': 'float64',
-                    'starttime': 'str',
-                    'endtime': 'str',
-                    'alias': 'str',
+                "network": "str",
+                "station": "str",
+                "location": "str",
+                "channel": "str",
+                "latitude": "float64",
+                "longitude": "float64",
+                "elevation": "float64",
+                "starttime": "str",
+                "endtime": "str",
+                "alias": "str",
             }
             for f in self.fallback:
                 logger.info(f"Reading fallback file {f}")
@@ -277,8 +323,8 @@ class StationConfig:
                     raise e
 
                 # if no elevation defined set to 0.0
-                df['elevation'] = pd.to_numeric(df['elevation'], errors='coerce')
-                df['elevation'] = df['elevation'].fillna(0.0)
+                df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
+                df["elevation"] = df["elevation"].fillna(0.0)
                 #  else set to empty string
                 df = df.fillna("")
 
@@ -294,7 +340,7 @@ class StationConfig:
                     self.fallback_df = df
                 else:
                     self.fallback_df = pd.concat(
-                        [self.fallback_df, df], ignore_index=True
+                        [df, self.fallback_df], ignore_index=True
                     )
 
 
@@ -482,7 +528,6 @@ class CatalogConfig:
                 conn.close()
             except Exception as e:
                 raise e(f"Can't create sqlite db {self.sqlite_db_fullpath}")
-
 
 
 @dataclass
