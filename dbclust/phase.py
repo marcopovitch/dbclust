@@ -42,6 +42,7 @@ class Phase:
     time_uncertainty: Optional[float]
     proba: float
     info_sta: Union[Inventory, str]
+    provenance: Optional[str] = None
     fallback_df: Optional[pd.DataFrame] = None
     evaluation: Optional[Literal["automatic", "manual"]] = None
     method: Optional[str] = None
@@ -62,6 +63,7 @@ class Phase:
         time_uncertainty (Optional[float]): Uncertainty in the phase time.
         proba (float): Probability associated with the phase.
         info_sta (Union[Inventory, str]): Station information, either as an Inventory object or FDSNWS URL.
+        provenance: (Optional[str]): Provenance of the station information.
         fallback_df (Optional[pd.DataFrame]): Fallback station info dataframe.
         evaluation (Optional[Literal["automatic", "manual"]]): Evaluation mode of the phase.
         method (Optional[str]): Method used for phase determination.
@@ -124,6 +126,9 @@ class Phase:
             except ValueError as e:
                 logger.warning(f"{e}")
                 raise
+            self.provenance = "fallback"
+        else:
+            self.provenance = "inventory" if isinstance(self.info_sta, Inventory) else "fdsnws"
 
         # Update instance attributes with the fetched data
         self.coord = {"latitude": lat, "longitude": lon, "elevation": elev}
@@ -226,7 +231,8 @@ class Phase:
         if self.coord:
             print(
                 f"    Coordinates: lat={self.coord['latitude']:.4f}, "
-                f"lon={self.coord['longitude']:.4f}, elev={self.coord['elevation']:.1f}"
+                f"lon={self.coord['longitude']:.4f}, elev={self.coord['elevation']:.1f}, "
+                f"provenance={self.provenance}"
             )
         else:
             print("    No coordinates found.")
