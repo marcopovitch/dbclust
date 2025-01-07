@@ -451,6 +451,7 @@ class RelocationConfig:
     keep_manual_picks: bool
     use_deactivated_arrivals: bool
     use_pick_zone: bool
+    gap_dist_max_km: Optional[float] = None
     dist_km_cutoff: Optional[float] = None
 
     # enable pick relabeling based on pick zone and score threshold
