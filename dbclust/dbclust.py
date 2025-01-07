@@ -119,6 +119,7 @@ def get_locator_from_config(cfg, log_level=logging.INFO):
         enable_relabel_pick_zone=cfg.relocation.enable_relabel_pick_zone,
         enable_cleanup_pick_zone=cfg.relocation.enable_cleanup_pick_zone,
         #
+        keep_not_existing_event=cfg.catalog.keep_not_existing_event,
         log_level=log_level,
     )
     return locator

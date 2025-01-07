@@ -136,6 +136,7 @@ class NllLoc(object):
         use_pick_zone: bool = True,  # use pick zones
         enable_cleanup_pick_zone: bool = True,  # clean up pick outside of zone
         enable_relabel_pick_zone: bool = False,  # relabel pick within zone
+        keep_not_existing_event: bool = False,  # keep "not existing" event, or not
         log_level=logging.INFO,
     ):
         logger.setLevel(log_level)
@@ -171,6 +172,7 @@ class NllLoc(object):
         self.use_pick_zone = use_pick_zone
         self.enable_cleanup_pick_zone = enable_cleanup_pick_zone
         self.enable_relabel_pick_zone = enable_relabel_pick_zone
+        self.keep_not_existing_event = keep_not_existing_event
 
         # keep track of cluster affiliation
         self.event_cluster_mapping = {}
@@ -389,10 +391,14 @@ class NllLoc(object):
                 # due to clusters obtained from dbscan only.
                 # Use only the default template and velocity model
                 if not self.nll_default_template:
-                    logger.error("No preloc file found and no default nll template provided !")
+                    logger.error(
+                        "No preloc file found and no default nll template provided !"
+                    )
                     return Catalog()
                 nll_template = self.nll_default_template
-                logger.info(f"No preloc file found. Using default nll template and model {os.path.basename(nll_template)}")
+                logger.info(
+                    f"No preloc file found. Using default nll template and model {os.path.basename(nll_template)}"
+                )
 
         logger.debug(f"Localization of {nll_obs_file} using {nll_template} template.")
         nll_obs_file_basename = os.path.basename(nll_obs_file)
@@ -671,6 +677,9 @@ class NllLoc(object):
             else:
                 # can't relocate: set it to "not existing"
                 e.event_type = "not existing"
+                if not self.keep_not_existing_event:
+                    # do not keep "not existing" event
+                    return Catalog()
 
         else:
             # pass_count > 0

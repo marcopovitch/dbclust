@@ -486,6 +486,7 @@ class CatalogConfig:
         PermissionError: if path is not writable
     """
 
+    keep_not_existing_event: bool
     enable_quakeml_file: bool
     qml_path: str
     qml_base_filename: str
