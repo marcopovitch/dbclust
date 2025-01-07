@@ -32,9 +32,9 @@ from quakeml import deduplicate_picks
 from tqdm import tqdm
 
 # default logger
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("clusterize")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 @functools.lru_cache(maxsize=None)
@@ -478,9 +478,8 @@ class Clusterize(object):
             return
 
         logger.info(
-            "cluster_merge_based_on_eventid(): merging clusters (myclust) sharing same EventId."
+            f"cluster_merge_based_on_eventid(): merging clusters sharing same EventId: {self.n_clusters} clusters to handle."
         )
-        logger.info(f"Working on {self.n_clusters} clusters.")
 
         final_cluster_list = []
         while self.clusters:
@@ -527,7 +526,7 @@ class Clusterize(object):
             # count the number of stations
             stations_list = set([p.station for p in cluster])
             logger.info(
-                f"Working on cluster {i} ({len(stations_list)} stations / {len(cluster)} picks)"
+                f"Generating nllobs for cluster {i} ({len(stations_list)} stations / {len(cluster)} picks)"
             )
             if self.min_station_count:
                 if len(stations_list) < self.min_station_count:
