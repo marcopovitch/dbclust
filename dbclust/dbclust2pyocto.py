@@ -240,16 +240,22 @@ def dbclust2pyocto(
     except MultipleEventIDsWithSameAgencyError as e:
         raise
 
+    logger.info(
+        f"PyOcto found {len(pyocto_clusters)} clusters, dbclust found {myclust.n_clusters} clusters."
+    )
+
+    if len(pyocto_clusters) == 0 and myclust.n_clusters > 0:
+        # just in case pyocto does not find any clusters
+        logger.warning("PyOcto did not find any clusters. Returning original dbclust clusters.")
+        # fixme: for each cluster add a preloc based on the barycenter of the stations
+        return myclust
+
     # Clone the original Clusterize object and update it with the new clusters
     newclust = copy.deepcopy(myclust)
     newclust.clusters = pyocto_clusters
     newclust.n_clusters = len(newclust.clusters)
     newclust.clusters_stability = [1] * newclust.n_clusters  # unused but needed
     newclust.preloc = pyocto_preloc  # used to choose NLL velocity model
-
-    logger.info(
-        f"PyOcto found {newclust.n_clusters} clusters, dbclust had {myclust.n_clusters} clusters."
-    )
 
     # Clean up the original cluster object
     for attr in ["clusters", "clusters_stability", "noise", "zones", "preloc"]:
