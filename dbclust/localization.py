@@ -387,7 +387,6 @@ class NllLoc(object):
                 logger.info("No preloc file found. Using default template and model.")
                 nll_template = "/Users/marc/github/dbclust/nll_template/nll_haslach-0.2_template.conf"
 
-
         logger.debug(f"Localization of {nll_obs_file} using {nll_template} template.")
         nll_obs_file_basename = os.path.basename(nll_obs_file)
 
@@ -459,7 +458,9 @@ class NllLoc(object):
                 return Catalog()
             elif "x-sheet" in line:
                 l = line.split()
-                logger.warning(f"Station {l[2]} outside velocity bounding box coordinates: localization aborted by NonLinLoc !")
+                logger.warning(
+                    f"Station {l[2]} outside velocity bounding box coordinates: localization aborted by NonLinLoc !"
+                )
                 return Catalog()
             elif "ERROR" in line:
                 logger.error(line)
@@ -945,6 +946,10 @@ class NllLoc(object):
         arrivals_to_unset = get_arrival_with_distance_gap_greater_than(
             event, gap_dist_max_km
         )
+        logger.info(
+            f"Unset arrival time_weight due to gap_dist_max_km >= {gap_dist_max_km} km: {len(arrivals_to_unset)} arrivals."
+        )
+
         for a in arrivals_to_unset:
             pick = get_pick_from_arrival(event, a)
             assert pick, f"Can't find pick for arrival {a.pick_id}"
@@ -1129,7 +1134,7 @@ class NllLoc(object):
 
             # remove pick with time_weight set to 0
             if isclose(arrival.time_weight, 0, abs_tol=time_weight_tolerance):
-                logger.info(
+                logger.debug(
                     f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
                     f"with time_weight set to 0"
                 )
@@ -1311,6 +1316,10 @@ class NllLoc(object):
             orig.arrivals.remove(a)
         for p in pick_to_delete:
             event.picks.remove(p)
+
+        logger.info(
+            f"Removed arrivals with time_weight set to 0 (by nll, gap_dist, cutoff or polygons): {len(arrival_to_delete)} arrivals"
+        )
 
         # update "stations used" with weight > 0
         orig.quality.used_station_count = NllLoc.get_used_station_count(event, orig)
