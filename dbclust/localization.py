@@ -113,6 +113,7 @@ class NllLoc(object):
         nll_obs_file=None,
         nll_min_phase=4,
         nll_verbose=False,
+        nll_default_template=None,  # default template to use if no preloc found
         loc_method="EDT_OT_WT_ML",
         tmpdir="/tmp",
         min_station_with_P_and_S=0,
@@ -147,6 +148,7 @@ class NllLoc(object):
         self.nll_obs_file = nll_obs_file  # obs file to localize
         self.nll_min_phase = nll_min_phase
         self.nll_verbose = nll_verbose
+        self.nll_default_template = nll_default_template
         self.loc_method = loc_method
         self.tmpdir = tmpdir
         self.min_station_with_P_and_S = min_station_with_P_and_S
@@ -386,8 +388,11 @@ class NllLoc(object):
                 # pyocto has not generated a preloc
                 # due to clusters obtained from dbscan only.
                 # Use only the default template and velocity model
-                logger.info("No preloc file found. Using default template and model.")
-                nll_template = "/Users/marc/github/dbclust/nll_template/nll_haslach-0.2_template.conf"
+                if not self.nll_default_template:
+                    logger.error("No preloc file found and no default nll template provided !")
+                    return Catalog()
+                nll_template = self.nll_default_template
+                logger.info(f"No preloc file found. Using default nll template and model {os.path.basename(nll_template)}")
 
         logger.debug(f"Localization of {nll_obs_file} using {nll_template} template.")
         nll_obs_file_basename = os.path.basename(nll_obs_file)
