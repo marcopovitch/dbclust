@@ -157,9 +157,6 @@ def dbclust_test(
     return True
 
 
-
-
-
 def dbclust(
     cfg: DBClustConfig,
     df: Optional[pd.DataFrame] = pd.DataFrame(),
@@ -374,12 +371,10 @@ def dbclust(
         # with clusters from the previous round
         # (as some phases come from the overlapped zone)
         logger.info("Check clusters related to the same event (overlapped zone).")
-        (
-            previous_myclust,
-            myclust,
-            nb_cluster_removed,
-        ) = merge_cluster_with_common_phases(
-            previous_myclust, myclust, cfg.cluster.min_picks_common
+        (previous_myclust, myclust, nb_cluster_removed) = (
+            merge_cluster_with_common_phases(
+                previous_myclust, myclust, cfg.cluster.min_picks_common
+            )
         )
 
         # This is the last round: merge previous_myclust and myclust
