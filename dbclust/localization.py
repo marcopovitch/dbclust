@@ -372,11 +372,21 @@ class NllLoc(object):
         if pass_count == 0:
             # get info to create a full Origin for preliminary location
             # (only on the first location iteration)
-            picks_file = os.path.splitext(nll_obs_file)[0] + "-picks.csv"
-            sta_file = os.path.splitext(nll_obs_file)[0] + "-sta.csv"
-            preloc_origin, preloc_picks_list = make_preloc_origin(
-                vel_file, picks_file, sta_file, self.quakeml_settings
-            )
+            if os.path.exists(vel_file):
+                logger.info("Creating a preliminary location from pyocto.")
+                picks_file = os.path.splitext(nll_obs_file)[0] + "-picks.csv"
+                sta_file = os.path.splitext(nll_obs_file)[0] + "-sta.csv"
+                # pyocto has generated a preloc
+                preloc_origin, preloc_picks_list = make_preloc_origin(
+                    vel_file, picks_file, sta_file, self.quakeml_settings
+                )
+            else:
+                # pyocto has not generated a preloc
+                # due to clusters obtained from dbscan only.
+                # Use only the default template and velocity model
+                logger.info("No preloc file found. Using default template and model.")
+                nll_template = "/Users/marc/github/dbclust/nll_template/nll_haslach-0.2_template.conf"
+
 
         logger.debug(f"Localization of {nll_obs_file} using {nll_template} template.")
         nll_obs_file_basename = os.path.basename(nll_obs_file)
@@ -403,8 +413,7 @@ class NllLoc(object):
         try:
             self.replace(nll_template, conf_file, tags)
         except Exception as e:
-            # logger.error(e)
-            # return Catalog()
+            ic(nll_template, conf_file, tags)
             raise e
 
         ####################
