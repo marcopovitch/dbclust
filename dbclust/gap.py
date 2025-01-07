@@ -21,7 +21,7 @@ def get_arrival_with_distance_gap_greater_than(
     origin = event.preferred_origin()
 
     if not origin:
-        return None
+        return []
 
     # sort arrival by distance
     sorted_arrivals = sorted(origin.arrivals, key=lambda x: x.distance)
@@ -41,7 +41,7 @@ def get_arrival_with_distance_gap_greater_than(
             i_max = i
             break
     else:
-        return None # no arrival with distance greater than dist_max_km
+        return [] # no arrival with distance greater than dist_max_km
 
     arrivals_to_unset = []
     for i in range(i_max, len(dist_list)):
