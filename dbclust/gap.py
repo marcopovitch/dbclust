@@ -31,21 +31,31 @@ def get_arrival_with_distance_gap_greater_than(
         sorted_arrivals[i].distance - sorted_arrivals[i - 1].distance
         for i in range(1, len(sorted_arrivals))
     ]
-    # get arrival with corresponding dist_list greater than dist_max
-    arrivals_to_unset = []
+
+    # find the first arrival with distance greater than dist_max_km
+    # and return the corresponding arrival and all the following arrivals
+    # if their evaluation mode is in apply_to_evaluation_mode
+    # return None if no arrival with distance greater than dist_max_km
     for i in range(len(dist_list)):
         if dist_list[i] >= dist_max_km / 111.1:
-            # find corresponding pick to arrival
-            pick = next(
-                (
-                    p
-                    for p in event.picks
-                    if p.resource_id == sorted_arrivals[i + 1].pick_id
-                ),
-                None,
-            )
-            if pick.evaluation_mode in apply_to_evaluation_mode:
-                arrivals_to_unset.append(sorted_arrivals[i + 1])
+            i_max = i
+            break
+    else:
+        return None # no arrival with distance greater than dist_max_km
+
+    arrivals_to_unset = []
+    for i in range(i_max, len(dist_list)):
+        # find corresponding pick to arrival
+        pick = next(
+            (
+                p
+                for p in event.picks
+                if p.resource_id == sorted_arrivals[i].pick_id
+            ),
+            None,
+        )
+        if pick.evaluation_mode in apply_to_evaluation_mode:
+            arrivals_to_unset.append(sorted_arrivals[i])
 
     return arrivals_to_unset
 
