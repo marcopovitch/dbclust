@@ -93,9 +93,12 @@ def get_locator_from_config(cfg, log_level=logging.INFO):
         cfg.nll.nlloc_bin,
         cfg.nll.scat2latlon_bin,
         cfg.nll.time_path,
-        cfg.nll.template_path,
-        tmpdir=cfg.file.tmp_path,
+        #
+        nll_verbose=cfg.nll.verbose,
+        nll_default_template=cfg.nll.default_template_file,
+        nll_template=cfg.nll.template_path,
         loc_method=cfg.nll.loc_method,
+        tmpdir=cfg.file.tmp_path,
         #
         double_pass=cfg.relocation.double_pass,
         P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
@@ -107,7 +110,6 @@ def get_locator_from_config(cfg, log_level=logging.INFO):
         nll_min_phase=cfg.nll.min_phase,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         quakeml_settings=asdict(cfg.quakeml),
-        nll_verbose=cfg.nll.verbose,
         keep_scat=cfg.nll.enable_scatter,
         #
         zones=cfg.zones,
