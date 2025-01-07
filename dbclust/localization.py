@@ -120,6 +120,7 @@ class NllLoc(object):
         force_uncertainty=False,
         P_uncertainty=0.1,
         S_uncertainty=0.2,
+        gap_dist_max_km=100,
         dist_km_cutoff=None,
         use_deactivated_arrivals=False,
         keep_manual_picks=False,
@@ -153,6 +154,7 @@ class NllLoc(object):
         self.force_uncertainty = force_uncertainty
         self.P_uncertainty = P_uncertainty
         self.S_uncertainty = S_uncertainty
+        self.gap_dist_max_km = gap_dist_max_km
         self.dist_km_cutoff = dist_km_cutoff
         self.use_deactivated_arrivals = use_deactivated_arrivals
         self.keep_manual_picks = keep_manual_picks
@@ -580,7 +582,7 @@ class NllLoc(object):
             # event2 = deduplicate_picks(event2)
 
             # unset arrival with gap in distance > dist_max
-            event2 = self.unset_arrival(event2, 100)  # FIXME: hardcoded value
+            event2 = self.unset_arrival_gap_dist_km(event2, self.gap_dist_max_km)
 
             # Clean up picks outside of the polygons defined in zones
             if self.use_pick_zone and self.zones and self.enable_cleanup_pick_zone:
@@ -934,15 +936,19 @@ class NllLoc(object):
 
         return mycatalog
 
-    def unset_arrival(self, event: Event, gap_dist_max_km) -> Event:
+    def unset_arrival_gap_dist_km(self, event: Event, gap_dist_max_km) -> Event:
         """Unset arrival with gap in distance > dist_max
 
         Args:
             event (Event): event to work on
 
         Returns:
-            Event: modified event
+            Event: modified event with arrival time_weight set to 0 if gap_dist_max_km >= gap_dist_max_km
         """
+        if gap_dist_max_km is None:
+            logger.info("No gap_dist_max_km defined. Skip unset arrival.")
+            return event
+
         arrivals_to_unset = get_arrival_with_distance_gap_greater_than(
             event, gap_dist_max_km
         )
