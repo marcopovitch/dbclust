@@ -172,7 +172,7 @@ def dbclust2pyocto(
     all_picks_list = list(chain(*myclust.clusters))
     pyocto_clusters, pyocto_preloc = [], []
 
-    for cluster in myclust.clusters:
+    for i, cluster in enumerate(myclust.clusters):
         # Extract station and pick data for the cluster
         stations = get_stations_from_cluster(cluster)
         picks = get_picks_from_cluster(cluster)
@@ -225,6 +225,10 @@ def dbclust2pyocto(
         pyocto_preloc.extend(get_events_list(events, assignments, stations, model_name))
         pyocto_clusters.extend(
             get_clusters_from_assignment(cluster, events, assignments)
+        )
+
+        logger.info(
+            f"\t{len(events)} events found in cluster#{i} with {len(cluster)} picks"
         )
 
     # Merge clusters with common picks or event IDs
