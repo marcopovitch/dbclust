@@ -468,15 +468,21 @@ class NllLoc(object):
                     " ".join(line.split()[3:]).replace('"', "").replace("WARNING: ", "")
                 )
                 logger.warning(f"Localization was ABORTED|IGNORED|REJECTED: {why}")
+                if self.nll_verbose:
+                    print(result.stdout)
                 return Catalog()
             elif "x-sheet" in line:
                 l = line.split()
                 logger.warning(
                     f"Station {l[2]} outside velocity bounding box coordinates: localization aborted by NonLinLoc !"
                 )
+                if self.nll_verbose:
+                    print(result.stdout)
                 return Catalog()
             elif "ERROR" in line:
                 logger.error(line)
+                if self.nll_verbose:
+                    print(result.stdout)
                 return Catalog()
             elif "scatter_volume" in line:
                 l = line.split("scatter_volume")
