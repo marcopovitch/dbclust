@@ -80,9 +80,9 @@ def rename_waveform_id(df: pd.DataFrame, rename_config: RenameConfig) -> pd.Data
             temp_result.tolist(), index=data.index, columns=["station_id", "channel"]
         )
         if indices is not None:
-            df.loc[indices, ["station_id", "channel"]] = temp_df
+            df.loc[indices, ["station_id", "channel"]] = temp_df.values
         else:
-            df[["station_id", "channel"]] = temp_df
+            df.loc[:, ["station_id", "channel"]] = temp_df[["station_id", "channel"]].values
 
     # Apply "before" transformations
     if rename_config.before:
