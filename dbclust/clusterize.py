@@ -530,7 +530,7 @@ class Clusterize(object):
             )
             if self.min_station_count:
                 if len(stations_list) < self.min_station_count:
-                    logger.debug(
+                    logger.info(
                         f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
                         f"not enough stations ({len(stations_list)}/{self.min_station_count})"
                     )
@@ -550,7 +550,7 @@ class Clusterize(object):
                     if len(phase_list) == 2:
                         stations_with_P_and_S_count += 1
                 if stations_with_P_and_S_count < self.min_station_with_P_and_S:
-                    logger.debug(
+                    logger.info(
                         f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
                         f"not enough stations with both P and S ({stations_with_P_and_S_count}/{self.min_station_with_P_and_S})"
                     )
