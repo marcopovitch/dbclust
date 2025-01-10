@@ -360,6 +360,7 @@ class Clusterize(object):
         )
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
+
         del pseudo_tt
         self.cluster_merge_based_on_eventid()
 
@@ -536,6 +537,9 @@ class Clusterize(object):
                     )
                     continue
 
+            # Count the number of picks associated to a given event ID
+            event_id_counts = Counter([p.event_id for p in cluster if p.event_id])
+
             # count the number of station that have both P and S
             if self.min_station_with_P_and_S:
                 stations_with_P_and_S_count = 0
@@ -550,11 +554,20 @@ class Clusterize(object):
                     if len(phase_list) == 2:
                         stations_with_P_and_S_count += 1
                 if stations_with_P_and_S_count < self.min_station_with_P_and_S:
-                    logger.info(
-                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
-                        f"not enough stations with both P and S ({stations_with_P_and_S_count}/{self.min_station_with_P_and_S})"
-                    )
+                    if event_id_counts:
+                        # This is a problem, a localization should be done
+                        logger.warning(
+                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
+                            f"not enough stations with both P and S ({stations_with_P_and_S_count}/{self.min_station_with_P_and_S})"
+                            f" but event_id(s) found: {event_id_counts}"
+                        )
+                    else:
+                        logger.info(
+                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
+                            f"not enough stations with both P and S ({stations_with_P_and_S_count}/{self.min_station_with_P_and_S})"
+                        )
                     continue
+
 
             for p in cluster:
                 pick = p.to_pick()
