@@ -216,7 +216,7 @@ class Phase:
         )
 
     def __repr__(self) -> str:
-        return f"{self.network}.{self.station}.{self.location}.{self.channel}: {self.phase} {self.time} {self.proba:.3f}"
+        return f"{self.network}.{self.station}.{self.location}.{self.channel}: {self.phase} {self.time} {self.proba:.2f} {self.event_id}"
 
     def __lt__(self, obj: "Phase") -> bool:
         return self.time < obj.time
