@@ -7,8 +7,9 @@ from typing import List
 from typing import Optional
 
 import pandas as pd
-from config import RenameConfig
 from icecream import ic
+
+from dbclust.config import RenameConfig
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)

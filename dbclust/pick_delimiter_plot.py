@@ -5,9 +5,10 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
-from config import DBClustConfig
-from config import Zone
 from icecream import ic
+
+from dbclust.config import DBClustConfig
+from dbclust.config import Zone
 
 
 def pick_delimiter_plot_all(conf):

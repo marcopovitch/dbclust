@@ -5,9 +5,10 @@ from typing import Tuple
 
 import numpy as np
 from icecream import ic
-from localization_error import get_erh_erz
 from obspy.core.event import Event
 from obspy.core.event import Origin
+
+from dbclust.localization_error import get_erh_erz
 
 
 def chauvenet_filter(data: List[float]) -> np.ndarray:

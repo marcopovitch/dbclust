@@ -24,7 +24,6 @@ from obspy.core.event import Pick
 from obspy.core.event import ResourceIdentifier
 from obspy.core.event.base import WaveformStreamID
 
-
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("phase")
@@ -128,7 +127,9 @@ class Phase:
                 raise
             self.provenance = "fallback"
         else:
-            self.provenance = "inventory" if isinstance(self.info_sta, Inventory) else "fdsnws"
+            self.provenance = (
+                "inventory" if isinstance(self.info_sta, Inventory) else "fdsnws"
+            )
 
         # Update instance attributes with the fetched data
         self.coord = {"latitude": lat, "longitude": lon, "elevation": elev}

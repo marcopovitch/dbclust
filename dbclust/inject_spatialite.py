@@ -22,12 +22,13 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 from icecream import ic
-from localization_quality import classify_Michele_mod
 from obspy import Catalog
 from obspy import read_events
 from obspy import UTCDateTime
 from obspy.core.event import Event
 from obspy.core.event import Origin
+
+from dbclust.localization_quality import classify_Michele_mod
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("inject_spatialite")
@@ -500,6 +501,9 @@ def export_sqlite_to_quakeml(
                 """
                 SELECT COUNT(*) FROM event_coordinates as e WHERE e.time >= ? AND e.time < ?;
                 """
+                # """
+                # SELECT COUNT(*) FROM event_coordinates as e WHERE e.time >= ? AND e.time < ? AND e.quality IN ('A', 'B', 'C');
+                # """
                 if start_time and end_time
                 else "SELECT COUNT(*) FROM quakeml;"
             )
@@ -508,6 +512,10 @@ def export_sqlite_to_quakeml(
             print(f"Processing {count} events from {start_time} to {end_time}")
 
             query = (
+                # """
+                # SELECT q.data FROM quakeml q JOIN event_coordinates e ON q.event_id = e.event_id
+                # WHERE e.time >= ? AND e.time < ? and e.quality IN ('A', 'B', 'C');
+                # """
                 """
                 SELECT q.data FROM quakeml q JOIN event_coordinates e ON q.event_id = e.event_id
                 WHERE e.time >= ? AND e.time < ?;

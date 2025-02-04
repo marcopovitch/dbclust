@@ -23,18 +23,19 @@ import geopandas as gpd
 import pandas as pd
 import pyproj
 from dacite import from_dict
-from db import duckdb_init
-from db import duckdb_init_parquet
 from icecream import ic
-from inject_spatialite import create_schema
 from obspy import Inventory
 from obspy import read_inventory
 from obspy import UTCDateTime
 from pyocto.associator import VelocityModel1D
-from read_yml import read_config
 from shapely.geometry import LineString
 from shapely.geometry import Point
 from shapely.geometry import Polygon
+
+from dbclust.db import duckdb_init
+from dbclust.db import duckdb_init_parquet
+from dbclust.inject_spatialite import create_schema
+from dbclust.read_yml import read_config
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)

@@ -14,11 +14,12 @@ from typing import Union
 import pandas as pd
 import pyocto
 import pyproj
-from clusterize import cluster_share_eventid
-from clusterize import Clusterize
-from config import Associator
 from icecream import ic
-from phase import Phase
+
+from dbclust.clusterize import cluster_share_eventid
+from dbclust.clusterize import Clusterize
+from dbclust.config import Associator
+from dbclust.phase import Phase
 
 # import faulthandler
 # faulthandler.enable()

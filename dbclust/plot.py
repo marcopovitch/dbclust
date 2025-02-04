@@ -374,9 +374,10 @@ def make_plot_with_plotext(
 
 
 if __name__ == "__main__":
+    import argparse
     import os
     import sys
-    import argparse
+
     from obspy import read_events
 
     # Use argparse to get the event file

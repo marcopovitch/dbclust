@@ -19,27 +19,28 @@ import pandas as pd
 import psutil
 import pyproj
 import ray
-from clusterize import Clusterize
-from clusterize import feed_picks_event_ids
-from clusterize import feed_picks_probabilities
-from clusterize import get_picks_from_event
-from clusterize import merge_cluster_with_common_phases
-from config import DBClustConfig
 from dask.distributed import Client
 from dask.distributed import LocalCluster
-from db import duckdb_init
-from dbclust2pyocto import adjust_associator_tolerance
 from icecream import ic
-from inject_spatialite import import_catalog_object_to_sqlite_from_file
-from inject_spatialite import refresh_event_coordinates_view
-from localization import NllLoc
-from localization import show_event
-from phase import import_phases
-from preprocessing_picks import deduplicate_picks_by_time
-from quakeml import deduplicate_picks_and_make_readable_ids
-from quakeml import feed_distance_from_preloc_to_pref_origin
 from ray.util.multiprocessing import Pool
-from rename import rename_waveform_id
+
+from dbclust.clusterize import Clusterize
+from dbclust.clusterize import feed_picks_event_ids
+from dbclust.clusterize import feed_picks_probabilities
+from dbclust.clusterize import get_picks_from_event
+from dbclust.clusterize import merge_cluster_with_common_phases
+from dbclust.config import DBClustConfig
+from dbclust.db import duckdb_init
+from dbclust.dbclust2pyocto import adjust_associator_tolerance
+from dbclust.inject_spatialite import import_catalog_object_to_sqlite_from_file
+from dbclust.inject_spatialite import refresh_event_coordinates_view
+from dbclust.localization import NllLoc
+from dbclust.localization import show_event
+from dbclust.phase import import_phases
+from dbclust.preprocessing_picks import deduplicate_picks_by_time
+from dbclust.quakeml import deduplicate_picks_and_make_readable_ids
+from dbclust.quakeml import feed_distance_from_preloc_to_pref_origin
+from dbclust.rename import rename_waveform_id
 
 warnings.filterwarnings("ignore", category=UserWarning)
 ic.configureOutput(prefix="DBClust: ")

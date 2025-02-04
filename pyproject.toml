@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dbclust"
+version = "0.1"
+description = ""
+authors = [
+    { name = "Marc Grunberg", email = "marc.grunberg@unistra.fr" }
+]
+classifiers = []
+keywords = []
+dependencies = [
+    "numpy",
+    "duckdb",
+    "ray",
+    "obspy",
+]
+
+[tool.setuptools]
+packages = { find = {} }
