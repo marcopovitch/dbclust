@@ -6,6 +6,7 @@ from typing import Tuple
 import numpy as np
 from obspy.core.event import Origin
 
+
 def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
     """
     Calculate the values of erh (horizontal uncertainty) and erz (vertical uncertainty).

@@ -32,14 +32,8 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import ray
-from config import Zone
-from config import Zones
-from dask import delayed
-from gap import compute_gap
-from gap import get_arrival_with_distance_gap_greater_than
 from icecream import ic
 from jinja2 import Template
-from localization_quality import classify_event
 from obspy import Catalog
 from obspy import read_events
 from obspy.core import UTCDateTime
@@ -54,16 +48,22 @@ from obspy.core.event import ResourceIdentifier
 from obspy.core.event import WaveformStreamID
 from obspy.geodetics import gps2dist_azimuth
 from obspy.geodetics import kilometer2degrees
-from plot import plot_arrival_time
 from prettytable import PrettyTable
-from quakeml import deduplicate_picks
 from ray.util.multiprocessing import Pool
-from relabel import get_best_polygon_for_point
-from relabel import relabel_phase_and_comment_arrival
 from shapely import distance
 from shapely import prepare
 from shapely import within
 from shapely.geometry import Point
+
+from dbclust.config import Zone
+from dbclust.config import Zones
+from dbclust.gap import compute_gap
+from dbclust.gap import get_arrival_with_distance_gap_greater_than
+from dbclust.localization_quality import classify_event
+from dbclust.plot import plot_arrival_time
+from dbclust.quakeml import deduplicate_picks
+from dbclust.relabel import get_best_polygon_for_point
+from dbclust.relabel import relabel_phase_and_comment_arrival
 
 # Disable warnings from obspy
 # UserWarning: Setting attribute ... which is not a default attribute
@@ -1868,8 +1868,8 @@ def make_preloc_origin(
 
 
 if __name__ == "__main__":
-    from dbclust import MyTemporaryDirectory
     from config import DBClustConfig
+    from dbclust import MyTemporaryDirectory
 
     logger.setLevel(logging.DEBUG)
 

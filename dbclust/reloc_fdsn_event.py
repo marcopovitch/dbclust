@@ -7,15 +7,15 @@ import urllib.parse
 from dataclasses import asdict
 from shutil import copyfile
 
-from config import DBClustConfig
 from icecream import ic
-from localization import NllLoc
-from localization import reloc_fdsn_event
-from localization import show_bulletin
-from localization import show_event
 from obspy import read_events
 
-from dbclust import MyTemporaryDirectory
+from dbclust.config import DBClustConfig
+from dbclust.localization import NllLoc
+from dbclust.localization import reloc_fdsn_event
+from dbclust.localization import show_bulletin
+from dbclust.localization import show_event
+from dbclust.runner import MyTemporaryDirectory
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -167,7 +167,9 @@ if __name__ == "__main__":
         enable_relabel = False
 
     if args.min_score_threshold_pick_zone:
-        cfg.relocation.min_score_threshold_pick_zone = args.min_score_threshold_pick_zone
+        cfg.relocation.min_score_threshold_pick_zone = (
+            args.min_score_threshold_pick_zone
+        )
 
     if args.event_id and args.event:
         logger.error("Please provide only one event source")

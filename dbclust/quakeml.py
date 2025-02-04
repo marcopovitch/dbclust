@@ -22,7 +22,6 @@ from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
 
-
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("quakeml")
@@ -71,9 +70,9 @@ def make_event_id(time: UTCDateTime, prefix: str, smi_base: str) -> ResourceIden
     """
     dt = time.datetime
     year = time.year
-    #alphatime = ats.base36.from_datetime(dt, time_unit=ats.TimeUnit.milliseconds)
+    # alphatime = ats.base36.from_datetime(dt, time_unit=ats.TimeUnit.milliseconds)
     alphatime = datetime_to_base64_timestamp(dt, precision="microsecond")
-    #ic(dt, alphatime)
+    # ic(dt, alphatime)
     event_id = f"{prefix}{year}{alphatime}"
     event_resource_id = ResourceIdentifier("/".join([smi_base, "event", event_id]))
     return event_resource_id
