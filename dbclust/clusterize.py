@@ -26,10 +26,11 @@ from obspy.core.event import Origin
 from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
-from phase import import_phases
-from phase import Phase
-from quakeml import deduplicate_picks
 from tqdm import tqdm
+
+from dbclust.phase import import_phases
+from dbclust.phase import Phase
+from dbclust.quakeml import deduplicate_picks
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
