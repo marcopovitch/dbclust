@@ -26,6 +26,7 @@ from obspy import Catalog
 from obspy import read_events
 from obspy import UTCDateTime
 from obspy.core.event import Event
+from obspy.core.event import Magnitude
 from obspy.core.event import Origin
 
 from dbclust.localization_quality import classify_Michele_mod
@@ -42,6 +43,7 @@ SELECT
     e.event_id,
     o.time, o.latitude, o.longitude, o.depth,
     o.rms, o.erh, o.erz, o.er_method,
+    m.magnitude, m.magnitude_type, m.uncertainty, m.method_id,
     o.used_station_count, o.used_phase_count, o.P_count, o.S_count,
     o.minimum_distance, o.maximum_distance, o.median_distance,
     o.azimuthal_gap, o.secondary_azimuthal_gap,
@@ -54,9 +56,9 @@ SELECT
 FROM
     events AS e
 JOIN
-    origins AS o ON e.event_id = o.event_id
+    origins AS o ON e.event_id = o.event_id, magnitudes AS m ON e.event_id = m.event_id
 WHERE
-    o.preferred = 1;
+    o.preferred = 1 AND m.preferred = 1;
 """
 
 
@@ -331,7 +333,7 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
                     (
                         pick.resource_id.id,
                         event.resource_id.id,
-                        pick.waveform_id.station_code,
+                        f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}",
                         to_datetime(pick.time),
                         pick.time_errors.uncertainty,
                         pick.evaluation_mode,
@@ -345,6 +347,11 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
             logger.debug(f"Inserting arrivals for event {event.resource_id.id}.")
             for origin in event.origins:
                 insert_arrivals(conn, origin)
+
+            # Insert magnitudes
+            logger.debug(f"Inserting magnitudes for event {event.resource_id.id}.")
+            insert_magnitudes(conn, event)
+            insert_station_magnitudes(conn, event)
 
             logger.info(f"Event {event.resource_id.id} successfully inserted.")
 
@@ -428,20 +435,96 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     logger.debug(f"Origin {origin.resource_id.id} inserted.")
 
 
+def insert_magnitudes(conn: sqlite3.Connection, event: Event) -> None:
+    """Inserts all magnitudes into the database."""
+    for magnitude in event.magnitudes:
+        conn.execute(
+            """
+            INSERT INTO magnitudes (id, origin_id, event_id, magnitude, uncertainty, station_count, magnitude_type, evaluation_mode, method_id, preferred)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                magnitude.resource_id.id,
+                magnitude.origin_id.id if magnitude.origin_id else None,
+                event.resource_id.id,
+                magnitude.mag,
+                magnitude.mag_errors.uncertainty,
+                magnitude.station_count,
+                magnitude.magnitude_type,
+                magnitude.evaluation_mode,
+                magnitude.method_id.id,
+                (
+                    1
+                    if magnitude.resource_id == event.preferred_magnitude().resource_id
+                    else 0
+                ),
+            ),
+        )
+
+        insert_station_magnitude_contributions(conn, magnitude)
+
+        logger.debug(f"Magnitude {magnitude.resource_id.id} inserted.")
+
+
+def insert_station_magnitudes(conn: sqlite3.Connection, event: Event) -> None:
+    """Inserts all station magnitudes into the database."""
+    for station_magnitude in event.station_magnitudes:
+        conn.execute(
+            """
+            INSERT INTO station_magnitudes (id, origin_id, magnitude, uncertainty, magnitude_type, method_id, waveform_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                station_magnitude.resource_id.id,
+                station_magnitude.origin_id.id,
+                station_magnitude.mag,
+                station_magnitude.mag_errors.uncertainty,
+                station_magnitude.station_magnitude_type,
+                station_magnitude.method_id.id,
+                station_magnitude.waveform_id.get_seed_string(),
+            ),
+        )
+        logger.debug(f"Station Magnitude {station_magnitude.resource_id.id} inserted.")
+
+
+def insert_station_magnitude_contributions(
+    conn: sqlite3.Connection, magnitude: Magnitude
+) -> None:
+    """Inserts all station magnitude contribution for a given magnitude into the database."""
+
+    for station_magnitude_contribution in magnitude.station_magnitude_contributions:
+        conn.execute(
+            """
+            INSERT INTO station_magnitude_contributions (id, residual, weight)
+            VALUES (?, ?, ?)
+            """,
+            (
+                station_magnitude_contribution.station_magnitude_id.id,
+                station_magnitude_contribution.residual,
+                station_magnitude_contribution.weight,
+            ),
+        )
+        logger.debug(
+            f"Station Magnitude Contribution {station_magnitude_contribution.station_magnitude_id.id} inserted."
+        )
+
+
 def insert_arrivals(conn: sqlite3.Connection, origin: Origin) -> None:
     """Inserts arrivals associated with an origin into the database."""
     for arrival in origin.arrivals:
         pick_id = arrival.pick_id.id if arrival.pick_id else None
         conn.execute(
             """
-            INSERT INTO arrivals (id, origin_id, pick_id, name, takeoff_angle, azimuth, distance)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO arrivals (id, origin_id, pick_id, name, time_weight, time_residual, takeoff_angle, azimuth, distance)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 arrival.resource_id.id,
                 origin.resource_id.id,
                 pick_id,
                 arrival.phase,
+                arrival.time_weight,
+                arrival.time_residual,
                 arrival.takeoff_angle,
                 arrival.azimuth,
                 arrival.distance,
@@ -507,7 +590,9 @@ def export_sqlite_to_quakeml(
                 if start_time and end_time
                 else "SELECT COUNT(*) FROM quakeml;"
             )
-            cursor.execute(count_query, (start_time, end_time) if start_time and end_time else ())
+            cursor.execute(
+                count_query, (start_time, end_time) if start_time and end_time else ()
+            )
             count = cursor.fetchone()[0]
             print(f"Processing {count} events from {start_time} to {end_time}")
 
@@ -722,9 +807,43 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             origin_id TEXT REFERENCES origins(id),
             pick_id TEXT REFERENCES picks(id),
             name TEXT,
+            time_weight DOUBLE,
+            time_residual DOUBLE,
             takeoff_angle DOUBLE,
             azimuth DOUBLE,
             distance DOUBLE
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS magnitudes (
+            id TEXT PRIMARY KEY,
+            origin_id TEXT REFERENCES origins(id),
+            event_id TEXT REFERENCES events(event_id),
+            magnitude DOUBLE,
+            uncertainty DOUBLE,
+            station_count INTEGER,
+            magnitude_type TEXT,
+            evaluation_mode TEXT,
+            method_id TEXT,
+            preferred BOOLEAN
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS station_magnitudes (
+            id TEXT PRIMARY KEY,
+            origin_id TEXT REFERENCES origins(id),
+            magnitude DOUBLE,
+            uncertainty DOUBLE,
+            magnitude_type TEXT,
+            method_id TEXT,
+            waveform_id TEXT
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS station_magnitude_contributions (
+            id TEXT PRIMARY KEY,
+            residual DOUBLE,
+            weight DOUBLE
         );
         """,
     ]
