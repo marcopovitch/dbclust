@@ -41,13 +41,18 @@ EVENT_COORDINATES_VIEW = """
 CREATE VIEW IF NOT EXISTS event_coordinates AS
 SELECT
     e.event_id,
-    o.time, o.latitude, o.longitude, o.depth,
+    o.time, o.time_errors,
+    o.latitude, o.longitude, o.depth,
     o.rms, o.erh, o.erz, o.er_method,
-    m.magnitude, m.magnitude_type, m.uncertainty, m.method_id,
+    m.magnitude, m.magnitude_type,
+    m.uncertainty as magnitude_uncertainty,
+    m.method_id as magnitude_method_id,
     o.used_station_count, o.used_phase_count, o.P_count, o.S_count,
     o.minimum_distance, o.maximum_distance, o.median_distance,
     o.azimuthal_gap, o.secondary_azimuthal_gap,
-    o.scatter_volume, e.dist_km_from_preloc,
+    o.expectation_latitude, o.expectation_longitude, o.expectation_depth,
+    o.scatter_volume,
+    e.dist_km_from_preloc,
     e.nb_agencies, e.agencies_list, e.agency_names, e.multiple_same_agencies,
     o.evaluation_mode,
     e.event_type, e.discrimination_probability, e.discrimination_station_count, e.discrimination_certainty,
@@ -121,6 +126,33 @@ def get_scatter_volume(origin: Origin) -> float:
             scatter_volume = info["scatter_volume"]
             break
     return scatter_volume
+
+
+def get_expectation_localization(origin: Origin) -> Tuple[float, float, float]:
+    """
+    Extracts from the origin's comment the expectation localization.
+
+    Args:
+        origin (Origin): An origin object containing comments with potential expectation localization information.
+    Returns:
+        Tuple[float, float, float] or None: The expectation localization if found, otherwise None.
+    """
+    expectation_latitude = None
+    expectation_longitude = None
+    expectation_depth = None
+    for comment in origin.comments:
+        try:
+            info = json.loads(comment.text)
+        except:
+            continue
+
+        data = info.get("expectation")
+        if data:
+            expectation_latitude = data.get("latitude")
+            expectation_longitude = data.get("longitude")
+            expectation_depth = data.get("depth") * 1000.
+            break
+    return expectation_latitude, expectation_longitude, expectation_depth
 
 
 def get_pick_probability(pick):
@@ -368,6 +400,9 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     S_count = phase_count(event, origin, "S")
     erz, erh, err_method = get_erh_erz(origin)
     scatter_volume = get_scatter_volume(origin)
+    expectation_latitude, expectation_longitude, expectation_depth = (
+        get_expectation_localization(origin)
+    )
 
     try:
         quality_factor, quality = classify_Michele_mod(
@@ -388,18 +423,21 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     conn.execute(
         """
         INSERT INTO origins (
-            id, event_id, time, latitude, longitude, depth, depth_type,
+            id, event_id, time, time_errors,
+            latitude, longitude, depth, depth_type,
             rms, erh, erz, er_method,
             used_station_count, used_phase_count, P_count, S_count,
             minimum_distance, maximum_distance, median_distance,
             azimuthal_gap, secondary_azimuthal_gap,
-            scatter_volume, quality, quality_factor,
+            expectation_latitude, expectation_longitude, expectation_depth,
+            scatter_volume,
+            quality, quality_factor,
             evaluation_mode, preferred, geometry
         )
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ST_GeomFromText(?, 4326)
         )
         """,
@@ -407,6 +445,7 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
             origin.resource_id.id,
             event.resource_id.id,
             to_datetime(origin.time),
+            origin.time_errors.uncertainty,
             origin.latitude,
             origin.longitude,
             origin.depth,
@@ -424,7 +463,10 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
             q.median_distance,
             q.azimuthal_gap,
             q.secondary_azimuthal_gap,
-            get_scatter_volume(origin),
+            expectation_latitude,
+            expectation_longitude,
+            expectation_depth,
+            scatter_volume,
             quality,
             quality_factor,
             origin.evaluation_mode,
@@ -777,6 +819,7 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             id TEXT PRIMARY KEY,
             event_id TEXT REFERENCES events(event_id),
             time TIMESTAMP,
+            time_errors DOUBLE,
             latitude DOUBLE,
             longitude DOUBLE,
             depth DOUBLE,
@@ -794,6 +837,9 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             median_distance DOUBLE,
             azimuthal_gap DOUBLE,
             secondary_azimuthal_gap DOUBLE,
+            expectation_latitude DOUBLE,
+            expectation_longitude DOUBLE,
+            expectation_depth DOUBLE,
             scatter_volume DOUBLE,
             quality TEXT,
             quality_factor DOUBLE,
@@ -1108,6 +1154,7 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
 
             # Apply rounding to specific columns
             for col, precision in [
+                ("time_errors", 2),
                 ("depth", 1),
                 ("quality_factor", 2),
                 ("scatter_volume", 2),
@@ -1119,6 +1166,9 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
                 ("rms", 2),
                 ("erh", 2),
                 ("erz", 2),
+                ("expectation_depth", 1),
+                ("magnitude", 2),
+                ("magnitude_uncertainty", 2),
                 ("uncertainty", 2),
                 ("dist_km_from_preloc", 2),
                 ("discrimination_probability", 2),
