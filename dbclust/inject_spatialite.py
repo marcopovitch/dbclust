@@ -41,29 +41,48 @@ EVENT_COORDINATES_VIEW = """
 CREATE VIEW IF NOT EXISTS event_coordinates AS
 SELECT
     e.event_id,
-    o.time, o.time_errors,
-    o.latitude, o.longitude, o.depth,
-    o.rms, o.erh, o.erz, o.er_method,
-    m.magnitude, m.magnitude_type,
-    m.uncertainty as magnitude_uncertainty,
-    m.method_id as magnitude_method_id,
+    o.time,
+    o.latitude, o.longitude,
+    o.depth / 1000.0 AS depth_km,
+    o.rms,
+    o.erh / 1000.0 AS erh_km,
+    o.erz / 1000.0 AS erz_km,
+    o.er_method,
+    o.method_id AS location_method_id,
+    o.earth_model_id,
+    e.nb_origins,
+    e.nb_magnitudes,
+    m.magnitude,
+    m.magnitude_type,
+    m.uncertainty AS magnitude_uncertainty,
+    -- m.method_id AS magnitude_method_id,
     o.used_station_count, o.used_phase_count, o.P_count, o.S_count,
-    o.minimum_distance, o.maximum_distance, o.median_distance,
+    o.minimum_distance AS minimum_distance_deg,
+    o.maximum_distance AS maximum_distance_deg,
+    o.median_distance AS median_distance_deg,
     o.azimuthal_gap, o.secondary_azimuthal_gap,
-    o.expectation_latitude, o.expectation_longitude, o.expectation_depth,
+    o.expectation_latitude, o.expectation_longitude,
+    o.expectation_depth / 1000.0 AS expectation_depth_km,
     o.scatter_volume,
-    e.dist_km_from_preloc,
+    e.dist_km_from_preloc AS dist_from_preloc_km,
     e.nb_agencies, e.agencies_list, e.agency_names, e.multiple_same_agencies,
     o.evaluation_mode,
-    e.event_type, e.discrimination_probability, e.discrimination_station_count, e.discrimination_certainty,
+    e.event_type,
+    e.discrimination_probability,
+    e.discrimination_station_count,
+    e.discrimination_certainty,
     o.quality, o.quality_factor,
     o.geometry
 FROM
     events AS e
 JOIN
-    origins AS o ON e.event_id = o.event_id, magnitudes AS m ON e.event_id = m.event_id
+    origins AS o
+    ON e.event_id = o.event_id AND o.preferred = 1  -- INNER JOIN car une origine préférentielle existe toujours
+LEFT JOIN
+    magnitudes AS m
+    ON e.event_id = m.event_id AND m.preferred = 1
 WHERE
-    o.preferred = 1 AND m.preferred = 1;
+    COALESCE(e.event_type, '') NOT IN ('not existing', 'not locatable');
 """
 
 
@@ -329,8 +348,8 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
 
             conn.execute(
                 """
-                INSERT INTO events (event_id, event_type, dist_km_from_preloc, nb_agencies, agencies_list)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO events (event_id, event_type, dist_km_from_preloc, nb_agencies, agencies_list, nb_origins, nb_magnitudes)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.resource_id.id,
@@ -338,6 +357,8 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
                     get_distance_km_info(event),
                     len(all_agencies_ids),
                     agencies_list_str,
+                    len(event.origins),
+                    len(event.magnitudes),
                 ),
             )
 
@@ -404,6 +425,17 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
         get_expectation_localization(origin)
     )
 
+    # Get only the relevant info from the origin method ID
+    try:
+        origin_method_id = origin.method_id.id.split("/")[-1]
+    except:
+        origin_method_id = origin.method_id.id
+
+    try:
+        earth_model_id = origin.earth_model_id.id.split("/")[-1]
+    except:
+        earth_model_id = origin.earth_model_id.id
+
     try:
         quality_factor, quality = classify_Michele_mod(
             rms,
@@ -426,6 +458,8 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
             id, event_id, time, time_errors,
             latitude, longitude, depth, depth_type,
             rms, erh, erz, er_method,
+            method_id,
+            earth_model_id,
             used_station_count, used_phase_count, P_count, S_count,
             minimum_distance, maximum_distance, median_distance,
             azimuthal_gap, secondary_azimuthal_gap,
@@ -437,7 +471,8 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?,
             ST_GeomFromText(?, 4326)
         )
         """,
@@ -454,6 +489,8 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
             erh,
             erz,
             err_method,
+            origin_method_id,
+            earth_model_id,
             q.used_station_count,
             q.used_phase_count,
             P_count,
@@ -798,7 +835,9 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             nb_agencies INTEGER,
             agencies_list JSON,
             agency_names TEXT,
-            multiple_same_agencies BOOLEAN
+            multiple_same_agencies BOOLEAN,
+            nb_origins INTEGER,
+            nb_magnitudes INTEGER
         );
         """,
         """
@@ -828,6 +867,8 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             erh DOUBLE,
             erz DOUBLE,
             er_method TEXT,
+            method_id TEXT,
+            earth_model_id TEXT,
             used_station_count INTEGER,
             used_phase_count INTEGER,
             P_count INTEGER,
@@ -1156,6 +1197,7 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
             for col, precision in [
                 ("time_errors", 2),
                 ("depth", 1),
+                ("depth_km", 1),
                 ("quality_factor", 2),
                 ("scatter_volume", 2),
                 ("azimuthal_gap", 2),
@@ -1163,14 +1205,21 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
                 ("minimum_distance", 2),
                 ("maximum_distance", 2),
                 ("median_distance", 2),
+                ("minimum_distance_deg", 2),
+                ("maximum_distance_deg", 2),
+                ("median_distance_deg", 2),
                 ("rms", 2),
                 ("erh", 2),
                 ("erz", 2),
+                ("erh_km", 2),
+                ("erz_km", 2),
                 ("expectation_depth", 1),
+                ("expectation_depth_km", 1),
                 ("magnitude", 2),
                 ("magnitude_uncertainty", 2),
                 ("uncertainty", 2),
                 ("dist_km_from_preloc", 2),
+                ("dist_from_preloc_km", 2),
                 ("discrimination_probability", 2),
                 ("discrimination_certainty", 2),
             ]:
