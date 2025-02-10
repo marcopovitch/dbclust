@@ -798,7 +798,7 @@ def create_schema(db_path: str) -> sqlite3.Connection:
 
             # Create the event coordinates view
             cursor.execute(EVENT_COORDINATES_VIEW)
-            logger.info("Database schema created successfully.")
+            logger.info("Database SpatiaLite schema created successfully.")
 
         return conn
 
@@ -816,6 +816,9 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
     """
     logger.info("Creating database tables...")
 
+    # Begin a transaction to speed up execution
+    cursor.execute("BEGIN TRANSACTION;")
+
     # Table creation SQL
     tables_sql = [
         """
@@ -826,7 +829,7 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
         """,
         """
         CREATE TABLE IF NOT EXISTS events (
-            event_id TEXT PRIMARY KEY REFERENCES quakeml(event_id),
+            event_id TEXT PRIMARY KEY REFERENCES quakeml(event_id) ON DELETE CASCADE,
             event_type TEXT,
             dist_km_from_preloc DOUBLE,
             discrimination_probability DOUBLE,
@@ -843,7 +846,7 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
         """
         CREATE TABLE IF NOT EXISTS picks (
             id TEXT PRIMARY KEY,
-            event_id TEXT REFERENCES events(event_id),
+            event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
             station_name TEXT,
             pick_time TIMESTAMP,
             evaluation_mode TEXT,
@@ -856,7 +859,7 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
         """
         CREATE TABLE IF NOT EXISTS origins (
             id TEXT PRIMARY KEY,
-            event_id TEXT REFERENCES events(event_id),
+            event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
             time TIMESTAMP,
             time_errors DOUBLE,
             latitude DOUBLE,
@@ -890,9 +893,9 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
         """,
         """
         CREATE TABLE IF NOT EXISTS arrivals (
-            id TEXT PRIMARY KEY,
-            origin_id TEXT REFERENCES origins(id),
-            pick_id TEXT REFERENCES picks(id),
+            id TEXT PRIMARY KEY,  -- Adding a unique key
+            origin_id TEXT REFERENCES origins(id) ON DELETE CASCADE,
+            pick_id TEXT REFERENCES picks(id) ON DELETE CASCADE,
             name TEXT,
             time_weight DOUBLE,
             time_residual DOUBLE,
@@ -904,8 +907,8 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
         """
         CREATE TABLE IF NOT EXISTS magnitudes (
             id TEXT PRIMARY KEY,
-            origin_id TEXT REFERENCES origins(id),
-            event_id TEXT REFERENCES events(event_id),
+            origin_id TEXT REFERENCES origins(id) ON DELETE CASCADE,
+            event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
             magnitude DOUBLE,
             uncertainty DOUBLE,
             station_count INTEGER,
@@ -918,7 +921,7 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
         """
         CREATE TABLE IF NOT EXISTS station_magnitudes (
             id TEXT PRIMARY KEY,
-            origin_id TEXT REFERENCES origins(id),
+            origin_id TEXT REFERENCES origins(id) ON DELETE CASCADE,
             magnitude DOUBLE,
             uncertainty DOUBLE,
             magnitude_type TEXT,
@@ -928,16 +931,37 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
         """,
         """
         CREATE TABLE IF NOT EXISTS station_magnitude_contributions (
-            id TEXT PRIMARY KEY,
+            id TEXT PRIMARY KEY,  -- Adding a unique key
             residual DOUBLE,
             weight DOUBLE
         );
-        """,
+        """
     ]
 
-    # Execute each table creation SQL
+    # Execute table creation
     for sql in tables_sql:
         cursor.execute(sql)
+
+    # Create indexes to speed up queries
+    indexes_sql = [
+        "CREATE INDEX IF NOT EXISTS idx_origins_event_id ON origins(event_id);",
+        "CREATE INDEX IF NOT EXISTS idx_origins_preferred ON origins(preferred);",
+        "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_id ON arrivals(origin_id);",
+        "CREATE INDEX IF NOT EXISTS idx_arrivals_time_weight ON arrivals(time_weight);",
+        "CREATE INDEX IF NOT EXISTS idx_picks_id ON picks(id);",
+        "CREATE INDEX IF NOT EXISTS idx_picks_event_id ON picks(event_id);",
+        "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_time_weight ON arrivals(origin_id, time_weight);",
+        "CREATE INDEX IF NOT EXISTS idx_origins_event_preferred ON origins(event_id, preferred);"
+    ]
+
+    # Execute index creation
+    for sql in indexes_sql:
+        cursor.execute(sql)
+
+    # End the transaction
+    cursor.execute("COMMIT;")
+
+    logger.info("Database tables created successfully.")
 
 
 def refresh_event_coordinates_view(conn: sqlite3.Connection):
