@@ -11,9 +11,9 @@ import os
 import re
 import sqlite3
 import sys
+import warnings
 import xml.etree.ElementTree as ET
 import zlib
-from collections import Counter
 from datetime import datetime
 from io import BytesIO
 from typing import List
@@ -28,8 +28,12 @@ from obspy import UTCDateTime
 from obspy.core.event import Event
 from obspy.core.event import Magnitude
 from obspy.core.event import Origin
+from tqdm import tqdm
 
 from dbclust.localization_quality import classify_Michele_mod
+
+# Suppress UserWarnings in ObsPy
+warnings.filterwarnings("ignore", category=UserWarning, module="obspy")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("inject_spatialite")
@@ -169,7 +173,7 @@ def get_expectation_localization(origin: Origin) -> Tuple[float, float, float]:
         if data:
             expectation_latitude = data.get("latitude")
             expectation_longitude = data.get("longitude")
-            expectation_depth = data.get("depth") * 1000.
+            expectation_depth = data.get("depth") * 1000.0
             break
     return expectation_latitude, expectation_longitude, expectation_depth
 
@@ -328,7 +332,7 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
 
     try:
         with conn:
-            logger.info(f"Inserting event {event.resource_id.id}.")
+            logger.debug(f"Inserting event {event.resource_id.id}.")
 
             # Insert full QuakeML data
             logger.debug(f"Inserting QuakeML data for event {event.resource_id.id}.")
@@ -369,6 +373,7 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
 
             # Insert picks
             logger.debug(f"Inserting picks for event {event.resource_id.id}.")
+            cursor = conn.cursor()
             for pick in event.picks:
                 agency_id = (
                     pick.creation_info.agency_id
@@ -376,6 +381,17 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
                     else None
                 )
                 probability = get_pick_probability(pick)
+
+                # Check if the pick ID already exists
+                cursor.execute(
+                    "SELECT id FROM picks WHERE id = ?", (pick.resource_id.id,)
+                )
+                if cursor.fetchone():
+                    logger.warning(
+                        f"ID '{pick.resource_id.id}' already exists. Pick will not be inserted."
+                    )
+                    continue
+
                 conn.execute(
                     """
                     INSERT INTO picks (
@@ -406,7 +422,7 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
             insert_magnitudes(conn, event)
             insert_station_magnitudes(conn, event)
 
-            logger.info(f"Event {event.resource_id.id} successfully inserted.")
+            logger.debug(f"Event {event.resource_id.id} successfully inserted.")
 
     except Exception as e:
         logger.error(f"Failed to insert event {event.resource_id.id}: {e}")
@@ -426,15 +442,13 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     )
 
     # Get only the relevant info from the origin method ID
-    try:
-        origin_method_id = origin.method_id.id.split("/")[-1]
-    except:
-        origin_method_id = origin.method_id.id
+    origin_method_id = getattr(getattr(origin, "method_id", None), "id", "unknown")
+    if isinstance(origin_method_id, str) and "/" in origin_method_id:
+        origin_method_id = origin_method_id.rsplit("/", 1)[-1]
 
-    try:
-        earth_model_id = origin.earth_model_id.id.split("/")[-1]
-    except:
-        earth_model_id = origin.earth_model_id.id
+    earth_model_id = getattr(getattr(origin, "earth_model_id", None), "id", "unknown")
+    if isinstance(earth_model_id, str) and "/" in earth_model_id:
+        earth_model_id = earth_model_id.rsplit("/", 1)[-1]
 
     try:
         quality_factor, quality = classify_Michele_mod(
@@ -935,7 +949,7 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             residual DOUBLE,
             weight DOUBLE
         );
-        """
+        """,
     ]
 
     # Execute table creation
@@ -951,7 +965,7 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
         "CREATE INDEX IF NOT EXISTS idx_picks_id ON picks(id);",
         "CREATE INDEX IF NOT EXISTS idx_picks_event_id ON picks(event_id);",
         "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_time_weight ON arrivals(origin_id, time_weight);",
-        "CREATE INDEX IF NOT EXISTS idx_origins_event_preferred ON origins(event_id, preferred);"
+        "CREATE INDEX IF NOT EXISTS idx_origins_event_preferred ON origins(event_id, preferred);",
     ]
 
     # Execute index creation
@@ -1162,7 +1176,8 @@ def import_catalog_to_sqlite(
     """
 
     # Process events and insert into SQLite
-    for event in catalog:
+    # tqdm is used to display a progress bar
+    for event in tqdm(catalog, desc="Importing events to SQLite"):
         # Serialize QuakeML content using format and compress it
         if enable_quakeml:
             quakeml_data = compress_quakeml_data(event, format="QUAKEML")
