@@ -6,6 +6,8 @@ from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import yaml
 from icecream import ic
 from obspy.core.event import Arrival
 from obspy.core.event import Catalog
@@ -19,6 +21,54 @@ from tqdm import tqdm
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def read_polygons_from_yaml(filename: str):
+    """
+    Reads a YAML file containing a list of polygons with a title and coordinates.
+
+    Args:
+        filename (str): Path to the YAML file.
+
+    Returns:
+        list: List of polygons as dictionaries {"title": str, "coordinates": list}
+    """
+    with open(filename, "r", encoding="utf-8") as file:
+        data = yaml.safe_load(file)
+    return data.get("polygons", [])
+
+
+def generate_wkt_from_polygon(coord_list: list) -> str:
+    """
+    Generate a polygon WKT (Well-Known Text) string from a list of coordinates.
+
+    Args:
+        coord_list (list): List of (longitude, latitude) tuples.
+
+    Returns:
+        str: WKT string representing the polygon.
+    """
+    coordinates = ", ".join(f"{lon} {lat}" for lon, lat in coord_list)
+    polygon_wkt = f"POLYGON(({coordinates}))"
+
+    return polygon_wkt
+
+
+def get_polygon_index(polygons: list, title: str) -> int:
+    """
+    Retrieve the index of a polygon in a list of polygons.
+
+    Args:
+        polygons (list): List of polygons as dictionaries.
+        title (str): Title of the polygon to search for.
+
+    Returns:
+        int: Index of the polygon in the list, or -1 if not found.
+    """
+    for i, p in enumerate(polygons):
+        if p.get("title") == title:
+            return i
+    return -1
 
 
 def get_pick_from_arrival(event: Event, arrival: Arrival) -> Pick:
@@ -48,7 +98,7 @@ def get_station_name_from_pick(pick: Pick) -> str:
     return station_name
 
 
-def wadati(catalog: Catalog):
+def wadati(catalog: Catalog) -> tuple:
     # Initialize lists to store arrival times
     T_P = []
     T_S = []
@@ -97,15 +147,16 @@ def wadati(catalog: Catalog):
     # Check if there are enough data points for regression
     if len(T_P) < 2:
         logger.warning("Not enough data to estimate Vp/Vs ratio.")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
     # Perform linear regression to estimate the slope (Vp/Vs)
     slope, intercept, r_value, _, _ = linregress(T_P, T_S)
+    nb_events = len(catalog.events)
 
-    return T_P, T_S, slope, intercept, r_value
+    return T_P, T_S, nb_events, slope, intercept, r_value
 
 
-def get_wadati_times_from_db(conn, event_id: str):
+def get_wadati_times_from_db(conn: sqlite3.Connection, event_id: str) -> tuple:
     """
     Retrieve the arrival times of P and S waves for a given event,
     considering only the preferred origin.
@@ -159,6 +210,8 @@ def get_wadati_times_from_db(conn, event_id: str):
         elif arrival_name == "Sg":
             arrivals[station_name]["S"] = pick_time
 
+    # ic(arrivals)
+
     # Calculate relative times
     T_P, T_S = [], []
     for station, phases in arrivals.items():
@@ -171,56 +224,87 @@ def get_wadati_times_from_db(conn, event_id: str):
     return T_P, T_S
 
 
-def wadati_db(db_filename: str):
+def wadati_db(db_filename: str, polygon_wkt: str) -> tuple:
     """
-    Perform a Wadati analysis on all events.
+    Compute the Vp/Vs ratio using the Wadati method for events
+    located within a given polygon.
 
     Args:
-        db_filename (str): Path to the SQLite database file.
+        db_filename (str): Path to the SQLite/SpatiaLite database.
+        polygon_wkt (str): Polygon in WKT (Well-Known Text) format to filter events.
 
     Returns:
-        tuple: Data (T_P, T_S, slope, intercept, r_value) for the Vp/Vs ratio.
+        tuple: (T_P, T_S, slope, intercept, r_value) or None if not enough data.
     """
-
     conn = sqlite3.connect(db_filename)
-
-    # ⚡ Enable SQLite optimizations
-    conn.execute("PRAGMA synchronous = OFF")
-    conn.execute("PRAGMA journal_mode = MEMORY")
-    conn.execute("PRAGMA temp_store = MEMORY")
-
-    # Retrieve events with preferred origin
     cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT event_id FROM origins WHERE preferred = 1")
+
+    # Ensure SpatiaLite is enabled
+    # cursor.execute("PRAGMA foreign_keys = ON;")  # Activer les clés étrangères si ce n'est pas déjà fait
+    conn.enable_load_extension(True)
+    cursor.execute("SELECT load_extension('mod_spatialite');")
+
+    # Check if the events table has a geometry column
+    # cursor.execute("PRAGMA table_info(events);")
+    # columns = {col[1] for col in cursor.fetchall()}
+    # if "geometry" not in columns:
+    #    logger.error("The 'geometry' column is missing in the 'events' table.")
+    #    return None, None, None, None, None, None
+
+    # Retrieve event_ids located within the polygon
+    cursor.execute(
+        """
+        SELECT DISTINCT event_id
+        FROM event_coordinates AS e
+        WHERE COALESCE(e.event_type, '') NOT IN ('not existing', 'not locatable')
+            AND ST_Contains(GeomFromText(?), geometry)
+        """,
+        (polygon_wkt,),
+    )
     event_ids = [row[0] for row in cursor.fetchall()]
 
-    logger.info(f"Catalog contains {len(event_ids)} events.")
+    if not event_ids:
+        logger.warning("No events found in the specified area.")
+        return None, None, None, None, None, None
 
-    T_P, T_S = [], []
+    T_P = []
+    T_S = []
 
-    # Process all events
     for event_id in tqdm(event_ids, desc="Processing events"):
         tp, ts = get_wadati_times_from_db(conn, event_id)
         T_P.extend(tp)
         T_S.extend(ts)
 
-    conn.close()
-
-    # ⚡ NumPy only at the end
-    T_P = np.array(T_P, dtype=np.float64)
-    T_S = np.array(T_S, dtype=np.float64)
+    # Convert to numpy arrays
+    T_P = np.array(T_P)
+    T_S = np.array(T_S)
 
     if len(T_P) < 2:
-        logger.warning("Not enough data to estimate Vp/Vs.")
-        return None, None, None, None, None
+        logger.warning("Not enough data to estimate the Vp/Vs ratio.")
+        return None, None, None, None, None, None
 
-    # ⚡ Optimized linear regression
+    # filter data to remove outliers
+    df = pd.DataFrame({"T_P": T_P, "T_S": T_S}, columns=["T_P", "T_S"], dtype=float)
+    df = df[(df["T_P"] <= 200) & (df["T_S"] <= 200)]
+    df = df[(df["T_P"] > 0) & (df["T_S"] > 0)]
+    T_P = df["T_P"].values
+    T_S = df["T_S"].values
+
+    # Linear regression to estimate the Vp/Vs ratio
     slope, intercept, r_value, _, _ = linregress(T_P, T_S)
+    nb_events = len(event_ids)
 
-    return T_P, T_S, slope, intercept, r_value
+    return T_P, T_S, nb_events, slope, intercept, r_value
 
 
-def wadati_plot(T_P, T_S, slope=None, intercept=None, output: str = None):
+def wadati_plot(
+    T_P,
+    T_S,
+    slope=None,
+    intercept=None,
+    output: str = None,
+    title: str = "Wadati diagram",
+) -> None:
     """
     Plot a Wadati diagram from given P and S arrival times.
 
@@ -231,11 +315,19 @@ def wadati_plot(T_P, T_S, slope=None, intercept=None, output: str = None):
         r_value (float): Coefficient of determination (optional).
         output (str): Path to the output image file (optional).
     """
-
     # Check if we have enough points
     if len(T_P) < 2:
         print("Not enough data to plot a Wadati diagram.")
         exit()
+
+    # remove outliers from the data
+    df = pd.DataFrame({"T_P": T_P, "T_S": T_S}, columns=["T_P", "T_S"], dtype=float)
+    df = df[(df["T_P"] <= 200) & (df["T_S"] <= 200)]
+    df = df[(df["T_P"] > 0) & (df["T_S"] > 0)]
+
+    df.to_csv("wadati.csv", index=False)
+    T_P = df["T_P"].values
+    T_S = df["T_S"].values
 
     # Linear regression to estimate the slope (Vp/Vs)
     if slope is None or intercept is None:
@@ -252,7 +344,7 @@ def wadati_plot(T_P, T_S, slope=None, intercept=None, output: str = None):
     )
     plt.xlabel("T_P - T0 (s)")
     plt.ylabel("T_S - T0 (s)")
-    plt.title("Wadati Diagram")
+    plt.title(title)
     plt.legend()
     plt.grid()
 
@@ -277,10 +369,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "-o", "--output", help="Path to the output image file (optional)"
     )
+    parser.add_argument(
+        "-p", "--polygon", help="Title of the polygon in polygons.yaml (optional)"
+    )
     args = parser.parse_args()
 
     if not args.database and not args.input:
         logger.error("Please provide a QuakeML file or a SQLite database.")
+        polygons = read_polygons_from_yaml("polygons.yaml")
+        for p in polygons:
+            print(p.get("title"))
         exit()
 
     if args.database and args.input:
@@ -288,7 +386,23 @@ if __name__ == "__main__":
         exit()
 
     if args.database is not None:
-        T_P, T_S, slope, intercept, r_value = wadati_db(args.database)
+        if args.polygon:
+            polygons = read_polygons_from_yaml("polygons.yaml")
+            polygon_name = args.polygon
+            # get index of polygon_title
+            i = get_polygon_index(polygons, args.polygon)
+            if i == -1:
+                logger.error(f"Polygon '{args.polygon}' not found in polygons.yaml.")
+                exit()
+            my_polygon = polygons[i]["coordinates"]
+            polygon_wkt = generate_wkt_from_polygon(my_polygon)
+        else:
+            polygon_wkt = "POLYGON(())"
+            polygon_name = ""
+
+        T_P, T_S, nb_events, slope, intercept, r_value = wadati_db(
+            args.database, polygon_wkt=polygon_wkt
+        )
     else:
         logger.info(f"Reading QuakeML file: {args.input}")
         try:
@@ -298,15 +412,22 @@ if __name__ == "__main__":
             exit()
         logger.info(f"Catalog contains {len(catalog)} events.")
         # Extract P and S arrival times and estimate Vp/Vs ratio
-        T_P, T_S, slope, intercept, r_value = wadati(catalog)
+        T_P, T_S, nb_events, slope, intercept, r_value = wadati(catalog)
 
     if T_P is None:
         logger.warning("Not enough data to estimate Vp/Vs ratio.")
         exit()
 
     logger.info(
-        f"Estimated Vp/Vs ratio: {slope:.2f} (R²={r_value**2:.3f}), len(T_P)={len(T_P)}"
+        f"Estimated Vp/Vs ratio: {slope:.2f} (R²={r_value**2:.3f}), #events={nb_events}, #points={len(T_P)}"
     )
 
     # Plot the Wadati diagram
-    wadati_plot(T_P, T_S, slope=slope, intercept=intercept, output=args.output)
+    wadati_plot(
+        T_P,
+        T_S,
+        slope=slope,
+        intercept=intercept,
+        output=args.output,
+        title=f"Wadati diagram [{polygon_name} / {nb_events} events]",
+    )
