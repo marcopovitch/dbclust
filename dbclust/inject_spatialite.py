@@ -382,13 +382,22 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
                 )
                 probability = get_pick_probability(pick)
 
-                # Check if the pick ID already exists
+                # Check if the pick ID already exists, and to which event it belongs
                 cursor.execute(
                     "SELECT id FROM picks WHERE id = ?", (pick.resource_id.id,)
                 )
                 if cursor.fetchone():
+                    # Pick ID already exists in the database related to another event
+                    # it is something possible in the case of close events in QuakeML-RT.
+                    # This is something that should be handled in the future.
+
+                    # get event_id  of the pick
+                    cursor.execute(
+                        "SELECT event_id FROM picks WHERE id = ?", (pick.resource_id.id,)
+                    )
+                    event_id = cursor.fetchone()[0]
                     logger.warning(
-                        f"ID '{pick.resource_id.id}' already exists. Pick will not be inserted."
+                        f"[{event.resource_id.id}] ID '{pick.resource_id.id}' already exists in event {event_id}. Pick will not be inserted."
                     )
                     continue
 
@@ -763,9 +772,8 @@ def create_schema(db_path: str) -> sqlite3.Connection:
     """
     try:
         conn = sqlite3.connect(db_path)
-        conn.execute(
-            "PRAGMA journal_mode=WAL;"
-        )  # Enable WAL mode for concurrent read/write
+        conn.execute("PRAGMA journal_mode=WAL;")  # Enable WAL mode for concurrent read/write
+        conn.execute("PRAGMA foreign_keys = ON;")  # Enable foreign key constraints
         conn.enable_load_extension(True)
 
         try:
@@ -774,52 +782,43 @@ def create_schema(db_path: str) -> sqlite3.Connection:
             logger.error(f"Failed to load SpatiaLite extension: {e}")
             raise
 
-        with conn:
-            cursor = conn.cursor()
+        cursor = conn.cursor()
 
-            # Initialize SpatiaLite metadata if not already initialized
-            cursor.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spatial_ref_sys';"
-            )
-            if cursor.fetchone()[0] == 0:
-                logger.info("Initializing SpatiaLite metadata...")
-                cursor.execute("SELECT InitSpatialMetadata();")
+        # Initialize SpatiaLite metadata if not already initialized
+        cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spatial_ref_sys';")
+        if cursor.fetchone()[0] == 0:
+            logger.info("Initializing SpatiaLite metadata...")
+            cursor.execute("SELECT InitSpatialMetadata();")
 
-            # Create tables
-            create_tables(cursor)
+        # Create tables
+        create_tables(cursor)
 
-            # Ensure 'geometry' column exists in 'origins' table
-            cursor.execute("PRAGMA table_info(origins);")
-            columns = [row[1] for row in cursor.fetchall()]
-            if "geometry" not in columns:
-                logger.info("Adding 'geometry' column to 'origins' table...")
-                cursor.execute(
-                    "SELECT AddGeometryColumn('origins', 'geometry', 4326, 'POINT', 'XY');"
-                )
+        # Ensure 'geometry' column exists in 'origins' table
+        cursor.execute("PRAGMA table_info(origins);")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "geometry" not in columns:
+            logger.info("Adding 'geometry' column to 'origins' table...")
+            cursor.execute("SELECT AddGeometryColumn('origins', 'geometry', 4326, 'POINT', 'XY');")
 
-            # Create spatial index if not exists
-            cursor.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='idx_origins_geometry';"
-            )
-            if cursor.fetchone()[0] == 0:
-                try:
-                    logger.info(
-                        "Creating spatial index for 'geometry' column in 'origins' table..."
-                    )
-                    cursor.execute("SELECT CreateSpatialIndex('origins', 'geometry');")
-                except sqlite3.OperationalError as e:
-                    logger.error(f"Error creating spatial index: {e}")
+        # Create spatial index if not exists
+        cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='idx_origins_geometry';")
+        if cursor.fetchone()[0] == 0:
+            try:
+                logger.info("Creating spatial index for 'geometry' column in 'origins' table...")
+                cursor.execute("SELECT CreateSpatialIndex('origins', 'geometry');")
+            except sqlite3.OperationalError as e:
+                logger.error(f"Error creating spatial index: {e}")
 
-            # Create the event coordinates view
-            cursor.execute(EVENT_COORDINATES_VIEW)
-            logger.info("Database SpatiaLite schema created successfully.")
+        # Create the event coordinates view
+        cursor.execute(EVENT_COORDINATES_VIEW)
+        logger.info("Database SpatiaLite schema created successfully.")
+
 
         return conn
 
     except Exception as e:
-        logger.error(f"Failed to create schema: {e}")
+        logger.error(f"Error creating schema: {e}")
         raise
-
 
 def create_tables(cursor: sqlite3.Cursor) -> None:
     """
@@ -830,152 +829,154 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
     """
     logger.info("Creating database tables...")
 
-    # Begin a transaction to speed up execution
-    cursor.execute("BEGIN TRANSACTION;")
+    try:
+        # Begin a transaction to speed up execution
+        cursor.execute("BEGIN TRANSACTION;")
 
-    # Table creation SQL
-    tables_sql = [
-        """
-        CREATE TABLE IF NOT EXISTS quakeml (
-            event_id TEXT PRIMARY KEY,
-            data BLOB
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS events (
-            event_id TEXT PRIMARY KEY REFERENCES quakeml(event_id) ON DELETE CASCADE,
-            event_type TEXT,
-            dist_km_from_preloc DOUBLE,
-            discrimination_probability DOUBLE,
-            discrimination_station_count INTEGER,
-            discrimination_certainty DOUBLE,
-            nb_agencies INTEGER,
-            agencies_list JSON,
-            agency_names TEXT,
-            multiple_same_agencies BOOLEAN,
-            nb_origins INTEGER,
-            nb_magnitudes INTEGER
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS picks (
-            id TEXT PRIMARY KEY,
-            event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
-            station_name TEXT,
-            pick_time TIMESTAMP,
-            evaluation_mode TEXT,
-            uncertainty DOUBLE,
-            phase_hint TEXT,
-            agency_id TEXT,
-            probability DOUBLE
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS origins (
-            id TEXT PRIMARY KEY,
-            event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
-            time TIMESTAMP,
-            time_errors DOUBLE,
-            latitude DOUBLE,
-            longitude DOUBLE,
-            depth DOUBLE,
-            depth_type TEXT,
-            rms DOUBLE,
-            erh DOUBLE,
-            erz DOUBLE,
-            er_method TEXT,
-            method_id TEXT,
-            earth_model_id TEXT,
-            used_station_count INTEGER,
-            used_phase_count INTEGER,
-            P_count INTEGER,
-            S_count INTEGER,
-            minimum_distance DOUBLE,
-            maximum_distance DOUBLE,
-            median_distance DOUBLE,
-            azimuthal_gap DOUBLE,
-            secondary_azimuthal_gap DOUBLE,
-            expectation_latitude DOUBLE,
-            expectation_longitude DOUBLE,
-            expectation_depth DOUBLE,
-            scatter_volume DOUBLE,
-            quality TEXT,
-            quality_factor DOUBLE,
-            evaluation_mode TEXT,
-            preferred BOOLEAN
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS arrivals (
-            id TEXT PRIMARY KEY,  -- Adding a unique key
-            origin_id TEXT REFERENCES origins(id) ON DELETE CASCADE,
-            pick_id TEXT REFERENCES picks(id) ON DELETE CASCADE,
-            name TEXT,
-            time_weight DOUBLE,
-            time_residual DOUBLE,
-            takeoff_angle DOUBLE,
-            azimuth DOUBLE,
-            distance DOUBLE
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS magnitudes (
-            id TEXT PRIMARY KEY,
-            origin_id TEXT REFERENCES origins(id) ON DELETE CASCADE,
-            event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
-            magnitude DOUBLE,
-            uncertainty DOUBLE,
-            station_count INTEGER,
-            magnitude_type TEXT,
-            evaluation_mode TEXT,
-            method_id TEXT,
-            preferred BOOLEAN
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS station_magnitudes (
-            id TEXT PRIMARY KEY,
-            origin_id TEXT REFERENCES origins(id) ON DELETE CASCADE,
-            magnitude DOUBLE,
-            uncertainty DOUBLE,
-            magnitude_type TEXT,
-            method_id TEXT,
-            waveform_id TEXT
-        );
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS station_magnitude_contributions (
-            id TEXT PRIMARY KEY,  -- Adding a unique key
-            residual DOUBLE,
-            weight DOUBLE
-        );
-        """,
-    ]
+        # Table creation SQL
+        tables_sql = [
+            """
+            CREATE TABLE IF NOT EXISTS quakeml (
+                event_id TEXT PRIMARY KEY,
+                data BLOB
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                event_id TEXT PRIMARY KEY REFERENCES quakeml(event_id) ON DELETE CASCADE,
+                event_type TEXT,
+                dist_km_from_preloc DOUBLE,
+                discrimination_probability DOUBLE,
+                discrimination_station_count INTEGER,
+                discrimination_certainty DOUBLE,
+                nb_agencies INTEGER,
+                agencies_list JSON,
+                agency_names TEXT,
+                multiple_same_agencies BOOLEAN,
+                nb_origins INTEGER,
+                nb_magnitudes INTEGER
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS picks (
+                id TEXT PRIMARY KEY,
+                event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
+                station_name TEXT,
+                pick_time TIMESTAMP,
+                evaluation_mode TEXT,
+                uncertainty DOUBLE,
+                phase_hint TEXT,
+                agency_id TEXT,
+                probability DOUBLE
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS origins (
+                id TEXT PRIMARY KEY,
+                event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
+                time TIMESTAMP,
+                time_errors DOUBLE,
+                latitude DOUBLE,
+                longitude DOUBLE,
+                depth DOUBLE,
+                depth_type TEXT,
+                rms DOUBLE,
+                erh DOUBLE,
+                erz DOUBLE,
+                er_method TEXT,
+                method_id TEXT,
+                earth_model_id TEXT,
+                used_station_count INTEGER,
+                used_phase_count INTEGER,
+                P_count INTEGER,
+                S_count INTEGER,
+                minimum_distance DOUBLE,
+                maximum_distance DOUBLE,
+                median_distance DOUBLE,
+                azimuthal_gap DOUBLE,
+                secondary_azimuthal_gap DOUBLE,
+                expectation_latitude DOUBLE,
+                expectation_longitude DOUBLE,
+                expectation_depth DOUBLE,
+                scatter_volume DOUBLE,
+                quality TEXT,
+                quality_factor DOUBLE,
+                evaluation_mode TEXT,
+                preferred BOOLEAN
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS arrivals (
+                id TEXT PRIMARY KEY,
+                origin_id TEXT REFERENCES origins(id) ON DELETE CASCADE,
+                pick_id TEXT REFERENCES picks(id) ON DELETE CASCADE,
+                name TEXT,
+                time_weight DOUBLE,
+                time_residual DOUBLE,
+                takeoff_angle DOUBLE,
+                azimuth DOUBLE,
+                distance DOUBLE
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS magnitudes (
+                id TEXT PRIMARY KEY,
+                origin_id TEXT REFERENCES origins(id) ON DELETE CASCADE,
+                event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
+                magnitude DOUBLE,
+                uncertainty DOUBLE,
+                station_count INTEGER,
+                magnitude_type TEXT,
+                evaluation_mode TEXT,
+                method_id TEXT,
+                preferred BOOLEAN
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS station_magnitudes (
+                id TEXT PRIMARY KEY,
+                origin_id TEXT REFERENCES origins(id) ON DELETE CASCADE,
+                magnitude DOUBLE,
+                uncertainty DOUBLE,
+                magnitude_type TEXT,
+                method_id TEXT,
+                waveform_id TEXT
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS station_magnitude_contributions (
+                id TEXT PRIMARY KEY,
+                residual DOUBLE,
+                weight DOUBLE
+            );
+            """,
+        ]
 
-    # Execute table creation
-    for sql in tables_sql:
-        cursor.execute(sql)
+        for sql in tables_sql:
+            cursor.execute(sql)
 
-    # Create indexes to speed up queries
-    indexes_sql = [
-        "CREATE INDEX IF NOT EXISTS idx_origins_event_id ON origins(event_id);",
-        "CREATE INDEX IF NOT EXISTS idx_origins_preferred ON origins(preferred);",
-        "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_id ON arrivals(origin_id);",
-        "CREATE INDEX IF NOT EXISTS idx_arrivals_time_weight ON arrivals(time_weight);",
-        "CREATE INDEX IF NOT EXISTS idx_picks_id ON picks(id);",
-        "CREATE INDEX IF NOT EXISTS idx_picks_event_id ON picks(event_id);",
-        "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_time_weight ON arrivals(origin_id, time_weight);",
-        "CREATE INDEX IF NOT EXISTS idx_origins_event_preferred ON origins(event_id, preferred);",
-    ]
+        # Create indexes to speed up queries
+        indexes_sql = [
+            "CREATE INDEX IF NOT EXISTS idx_origins_event_id ON origins(event_id);",
+            "CREATE INDEX IF NOT EXISTS idx_origins_preferred ON origins(preferred);",
+            "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_id ON arrivals(origin_id);",
+            "CREATE INDEX IF NOT EXISTS idx_arrivals_time_weight ON arrivals(time_weight);",
+            "CREATE INDEX IF NOT EXISTS idx_picks_id ON picks(id);",
+            "CREATE INDEX IF NOT EXISTS idx_picks_event_id ON picks(event_id);",
+            "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_time_weight ON arrivals(origin_id, time_weight);",
+            "CREATE INDEX IF NOT EXISTS idx_origins_event_preferred ON origins(event_id, preferred);",
+        ]
 
-    # Execute index creation
-    for sql in indexes_sql:
-        cursor.execute(sql)
+        for sql in indexes_sql:
+            cursor.execute(sql)
 
-    # End the transaction
-    cursor.execute("COMMIT;")
+        cursor.execute("COMMIT;")
+        logger.info("Database tables created successfully.")
 
-    logger.info("Database tables created successfully.")
+    except sqlite3.Error as e:
+        logger.error(f"Error creating tables: {e}")
+        cursor.execute("ROLLBACK;")
+        raise
 
 
 def refresh_event_coordinates_view(conn: sqlite3.Connection):
@@ -1137,6 +1138,7 @@ def import_catalog_to_sqlite_from_file(
         raise e
 
     # # Read QuakeML file
+    logger.info(f"Reading catalog from file '{catalog_file}'...")
     catalog = read_events(catalog_file)
 
     # Import the catalog into the SQLite database
