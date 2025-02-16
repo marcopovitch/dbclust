@@ -433,7 +433,7 @@ def wadati_plot(
     plt.figure(figsize=(8, 6))
     plt.scatter(T_P, T_S, label="Observations", color="blue")
     if outliers is not None:
-        plt.scatter(outliers["T_P"], outliers["T_S"], label="Observations", color="red")
+        plt.scatter(outliers["T_P"], outliers["T_S"], label="Outliers", color="red")
     plt.plot(
         T_P,
         slope * T_P + intercept,
@@ -581,7 +581,7 @@ def main():
             polygon_center,
         ) = process_quakeml(args)
 
-    T_P, T_S, evt_ids, sta_names = filter_basic_outliers(T_P, T_S, evt_ids, sta_names)
+    # T_P, T_S, evt_ids, sta_names = filter_basic_outliers(T_P, T_S, evt_ids, sta_names)
 
     if T_P is None:
         logger.warning("Not enough data to estimate Vp/Vs ratio.")
