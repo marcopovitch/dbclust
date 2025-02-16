@@ -2,6 +2,7 @@
 from typing import List
 from typing import Union
 
+import numpy as np
 from obspy.core.event import Event
 
 
@@ -39,7 +40,7 @@ def get_arrival_with_distance_gap_greater_than(
     for i in range(len(dist_list)):
         if dist_list[i] >= dist_max_km / 111.1:
             # get the index of the first arrival with distance >= dist_max_km
-            i_max = i+1
+            i_max = i + 1
             break
     else:
         return []  # no arrival with distance greater than dist_max_km
@@ -78,6 +79,27 @@ def compute_gap(azimuth_list: List[float]) -> Union[float, None]:
         if gap > gap_max:
             gap_max = gap
     return gap_max
+
+
+def compute_azimuthal_gap(azimuths: List[float]) -> Union[float, None]:
+    """Calculate the largest angular gap (Azimuthal Gap)."""
+    azimuths = np.sort(np.array(azimuths))
+    azimuthal_gaps = np.diff(np.append(azimuths, azimuths[0] + 360))
+    return np.max(azimuthal_gaps)
+
+
+def compute_secondary_azimuthal_gap(azimuths: List[float]) -> Union[float, None]:
+    """Calculate the Secondary Azimuthal Gap by removing one station at a time."""
+    if len(azimuths) < 3:
+        return None
+
+    max_secondary_gap = 0
+    for i in range(len(azimuths)):
+        reduced_azimuths = np.delete(azimuths, i)  # Remove one station
+        new_gap = compute_azimuthal_gap(reduced_azimuths)
+        max_secondary_gap = max(max_secondary_gap, new_gap)
+
+    return max_secondary_gap
 
 
 if __name__ == "__main__":
@@ -129,3 +151,8 @@ if __name__ == "__main__":
 
     gap = compute_gap(az)
     print(f"Gap = {gap} degrees")
+
+    gap1 = compute_azimuthal_gap(az)
+    gap2 = compute_secondary_azimuthal_gap(az)
+    print(f"Azimuthal Gap = {gap1} degrees")
+    print(f"Secondary Azimuthal Gap = {gap2} degrees")
