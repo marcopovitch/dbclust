@@ -30,6 +30,7 @@ from obspy.core.event import Magnitude
 from obspy.core.event import Origin
 from tqdm import tqdm
 
+from dbclust.gt5 import compute_gt5_score
 from dbclust.localization_quality import classify_Michele_mod
 
 # Suppress UserWarnings in ObsPy
@@ -59,7 +60,6 @@ SELECT
     m.magnitude,
     m.magnitude_type,
     m.uncertainty AS magnitude_uncertainty,
-    -- m.method_id AS magnitude_method_id,
     o.used_station_count, o.used_phase_count, o.P_count, o.S_count,
     o.minimum_distance AS minimum_distance_deg,
     o.maximum_distance AS maximum_distance_deg,
@@ -76,12 +76,13 @@ SELECT
     e.discrimination_station_count,
     e.discrimination_certainty,
     o.quality, o.quality_factor,
+    o.gt5_status, o.delta_U, o.num_stations_10km, o.num_stations_30km, o.num_stations_150km,
     o.geometry
 FROM
     events AS e
 JOIN
     origins AS o
-    ON e.event_id = o.event_id AND o.preferred = 1  -- INNER JOIN car une origine préférentielle existe toujours
+    ON e.event_id = o.event_id AND o.preferred = 1  -- INNER JOIN because a preferred origin always exists
 LEFT JOIN
     magnitudes AS m
     ON e.event_id = m.event_id AND m.preferred = 1
@@ -393,7 +394,8 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
 
                     # get event_id  of the pick
                     cursor.execute(
-                        "SELECT event_id FROM picks WHERE id = ?", (pick.resource_id.id,)
+                        "SELECT event_id FROM picks WHERE id = ?",
+                        (pick.resource_id.id,),
                     )
                     event_id = cursor.fetchone()[0]
                     logger.warning(
@@ -445,6 +447,22 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     P_count = phase_count(event, origin, "P")
     S_count = phase_count(event, origin, "S")
     erz, erh, err_method = get_erh_erz(origin)
+    num_stations_10km = sum(
+        1
+        for arrival in origin.arrivals
+        if arrival.time_weight and arrival.distance * 111.11 <= 10
+    )
+    num_stations_30km = sum(
+        1
+        for arrival in origin.arrivals
+        if arrival.time_weight and arrival.distance * 111.11 <= 30
+    )
+    num_stations_150km = sum(
+        1
+        for arrival in origin.arrivals
+        if arrival.time_weight and arrival.distance * 111.11 <= 150
+    )
+
     scatter_volume = get_scatter_volume(origin)
     expectation_latitude, expectation_longitude, expectation_depth = (
         get_expectation_localization(origin)
@@ -459,6 +477,30 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     if isinstance(earth_model_id, str) and "/" in earth_model_id:
         earth_model_id = earth_model_id.rsplit("/", 1)[-1]
 
+    # compute GT5 score
+    try:
+        gt5_status, gt5_details = compute_gt5_score(origin)
+        delta_U = gt5_details.get("delta_U", None)
+    except Exception as e:
+        logger.debug(f"Error computing GT5 score: {e}")
+        gt5_status = None
+        delta_U = None
+        gt5_details = None
+
+    # fix azimuthal gap
+    if (q.azimuthal_gap is None or q.azimuthal_gap == 0) and gt5_details:
+        azimuthal_gap = gt5_details.get("primary_gap", None)
+    else:
+        azimuthal_gap = q.azimuthal_gap
+
+    if (
+        q.secondary_azimuthal_gap is None or q.secondary_azimuthal_gap == 0
+    ) and gt5_details:
+        secondary_azimuthal_gap = gt5_details.get("secondary_gap", None)
+    else:
+        secondary_azimuthal_gap = q.secondary_azimuthal_gap
+
+    # compute Michele et al. quality factor
     try:
         quality_factor, quality = classify_Michele_mod(
             rms,
@@ -467,11 +509,12 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
             q.used_phase_count,
             q.minimum_distance,
             q.median_distance,
-            q.azimuthal_gap,
-            q.secondary_azimuthal_gap,
+            azimuthal_gap,
+            secondary_azimuthal_gap,
             scatter_volume,
         )
     except Exception as e:
+        logger.debug(f"Error classifying Michele mod: {e}")
         quality_factor = None
         quality = None
 
@@ -489,13 +532,18 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
             expectation_latitude, expectation_longitude, expectation_depth,
             scatter_volume,
             quality, quality_factor,
+            num_stations_10km,
+            num_stations_30km,
+            num_stations_150km,
+            delta_U,
+            gt5_status,
             evaluation_mode, preferred, geometry
         )
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?,
+            ?, ?, ?, ?, ?, ?,
             ST_GeomFromText(?, 4326)
         )
         """,
@@ -521,14 +569,19 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
             q.minimum_distance,
             q.maximum_distance,
             q.median_distance,
-            q.azimuthal_gap,
-            q.secondary_azimuthal_gap,
+            azimuthal_gap,
+            secondary_azimuthal_gap,
             expectation_latitude,
             expectation_longitude,
             expectation_depth,
             scatter_volume,
             quality,
             quality_factor,
+            num_stations_10km,
+            num_stations_30km,
+            num_stations_150km,
+            delta_U,
+            1 if gt5_status else 0,
             origin.evaluation_mode,
             1 if origin.resource_id == event.preferred_origin().resource_id else 0,
             f"POINT({origin.longitude} {origin.latitude})",
@@ -772,7 +825,9 @@ def create_schema(db_path: str) -> sqlite3.Connection:
     """
     try:
         conn = sqlite3.connect(db_path)
-        conn.execute("PRAGMA journal_mode=WAL;")  # Enable WAL mode for concurrent read/write
+        conn.execute(
+            "PRAGMA journal_mode=WAL;"
+        )  # Enable WAL mode for concurrent read/write
         conn.execute("PRAGMA foreign_keys = ON;")  # Enable foreign key constraints
         conn.enable_load_extension(True)
 
@@ -785,7 +840,9 @@ def create_schema(db_path: str) -> sqlite3.Connection:
         cursor = conn.cursor()
 
         # Initialize SpatiaLite metadata if not already initialized
-        cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spatial_ref_sys';")
+        cursor.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spatial_ref_sys';"
+        )
         if cursor.fetchone()[0] == 0:
             logger.info("Initializing SpatiaLite metadata...")
             cursor.execute("SELECT InitSpatialMetadata();")
@@ -798,13 +855,19 @@ def create_schema(db_path: str) -> sqlite3.Connection:
         columns = [row[1] for row in cursor.fetchall()]
         if "geometry" not in columns:
             logger.info("Adding 'geometry' column to 'origins' table...")
-            cursor.execute("SELECT AddGeometryColumn('origins', 'geometry', 4326, 'POINT', 'XY');")
+            cursor.execute(
+                "SELECT AddGeometryColumn('origins', 'geometry', 4326, 'POINT', 'XY');"
+            )
 
         # Create spatial index if not exists
-        cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='idx_origins_geometry';")
+        cursor.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='idx_origins_geometry';"
+        )
         if cursor.fetchone()[0] == 0:
             try:
-                logger.info("Creating spatial index for 'geometry' column in 'origins' table...")
+                logger.info(
+                    "Creating spatial index for 'geometry' column in 'origins' table..."
+                )
                 cursor.execute("SELECT CreateSpatialIndex('origins', 'geometry');")
             except sqlite3.OperationalError as e:
                 logger.error(f"Error creating spatial index: {e}")
@@ -813,12 +876,12 @@ def create_schema(db_path: str) -> sqlite3.Connection:
         cursor.execute(EVENT_COORDINATES_VIEW)
         logger.info("Database SpatiaLite schema created successfully.")
 
-
         return conn
 
     except Exception as e:
         logger.error(f"Error creating schema: {e}")
         raise
+
 
 def create_tables(cursor: sqlite3.Cursor) -> None:
     """
@@ -901,6 +964,11 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
                 scatter_volume DOUBLE,
                 quality TEXT,
                 quality_factor DOUBLE,
+                num_stations_10km INTEGER,
+                num_stations_30km INTEGER,
+                num_stations_150km INTEGER,
+                delta_U DOUBLE,
+                gt5_status BOOLEAN,
                 evaluation_mode TEXT,
                 preferred BOOLEAN
             );
@@ -959,12 +1027,20 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
         indexes_sql = [
             "CREATE INDEX IF NOT EXISTS idx_origins_event_id ON origins(event_id);",
             "CREATE INDEX IF NOT EXISTS idx_origins_preferred ON origins(preferred);",
+            "CREATE INDEX IF NOT EXISTS idx_origins_event_preferred ON origins(event_id, preferred);",
+            #
+            "CREATE INDEX IF NOT EXISTS idx_magnitudes_event_id ON magnitudes(event_id);",
+            "CREATE INDEX IF NOT EXISTS idx_magnitudes_preferred ON magnitudes(preferred);",
+            "CREATE INDEX IF NOT EXISTS idx_magnitudes_event_preferred ON magnitudes(event_id, preferred);",
+            "CREATE INDEX IF NOT EXISTS idx_magnitudes_origin_id ON magnitudes(origin_id);",
+            "CREATE INDEX IF NOT EXISTS idx_station_magnitudes_origin_id ON station_magnitudes(origin_id);",
+            #
             "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_id ON arrivals(origin_id);",
             "CREATE INDEX IF NOT EXISTS idx_arrivals_time_weight ON arrivals(time_weight);",
+            "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_time_weight ON arrivals(origin_id, time_weight);",
+            #
             "CREATE INDEX IF NOT EXISTS idx_picks_id ON picks(id);",
             "CREATE INDEX IF NOT EXISTS idx_picks_event_id ON picks(event_id);",
-            "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_time_weight ON arrivals(origin_id, time_weight);",
-            "CREATE INDEX IF NOT EXISTS idx_origins_event_preferred ON origins(event_id, preferred);",
         ]
 
         for sql in indexes_sql:
@@ -1207,7 +1283,7 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
         view_name (str): Name of the view to export.
         output_csv (str): Path to the output CSV file.
     """
-    print(f"Exporting view '{view_name}' to '{output_csv}' without 'geometry'...")
+    print(f"Exporting view '{view_name}' to '{output_csv}' ...")
 
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -1227,7 +1303,8 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
         writer = csv.writer(csv_file)
         writer.writerow(column_names)  # Write the header
 
-        for row in rows:
+        # use tqdm to display a progress bar
+        for row in tqdm(rows, desc="Exporting rows to CSV"):
             row_dict = dict(zip(column_names, row))
 
             # Format the 'time' column using UTCDateTime
@@ -1263,6 +1340,7 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
                 ("dist_from_preloc_km", 2),
                 ("discrimination_probability", 2),
                 ("discrimination_certainty", 2),
+                ("delta_U", 2),
             ]:
                 if col in row_dict and row_dict[col] is not None:
                     row_dict[col] = round(row_dict[col], precision)
@@ -1603,6 +1681,16 @@ if __name__ == "__main__":
         help="Add agency names to the event table.",
     )
 
+    #########################
+    # GT5 score computation #
+    #########################
+    parser.add_argument(
+        "--gt5",
+        action="store_true",
+        default=False,
+        help="Compute GT5 score.",
+    )
+
     args = parser.parse_args()
 
     print(args)
@@ -1615,6 +1703,9 @@ if __name__ == "__main__":
                 args.database, files, args.enable_quakeml
             )
     elif args.csv_output:
+        if os.path.exists(args.database) is False:
+            print(f"Database '{args.database}' does not exist.")
+            sys.exit(1)
         # output file should not already exist
         if os.path.exists(args.csv_output):
             print(f"Output file '{args.csv_output}' already exists.")
@@ -1624,15 +1715,24 @@ if __name__ == "__main__":
             args.database, "event_coordinates", args.csv_output
         )
     elif args.event_id_csv:
+        if os.path.exists(args.database) is False:
+            print(f"Database '{args.database}' does not exist.")
+            sys.exit(1)
         # read event_id from csv file using pandas
         print(f"Reading event_id from '{args.event_id_csv}'")
         event_ids = pd.read_csv(args.event_id_csv)["event_id"].tolist()
         export_sqlite_to_quakeml(args.database, args.export_quakeml, event_ids)
     elif args.event_id:
+        if os.path.exists(args.database) is False:
+            print(f"Database '{args.database}' does not exist.")
+            sys.exit(1)
         # export quakeml only for a list of specific events (event_id)
         print(f"Exporting QuakeML for event_id: {args.event_id}")
         export_sqlite_to_quakeml(args.database, args.export_quakeml, args.event_id)
     elif args.export_quakeml:
+        if os.path.exists(args.database) is False:
+            print(f"Database '{args.database}' does not exist.")
+            sys.exit(1)
         # Export QuakeML data to a files by year and month
         print(f"Exporting QuakeML by year and month to {args.export_quakeml}")
 
@@ -1700,21 +1800,39 @@ if __name__ == "__main__":
             )
 
     elif args.add_discrimination:
+        if os.path.exists(args.database) is False:
+            print(f"Database '{args.database}' does not exist.")
+            sys.exit(1)
         # Add discrimination info to the event table
         conn = sqlite3.connect(args.database)
         add_discrimination_info(conn, args.add_discrimination)
         refresh_event_coordinates_view(conn)
         conn.close()
     elif args.add_localization_quality:
+        if os.path.exists(args.database) is False:
+            print(f"Database '{args.database}' does not exist.")
+            sys.exit(1)
         # Add localisation quality info to the event table
         conn = sqlite3.connect(args.database)
         add_compute_localization_quality(conn)
         refresh_event_coordinates_view(conn)
         conn.close()
     elif args.add_agency_names:
+        if os.path.exists(args.database) is False:
+            print(f"Database '{args.database}' does not exist.")
+            sys.exit(1)
         # Add agency names to the event table
         conn = sqlite3.connect(args.database)
         add_agency_names(conn)
+        refresh_event_coordinates_view(conn)
+        conn.close()
+    elif args.gt5:
+        if os.path.exists(args.database) is False:
+            print(f"Database '{args.database}' does not exist.")
+            sys.exit(1)
+        # Compute GT5 score
+        conn = sqlite3.connect(args.database)
+        add_gt5_score(conn)
         refresh_event_coordinates_view(conn)
         conn.close()
     else:
