@@ -4,7 +4,7 @@ from typing import Union
 
 import numpy as np
 from icecream import ic
-from obspy.core.event import Event
+from obspy.core.event import Origin
 
 from dbclust.gap import compute_azimuthal_gap
 from dbclust.gap import compute_secondary_azimuthal_gap
@@ -30,9 +30,8 @@ def compute_delta_U(azimuths: List[float]) -> Union[float, None]:
     return delta_U
 
 
-def is_event_gt5(event: Event) -> bool:
+def compute_gt5_score(origin: Origin) -> Union[bool, dict]:
     """Determine if an event meets the GT5 criteria."""
-    origin = event.preferred_origin() or event.origins[0]
 
     arrivals = [a for a in origin.arrivals if a.time_weight > 0]
     azimuths = []
