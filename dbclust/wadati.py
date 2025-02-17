@@ -36,8 +36,10 @@ def show_dataframes(df: pd.DataFrame, title: str) -> None:
     for col in df.columns:
         table.add_column(col, justify="center")
     for row in df.itertuples(index=False):
-        #table.add_row(*row)
-        table.add_row(*(f"{cell:.2f}" if isinstance(cell, float) else str(cell) for cell in row))
+        # table.add_row(*row)
+        table.add_row(
+            *(f"{cell:.2f}" if isinstance(cell, float) else str(cell) for cell in row)
+        )
     console.print(table)
 
 
@@ -184,7 +186,7 @@ def wadati_catalog(catalog: Catalog) -> tuple:
 
     # Check if there are enough data points for regression
     if len(T_P) < 2:
-        logger.warning("Not enough data to estimate Vp/Vs ratio.")
+        # logger.warning("Not enough data to estimate Vp/Vs ratio.")
         return [], [], [], []
 
     return T_P, T_S, e_ids, station_names
@@ -292,7 +294,7 @@ def wadati_db(db_filename: str, polygon_wkt: str, use_tqdm: bool = True) -> tupl
     event_ids = [row[0] for row in cursor.fetchall()]
 
     if not event_ids:
-        logger.warning("No events found in the specified area.")
+        # logger.warning("No events found in the specified area.")
         return [], [], [], []
 
     T_P = []
@@ -314,7 +316,7 @@ def wadati_db(db_filename: str, polygon_wkt: str, use_tqdm: bool = True) -> tupl
     station_names = np.array(station_names)
 
     if len(T_P) < 2:
-        logger.warning("Not enough data to estimate the Vp/Vs ratio.")
+        # logger.warning("Not enough data to estimate the Vp/Vs ratio.")
         return [], [], [], []
 
     return T_P, T_S, e_ids, station_names
@@ -366,7 +368,7 @@ def get_outliers(
     station_names: np.ndarray,
     slope: float,
     intercept: float,
-) -> tuple:
+) -> tuple:  # (inliers, outliers)
     """
     Get the outliers from the residuals of the linear regression.
     """
@@ -389,9 +391,9 @@ def get_outliers(
 
     # Filter outliers
     outliers = df[(df["residuals"] < lower_bound) | (df["residuals"] > upper_bound)]
-    show_dataframes(outliers, "Outliers based on residuals")
+    inliers = df[(df["residuals"] >= lower_bound) & (df["residuals"] <= upper_bound)]
 
-    return outliers
+    return inliers, outliers
 
 
 # get regressed Vp/Vs ratio from the Wadati diagram
@@ -490,10 +492,10 @@ def process_quakeml(args):
 
 
 def write_results_to_csv(
-    polygon_name, polygon_center, slope, r_value, nb_events, num_points
+    path, polygon_name, polygon_center, slope, r_value, nb_events, num_points
 ):
     """Write Wadati results to a CSV file."""
-    csv_output_filename = f"{polygon_name}.csv"
+    csv_output_filename = os.path.join(path, f"{polygon_name}.csv")
     if os.path.exists(csv_output_filename):
         logger.error(f"File {csv_output_filename} already exists.")
         return
@@ -533,10 +535,22 @@ def parse_arguments():
         required=True,
         help="Path to the YAML configuration file containing polygons",
     )
-    parser.add_argument("-i", "--input", help="Path to the QuakeML catalog file")
     parser.add_argument("-d", "--database", help="Path to the SQLite3 database file")
+    parser.add_argument("-i", "--input", help="Path to the QuakeML catalog file")
     parser.add_argument("-o", "--output", help="Path to the output image file")
-    parser.add_argument("-p", "--polygon", help="Title of the polygon in polygons.yaml")
+    parser.add_argument(
+        "-p", "--polygon", help="Title of the polygon to use in polygons.yaml"
+    )
+    parser.add_argument(
+        "--path",
+        default=".",
+        help="Path to save the output CSV file (default: current directory)",
+    )
+    parser.add_argument(
+        "--no-plot",
+        action="store_true",
+        help="Do not display the Wadati diagram plot",
+    )
     parser.add_argument(
         "--use-tqdm",
         action="store_true",
@@ -558,6 +572,12 @@ def validate_arguments(args):
         logger.error(
             "Please provide either a QuakeML file or an SQLite database, not both."
         )
+        sys.exit(1)
+
+    try:
+        os.makedirs(args.path, exist_ok=True)
+    except OSError as e:
+        logger.error(f"Error creating output directory: {e}")
         sys.exit(1)
 
     return "database" if args.database else "quakeML"
@@ -583,30 +603,50 @@ def main():
 
     # T_P, T_S, evt_ids, sta_names = filter_basic_outliers(T_P, T_S, evt_ids, sta_names)
 
-    if T_P is None:
-        logger.warning("Not enough data to estimate Vp/Vs ratio.")
+    if T_P is None or len(T_P) < 2:
+        if not args.no_plot:
+            logger.warning("Not enough data to estimate Vp/Vs ratio.")
         sys.exit(1)
 
+    # Estimate Vp/Vs ratio
     slope, intercept, r_value = get_regressed_vp_vs(T_P, T_S)
-    outliers = get_outliers(T_P, T_S, evt_ids, sta_names, slope, intercept)
 
-    logger.info(
-        f"Estimated Vp/Vs ratio: {slope:.2f} (R²={r_value**2:.3f}), #events={len(set(evt_ids))}, #points={len(T_P)}"
+    # Filter inliers, outliers
+    df_inliers, df_outliers = get_outliers(
+        T_P, T_S, evt_ids, sta_names, slope, intercept
     )
+    # show_dataframes(df_outliers, "Outliers based on residuals")
+
+
+    # keep only inliers
+    T_P = df_inliers["T_P"].values.astype(float)
+    T_S = df_inliers["T_S"].values.astype(float)
+    evt_ids = df_inliers["event_id"].values
+    sta_names = df_inliers["station"].values
 
     write_results_to_csv(
-        polygon_name, polygon_center, slope, r_value, len(set(evt_ids)), len(T_P)
+        args.path,
+        polygon_name,
+        polygon_center,
+        slope,
+        r_value,
+        len(set(evt_ids)),
+        len(T_P),
     )
 
-    wadati_plot(
-        T_P,
-        T_S,
-        slope=slope,
-        intercept=intercept,
-        output=args.output,
-        title=f"Wadati diagram [{polygon_name} / {len(set(evt_ids))} events]",
-        outliers=outliers,
-    )
+    if not args.no_plot:
+        logger.info(
+            f"Estimated Vp/Vs ratio: {slope:.2f} (R²={r_value**2:.3f}), #events={len(set(evt_ids))}, #points={len(T_P)}"
+        )
+        wadati_plot(
+            T_P,
+            T_S,
+            slope=slope,
+            intercept=intercept,
+            output=args.output,
+            title=f"Wadati diagram [{polygon_name} / {len(set(evt_ids))} events]",
+            outliers=df_outliers,
+        )
 
 
 if __name__ == "__main__":
