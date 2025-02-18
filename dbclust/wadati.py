@@ -34,7 +34,7 @@ def show_dataframes(df: pd.DataFrame, title: str) -> None:
     table = Table(show_header=True, header_style="bold magenta", title=title)
 
     for col in df.columns:
-        table.add_column(col, justify="center")
+        table.add_column(col, justify="center_wgs84")
     for row in df.itertuples(index=False):
         # table.add_row(*row)
         table.add_row(
@@ -466,7 +466,7 @@ def process_database(args):
         if i == -1:
             logger.error(f"Polygon '{args.polygon}' not found in polygons.yaml.")
             sys.exit(1)
-        polygon_center = polygons[i]["center"]
+        polygon_center = polygons[i]["center_grid"]
         polygon_wkt = generate_wkt_from_polygon(polygons[i]["coordinates"])
     else:
         polygon_center = (None, None)
@@ -603,36 +603,40 @@ def main():
 
     # T_P, T_S, evt_ids, sta_names = filter_basic_outliers(T_P, T_S, evt_ids, sta_names)
 
-    if T_P is None or len(T_P) < 2:
+    if T_P is not None and len(T_P) >= 2:
+        # Estimate Vp/Vs ratio
+        slope, intercept, r_value = get_regressed_vp_vs(T_P, T_S)
+
+        # Filter inliers, outliers
+        df_inliers, df_outliers = get_outliers(
+            T_P, T_S, evt_ids, sta_names, slope, intercept
+        )
+        # show_dataframes(df_outliers, "Outliers based on residuals")
+
+
+        # keep only inliers
+        T_P = df_inliers["T_P"].values.astype(float)
+        T_S = df_inliers["T_S"].values.astype(float)
+        evt_ids = df_inliers["event_id"].values
+        sta_names = df_inliers["station"].values
+
+        write_results_to_csv(
+            args.path,
+            polygon_name,
+            polygon_center,
+            slope,
+            r_value,
+            len(set(evt_ids)),
+            len(T_P),
+        )
+    else:
         if not args.no_plot:
-            logger.warning("Not enough data to estimate Vp/Vs ratio.")
-        sys.exit(1)
+            logger.warning("Not enough data to estimate the Vp/Vs ratio.")
+        write_results_to_csv(
+            args.path, polygon_name, polygon_center, np.nan, np.nan, 0, 0
+        )
+        sys.exit(0)
 
-    # Estimate Vp/Vs ratio
-    slope, intercept, r_value = get_regressed_vp_vs(T_P, T_S)
-
-    # Filter inliers, outliers
-    df_inliers, df_outliers = get_outliers(
-        T_P, T_S, evt_ids, sta_names, slope, intercept
-    )
-    # show_dataframes(df_outliers, "Outliers based on residuals")
-
-
-    # keep only inliers
-    T_P = df_inliers["T_P"].values.astype(float)
-    T_S = df_inliers["T_S"].values.astype(float)
-    evt_ids = df_inliers["event_id"].values
-    sta_names = df_inliers["station"].values
-
-    write_results_to_csv(
-        args.path,
-        polygon_name,
-        polygon_center,
-        slope,
-        r_value,
-        len(set(evt_ids)),
-        len(T_P),
-    )
 
     if not args.no_plot:
         logger.info(
