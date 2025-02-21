@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 import argparse
+import glob
 import logging
+import os
 import sys
 import traceback
 import urllib.parse
@@ -17,11 +19,23 @@ from dbclust.localization import show_bulletin
 from dbclust.localization import show_event
 from dbclust.runner import MyTemporaryDirectory
 
-# default logger
+# Default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("reloc_fdsn_event")
 logger.setLevel(logging.DEBUG)
 
+def only_one(inputs):
+    """
+    Check if exactly one of the provided arguments is not None.
+
+    Args:
+        inputs (list): A list of input values to check.
+
+    Returns:
+        bool: True if exactly one input is not None, False otherwise.
+    """
+    non_none_count = sum(1 for item in inputs if item is not None)
+    return non_none_count == 1
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -30,7 +44,7 @@ if __name__ == "__main__":
         "--conf",
         default=None,
         dest="profile_conf_file",
-        help="profile configuration file.",
+        help="dbclust configuration file.",
         type=str,
     )
     parser.add_argument(
@@ -38,7 +52,7 @@ if __name__ == "__main__":
         "--dist-km-cutoff",
         default=None,
         dest="dist_km_cutoff",
-        help="cut off distance in km",
+        help="station cut off distance in km",
         type=float,
     )
     parser.add_argument(
@@ -46,14 +60,21 @@ if __name__ == "__main__":
         "--eventid",
         default=None,
         dest="event_id",
-        help="event id",
+        help="event id to fetch from FDSN and to relocate",
         type=str,
     )
     parser.add_argument(
         "--event",
         default=None,
         dest="event",
-        help="event in QuakeML format",
+        help="event file in QuakeML format",
+        type=str,
+    )
+    parser.add_argument(
+        "--dir",
+        default=None,
+        dest="dir",
+        help="Directory containing QuakeML files to relocate",
         type=str,
     )
     parser.add_argument(
@@ -61,7 +82,7 @@ if __name__ == "__main__":
         "--fdsn-event-profile",
         default=None,
         dest="fdsn_event_profile",
-        help="fdsn event profile",
+        help="fdsn event profile name to use (see conf.yml file)",
         type=str,
     )
     parser.add_argument(
@@ -69,7 +90,7 @@ if __name__ == "__main__":
         "--loglevel",
         default="INFO",
         dest="loglevel",
-        help="loglevel (debug,warning,info,error)",
+        help="set loglevel (debug, warning, info, error)",
         type=str,
     )
     parser.add_argument(
@@ -96,7 +117,14 @@ if __name__ == "__main__":
         help="enable relabeling",
         action="store_true",
     )
-    parser.add_argument("-s", "--scat", help="get xyz scat file", action="store_true")
+    parser.add_argument(
+        "-s",
+        "--scat",
+        default=False,
+        dest="scat",
+        help="get xyz scat file",
+        action="store_true",
+    )
     parser.add_argument(
         "--plot",
         default=False,
@@ -123,7 +151,15 @@ if __name__ == "__main__":
         "--zone",
         default=None,
         dest="zone_name",
-        help="force zone name to use",
+        help="force zone name to use (default is autodetect from event lat/lon)",
+        type=str,
+    )
+    parser.add_argument(
+        "-o",
+        "--output-format",
+        default="QUAKEML",
+        dest="output_format",
+        help="output format for the event file",
         type=str,
     )
 
@@ -135,14 +171,14 @@ if __name__ == "__main__":
     numeric_level = getattr(logging, args.loglevel.upper(), None)
     if not numeric_level:
         logger.error("Invalid loglevel '%s' !", args.loglevel.upper())
-        logger.error("loglevel should be: debug,warning,info,error.")
+        logger.error("loglevel should be: debug, warning, info, error.")
         sys.exit(255)
     else:
         logger.setLevel(numeric_level)
 
     cfg = DBClustConfig(args.profile_conf_file)
 
-    # update configuration
+    # Update configuration
     if args.dist_km_cutoff:
         cfg.relocation.dist_km_cutoff = args.dist_km_cutoff
 
@@ -161,102 +197,126 @@ if __name__ == "__main__":
     if not args.zone_name:
         cfg.quakeml.model_id = None
 
-    if args.relabel:
-        enable_relabel = True
-    else:
-        enable_relabel = False
+    enable_relabel = args.relabel
 
     if args.min_score_threshold_pick_zone:
-        cfg.relocation.min_score_threshold_pick_zone = (
-            args.min_score_threshold_pick_zone
-        )
+        cfg.relocation.min_score_threshold_pick_zone = args.min_score_threshold_pick_zone
 
-    if args.event_id and args.event:
+    # Check event source
+    if not any([args.event_id, args.event, args.dir]):
+        logger.error("Please provide an event source")
+        sys.exit()
+
+    if not only_one([args.event_id, args.event, args.dir]):
         logger.error("Please provide only one event source")
         sys.exit()
 
     if args.fdsn_event_profile:
         cfg.fdsnws_event.set_url_from_service_name(args.fdsn_event_profile)
         ic(cfg.fdsnws_event.get_url())
+    elif args.dir and not os.path.exists(args.dir):
+        logger.error("Please provide a valid directory")
+        sys.exit()
+    elif args.event and not os.path.exists(args.event):
+        logger.error("Please provide a valid event file")
+        sys.exit()
 
-    if args.event:
-        cat = read_events(args.event)
-        if len(cat) == 0:
-            logger.error("No event found in QuakeML file")
-            sys.exit()
-        elif len(cat) > 1:
-            logger.error("More than one event found in QuakeML file")
-            sys.exit()
-        event = cat.events[0]
-
-    output_format = "QUAKEML"
 
     with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
         locator = NllLoc(
             cfg.nll.nlloc_bin,
             cfg.nll.scat2latlon_bin,
             cfg.nll.time_path,
-            #
             tmpdir=tmp_path,
             double_pass=cfg.relocation.double_pass,
-            #
+            gap_dist_max_km=cfg.relocation.gap_dist_max_km,
             P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
             S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
             dist_km_cutoff=cfg.relocation.dist_km_cutoff,
-            use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,  # to be added in the configuration file
-            #
+            use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,
             keep_manual_picks=cfg.relocation.keep_manual_picks,
             nll_min_phase=cfg.nll.min_phase,
             min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
-            #
             quakeml_settings=asdict(cfg.quakeml),
             nll_verbose=cfg.nll.verbose,
             keep_scat=cfg.nll.enable_scatter,
-            #
             zones=cfg.zones,
             force_zone_name=args.zone_name,
             min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
             enable_relabel_pick_zone=enable_relabel,
             enable_cleanup_pick_zone=True,
-            #
             log_level=numeric_level,
         )
 
-        try:
-            if args.event:
-                cat = reloc_fdsn_event(locator, event=event, zone_name=args.zone_name)
-            else:
-                cat = reloc_fdsn_event(
-                    locator,
-                    args.event_id,
-                    cfg.fdsnws_event.get_url(),
-                    zone_name=args.zone_name,
-                )
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            traceback.print_exc()
-            sys.exit()
+        def process_file(f):
+            cat = read_events(f)
+            if len(cat) == 0:
+                logging.error(f"No event found in QuakeML file {f}")
+                return
+            elif len(cat) > 1:
+                logging.error(f"More than one event found in QuakeML file {f}")
+                return
 
-        event_id = cat[0].resource_id.id.split("/")[-1]
+            event = cat[0]
+            o = event.preferred_origin() or event.origins[0]
+            zone, _ = cfg.zones.find_zone(o.latitude, o.longitude)
+            ic(zone["name"])
 
-        for e in cat:
+            cat = reloc_fdsn_event(locator, event=event, zone_name=zone["name"])
+            if len(cat) == 0:
+                logging.error("No relocated event found")
+                return
+            elif len(cat) > 1:
+                logging.error("More than one relocated event found")
+                return
+
+            # merge relocated event with original event
+            e = cat[0]
+            e.origins.extend(event.origins)
+            e.origins.sort(key=lambda x: x.creation_info.creation_time, reverse=True)
+            e.picks.extend(event.picks)
+            e.amplitudes.extend(event.amplitudes)
+            e.magnitudes.extend(event.magnitudes)
+
+            # show relocated event
             show_event(e, "****", header=True)
-            show_bulletin(
-                e,
-                zones=cfg.zones,
-                plot=args.enable_plot,
+            show_bulletin(e, zones=cfg.zones, plot=args.enable_plot)
+
+            event_id = cat[0].resource_id.id.split("/")[-1]
+            file_extension = args.output_format.lower()
+            cat.write(
+                f"{urllib.parse.quote(event_id, safe='')}.{file_extension}",
+                format=args.output_format,
             )
 
-        file_extension = output_format.lower()
-        cat.write(
-            f"{urllib.parse.quote(event_id, safe='')}.{file_extension}",
-            format=output_format,
-        )
-        if locator.scat_file:
+            if locator.scat_file:
+                try:
+                    copyfile(locator.scat_file, f"{urllib.parse.quote(event_id, safe='')}.scat")
+                except Exception as e:
+                    logging.error("Can't get nll scat file (%s)", e)
+
+        if args.event:
+            process_file(args.event)
+        elif args.dir:
+            for f in glob.glob(f"{args.dir}/*.qml"):
+                process_file(f)
+        else:
+            # fetch directly from FDSNWS url
+            filename = os.path.join(tmp_path, args.event_id + ".xml")
+            options="includeallorigins=true&includeallmagnitudes=true&includearrivals=true&nodata=404"
+            url = cfg.fdsnws_event.get_url() + f"/query?{options}&eventid={args.event_id}"
             try:
-                copyfile(
-                    locator.scat_file,
-                    f"{urllib.parse.quote(event_id, safe='')}.scat",
-                )
+                urllib.request.urlretrieve(url, filename)
+            except urllib.error.HTTPError as e:
+                # get 404 error
+                if e.code == 404:
+                    logging.error(f"Event: {args.event_id} not found in FDSNWS")
+                    #logging.error(f"URL: {url}")
+                else:
+                    logging.error(f"Error: {e}")
+                sys.exit()
             except Exception as e:
-                logger.error("Can't get nll scat file (%s)", e)
+                logging.error(f"Error: {e}")
+                traceback.print_exc()
+                sys.exit()
+            process_file(filename)
