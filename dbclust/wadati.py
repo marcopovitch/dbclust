@@ -192,7 +192,9 @@ def wadati_catalog(catalog: Catalog) -> tuple:
     return T_P, T_S, e_ids, station_names
 
 
-def get_wadati_times_from_db(conn: sqlite3.Connection, event_id: str) -> tuple:
+def get_wadati_times_from_db(
+    conn: sqlite3.Connection, event_id: str, method: str = "wadati"
+) -> tuple:
     """
     Retrieve the arrival times of P and S waves for a given event,
     considering only the preferred origin.
@@ -200,11 +202,13 @@ def get_wadati_times_from_db(conn: sqlite3.Connection, event_id: str) -> tuple:
     Args:
         conn: SQLite connection
         event_id (str): ID of the event.
+        method (str): Method to use for the Wadati diagram "chatelain" or "wadati" (default: "wadati").
 
     Returns:
         tuple:
-            Two lists containing the P and S arrival times relative to the origin time,
-            the event ID and station names.
+            Two lists containing the P and S arrival times relative to the origin time if wadata method is used,
+            two lists containing the P and S arrival times if chatelain method is used.
+            The event ID and station names.
     """
 
     cursor = conn.cursor()
@@ -254,15 +258,22 @@ def get_wadati_times_from_db(conn: sqlite3.Connection, event_id: str) -> tuple:
         P_arrival = phases.get("P")
         S_arrival = phases.get("S")
         if P_arrival is not None and S_arrival is not None:
-            T_P.append(P_arrival - T0)
-            T_S.append(S_arrival - T0)
+            if method == "chatelain":
+                T_P.append(P_arrival - T0)
+                T_S.append(S_arrival - P_arrival)
+            else:
+                # Wadati method
+                T_P.append(P_arrival - T0)
+                T_S.append(S_arrival - T0)
             evt_ids.append(event_id)
             sta_names.append(station)
 
     return T_P, T_S, evt_ids, sta_names
 
 
-def wadati_db(db_filename: str, polygon_wkt: str, use_tqdm: bool = True) -> tuple:
+def wadati_db(
+    db_filename: str, polygon_wkt: str, method: str = "wadati", use_tqdm: bool = True
+) -> tuple:
     """
     Compute the Vp/Vs ratio using the Wadati method for events
     located within a given polygon.
@@ -282,11 +293,12 @@ def wadati_db(db_filename: str, polygon_wkt: str, use_tqdm: bool = True) -> tupl
     cursor.execute("SELECT load_extension('mod_spatialite');")
 
     # Retrieve event_ids located within the polygon
+    #    WHERE e.event_type IN ('earthquake', 'quarry blast', 'explosion')
     cursor.execute(
         """
         SELECT DISTINCT event_id
         FROM event_coordinates AS e
-        WHERE e.event_type IN ('earthquake', 'quarry blast', 'explosion')
+        WHERE e.event_type LIKE '%earthquake%'
             AND ST_Contains(GeomFromText(?), geometry)
         """,
         (polygon_wkt,),
@@ -303,7 +315,9 @@ def wadati_db(db_filename: str, polygon_wkt: str, use_tqdm: bool = True) -> tupl
     station_names = []
 
     for event_id in tqdm(event_ids, desc="Processing events", disable=not use_tqdm):
-        tp, ts, evt_ids, sta_names = get_wadati_times_from_db(conn, event_id)
+        tp, ts, evt_ids, sta_names = get_wadati_times_from_db(
+            conn, event_id, method=method
+        )
         T_P.extend(tp)
         T_S.extend(ts)
         e_ids.extend(evt_ids)
@@ -319,6 +333,8 @@ def wadati_db(db_filename: str, polygon_wkt: str, use_tqdm: bool = True) -> tupl
         # logger.warning("Not enough data to estimate the Vp/Vs ratio.")
         return [], [], [], []
 
+    # Warning: if method is "chatelain", T_P and T_S are not relative to the origin time !
+    # T_P is the P-wave arrival time and T_S is  difference between S-wave and P-wave arrival times
     return T_P, T_S, e_ids, station_names
 
 
@@ -421,6 +437,7 @@ def wadati_plot(
     output: str = None,
     title: str = "Wadati diagram",
     outliers: pd.DataFrame = None,
+    method: str = "wadati",
 ) -> None:
     """
     Plot a Wadati diagram from given P and S arrival times.
@@ -432,6 +449,12 @@ def wadati_plot(
         r_value (float): Coefficient of determination (optional).
         output (str): Path to the output image file (optional).
     """
+    if method == "wadati":
+        vp_vs = slope
+    else:
+        # chatelain method
+        vp_vs = 1 + slope
+
     plt.figure(figsize=(8, 6))
     plt.scatter(T_P, T_S, label="Observations", color="blue")
     if outliers is not None:
@@ -440,10 +463,16 @@ def wadati_plot(
         T_P,
         slope * T_P + intercept,
         color="red",
-        label=f"Linear regression (Vp/Vs = {slope:.2f})",
+        label=f"Linear regression (Vp/Vs = {vp_vs:.2f})",
     )
-    plt.xlabel("T_P - T0 (s)")
-    plt.ylabel("T_S - T0 (s)")
+    if method == "wadati":
+        plt.xlabel("T_P - T0 (s)")
+        plt.ylabel("T_S - T0 (s)")
+    else:
+        # chatelain method
+        plt.xlabel("T_P (s)")
+        plt.ylabel("T_S - T_P (s)")
+
     plt.title(title)
     plt.legend()
     plt.grid()
@@ -472,7 +501,12 @@ def process_database(args):
         polygon_center = (None, None)
 
     return (
-        wadati_db(args.database, polygon_wkt=polygon_wkt, use_tqdm=use_tqdm),
+        wadati_db(
+            args.database,
+            polygon_wkt=polygon_wkt,
+            method=args.method,
+            use_tqdm=use_tqdm,
+        ),
         polygon_name,
         polygon_center,
     )
@@ -551,6 +585,12 @@ def parse_arguments():
         action="store_true",
         help="Do not display the Wadati diagram plot",
     )
+    # add method
+    parser.add_argument(
+        "--method",
+        default="wadati",
+        help="Method to use for the Wadati diagram 'chatelain' or 'wadati' (default: 'wadati')",
+    )
     parser.add_argument(
         "--use-tqdm",
         action="store_true",
@@ -572,6 +612,10 @@ def validate_arguments(args):
         logger.error(
             "Please provide either a QuakeML file or an SQLite database, not both."
         )
+        sys.exit(1)
+
+    if args.method not in ["wadati", "chatelain"]:
+        logger.error("Invalid method. Use 'wadati' or 'chatelain'.")
         sys.exit(1)
 
     try:
@@ -613,18 +657,23 @@ def main():
         )
         # show_dataframes(df_outliers, "Outliers based on residuals")
 
-
         # keep only inliers
         T_P = df_inliers["T_P"].values.astype(float)
         T_S = df_inliers["T_S"].values.astype(float)
         evt_ids = df_inliers["event_id"].values
         sta_names = df_inliers["station"].values
 
+        if args.method == "wadati":
+            vp_vs = slope
+        else:
+            # chatelain method
+            vp_vs = 1 + slope
+
         write_results_to_csv(
             args.path,
             polygon_name,
             polygon_center,
-            slope,
+            vp_vs,
             r_value,
             len(set(evt_ids)),
             len(T_P),
@@ -637,10 +686,9 @@ def main():
         )
         sys.exit(0)
 
-
     if not args.no_plot:
         logger.info(
-            f"Estimated Vp/Vs ratio: {slope:.2f} (R²={r_value**2:.3f}), #events={len(set(evt_ids))}, #points={len(T_P)}"
+            f"Estimated Vp/Vs ratio: {vp_vs:.2f} (R²={r_value**2:.3f}), #events={len(set(evt_ids))}, #points={len(T_P)}"
         )
         wadati_plot(
             T_P,
@@ -648,8 +696,9 @@ def main():
             slope=slope,
             intercept=intercept,
             output=args.output,
-            title=f"Wadati diagram [{polygon_name} / {len(set(evt_ids))} events]",
+            title=f"{args.method} diagram [{polygon_name} / {len(set(evt_ids))} events]",
             outliers=df_outliers,
+            method=args.method,
         )
 
 
