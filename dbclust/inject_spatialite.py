@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 import warnings
 import xml.etree.ElementTree as ET
 import zlib
@@ -316,6 +317,21 @@ def to_datetime(utc_datetime: UTCDateTime) -> datetime:
     )
 
 
+def execute_with_retry(conn, operation, retries=5, delay=0.1):
+    """Execute an operation with retry logic in case of database lock."""
+    while retries > 0:
+        try:
+            operation()
+            return
+        except sqlite3.OperationalError as e:
+            if 'locked' in str(e):
+                retries -= 1
+                time.sleep(delay)
+            else:
+                raise
+    raise sqlite3.OperationalError("Database is locked after multiple attempts")
+
+
 def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
     """
     Injects an earthquake event and its related data into a SpatiaLite-enabled SQLite database.
@@ -331,7 +347,7 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
     conn.enable_load_extension(True)
     conn.load_extension("mod_spatialite")
 
-    try:
+    def insert_event_data():
         with conn:
             logger.debug(f"Inserting event {event.resource_id.id}.")
 
@@ -435,6 +451,8 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
 
             logger.debug(f"Event {event.resource_id.id} successfully inserted.")
 
+    try:
+        execute_with_retry(conn, insert_event_data)
     except Exception as e:
         logger.error(f"Failed to insert event {event.resource_id.id}: {e}")
         raise
@@ -1025,6 +1043,10 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
 
         # Create indexes to speed up queries
         indexes_sql = [
+            #
+            "CREATE INDEX IF NOT EXISTS idx_events_event_id ON events(event_id);",
+            #
+            "CREATE INDEX IF NOT EXISTS idx_origins_id ON origins(id);",
             "CREATE INDEX IF NOT EXISTS idx_origins_event_id ON origins(event_id);",
             "CREATE INDEX IF NOT EXISTS idx_origins_preferred ON origins(preferred);",
             "CREATE INDEX IF NOT EXISTS idx_origins_event_preferred ON origins(event_id, preferred);",
@@ -1035,12 +1057,17 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             "CREATE INDEX IF NOT EXISTS idx_magnitudes_origin_id ON magnitudes(origin_id);",
             "CREATE INDEX IF NOT EXISTS idx_station_magnitudes_origin_id ON station_magnitudes(origin_id);",
             #
+            "CREATE INDEX IF NOT EXISTS idx_arrivals_pick_id ON arrivals(pick_id);",
             "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_id ON arrivals(origin_id);",
             "CREATE INDEX IF NOT EXISTS idx_arrivals_time_weight ON arrivals(time_weight);",
             "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_time_weight ON arrivals(origin_id, time_weight);",
             #
             "CREATE INDEX IF NOT EXISTS idx_picks_id ON picks(id);",
             "CREATE INDEX IF NOT EXISTS idx_picks_event_id ON picks(event_id);",
+            "CREATE INDEX IF NOT EXISTS idx_picks_evaluation_mode ON picks(evaluation_mode);",
+            "CREATE INDEX IF NOT EXISTS idx_picks_phase_hint ON picks(phase_hint);",
+            "CREATE INDEX IF NOT EXISTS idx_picks_agency_id ON picks(agency_id);",
+            "CREATE INDEX IF NOT EXISTS idx_picks_probability ON picks(probability);",
         ]
 
         for sql in indexes_sql:
@@ -1455,7 +1482,7 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
         print(f"Error reading CSV file '{csv_file}': {e}")
         return
 
-    # check if the columns exist
+    # check if the columns exist, and print the missing columns
     if not all(
         col in discrimination_df.columns
         for col in [
@@ -1466,8 +1493,11 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
             "hdq50mad",  # discrimination_certainty
         ]
     ):
+        # print the missing columns
         print(f"CSV file '{csv_file}' is missing required columns.")
         return
+
+    print(f"Adding discrimination info from '{csv_file}' ...")
 
     # Update the event table with discrimination info
     for index, row in discrimination_df.iterrows():
@@ -1492,6 +1522,8 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
         else:
             # TODO: fix this in spectrocnn when station_count is very low
             event_type = "unknown"
+
+        print(f"event_id: {event_id}, event_type: {event_type}, probability: {probability}, station_count: {station_count}, certainty: {certainty}")
 
         cursor.execute(
             """
@@ -1836,5 +1868,9 @@ if __name__ == "__main__":
         refresh_event_coordinates_view(conn)
         conn.close()
     else:
-        parser.print_help()
+        # Create the database schema
+        try:
+            conn = create_schema(args.database)
+        except Exception as e:
+            logger.error(f"Error creating schema: {e}")
         sys.exit(1)
