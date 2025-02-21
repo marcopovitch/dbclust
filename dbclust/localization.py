@@ -57,7 +57,9 @@ from shapely.geometry import Point
 
 from dbclust.config import Zone
 from dbclust.config import Zones
+from dbclust.gap import compute_azimuthal_gap
 from dbclust.gap import compute_gap
+from dbclust.gap import compute_secondary_azimuthal_gap
 from dbclust.gap import get_arrival_with_distance_gap_greater_than
 from dbclust.localization_quality import classify_event
 from dbclust.plot import plot_arrival_time
@@ -218,18 +220,21 @@ class NllLoc(object):
         return np.array([np.count_nonzero(x >= min_count) for x in count]).sum()
 
     def reloc_event(self, event: Event) -> Catalog:
-        """Event re-localization using a locator
+        """Event re-localization using a locator.
+
+        Args:
+            event (Event): The seismic event to be re-localized.
 
         Returns:
-            Catalog
+            Catalog: A catalog containing the re-localized event.
         """
-
         myevent = copy.deepcopy(event)
-
         show_event(myevent, "****", header=True)
         orig = myevent.preferred_origin()
+        mypicks = []
+
         for arrival in orig.arrivals:
-            pick = get_pick_from_arrival(myevent, arrival)
+            pick = arrival.pick_id.get_referred_object()
             if pick is None:
                 continue
 
@@ -238,49 +243,45 @@ class NllLoc(object):
             pick.phase_hint = arrival.phase
 
             if self.force_uncertainty:
-                if "P" in arrival.phase.upper():
+                phase_upper = arrival.phase.upper()
+                if "P" in phase_upper:
                     pick.time_errors.uncertainty = self.P_uncertainty
-                elif "S" in arrival.phase.upper():
+                elif "S" in phase_upper:
                     pick.time_errors.uncertainty = self.S_uncertainty
 
-            # do not use pick with deactivated arrival
-            # as it is not yet handled by NLLoc,
-            # unless use_deactivated_arrivals is True by user.
-            if self.use_deactivated_arrivals == False and isclose(
+            # Remove picks associated with deactivated arrivals unless explicitly allowed.
+            if not self.use_deactivated_arrivals and isclose(
                 arrival.time_weight, 0, abs_tol=time_weight_tolerance
             ):
-                myevent.picks.remove(pick)
                 continue
 
-            # filter out station's arrivals if distance > dist_max
-            if (self.dist_km_cutoff is not None) and (
-                arrival.distance > self.dist_km_cutoff / 111.0
+            # Remove arrivals from stations if their distance exceeds the cutoff.
+            if self.dist_km_cutoff is not None and arrival.distance > (
+                self.dist_km_cutoff / 111.0
             ):
-                myevent.picks.remove(pick)
+                continue
+
+            mypicks.append(pick)
+        myevent.picks = mypicks
 
         self.nll_obs_file = os.path.join(self.tmpdir, "nll_obs.txt")
         logger.debug(
-            f"Writing nll_obs file to {self.nll_obs_file} in {self.tmpdir} directory."
+            f"Writing NLLoc observation file to {self.nll_obs_file} in {self.tmpdir} directory."
         )
 
-        # NLLoc format only uses picks information but not arrivals
+        # NLLoc format only requires pick information, not arrivals.
         myevent.write(self.nll_obs_file, format="NLLOC_OBS")
         cat = self.nll_localisation(picks=myevent.picks)
 
-        # add previous event or origin back to this event
+        # Add the previous event or origin back to this event.
         if cat:
-            # add origin, phase and piks to the event
             new_loc = cat.events[0]
             new_loc.origins.append(orig)
-            new_loc.picks += event.picks
+            new_loc.picks.extend(event.picks)
         else:
             cat = Catalog()
             cat.append(event)
-            # logger.warning("relocation failed")
-            # raise a warning
-            logger.warning("relocation failed")
-            # warnings.simplefilter('always')
-            # warnings.warn("relocation failed", UserWarning)
+            logger.warning("Relocation failed")
 
         return cat
 
@@ -387,14 +388,17 @@ class NllLoc(object):
                     vel_file, picks_file, sta_file, self.quakeml_settings
                 )
             else:
-                # pyocto has not generated a preloc
+                # pyocto has not generated a preloc (or used to relocate the event)
                 # due to clusters obtained from dbscan only.
                 # Use only the default template and velocity model
                 if not self.nll_default_template:
-                    logger.error(
-                        "No preloc file found and no default nll template provided !"
-                    )
-                    return Catalog()
+                    if self.nll_template:
+                        self.nll_default_template = self.nll_template
+                    else:
+                        logger.error(
+                            "No preloc file found and no default nll template provided !"
+                        )
+                        return Catalog()
                 nll_template = self.nll_default_template
                 logger.info(
                     f"No preloc file found. Using default nll template and model {os.path.basename(nll_template)}"
@@ -1140,6 +1144,11 @@ class NllLoc(object):
         df_polygons = zone.picks_delimiter
         sigma = zone.sigma
 
+        cleaned_by_polygon = 0
+        cleaned_by_nll = 0
+        cleaned_by_gap_dist = 0
+        cleaned_by_cutoff = 0
+
         if df_polygons.empty:
             logger.warning("No polygon defined in zone. Can't cleanup picks.")
             # ic(zone)
@@ -1166,6 +1175,7 @@ class NllLoc(object):
                 )
                 pick_to_delete.append(pick)
                 arrival_to_delete.append(arrival)
+                cleaned_by_nll += 1
                 continue
 
             # remove pick with distance > dist_km_cutoff
@@ -1179,6 +1189,7 @@ class NllLoc(object):
                 )
                 pick_to_delete.append(pick)
                 arrival_to_delete.append(arrival)
+                cleaned_by_cutoff += 1
                 continue
 
             if df_polygons.empty:
@@ -1214,6 +1225,7 @@ class NllLoc(object):
                     relabel[relabel_key] = comment
                     pick_to_delete.append(pick)
                     arrival_to_delete.append(arrival)
+                    cleaned_by_polygon += 1
                     # Fixme: keep arrival but set time_weight = 0 and propagate it to the next localization
                     # arrival.time_weight = 0
                     continue
@@ -1344,7 +1356,9 @@ class NllLoc(object):
             event.picks.remove(p)
 
         logger.info(
-            f"Removed arrivals with time_weight set to 0 (by nll, gap_dist, cutoff or polygons): {len(arrival_to_delete)} arrivals"
+            f"Removed arrivals with time_weight set to 0 "
+            f"(by nll ({cleaned_by_nll}), cutoff ({cleaned_by_cutoff}) or polygons ({cleaned_by_polygon})): "
+            f"{len(arrival_to_delete)} arrivals"
         )
 
         # update "stations used" with weight > 0
@@ -1467,11 +1481,37 @@ def show_event(event: Event, txt: str = "", header: bool = False):
 
 
 def show_origin(o: Origin, txt: str) -> None:
-    if hasattr(o, "quality") and o.quality.azimuthal_gap:
-        azimuthal_gap = f"{o.quality.azimuthal_gap:.1f}"
+    # if hasattr(o, "quality") and o.quality.azimuthal_gap:
+    #     azimuthal_gap = f"{o.quality.azimuthal_gap:.1f}"
+    # else:
+    #     # logger.warning("No azimuthal_gap defined !")
+    #     azimuthal_gap = "-"
+
+    azimuthal_gap = o.get("quality", {}).get("azimuthal_gap", None)
+    if not azimuthal_gap:
+        azimuths = [
+            arrival.azimuth for arrival in o.arrivals if arrival.time_weight > 0
+        ]
+        azimuthal_gap = compute_azimuthal_gap(azimuths)
+        if azimuthal_gap:
+            azimuthal_gap = f"{azimuthal_gap:.1f}"
+        else:
+            azimuthal_gap = "-"
     else:
-        # logger.warning("No azimuthal_gap defined !")
-        azimuthal_gap = "-"
+        azimuthal_gap = f"{azimuthal_gap:.1f}"
+
+    secondary_azimuthal_gap = o.get("quality", {}).get("secondary_azimuthal_gap", None)
+    if not secondary_azimuthal_gap:
+        azimuths = [
+            arrival.azimuth for arrival in o.arrivals if arrival.time_weight > 0
+        ]
+        secondary_azimuthal_gap = compute_secondary_azimuthal_gap(azimuths)
+        if secondary_azimuthal_gap:
+            secondary_azimuthal_gap = f"{secondary_azimuthal_gap:.1f}"
+        else:
+            secondary_azimuthal_gap = "-"
+    else:
+        secondary_azimuthal_gap = f"{secondary_azimuthal_gap:.1f}"
 
     print(
         ", ".join(
@@ -1483,15 +1523,11 @@ def show_origin(o: Origin, txt: str) -> None:
                     f"{o.latitude:.3f}",
                     f"{o.longitude:.3f}",
                     f"{o.depth:.1f}",
-                    o.quality.standard_error,
+                    f"{o.quality.standard_error:.3f}",
                     o.quality.used_station_count,
                     o.quality.used_phase_count,
                     azimuthal_gap,
-                    (
-                        f"{o.quality.secondary_azimuthal_gap:.1f}"
-                        if o.quality.secondary_azimuthal_gap
-                        else "-"
-                    ),
+                    secondary_azimuthal_gap,
                     o.earth_model_id.id.split("/")[-1],
                     o.method_id.id.split("/")[-1],
                 ],
@@ -1553,7 +1589,8 @@ def show_bulletin(
             arrival.time_weight, 0, abs_tol=time_weight_tolerance
         ):
             used = False
-            print(f"arrival {arrival.pick_id} time_weight is {arrival.time_weight}")
+            wfid = get_pick_from_arrival(event, arrival).waveform_id.get_seed_string()
+            print(f"arrival: {wfid} {arrival.phase}, {arrival.pick_id} time_weight is {arrival.time_weight}")
         else:
             used = True
         pick = get_pick_from_arrival(event, arrival)
@@ -1624,7 +1661,7 @@ def show_bulletin(
         )
         # print(f"{station_name} {phase_name} {arrival.time_weight} {arrival.time_residual} {arrival.distance} {pick.time} {pick.evaluation_mode}")
 
-    print(Event.__str__(event))
+    # print(Event.__str__(event))
     Q, QS, QD, classif_txt = classify_event(event, debug=True)
     print(f"quality: {Q} ({classif_txt}), QS={QS}, QD={QD}")
     print(table)
@@ -1648,13 +1685,14 @@ def reloc_fdsn_event(
     zone_name: str = None,
 ) -> Catalog:
     """
-    Retrieves earthquake event information from a FDSN web service
+    Retrieves earthquake event information from a FDSN web service or an event object
     and performs relocation using a locator object.
 
     Args:
         locator (Locator): The locator object used for event relocation.
         eventid (str): The ID of the earthquake event.
         fdsnws (str): The URL of the FDSN web service.
+        event (Event): The earthquake event object.
         zone_name (str): The name of the zone to be used for relocation (forced).
 
     Returns:
@@ -1694,9 +1732,8 @@ def reloc_fdsn_event(
             zone = locator.zones.get_zone_from_name(zone_name)
         else:
             # Find the zone and set the velocity model and the nll template
-            zone, _ = locator.zones.find_zone(
-                event.origins[0].latitude, event.origins[0].longitude
-            )
+            origin = event.preferred_origin() or event.origins[0]
+            zone, _ = locator.zones.find_zone(origin.latitude, origin.longitude)
         if zone.empty:
             locator.zones.show_zones()
             raise ValueError(f"Zone {zone_name} not found.")
