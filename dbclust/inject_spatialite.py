@@ -779,7 +779,7 @@ def export_sqlite_to_quakeml(
                 WHERE e.time >= ? AND e.time < ?;
                 """
                 if start_time and end_time
-                else "SELECT q.data FROM quakeml;"
+                else "SELECT q.data FROM quakeml q;"
             )
 
             for row in cursor.execute(
@@ -1797,7 +1797,7 @@ if __name__ == "__main__":
             end_time = end_time.to_pydatetime()
         else:
             # Adjust args.end_time to the end of the month if provided
-            end_time = pd.to_datetime(end_time.split(" ")[0]) + pd.offsets.MonthBegin(1)
+            end_time = pd.to_datetime(args.end_time.split(" ")[0]) + pd.offsets.MonthBegin(1)
             end_time = end_time.to_pydatetime()
 
         # Loop over months: each month starts on the 1st at 00:00:00
