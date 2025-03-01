@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FDSN Event Search</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f9ff;
+            background-image: linear-gradient(120deg, #e0f7fa, #bbdefb);
+        }
+
+        select {
+            height: 38px; /* Même hauteur que les champs de saisie */
+            padding: 10px;
+        }
+
+        .container {
+            width: 90%;
+            max-width: 500px;
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0px 8px 20px rgba(0, 0, 0, 0.15);
+            margin-top: 20px;
+            border-top: 5px solid #42a5f5;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .logo {
+            width: 80px;
+            height: auto;
+            margin-right: 15px;
+        }
+
+        h2 {
+            margin: 0;
+            color: #1976d2;
+            flex-grow: 1;
+        }
+
+        fieldset {
+            margin-bottom: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            border: 2px solid #e3f2fd;
+            background-color: #f5f9ff;
+        }
+
+        legend {
+            font-weight: bold;
+            color: #1976d2;
+            padding: 0 10px;
+            background-color: white;
+            border-radius: 5px;
+        }
+
+        label {
+            display: block;
+            margin-top: 10px;
+            font-weight: bold;
+            color: #455a64;
+        }
+
+        input, select {
+            width: calc(100% - 16px);
+            padding: 10px;
+            margin-top: 5px;
+            border: 2px solid #bbdefb;
+            border-radius: 8px;
+            box-sizing: border-box;
+        }
+
+        button {
+            margin-top: 20px;
+            padding: 12px;
+            width: 100%;
+            border: none;
+            background: linear-gradient(135deg, #42a5f5, #2196f3);
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: linear-gradient(135deg, #2196f3, #1976d2);
+        }
+
+        #constructed-url {
+            margin-top: 15px;
+            font-size: 14px;
+            background-color: #e3f2fd;
+            padding: 12px;
+            border-radius: 8px;
+            word-break: break-word;
+        }
+
+        #constructed-url a {
+            color: #1976d2;
+            text-decoration: none;
+            font-weight: bold;
+        }
+
+        #constructed-url a:hover {
+            text-decoration: underline;
+            color: #0d47a1;
+        }
+
+        pre {
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: "Consolas", monospace;
+            color: #333;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="header">
+            <img src="/static/images/dbclust-logo.png" alt="DBClust logo" class="logo">
+            <h2>Search for Seismic Events</h2>
+        </div>
+
+        <form id="search-form">
+            <fieldset>
+                <legend>⏱️ Time Constraints</legend>
+                <label for="starttime">Start Date:</label>
+                <input type="datetime-local" id="starttime" name="starttime">
+
+                <label for="endtime">End Date:</label>
+                <input type="datetime-local" id="endtime" name="endtime">
+            </fieldset>
+
+            <fieldset>
+                <legend>🌍 Geographic Constraints</legend>
+
+                <label for="geo_search_type">Search Type:</label>
+                <select id="geo_search_type" onchange="toggleGeoInputs()">
+                    <option value="bounding-box">Bounding Box</option>
+                    <option value="circular">Circular Search</option>
+                </select>
+
+                <!-- Bounding Box Inputs -->
+                <div id="bbox-inputs">
+                    <label for="minlatitude">Min Latitude:</label>
+                    <input type="number" step="0.01" id="minlatitude" name="minlatitude">
+
+                    <label for="maxlatitude">Max Latitude:</label>
+                    <input type="number" step="0.01" id="maxlatitude" name="maxlatitude">
+
+                    <label for="minlongitude">Min Longitude:</label>
+                    <input type="number" step="0.01" id="minlongitude" name="minlongitude">
+
+                    <label for="maxlongitude">Max Longitude:</label>
+                    <input type="number" step="0.01" id="maxlongitude" name="maxlongitude">
+                </div>
+
+                <!-- Circular Search Inputs -->
+                <div id="circle-inputs" class="hidden">
+                    <label for="latitude">Center Latitude:</label>
+                    <input type="number" step="0.01" id="latitude" name="latitude">
+
+                    <label for="longitude">Center Longitude:</label>
+                    <input type="number" step="0.01" id="longitude" name="longitude">
+
+                    <label for="minradius">Min Radius (°):</label>
+                    <input type="number" step="0.01" id="minradius" name="minradius">
+
+                    <label for="maxradius">Max Radius (°):</label>
+                    <input type="number" step="0.01" id="maxradius" name="maxradius">
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>🔍 Service Specific Constraints</legend>
+
+                <label for="eventtype">Event Type:</label>
+                <select id="eventtype" name="eventtype" onchange="updateURL()">
+                    <option value="">All events</option>
+                    <option value="earthquake">Earthquake</option>
+                    <option value="quarry blast">Quarry Blast</option>
+                    <option value="explosion">Explosion</option>
+                </select>
+
+                <label for="eventid">Event ID:</label>
+                <input type="text" id="eventid" name="eventid">
+
+                <label for="minmagnitude">Min Magnitude:</label>
+                <input type="number" step="0.1" id="minmagnitude" name="minmagnitude">
+
+                <label for="maxmagnitude">Max Magnitude:</label>
+                <input type="number" step="0.1" id="maxmagnitude" name="maxmagnitude">
+
+                <label for="format">Format:</label>
+                <select id="format" name="format">
+                    <option value="text">Text (| delimited)</option>
+                    <option value="csv">Text (, delimited)</option>
+                    <option value="html">html table</option>
+                    <option value="json">json</option>
+                    <option value="geojson">geojson</option>
+                    <option value="quakeml">quakeml</option>
+                </select>
+            </fieldset>
+
+
+            <button type="button" onclick="submitSearch()">🔎 Search Events</button>
+        </form>
+
+        <h3>Request URL:</h3>
+        <div id="constructed-url">The URL will appear here...</div>
+
+        <h3>Results:</h3>
+        <pre id="results">The results will be displayed here...</pre>
+    </div>
+
+    <script>
+        function toggleGeoInputs() {
+            const type = document.getElementById("geo_search_type").value;
+            document.getElementById("bbox-inputs").classList.toggle("hidden", type !== "bounding-box");
+            document.getElementById("circle-inputs").classList.toggle("hidden", type !== "circular");
+        }
+
+        function submitSearch() {
+            const params = new URLSearchParams(new FormData(document.getElementById('search-form')));
+            const url = `${window.location.origin}/fdsnws/event/1/query?${params.toString()}`;
+            document.getElementById('constructed-url').innerHTML = `<a href="${url}" target="_blank">${url}</a>`;
+        }
+
+        document.getElementById('search-form').addEventListener('input', submitSearch);
+    </script>
+
+</body>
+</html>
