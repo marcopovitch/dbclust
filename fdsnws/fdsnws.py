@@ -3,50 +3,59 @@ import json
 import sqlite3
 from typing import Optional
 
+from export_csv import generate_csv_response
+from export_quakeml import generate_quake_response
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
-from fastapi.requests import Request
+from fastapi import Request
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fdsnws_csv import generate_csv_response
 from tabulate import tabulate
 
-
-DB_PATH = "/Users/marc/Data/DBClust/france.2016.01/quakeml_2010-2018_run2/MTE_2010-2018.db"  # Chemin vers ta base de données SQLite
+# Path to SQLite database
+DB_PATH = (
+    "/Users/marc/Data/DBClust/france.2016.01/quakeml_2010-2018_run2/MTE_2010-2018.db"
+)
 
 app = FastAPI()
-templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+    # Connect to the SQLite database in read-only mode
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, check_same_thread=False)
     conn.enable_load_extension(True)
     conn.load_extension("mod_spatialite")
-    conn.row_factory = sqlite3.Row  # Permet d'obtenir un dictionnaire au lieu d'un tuple
+    conn.row_factory = sqlite3.Row  # Allows getting a dictionary instead of a tuple
     return conn
+
 
 @app.get("/")
 def redirect_to_builder():
     return RedirectResponse(url="/fdsnws/event/1/builder")
 
+
 @app.get("/fdsnws/event/1/builder")
 def event_builder(request: Request):
     return templates.TemplateResponse("builder.html", {"request": request})
 
+
 @app.get("/fdsnws/event/1/query")
-def query_events(
+async def query_events(
+    request: Request,
     starttime: Optional[str] = Query(None),
     endtime: Optional[str] = Query(None),
-    minlatitude: Optional[str] = Query(None),  # Changed to Optional[str]
-    maxlatitude: Optional[str] = Query(None),  # Changed to Optional[str]
-    minlongitude: Optional[str] = Query(None),  # Changed to Optional[str]
-    maxlongitude: Optional[str] = Query(None),  # Changed to Optional[str]
+    minlatitude: Optional[float] = Query(None),
+    maxlatitude: Optional[float] = Query(None),
+    minlongitude: Optional[float] = Query(None),
+    maxlongitude: Optional[float] = Query(None),
     latitude: Optional[float] = Query(None),
     longitude: Optional[float] = Query(None),
-    minradius: Optional[float] = Query(0),  # Défaut à 0 si non défini
+    minradius: Optional[float] = Query(0),
     maxradius: Optional[float] = Query(None),
     mindepth: Optional[float] = Query(None),
     maxdepth: Optional[float] = Query(None),
@@ -58,129 +67,125 @@ def query_events(
     eventid: Optional[str] = Query(None),
     format: Optional[str] = Query("json"),
     nodata: int = Query(404),
-    request: Request = None,  # Ajout de la requête pour Jinja2
 ):
     try:
-        conn = get_db_connection()
-    except sqlite3.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {e}")
-    cur = conn.cursor()
+        with get_db_connection() as conn:
+            cur = conn.cursor()
 
-    # Récupérer les informations sur les colonnes de la table
-    cur.execute("PRAGMA table_info(event_coordinates);")
-    columns = cur.fetchall()
-    column_names = [column[1] for column in columns]
-    # Exclure 'geometry' des colonnes sélectionnées
-    columns_to_select = [col for col in column_names if col != "geometry"]
+            # Retrieve columns from the table
+            cur.execute("PRAGMA table_info(event_coordinates);")
+            columns = cur.fetchall()
+            column_names = [column["name"] for column in columns]
 
-    # Convert empty string values to None for optional numeric params
-    minlatitude = float(minlatitude) if minlatitude not in (None, "") else None
-    maxlatitude = float(maxlatitude) if maxlatitude not in (None, "") else None
-    minlongitude = float(minlongitude) if minlongitude not in (None, "") else None
-    maxlongitude = float(maxlongitude) if maxlongitude not in (None, "") else None
-
-    # Prepare the basic SQL query
-    query = "SELECT " + ", ".join(columns_to_select) + " FROM event_coordinates WHERE 1=1"
-    params = {}
-
-    # Time
-    if starttime:
-        query += " AND time >= :starttime"
-        params["starttime"] = starttime
-    if endtime:
-        query += " AND time <= :endtime"
-        params["endtime"] = endtime
-
-    # Bounding Box
-    if minlatitude is not None:
-        query += " AND latitude >= :minlatitude"
-        params["minlatitude"] = minlatitude
-    if maxlatitude is not None:
-        query += " AND latitude <= :maxlatitude"
-        params["maxlatitude"] = maxlatitude
-    if minlongitude is not None:
-        query += " AND longitude >= :minlongitude"
-        params["minlongitude"] = minlongitude
-    if maxlongitude is not None:
-        query += " AND longitude <= :maxlongitude"
-        params["maxlongitude"] = maxlongitude
-
-    # Circular Search
-    if latitude is not None and longitude is not None:
-        query = f"""
-            SELECT {', '.join(columns_to_select)}
-            FROM event_coordinates
-            WHERE ST_Intersects(
-                geometry,
-                ST_Buffer(
-                    MakePoint(:longitude, :latitude, 4326),
-                    :maxradius
-                )
+            # Select columns based on output format
+            columns_to_select = (
+                ["event_id"]
+                if format == "quakeml"
+                else [col for col in column_names if col != "geometry"]
             )
-            AND ST_Distance(
-                geometry,
-                MakePoint(:longitude, :latitude, 4326)
-            ) BETWEEN :minradius AND :maxradius
-        """
-        params["latitude"] = latitude
-        params["longitude"] = longitude
-        if minradius is not None:
-            params["minradius"] = minradius
-        if maxradius is not None:
-            params["maxradius"] = maxradius
-        elif minradius == 0:  # Special handling for minradius == 0
-            query = query.replace("BETWEEN :minradius AND :maxradius", ">= 0")
-            params["minradius"] = 0
 
-    # Depth filters
-    if mindepth is not None:
-        query += " AND depth_km >= :mindepth"
-        params["mindepth"] = mindepth
-    if maxdepth is not None:
-        query += " AND depth_km <= :maxdepth"
-        params["maxdepth"] = maxdepth
+            # Start of the SQL query
+            query = f"SELECT {', '.join(columns_to_select)} FROM event_coordinates WHERE 1=1"
+            params = {}
 
-    if eventtype:
-        query += " AND event_type = :eventtype"
-        params["eventtype"] = eventtype
+            # Temporal filters
+            if starttime:
+                query += " AND time >= :starttime"
+                params["starttime"] = starttime
+            if endtime:
+                query += " AND time <= :endtime"
+                params["endtime"] = endtime
 
-    if eventid:
-        query += " AND event_id = :eventid"
-        params["eventid"] = eventid
+            # Bounding box filters
+            if minlatitude is not None:
+                query += " AND latitude >= :minlatitude"
+                params["minlatitude"] = minlatitude
+            if maxlatitude is not None:
+                query += " AND latitude <= :maxlatitude"
+                params["maxlatitude"] = maxlatitude
+            if minlongitude is not None:
+                query += " AND longitude >= :minlongitude"
+                params["minlongitude"] = minlongitude
+            if maxlongitude is not None:
+                query += " AND longitude <= :maxlongitude"
+                params["maxlongitude"] = maxlongitude
 
-    # Optional Filters
-    if includeallorigins or includeallmagnitudes or includearrivals or includepicks:
-        # These filters are all defaulted to True, so we don’t need to add any specific conditions.
-        pass
+            # Circular search
+            if latitude is not None and longitude is not None and maxradius is not None:
+                query += """
+                    AND ST_Intersects(
+                        geometry,
+                        ST_Buffer(
+                            MakePoint(:longitude, :latitude, 4326),
+                            :maxradius
+                        )
+                    )
+                    AND ST_Distance(
+                        geometry,
+                        MakePoint(:longitude, :latitude, 4326)
+                    ) >= :minradius
+                """
+                params.update(
+                    {
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "maxradius": maxradius,
+                        "minradius": minradius or 0,
+                    }
+                )
 
-    # Execute query
-    try:
-        cur.execute(query, params)
+            # Depth filters
+            if mindepth is not None:
+                query += " AND depth_km >= :mindepth"
+                params["mindepth"] = mindepth
+            if maxdepth is not None:
+                query += " AND depth_km <= :maxdepth"
+                params["maxdepth"] = maxdepth
+
+            # Event type filter
+            if eventtype:
+                query += " AND event_type = :eventtype"
+                params["eventtype"] = eventtype
+
+            # Event ID filter
+            if eventid:
+                query += " AND event_id = :eventid"
+                params["eventid"] = eventid
+
+            # Execute the query
+            try:
+                cur.execute(query, params)
+                events = cur.fetchall()
+            except sqlite3.Error as e:
+                raise HTTPException(status_code=500, detail=f"SQL Error: {e}")
+
+            if not events:
+                return PlainTextResponse("No events found", status_code=nodata)
+
+            # Transform results into dictionaries
+            results = [dict(event) for event in events]
+
     except sqlite3.Error as e:
-        raise HTTPException(status_code=500, detail=f"SQL execution error: {e}")
+        raise HTTPException(status_code=500, detail=f"Database connection error: {e}")
 
-    events = cur.fetchall()
-
-    if not events:
-        raise HTTPException(status_code=nodata, detail="No data found")
-
-    results = [dict(event) for event in events]
-
-    # if format == "text":
-    #     text_output = "\n".join([json.dumps(event) for event in results])
-    #     return PlainTextResponse(text_output)
-
+    # Handle output formats
     if format == "text":
         return generate_csv_response(results, delimiter=",")
     elif format == "csv":
         return generate_csv_response(results, delimiter=",")
     elif format == "html":
-        return templates.TemplateResponse("table.html", {"request": request, "events": results})
+        return templates.TemplateResponse(
+            "table.html", {"request": request, "events": results}
+        )
     elif format == "json":
         return results
     elif format == "geojson":
         return {"type": "FeatureCollection", "features": results}
     elif format == "quakeml":
-        raise HTTPException(status_code=501, detail="QuakeML output not implemented")
-
-    return results
+        # new db connection
+        with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, check_same_thread=False) as conn:
+            return await generate_quake_response(results, conn)
+    else:
+        raise HTTPException(
+            status_code=501, detail=f"Format '{format}' not implemented"
+        )
