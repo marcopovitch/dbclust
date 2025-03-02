@@ -41,6 +41,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("inject_spatialite")
 logger.setLevel(logging.INFO)
 
+# Define ANSI escape code constants for colors
+RED = '\033[91m'
+GREEN = '\033[92m'
+YELLOW = '\033[93m'
+BLUE = '\033[94m'
+MAGENTA = '\033[95m'
+CYAN = '\033[96m'
+WHITE = '\033[97m'
+RESET = '\033[0m'  # Reset to default color
+
 
 # SQL for creating the event coordinates view
 EVENT_COORDINATES_VIEW = """
@@ -51,8 +61,8 @@ SELECT
     o.latitude, o.longitude,
     o.depth / 1000.0 AS depth_km,
     o.rms,
-    o.erh / 1000.0 AS erh_km,
-    o.erz / 1000.0 AS erz_km,
+    o.erh AS erh_km,
+    o.erz AS erz_km,
     o.er_method,
     o.method_id AS location_method_id,
     o.earth_model_id,
@@ -204,7 +214,7 @@ def get_pick_probability(pick):
 
 def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
     """
-    Calculate the values of erh (horizontal uncertainty) and erz (vertical uncertainty).
+    Calculate the values of erh (horizontal uncertainty) and erz (vertical uncertainty) in km.
 
     Parameters:
         origin (Origin): The origin.
@@ -720,6 +730,9 @@ def export_sqlite_to_quakeml(
     Args:
         db_path (str): Path to the SQLite database.
         output_file (str): Path to the output QuakeML file.
+        event_ids (List[str], optional): List of event IDs to export. Defaults to None.
+        start_time (str, optional): Start time for filtering events. Defaults to None.
+        end_time (str, optional): End time for filtering events. Defaults to None.
     """
     # Connect to the SQLite database
     conn = sqlite3.connect(db_path)
@@ -1495,6 +1508,9 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
     ):
         # print the missing columns
         print(f"CSV file '{csv_file}' is missing required columns.")
+        print(
+            f"{RED}Required columns: 'event_id', 'predhdq50', 'EqProbaPred hdq50', 'proba_count', 'hdq50mad'{RESET}"
+        )
         return
 
     print(f"Adding discrimination info from '{csv_file}' ...")
@@ -1723,6 +1739,16 @@ if __name__ == "__main__":
         help="Compute GT5 score.",
     )
 
+    ######################################
+    # Refresh the event_coordinates view #
+    ######################################
+    parser.add_argument(
+        "--refresh-view",
+        action="store_true",
+        default=False,
+        help="Refresh the event_coordinates view.",
+    )
+
     args = parser.parse_args()
 
     print(args)
@@ -1866,6 +1892,23 @@ if __name__ == "__main__":
         conn = sqlite3.connect(args.database)
         add_gt5_score(conn)
         refresh_event_coordinates_view(conn)
+        conn.close()
+    elif args.refresh_view:
+        if os.path.exists(args.database) is False:
+            print(f"Database '{args.database}' does not exist.")
+            sys.exit(1)
+        # Refresh the event_coordinates view
+        conn = sqlite3.connect(args.database)
+        logger.info("Refreshing event_coordinates view ...")
+        # drop and recreate the view
+        query = "DROP VIEW IF EXISTS event_coordinates;"
+        conn.execute(query)
+        conn.commit()
+        logger.info("Dropped event_coordinates view.")
+        query = EVENT_COORDINATES_VIEW
+        conn.execute(query)
+        conn.commit()
+        logger.info("Created event_coordinates view.")
         conn.close()
     else:
         # Create the database schema
