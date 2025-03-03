@@ -10,8 +10,7 @@
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.datatables.net/1.11.5/js/jquery.dataTables.min.js"></script>
 
-    <style>
-
+ <style>
         .logo {
             width: 80px;
             height: auto;
@@ -83,6 +82,12 @@
             border: none;
         }
 
+        table.dataTable thead th {
+            display: table-cell; /* Assurez-vous que les cellules sont affichées */
+            visibility: visible; /* Assurez-vous que les cellules sont visibles */
+        }
+
+
         table.dataTable tbody tr {
             background-color: #ffffff;
         }
@@ -142,6 +147,14 @@
             width: 100%;
         }
 
+        /* Force horizontal scrolling on the table container */
+        .table-container {
+            width: 100%;
+            overflow-x: auto;
+            position: relative;
+            clear: both;
+        }
+
         .info-bar {
             background-color: #e3f2fd;
             border-radius: 8px;
@@ -163,6 +176,75 @@
         .numeric-cell {
             text-align: right;
         }
+
+        /* Improved loading overlay */
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.9);
+            z-index: 1000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .loading-content {
+            text-align: center;
+            background-color: white;
+            padding: 30px 50px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            max-width: 80%;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 64px;
+            height: 64px;
+            margin-bottom: 20px;
+        }
+
+        .spinner:after {
+            content: " ";
+            display: block;
+            width: 46px;
+            height: 46px;
+            margin: 1px;
+            border-radius: 50%;
+            border: 5px solid #1976d2;
+            border-color: #1976d2 transparent #1976d2 transparent;
+            animation: spinner 1.2s linear infinite;
+        }
+
+        .loading-title {
+            font-size: 20px;
+            color: #1976d2;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .loading-message {
+            color: #455a64;
+            font-size: 16px;
+            margin: 0;
+        }
+
+        @keyframes spinner {
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Hide table until fully loaded */
+        .hidden-on-load {
+            visibility: hidden;
+        }
     </style>
 </head>
 <body>
@@ -180,8 +262,17 @@
             <div class="event-count">Events: <span id="event-count">0</span></div>
         </div>
 
+        <!-- New loading overlay with professional design -->
+        <div class="loading-overlay" id="loadingOverlay">
+            <div class="loading-content">
+                <div class="spinner"></div>
+                <div class="loading-title">Loading Seismic Data</div>
+                <p class="loading-message">Please wait while we retrieve and prepare the seismic events...</p>
+            </div>
+        </div>
+
         <div class="table-container">
-            <table id="eventsTable" class="display" style="width:100%">
+            <table id="eventsTable" class="display hidden-on-load" style="width:100%">
                 <thead>
                     <tr>
                         <th>Event ID</th>
@@ -294,6 +385,7 @@
 
     <script>
         $(document).ready(function() {
+
             // Define columns to round with the number of decimals
             const decimalColumns = {
                 "Latitude": 4,
@@ -348,8 +440,9 @@
 
             // Initialize DataTables with parameters
             var table = $("#eventsTable").DataTable({
-                scrollX: true,
-                responsive: true,
+                scrollX: true,  // Force horizontal scrolling
+                scrollCollapse: true,  // Improve scrolling behavior
+                paging: true,
                 lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
                 pageLength: 25,
                 order: [[1, "desc"]],
@@ -361,8 +454,30 @@
                     infoEmpty: "No events available",
                     infoFiltered: "(filtered from _MAX_ total events)"
                 },
+                preDrawCallback: function() {
+                    // Keep the table hidden during drawing to prevent visual artifacts
+                    $("#eventsTable").addClass('hidden-on-load');
+                },
+                drawCallback: function() {
+                    // Once drawn, remove hidden class with a slight delay to ensure rendering is complete
+                    setTimeout(function() {
+                        $("#eventsTable").removeClass('hidden-on-load');
+                    }, 100);
+                },
                 initComplete: function() {
+                    // Count and display the number of events
                     $("#event-count").text(this.api().rows().count());
+
+                    // Make sure columns are properly adjusted
+                    table.columns.adjust();
+
+                    // After a short delay to ensure everything is rendered properly,
+                    // remove the loading overlay with a fade effect
+                    //setTimeout(function() {
+                    //    $("#loadingOverlay").fadeOut(500, function() {
+                    //        $(this).remove();
+                    //    });
+                    //}, 500);
                 }
             });
 
@@ -371,8 +486,24 @@
                 table.columns.adjust();
             });
 
-            table.columns.adjust();
+            // Add debug logs to check the flow
+            console.log("DataTable initialized");
+
         });
+
+
+        $(document).ready(function() {
+            // Test du setTimeout en dehors de initComplete
+            setTimeout(function() {
+                console.log("setTimeout fonctionne correctement");
+                $("#loadingOverlay").fadeOut(500, function() {
+                    $(this).remove();
+                });
+            }, 1000); // 1 seconde pour tester
+        });
+
+
+
     </script>
 </body>
 </html>
