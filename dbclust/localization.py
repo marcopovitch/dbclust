@@ -1141,6 +1141,10 @@ class NllLoc(object):
             * 'removed': pick is not within a polygon
         """
 
+        # Minimum distance to epicenter to consider an arrival to be relabeled
+        #min_distance_to_epicenter = 0.25  # degrees
+        min_distance_to_epicenter = None  # degrees
+
         df_polygons = zone.picks_delimiter
         sigma = zone.sigma
 
@@ -1319,11 +1323,11 @@ class NllLoc(object):
                     continue
 
                 # Check if the station is too close to the epicenter
-                if arrival.distance < 0.3:  # FIXME: hardcoded value
+                if min_distance_to_epicenter is not None and arrival.distance <  min_distance_to_epicenter:
                     original_phase = arrival.phase
                     logger.debug(
                         f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
-                        f"has a distance < 0.2 deg. Do nothing."
+                        f"has a distance < {min_distance_to_epicenter} deg. Do nothing."
                     )
                     # add comment to arrival, and keep track of it
                     relabel_key, comment = relabel_phase_and_comment_arrival(
@@ -1332,7 +1336,7 @@ class NllLoc(object):
                         original_phase,
                         evaluation_score,
                         polygons_score,
-                        "ignored: distance < 0.2 deg",
+                        f"ignored: distance < {min_distance_to_epicenter} deg",
                     )
                     relabel[relabel_key] = comment
                     continue
@@ -1528,8 +1532,8 @@ def show_origin(o: Origin, txt: str) -> None:
                     o.quality.used_phase_count,
                     azimuthal_gap,
                     secondary_azimuthal_gap,
-                    o.earth_model_id.id.split("/")[-1],
-                    o.method_id.id.split("/")[-1],
+                    o.earth_model_id.id.split("/")[-1] if o.earth_model_id else "",
+                    o.method_id.id.split("/")[-1] if o.method_id else "",
                 ],
             )
         )
