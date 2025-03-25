@@ -1142,8 +1142,7 @@ class NllLoc(object):
         """
 
         # Minimum distance to epicenter to consider an arrival to be relabeled
-        #min_distance_to_epicenter = 0.25  # degrees
-        min_distance_to_epicenter = None  # degrees
+        min_distance_to_epicenter = 0.25  # degrees
 
         df_polygons = zone.picks_delimiter
         sigma = zone.sigma
@@ -1238,6 +1237,26 @@ class NllLoc(object):
                 if not self.enable_relabel_pick_zone:
                     continue
 
+                # Check if the station is too close to the epicenter
+                if min_distance_to_epicenter > 0 and arrival.distance <  min_distance_to_epicenter:
+                    original_phase = arrival.phase
+                    logger.debug(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
+                        f"has a distance < {min_distance_to_epicenter} deg. Do nothing."
+                    )
+                    # add comment to arrival, and keep track of it
+                    relabel_key, comment = relabel_phase_and_comment_arrival(
+                        arrival,
+                        pick,
+                        original_phase,
+                        evaluation_score,
+                        polygons_score,
+                        f"ignored: distance < {min_distance_to_epicenter} deg",
+                    )
+                    relabel[relabel_key] = comment
+                    continue
+
+
                 # Can't decide what to do
                 if (key is None) and (score is None):
                     logger.debug(
@@ -1275,6 +1294,8 @@ class NllLoc(object):
                     relabel[relabel_key] = comment
                     continue
 
+
+
                 # Check if the new label will not be
                 # in conflict with an already existing one
                 conflict = False
@@ -1293,6 +1314,7 @@ class NllLoc(object):
                             )
                             conflict = True
                             break
+
                 if conflict:
                     original_phase = arrival.phase
 
@@ -1322,24 +1344,7 @@ class NllLoc(object):
                     relabel[relabel_key] = comment
                     continue
 
-                # Check if the station is too close to the epicenter
-                if min_distance_to_epicenter is not None and arrival.distance <  min_distance_to_epicenter:
-                    original_phase = arrival.phase
-                    logger.debug(
-                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
-                        f"has a distance < {min_distance_to_epicenter} deg. Do nothing."
-                    )
-                    # add comment to arrival, and keep track of it
-                    relabel_key, comment = relabel_phase_and_comment_arrival(
-                        arrival,
-                        pick,
-                        original_phase,
-                        evaluation_score,
-                        polygons_score,
-                        f"ignored: distance < {min_distance_to_epicenter} deg",
-                    )
-                    relabel[relabel_key] = comment
-                    continue
+
 
                 # Relabel pick
                 logger.debug(
