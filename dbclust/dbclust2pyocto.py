@@ -151,7 +151,7 @@ def dbclust2pyocto(
     velocity_model: pyocto.VelocityModel1D,
     min_com_phases: int,
     log_level=logging.INFO,
-) -> Optional[Clusterize, None]:
+) -> Optional[Clusterize]:
     """
     Processes clusters using the pyocto library to check, split, and filter them.
 
