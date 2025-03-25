@@ -17,6 +17,7 @@ from dbclust.localization import NllLoc
 from dbclust.localization import reloc_fdsn_event
 from dbclust.localization import show_bulletin
 from dbclust.localization import show_event
+from dbclust.quakeml import deduplicate_picks_and_make_readable_ids
 from dbclust.runner import MyTemporaryDirectory
 
 # Default logger
@@ -273,10 +274,13 @@ if __name__ == "__main__":
             # merge relocated event with original event
             e = cat[0]
             e.origins.extend(event.origins)
-            e.origins.sort(key=lambda x: x.creation_info.creation_time, reverse=True)
+            e.origins.sort(key=lambda x: x.creation_info.creation_time or 0, reverse=True)
             e.picks.extend(event.picks)
             e.amplitudes.extend(event.amplitudes)
             e.magnitudes.extend(event.magnitudes)
+
+            # deduplicate picks and make readable ids
+            cat = deduplicate_picks_and_make_readable_ids(cat, "eost", "")
 
             # show relocated event
             show_event(e, "****", header=True)
