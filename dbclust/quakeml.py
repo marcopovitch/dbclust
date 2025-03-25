@@ -4,6 +4,7 @@ import base64
 import logging
 import os
 import sys
+import warnings
 from datetime import datetime
 from itertools import combinations
 from typing import Dict
@@ -21,6 +22,8 @@ from obspy.core.event import ResourceIdentifier
 from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
+
+warnings.filterwarnings("ignore", category=UserWarning, module="obspy")
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -212,8 +215,16 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
                 comment_id = make_comment_id(p)
                 c.resource_id = comment_id
 
+        # for o in e.origins:
+        #     if not o.creation_info:
+        #         creation_info = CreationInfo(version="0")
+        #     elif o.creation_info.get("version") is None:
+        #         o.creation_info.version = "0"
+
+
         # Generate readable IDs for origins
-        for o in sorted(e.origins, key=lambda o: o.creation_info.version):
+        #for o in sorted(e.origins, key=lambda o: o.creation_info.version if o.creation_info else "0"):
+        for o in sorted(e.origins, key=lambda o: o.creation_info.creation_time or 0):
             origin_id = make_origin_id(e)
             if o.resource_id == e.preferred_origin_id:
                 e.preferred_origin_id = origin_id
