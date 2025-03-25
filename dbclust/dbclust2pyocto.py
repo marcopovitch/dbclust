@@ -151,7 +151,7 @@ def dbclust2pyocto(
     velocity_model: pyocto.VelocityModel1D,
     min_com_phases: int,
     log_level=logging.INFO,
-) -> Clusterize:
+) -> Optional[Clusterize, None]:
     """
     Processes clusters using the pyocto library to check, split, and filter them.
 
@@ -250,10 +250,11 @@ def dbclust2pyocto(
     )
 
     if len(pyocto_clusters) == 0 and myclust.n_clusters > 0:
-        # just in case pyocto does not find any clusters
-        logger.warning("PyOcto did not find any clusters. Returning original dbclust clusters.")
-        # fixme: for each cluster add a preloc based on the barycenter of the stations
-        return myclust
+        return None
+        # # just in case pyocto does not find any clusters
+        # logger.warning("PyOcto did not find any clusters. Returning original dbclust clusters.")
+        # # fixme: for each cluster add a preloc based on the barycenter of the stations
+        # return myclust
 
     # Clone the original Clusterize object and update it with the new clusters
     newclust = copy.deepcopy(myclust)
