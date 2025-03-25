@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-    Processes QuakeML files and stores the data in a SpatiaLite-enabled SQLite database.
+Processes QuakeML files and stores the data in a SpatiaLite-enabled SQLite database.
 """
 import argparse
 import csv
@@ -17,7 +17,9 @@ import xml.etree.ElementTree as ET
 import zlib
 from datetime import datetime
 from io import BytesIO
+from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Tuple
 
 import numpy as np
@@ -26,6 +28,7 @@ from icecream import ic
 from obspy import Catalog
 from obspy import read_events
 from obspy import UTCDateTime
+from obspy.core.event import Arrival
 from obspy.core.event import Event
 from obspy.core.event import Magnitude
 from obspy.core.event import Origin
@@ -42,63 +45,90 @@ logger = logging.getLogger("inject_spatialite")
 logger.setLevel(logging.INFO)
 
 # Define ANSI escape code constants for colors
-RED = '\033[91m'
-GREEN = '\033[92m'
-YELLOW = '\033[93m'
-BLUE = '\033[94m'
-MAGENTA = '\033[95m'
-CYAN = '\033[96m'
-WHITE = '\033[97m'
-RESET = '\033[0m'  # Reset to default color
+RED = "\033[91m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+BLUE = "\033[94m"
+MAGENTA = "\033[95m"
+CYAN = "\033[96m"
+WHITE = "\033[97m"
+RESET = "\033[0m"  # Reset to default color
 
 
 # SQL for creating the event coordinates view
 EVENT_COORDINATES_VIEW = """
-CREATE VIEW IF NOT EXISTS event_coordinates AS
-SELECT
-    e.event_id,
-    o.time,
-    o.latitude, o.longitude,
-    o.depth / 1000.0 AS depth_km,
-    o.rms,
-    o.erh AS erh_km,
-    o.erz AS erz_km,
-    o.er_method,
-    o.method_id AS location_method_id,
-    o.earth_model_id,
-    e.nb_origins,
-    e.nb_magnitudes,
-    m.magnitude,
-    m.magnitude_type,
-    m.uncertainty AS magnitude_uncertainty,
-    o.used_station_count, o.used_phase_count, o.P_count, o.S_count,
-    o.minimum_distance AS minimum_distance_deg,
-    o.maximum_distance AS maximum_distance_deg,
-    o.median_distance AS median_distance_deg,
-    o.azimuthal_gap, o.secondary_azimuthal_gap,
-    o.expectation_latitude, o.expectation_longitude,
-    o.expectation_depth / 1000.0 AS expectation_depth_km,
-    o.scatter_volume,
-    e.dist_km_from_preloc AS dist_from_preloc_km,
-    e.nb_agencies, e.agencies_list, e.agency_names, e.multiple_same_agencies,
-    o.evaluation_mode,
-    e.event_type,
-    e.discrimination_probability,
-    e.discrimination_station_count,
-    e.discrimination_certainty,
-    o.quality, o.quality_factor,
-    o.gt5_status, o.delta_U, o.num_stations_10km, o.num_stations_30km, o.num_stations_150km,
-    o.geometry
-FROM
-    events AS e
-JOIN
-    origins AS o
-    ON e.event_id = o.event_id AND o.preferred = 1  -- INNER JOIN because a preferred origin always exists
-LEFT JOIN
-    magnitudes AS m
-    ON e.event_id = m.event_id AND m.preferred = 1
-WHERE
-    COALESCE(e.event_type, '') NOT IN ('not existing', 'not locatable');
+    CREATE VIEW IF NOT EXISTS event_coordinates AS
+    SELECT
+        e.event_id,
+        o.time,
+        o.latitude, o.longitude,
+        o.depth / 1000.0 AS depth_km,
+        o.rms,
+        o.erh AS erh_km,
+        o.erz AS erz_km,
+        o.er_method,
+        o.method_id AS location_method_id,
+        o.earth_model_id,
+        e.nb_origins,
+        e.nb_magnitudes,
+        m.magnitude,
+        m.magnitude_type,
+        m.uncertainty AS magnitude_uncertainty,
+        o.used_station_count, o.used_phase_count, o.P_count, o.S_count,
+        o.minimum_distance AS minimum_distance_deg,
+        o.maximum_distance AS maximum_distance_deg,
+        o.median_distance AS median_distance_deg,
+        o.azimuthal_gap, o.secondary_azimuthal_gap,
+        o.expectation_latitude, o.expectation_longitude,
+        o.expectation_depth / 1000.0 AS expectation_depth_km,
+        o.scatter_volume,
+        e.dist_km_from_preloc AS dist_from_preloc_km,
+        e.nb_agencies, e.agencies_list, e.agency_names, e.multiple_same_agencies,
+        o.evaluation_mode,
+        e.event_type,
+        e.discrimination_probability,
+        e.discrimination_station_count,
+        e.discrimination_certainty,
+        o.quality, o.quality_factor,
+        o.gt5_status, o.delta_U, o.num_stations_10km, o.num_stations_30km, o.num_stations_150km,
+        o.geometry
+    FROM
+        events AS e
+    JOIN
+        origins AS o
+        ON e.event_id = o.event_id AND o.preferred = 1  -- INNER JOIN because a preferred origin always exists
+    LEFT JOIN
+        magnitudes AS m
+        ON e.event_id = m.event_id AND m.preferred = 1
+    WHERE
+        COALESCE(e.event_type, '') NOT IN ('not existing', 'not locatable');
+"""
+
+RELABELING_VIEW = """
+    CREATE VIEW IF NOT EXISTS relabeling AS
+    SELECT
+        a.id AS arrival_id,
+        a.origin_id,
+        a.pick_id,
+        p.station_name,
+        a.name as station,
+        a.time_weight,
+        a.time_residual,
+        p.evaluation_mode,
+        p.probability,
+        a.distance,
+        a.relabel_action,
+        a.relabel_previous_phase,
+        a.relabel_evaluation_score,
+        a.relabel_scores
+    FROM
+        arrivals a
+    JOIN
+        origins o ON a.origin_id = o.id
+    JOIN
+        picks p ON a.pick_id = p.id
+    WHERE
+        o.preferred = TRUE;
 """
 
 
@@ -270,6 +300,50 @@ def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
     return erh, erz, method
 
 
+def get_relabel_info(
+    arrival: Arrival,
+) -> Tuple[Optional[str], Optional[str], Optional[float], Dict[str, float]]:
+    """Extract relabeling information from an Arrival object.
+
+    Args:
+        arrival: An Arrival object containing the information.
+
+    Returns:
+        A tuple (action, previous_phase, evaluation_score, scores)
+
+    Examples:
+        >>> arrival = Arrival()
+        >>> arrival.comments = [Comment(text='{"relabel": {"prev_phase": "P", "action": "score too low", "eval_score": "1.0024", "scores": {"Pg": "0.5006", "Sg": "0.4994"}}}')]
+        >>> get_relabel_info(arrival)
+        ('score too low', 'P', 1.0024, {'Pg': 0.5006, 'Sg': 0.4994})
+    """
+    if not arrival or not hasattr(arrival, "comments"):
+        return None, None, None, {}
+
+    for comment in arrival.comments:
+        try:
+            relabel_data = json.loads(comment.text)
+            if isinstance(relabel_data, dict) and "relabel" in relabel_data:
+                relabel_info = relabel_data["relabel"]
+
+                action = relabel_info.get("action")
+                previous_phase = relabel_info.get("prev_phase")
+                evaluation_score = (
+                    float(relabel_info["eval_score"])
+                    if "eval_score" in relabel_info
+                    else None
+                )
+                scores = {
+                    k: float(v) for k, v in relabel_info.get("scores", {}).items()
+                }
+                return action, previous_phase, evaluation_score, scores
+
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            continue
+
+    return None, None, None, {}
+
+
 def phase_count(event: Event, origin: Origin, phase_type: str) -> int:
     """
     Count the number of phase of a given type in an origin.
@@ -334,7 +408,7 @@ def execute_with_retry(conn, operation, retries=5, delay=0.1):
             operation()
             return
         except sqlite3.OperationalError as e:
-            if 'locked' in str(e):
+            if "locked" in str(e):
                 retries -= 1
                 time.sleep(delay)
             else:
@@ -696,10 +770,13 @@ def insert_arrivals(conn: sqlite3.Connection, origin: Origin) -> None:
     """Inserts arrivals associated with an origin into the database."""
     for arrival in origin.arrivals:
         pick_id = arrival.pick_id.id if arrival.pick_id else None
+        action, previous_phase, evaluation_score, scores = get_relabel_info(arrival)
         conn.execute(
             """
-            INSERT INTO arrivals (id, origin_id, pick_id, name, time_weight, time_residual, takeoff_angle, azimuth, distance)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO arrivals (id, origin_id, pick_id, name, time_weight, time_residual,
+                takeoff_angle, azimuth, distance,
+                relabel_action, relabel_previous_phase, relabel_evaluation_score, relabel_scores)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 arrival.resource_id.id,
@@ -711,6 +788,10 @@ def insert_arrivals(conn: sqlite3.Connection, origin: Origin) -> None:
                 arrival.takeoff_angle,
                 arrival.azimuth,
                 arrival.distance,
+                action,
+                previous_phase,
+                evaluation_score,
+                json.dumps(scores),
             ),
         )
         logger.debug(f"Arrival {arrival.resource_id.id} inserted.")
@@ -1014,7 +1095,11 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
                 time_residual DOUBLE,
                 takeoff_angle DOUBLE,
                 azimuth DOUBLE,
-                distance DOUBLE
+                distance DOUBLE,
+                relabel_action TEXT,
+                relabel_previous_phase TEXT,
+                relabel_evaluation_score DOUBLE,
+                relabel_scores TEXT
             );
             """,
             """
@@ -1076,11 +1161,17 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             "CREATE INDEX IF NOT EXISTS idx_arrivals_origin_time_weight ON arrivals(origin_id, time_weight);",
             #
             "CREATE INDEX IF NOT EXISTS idx_picks_id ON picks(id);",
+            "CREATE INDEX IF NOT EXISTS idx_picks_station_name ON picks(station_name);",
             "CREATE INDEX IF NOT EXISTS idx_picks_event_id ON picks(event_id);",
             "CREATE INDEX IF NOT EXISTS idx_picks_evaluation_mode ON picks(evaluation_mode);",
             "CREATE INDEX IF NOT EXISTS idx_picks_phase_hint ON picks(phase_hint);",
             "CREATE INDEX IF NOT EXISTS idx_picks_agency_id ON picks(agency_id);",
             "CREATE INDEX IF NOT EXISTS idx_picks_probability ON picks(probability);",
+
+            "CREATE INDEX IF NOT EXISTS idx_arrivals_relabel_action ON arrivals(relabel_action);",
+            "CREATE INDEX IF NOT EXISTS idx_arrivals_relabel_previous_phase ON arrivals(relabel_previous_phase);",
+            "CREATE INDEX IF NOT EXISTS idx_arrivals_relabel_evaluation_score ON arrivals(relabel_evaluation_score);",
+            "CREATE INDEX IF NOT EXISTS idx_arrivals_relabel_scores ON arrivals(relabel_scores);",
         ]
 
         for sql in indexes_sql:
@@ -1462,6 +1553,7 @@ def add_agency_names(conn: sqlite3.Connection) -> None:
             items = json.loads(json_array)
             return len(items) > len(set(items))
         except (json.JSONDecodeError, TypeError):
+            logger.error(f"Error parsing JSON array: {json_array}")
             return False
 
     conn.create_function("HAS_DUPLICATES", 1, has_duplicates)
@@ -1539,7 +1631,9 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
             # TODO: fix this in spectrocnn when station_count is very low
             event_type = "unknown"
 
-        print(f"event_id: {event_id}, event_type: {event_type}, probability: {probability}, station_count: {station_count}, certainty: {certainty}")
+        print(
+            f"event_id: {event_id}, event_type: {event_type}, probability: {probability}, station_count: {station_count}, certainty: {certainty}"
+        )
 
         cursor.execute(
             """
@@ -1823,7 +1917,9 @@ if __name__ == "__main__":
             end_time = end_time.to_pydatetime()
         else:
             # Adjust args.end_time to the end of the month if provided
-            end_time = pd.to_datetime(args.end_time.split(" ")[0]) + pd.offsets.MonthBegin(1)
+            end_time = pd.to_datetime(
+                args.end_time.split(" ")[0]
+            ) + pd.offsets.MonthBegin(1)
             end_time = end_time.to_pydatetime()
 
         # Loop over months: each month starts on the 1st at 00:00:00
