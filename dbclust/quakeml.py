@@ -8,6 +8,7 @@ import warnings
 from datetime import datetime
 from itertools import combinations
 from typing import Dict
+from typing import List
 
 import alphabetic_timestamp as ats
 from icecream import ic
@@ -29,6 +30,12 @@ warnings.filterwarnings("ignore", category=UserWarning, module="obspy")
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("quakeml")
 logger.setLevel(logging.INFO)
+
+
+def safe_creation_time(origin):
+    if origin.creation_info and origin.creation_info.creation_time:
+        return origin.creation_info.creation_time.timestamp
+    return 0
 
 
 def datetime_to_base64_timestamp(dt, precision="microsecond"):
@@ -215,18 +222,10 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
                 comment_id = make_comment_id(p)
                 c.resource_id = comment_id
 
-        # for o in e.origins:
-        #     if not o.creation_info:
-        #         creation_info = CreationInfo(version="0")
-        #     elif o.creation_info.get("version") is None:
-        #         o.creation_info.version = "0"
-
-
         # Generate readable IDs for origins
-        #for o in sorted(e.origins, key=lambda o: o.creation_info.version if o.creation_info else "0"):
-        for o in sorted(e.origins, key=lambda o: o.creation_info.creation_time or 0):
+        for o in sorted(e.origins, key=safe_creation_time):
             origin_id = make_origin_id(e)
-            if o.resource_id == e.preferred_origin_id:
+            if o.resource_id.id == e.preferred_origin_id.id:
                 e.preferred_origin_id = origin_id
             o.resource_id = origin_id
 
@@ -240,64 +239,70 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
                     a.pick_id = ResourceIdentifier(pick_lookup_table[a.pick_id.id])
                 else:
                     logger.warning(
-                        f"Arrival {a.resource_id} references a missing pick {a.pick_id.id}."
+                        f"Arrival {a.resource_id} references a missing pick {a.pick_id.id if a.pick_id else 'None'}."
                     )
 
     return cat
 
 
-def deduplicate_picks_one_pass(event: Event) -> Event:
+def deduplicate_picks_one_pass(event: Event) -> bool:
     """
     Deduplicate picks from the given event by identifying and removing duplicate picks
     based on waveform ID, time, and phase hint.
-    This function performs a single pass through the list of picks to identify and remove duplicates.
-
+    This function performs a single pass through the list of picks.
     Args:
         event (Event): The event object containing picks.
-
     Returns:
-        Event: The event object with deduplicated picks.
+        bool: True if duplicates were removed, False otherwise.
     """
-    # Ensure picks are accessed once
-    picks = list(event.picks)
-    to_be_removed = []
-    match_pick_id = {}
+    if not event.picks:
+        return False  # No picks to process
 
-    # Compare each pair of picks for potential duplicates
-    for p1, p2 in combinations(picks, 2):
-        if (
-            p1.waveform_id.get_seed_string() == p2.waveform_id.get_seed_string()
-            and p1.time == p2.time
-            and p1.phase_hint == p2.phase_hint
-        ):
-            if p2 in to_be_removed or p1 in to_be_removed:
-                continue
+    pick_map = {}  # Map removed pick IDs to their replacements
+    to_remove = set()  # List of picks to remove
+    unique_picks = {}
 
-            # Map the duplicate pick's ID to the retained pick's ID
-            match_pick_id[p2.resource_id] = p1.resource_id
-            to_be_removed.append(p2)
+    for pick in event.picks:
+        key = (
+            pick.waveform_id.get_seed_string() if pick.waveform_id else None,
+            round(pick.time.timestamp, 6),  # Tolerance on time
+            pick.phase_hint,
+        )
 
-    # Update arrival pick IDs in origins to point to the retained pick
+        if key in unique_picks:
+            ref_pick = unique_picks[key]
+
+            # Use ref_pick.resource_id.id as the replacement value
+            pick_map[pick.resource_id.id] = ref_pick.resource_id.id
+            to_remove.add(pick.resource_id.id)
+
+            logger.info(
+                f"Duplicate found: {pick.resource_id.id} -> {ref_pick.resource_id.id}"
+            )
+        else:
+            unique_picks[key] = pick  # Add a new unique pick
+
+    if not to_remove:
+        return False  # No duplicates found
+
+    # Update references in arrivals
     for origin in event.origins:
         for arrival in origin.arrivals:
-            if arrival.pick_id in match_pick_id:
-                arrival.pick_id = match_pick_id[arrival.pick_id]
+            if arrival.pick_id.id in pick_map:
+                arrival.pick_id = pick_map[arrival.pick_id.id]
 
-    # Log and remove duplicate picks
+    # Remove duplicate picks
+    event.picks = [p for p in event.picks if p.resource_id.id not in to_remove]
+
     logger.debug(
-        f"Deduplicate picks: to remove={len(to_be_removed)}, remaining={len(picks) - len(to_be_removed)}."
+        f"Removed {len(to_remove)} duplicate picks, {len(event.picks)} remaining."
     )
-    for p in to_be_removed:
-        event.picks.remove(p)
-
-    return event
+    return True
 
 
 def deduplicate_picks(event: Event) -> Event:
-    """ "
-    Deduplicate picks from the given event by identifying and removing duplicate picks
-    based on waveform ID, time, and phase hint.
-    This function repeatedly deduplicates picks until no more duplicates are found.
+    """
+    Deduplicate picks from the given event iteratively until no duplicates remain.
 
     Args:
         event (Event): The event object containing picks.
@@ -305,13 +310,8 @@ def deduplicate_picks(event: Event) -> Event:
     Returns:
         Event: The event object with deduplicated picks.
     """
-    # Deduplicate picks until no more duplicates are found
-    while True:
-        event_nb_picks = len(event.picks)
-        new_event = deduplicate_picks_one_pass(event)
-        if len(new_event.picks) == event_nb_picks:
-            break
-        event = new_event
+    while deduplicate_picks_one_pass(event):
+        pass
 
     return event
 
@@ -359,6 +359,54 @@ def feed_distance_from_preloc_to_pref_origin(cat: Catalog) -> Catalog:
     return cat
 
 
+def remove_duplicate_picks(picks: List[Pick]) -> List[Pick]:
+    """
+    Removes duplicate picks based on resource ID, ensuring that time, phase hint, and
+    waveform ID are identical before removal. If conflicting values exist for the same
+    resource ID, logs an error.
+
+    Args:
+        picks (List[Pick]): A list of picks to deduplicate.
+
+    Returns:
+        List[Pick]: A list of unique picks.
+    """
+    seen_picks = {}
+    unique_picks = []
+
+    for pick in picks:
+        if not pick.resource_id:
+            logger.error("Pick without resource_id found")
+            continue
+
+        pick_id = pick.resource_id.id
+        pick_values = (
+            round(pick.time.timestamp, 6),  # Rounded to avoid floating-point errors
+            pick.phase_hint,
+            pick.waveform_id.get_seed_string() if pick.waveform_id else None,
+        )
+
+        if pick_id in seen_picks:
+            # Check if the values are consistent with those already recorded
+            if seen_picks[pick_id] != pick_values:
+                logger.error(
+                    f"Conflict for pick {pick_id}: inconsistent time, phase, or station"
+                )
+            else:
+                logger.warning(f"Pathological duplicate pick ignored: {pick_id}")
+        else:
+            seen_picks[pick_id] = pick_values
+            unique_picks.append(pick)  # Add to the final list
+
+    # Stats, total number of picks and number of duplicates, remaining picks
+    logger.info(
+        f"Total number of picks: {len(picks)}, "
+        f"number of pathological duplicates: {len(picks) - len(unique_picks)}, "
+        f"number of remaining picks: {len(unique_picks)}"
+    )
+    return unique_picks
+
+
 # function to deduplicate picks and make readable ids for a catalog
 def deduplicate_picks_and_make_readable_ids(
     cat: Catalog, prefix: str, smi_base: str
@@ -375,8 +423,11 @@ def deduplicate_picks_and_make_readable_ids(
     Returns:
         Catalog: The catalog object with deduplicated picks and human-readable IDs.
     """
+
     # Deduplicate picks in each event
     for e in cat.events:
+        # remove picks with same id. It should not happen but it happens ...
+        e.picks = remove_duplicate_picks(e.picks)
         e = deduplicate_picks(e)
 
     # Make the IDs readable
