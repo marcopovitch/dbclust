@@ -234,7 +234,8 @@ class NllLoc(object):
         mypicks = []
 
         for arrival in orig.arrivals:
-            pick = arrival.pick_id.get_referred_object()
+            # pick = arrival.pick_id.get_referred_object()
+            pick = get_pick_from_arrival(myevent, arrival)
             if pick is None:
                 continue
 
@@ -475,6 +476,15 @@ class NllLoc(object):
                 if self.nll_verbose:
                     print(result.stdout)
                 return Catalog()
+            elif any(
+                k in line
+                for k in (
+                    "ERROR: reading x-sheet grid file",
+                    "ERROR: reading lower arrival travel time sheet",
+                )
+            ):
+                # ERROR is not fatal here as the location can be done
+                logger.warning(f"This is not fatal: {line}")
             elif "x-sheet" in line:
                 l = line.split()
                 logger.warning(
@@ -1238,7 +1248,10 @@ class NllLoc(object):
                     continue
 
                 # Check if the station is too close to the epicenter
-                if min_distance_to_epicenter > 0 and arrival.distance <  min_distance_to_epicenter:
+                if (
+                    min_distance_to_epicenter > 0
+                    and arrival.distance < min_distance_to_epicenter
+                ):
                     original_phase = arrival.phase
                     logger.debug(
                         f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
@@ -1255,7 +1268,6 @@ class NllLoc(object):
                     )
                     relabel[relabel_key] = comment
                     continue
-
 
                 # Can't decide what to do
                 if (key is None) and (score is None):
@@ -1293,8 +1305,6 @@ class NllLoc(object):
                     )
                     relabel[relabel_key] = comment
                     continue
-
-
 
                 # Check if the new label will not be
                 # in conflict with an already existing one
@@ -1343,8 +1353,6 @@ class NllLoc(object):
                     )
                     relabel[relabel_key] = comment
                     continue
-
-
 
                 # Relabel pick
                 logger.debug(
@@ -1594,17 +1602,19 @@ def show_bulletin(
 
     # print("station phase weight residual distance time evaluation")
     for arrival in origin.arrivals:
+        pick = get_pick_from_arrival(event, arrival)
+        if pick is None:
+            logger.error(f"Can't find pick for arrival {arrival.pick_id}")
+            logger.debug(f"arrival: {arrival}")
+            continue
+
         if hasattr(arrival, "time_weight") and isclose(
             arrival.time_weight, 0, abs_tol=time_weight_tolerance
         ):
             used = False
-            wfid = get_pick_from_arrival(event, arrival).waveform_id.get_seed_string()
-            print(f"arrival: {wfid} {arrival.phase}, {arrival.pick_id} time_weight is {arrival.time_weight}")
         else:
             used = True
-        pick = get_pick_from_arrival(event, arrival)
-        if pick is None:
-            continue
+
         wfid = pick.waveform_id
         station_name = f"{wfid.network_code}.{wfid.station_code}"
         phase_name = arrival.phase
