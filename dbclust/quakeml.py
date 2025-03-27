@@ -198,10 +198,22 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
     cat.resource_id = ResourceIdentifier(catalog_id)
 
     for e in cat.events:
+        logger.info(f"Event {e.resource_id.id} has {len(e.origins)} origins.")
+
+        # check every arrival has a pick_id and a pick_id that exists
+        for o in e.origins:
+            for a in o.arrivals:
+                if not a.pick_id:
+                    logger.warning(f"Arrival {a.resource_id} has no pick_id.")
+                elif a.pick_id.id not in [p.resource_id.id for p in e.picks]:
+                    logger.warning(f"Arrival {a.resource_id} references a missing pick {a.pick_id.id}.")
+        logger.info(f"Event {e.resource_id.id} has {sum(len(o.arrivals) for o in e.origins)} arrivals from all origins.")
+
         # Generate a new ID for the event
         o = e.preferred_origin()
         if o is None:
-            raise ValueError(f"Event {e.resource_id} has no preferred origin.")
+            raise ValueError(f"Event {e.resource_id.id} has no preferred origin.")
+
         event_id = make_event_id(o.time, prefix, smi_base)
         e.resource_id = event_id
 
@@ -222,6 +234,9 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
                 comment_id = make_comment_id(p)
                 c.resource_id = comment_id
 
+        logger.info(f"Event {e.resource_id.id} has {len(e.picks)} picks.")
+        logger.info(f"Event {e.resource_id.id} has {len(pick_lookup_table)} pick lookup table entries.")
+
         # Generate readable IDs for origins
         for o in sorted(e.origins, key=safe_creation_time):
             origin_id = make_origin_id(e)
@@ -235,7 +250,7 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
                 a.resource_id = arrival_id
 
                 # Link the pick ID if available in the lookup table
-                if a.pick_id.id in pick_lookup_table:
+                if a.pick_id.id in pick_lookup_table.keys():
                     a.pick_id = ResourceIdentifier(pick_lookup_table[a.pick_id.id])
                 else:
                     logger.warning(
@@ -393,7 +408,7 @@ def remove_duplicate_picks(picks: List[Pick]) -> List[Pick]:
                     f"Conflict for pick {pick_id}: inconsistent time, phase, or station"
                 )
             else:
-                logger.warning(f"Pathological duplicate pick ignored: {pick_id}")
+                logger.debug(f"Pathological duplicate pick ignored: {pick_id}")
         else:
             seen_picks[pick_id] = pick_values
             unique_picks.append(pick)  # Add to the final list
