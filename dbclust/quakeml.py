@@ -243,7 +243,7 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
     cat.resource_id = ResourceIdentifier(catalog_id)
 
     for e in cat.events:
-        logger.info(f"Event {e.resource_id.id} has {len(e.origins)} origins.")
+        logger.debug(f"Event {e.resource_id.id} has {len(e.origins)} origins.")
 
         # check every arrival has a pick_id and a pick_id that exists
         for o in e.origins:
@@ -252,7 +252,8 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
                     logger.warning(f"Arrival {a.resource_id} has no pick_id.")
                 elif a.pick_id.id not in [p.resource_id.id for p in e.picks]:
                     logger.warning(f"Arrival {a.resource_id} references a missing pick {a.pick_id.id}.")
-        logger.info(f"Event {e.resource_id.id} has {sum(len(o.arrivals) for o in e.origins)} arrivals from all origins.")
+
+        logger.debug(f"Event {e.resource_id.id} has {sum(len(o.arrivals) for o in e.origins)} arrivals from all origins.")
 
         # Generate a new ID for the event
         o = e.preferred_origin()
@@ -279,14 +280,14 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
                 comment_id = make_comment_id(p)
                 c.resource_id = comment_id
 
-        logger.info(f"Event {e.resource_id.id} has {len(e.picks)} picks.")
-        logger.info(f"Event {e.resource_id.id} has {len(pick_lookup_table)} pick lookup table entries.")
+        logger.debug(f"Event {e.resource_id.id} has {len(e.picks)} picks.")
+        logger.debug(f"Event {e.resource_id.id} has {len(pick_lookup_table)} pick lookup table entries.")
 
         # Generate readable IDs for origins
         origin_map = {}
         for o in sorted(e.origins, key=safe_creation_time):
             origin_id = make_origin_id(e)
-            origin_map[o.resource_id.id] = origin_id.id
+            origin_map[o.resource_id.id] = origin_id
             if o.resource_id.id == e.preferred_origin_id.id:
                 e.preferred_origin_id = origin_id
             o.resource_id = origin_id
@@ -307,11 +308,14 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
         # Generate readable IDs for magnitude origins
         for m in e.magnitudes:
             magnitude_id = make_magnitude_id(e)
+            if e.preferred_magnitude_id and m.resource_id.id == e.preferred_magnitude_id.id:
+                e.preferred_magnitude_id = magnitude_id
             m.resource_id = magnitude_id
-            if m.origin_id in origin_map:
-                m.origin_id = origin_map[m.origin_id]
+
+            if m.origin_id.id in origin_map:
+                m.origin_id = origin_map[m.origin_id.id]
             else:
-                logger.warning(f"Magnitude {m.resource_id.id} references a missing origin {m.origin_id}.")
+                logger.warning(f"Magnitude {m.resource_id.id} references a missing origin {m.origin_id.id}.")
                 m.origin_id = None
 
             # Generate readable IDs for station magnitude contribution
@@ -504,7 +508,7 @@ def deduplicate_picks_and_make_readable_ids(
 
     # Deduplicate picks in each event
     for e in cat.events:
-        # remove picks with same id. It should not happen but it happens ...
+        # remove picks with same id. It should not happen but it happens (picks info are the same)
         e.picks = remove_duplicate_picks(e.picks)
         e = deduplicate_picks(e)
 
