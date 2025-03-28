@@ -280,6 +280,7 @@ if __name__ == "__main__":
             e.magnitudes.extend(event.magnitudes)
 
             # deduplicate picks and make readable ids
+            logger.info("Deduplicate picks and make readable ids")
             cat = deduplicate_picks_and_make_readable_ids(cat, "eost", "")
 
             # show relocated event
