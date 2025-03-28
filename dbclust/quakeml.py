@@ -18,6 +18,7 @@ from obspy import UTCDateTime
 from obspy.core.event import Comment
 from obspy.core.event import CreationInfo
 from obspy.core.event import Event
+from obspy.core.event import Magnitude
 from obspy.core.event import Origin
 from obspy.core.event import ResourceIdentifier
 from obspy.core.event.base import WaveformStreamID
@@ -109,6 +110,50 @@ def make_origin_id(event: Event) -> ResourceIdentifier:
             break
         n_origins += 1
     return ResourceIdentifier(origin_id)
+
+
+def make_magnitude_id(event: Event) -> ResourceIdentifier:
+    """
+    Generate a unique magnitude ID for an event.
+    This function creates a unique magnitude ID for an event by iterating through
+    existing magnitude IDs and appending a number to the event's resource ID until
+    a unique ID is found.
+
+    Args:
+        event (Event): The event object containing magnitudes and a resource ID.
+    Returns:
+        ResourceIdentifier: A unique resource identifier for the magnitude.
+    """
+    magnitude_id_list = {m.resource_id.id for m in event.magnitudes}
+    n_magnitudes = 0
+    while True:
+        magnitude_id = f"{event.resource_id.id}/magnitude/{n_magnitudes}"
+        if magnitude_id not in magnitude_id_list:
+            break
+        n_magnitudes += 1
+    return ResourceIdentifier(magnitude_id)
+
+
+def make_station_magnitude_contribution_id(magnitude: Magnitude) -> ResourceIdentifier:
+    """
+    Generate a unique station magnitude ID for a magnitude.
+    This function creates a unique station magnitude ID for a magnitude by iterating through
+    existing station magnitude IDs and appending a number to the magnitude's resource ID until
+    a unique ID is found.
+
+    Args:
+        magnitude (Magnitude): The magnitude object containing station magnitudes and a resource ID.
+    Returns:
+        ResourceIdentifier: A unique resource identifier for the station magnitude.
+    """
+    station_magnitude_id_list = {m.resource_id.id for m in magnitude.station_magnitude_contributions}
+    n_station_magnitudes = 0
+    while True:
+        station_magnitude_id = f"{magnitude.resource_id.id}/station_magnitude_contribution/{n_station_magnitudes}"
+        if station_magnitude_id not in station_magnitude_id_list:
+            break
+        n_station_magnitudes += 1
+    return ResourceIdentifier(station_magnitude_id)
 
 
 def make_pick_id(event: Event) -> ResourceIdentifier:
@@ -238,8 +283,10 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
         logger.info(f"Event {e.resource_id.id} has {len(pick_lookup_table)} pick lookup table entries.")
 
         # Generate readable IDs for origins
+        origin_map = {}
         for o in sorted(e.origins, key=safe_creation_time):
             origin_id = make_origin_id(e)
+            origin_map[o.resource_id.id] = origin_id.id
             if o.resource_id.id == e.preferred_origin_id.id:
                 e.preferred_origin_id = origin_id
             o.resource_id = origin_id
@@ -250,12 +297,28 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
                 a.resource_id = arrival_id
 
                 # Link the pick ID if available in the lookup table
-                if a.pick_id.id in pick_lookup_table.keys():
+                if a.pick_id.id in pick_lookup_table:
                     a.pick_id = ResourceIdentifier(pick_lookup_table[a.pick_id.id])
                 else:
                     logger.warning(
                         f"Arrival {a.resource_id} references a missing pick {a.pick_id.id if a.pick_id else 'None'}."
                     )
+
+        # Generate readable IDs for magnitude origins
+        for m in e.magnitudes:
+            magnitude_id = make_magnitude_id(e)
+            m.resource_id = magnitude_id
+            if m.origin_id in origin_map:
+                m.origin_id = origin_map[m.origin_id]
+            else:
+                logger.warning(f"Magnitude {m.resource_id.id} references a missing origin {m.origin_id}.")
+                m.origin_id = None
+
+            # Generate readable IDs for station magnitude contribution
+            for sm in m.station_magnitude_contributions:
+                station_magnitude_contribution_id = make_station_magnitude_contribution_id(m)
+                sm.resource_id = station_magnitude_contribution_id
+
 
     return cat
 
@@ -397,7 +460,7 @@ def remove_duplicate_picks(picks: List[Pick]) -> List[Pick]:
         pick_id = pick.resource_id.id
         pick_values = (
             round(pick.time.timestamp, 6),  # Rounded to avoid floating-point errors
-            pick.phase_hint,
+            #pick.phase_hint,
             pick.waveform_id.get_seed_string() if pick.waveform_id else None,
         )
 
