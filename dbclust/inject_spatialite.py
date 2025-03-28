@@ -529,7 +529,9 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
                 insert_arrivals(conn, origin)
 
             # Insert magnitudes
-            logger.debug(f"Inserting magnitudes for event {event.resource_id.id}.")
+            logger.debug(
+                f"Inserting magnitude for event {event.resource_id.id} with origin_id {origin.resource_id.id}."
+            )
             insert_magnitudes(conn, event)
             insert_station_magnitudes(conn, event)
 
@@ -712,14 +714,13 @@ def insert_magnitudes(conn: sqlite3.Connection, event: Event) -> None:
                 magnitude.method_id.id,
                 (
                     1
-                    if magnitude.resource_id == event.preferred_magnitude().resource_id
+                    if event.preferred_magnitude()
+                    and magnitude.resource_id == event.preferred_magnitude().resource_id
                     else 0
                 ),
             ),
         )
-
         insert_station_magnitude_contributions(conn, magnitude)
-
         logger.debug(f"Magnitude {magnitude.resource_id.id} inserted.")
 
 
@@ -1167,7 +1168,6 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             "CREATE INDEX IF NOT EXISTS idx_picks_phase_hint ON picks(phase_hint);",
             "CREATE INDEX IF NOT EXISTS idx_picks_agency_id ON picks(agency_id);",
             "CREATE INDEX IF NOT EXISTS idx_picks_probability ON picks(probability);",
-
             "CREATE INDEX IF NOT EXISTS idx_arrivals_relabel_action ON arrivals(relabel_action);",
             "CREATE INDEX IF NOT EXISTS idx_arrivals_relabel_previous_phase ON arrivals(relabel_previous_phase);",
             "CREATE INDEX IF NOT EXISTS idx_arrivals_relabel_evaluation_score ON arrivals(relabel_evaluation_score);",
