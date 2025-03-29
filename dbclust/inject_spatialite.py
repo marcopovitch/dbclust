@@ -1276,6 +1276,7 @@ def import_catalog_object_to_sqlite_from_file(
     enable_quakeml: bool = False,
     retries: int = 5,
     delay: int = 1,
+    disable_tqdm: bool = False,
 ):
     """
     Import a catalog of seismic events to a SQLite database with conflict handling.
@@ -1295,7 +1296,7 @@ def import_catalog_object_to_sqlite_from_file(
             logger.info("Connected to the database successfully.")
 
             # Import the catalog into the SQLite database
-            import_catalog_to_sqlite(conn, catalog, enable_quakeml)
+            import_catalog_to_sqlite(conn, catalog, enable_quakeml, disable_tqdm)
 
             # Optional: Additional operations
             # add_agency_names(conn)
@@ -1360,7 +1361,7 @@ def import_catalog_to_sqlite_from_file(
 
 
 def import_catalog_to_sqlite(
-    conn: sqlite3.Connection, catalog: Catalog, enable_quakeml: bool = False
+    conn: sqlite3.Connection, catalog: Catalog, enable_quakeml: bool = False, disable_tqdm: bool = False
 ) -> None:
     """
     Export a catalog of seismic events to an SQLite database.
@@ -1386,7 +1387,7 @@ def import_catalog_to_sqlite(
 
     # Process events and insert into SQLite
     # tqdm is used to display a progress bar
-    for event in tqdm(catalog, desc="Importing events to SQLite"):
+    for event in tqdm(catalog, desc="Importing events to SQLite", disable=disable_tqdm):
         # Serialize QuakeML content using format and compress it
         if enable_quakeml:
             quakeml_data = compress_quakeml_data(event, format="QUAKEML")
