@@ -604,7 +604,10 @@ def save_catalog(
         )
         try:
             import_catalog_object_to_sqlite_from_file(
-                cfg.catalog.sqlite_db_fullpath, catalog, enable_quakeml=True
+                cfg.catalog.sqlite_db_fullpath,
+                catalog,
+                enable_quakeml=True,
+                disable_tqdm=True,
             )
         except Exception as e:
             logger.error(f"Error writing catalog to SQLite: {e}")
