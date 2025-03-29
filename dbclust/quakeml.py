@@ -358,11 +358,16 @@ def deduplicate_picks_one_pass(event: Event) -> bool:
             pick_map[pick.resource_id.id] = ref_pick.resource_id.id
             to_remove.add(pick.resource_id.id)
 
-            logger.info(
+            logger.debug(
                 f"Duplicate found: {pick.resource_id.id} -> {ref_pick.resource_id.id}"
             )
         else:
             unique_picks[key] = pick  # Add a new unique pick
+    # count the number of unique picks and duplicates
+    logger.debug(
+        f"Picks deduplication: number of unique picks: {len(unique_picks)}, "
+        f"number of duplicates: {len(to_remove)}"
+    )
 
     if not to_remove:
         return False  # No duplicates found
@@ -481,7 +486,7 @@ def remove_duplicate_picks(picks: List[Pick]) -> List[Pick]:
             unique_picks.append(pick)  # Add to the final list
 
     # Stats, total number of picks and number of duplicates, remaining picks
-    logger.info(
+    logger.debug(
         f"Total number of picks: {len(picks)}, "
         f"number of pathological duplicates: {len(picks) - len(unique_picks)}, "
         f"number of remaining picks: {len(unique_picks)}"
