@@ -86,12 +86,12 @@ def rename_waveform_id(df: pd.DataFrame, rename_config: RenameConfig) -> pd.Data
             df.loc[:, ["station_id", "channel"]] = temp_df[["station_id", "channel"]].values
 
     # Apply "before" transformations
-    if rename_config.before:
+    if rename_config and rename_config.before:
         logger.info("Applying 'before' transformations...")
         apply_regex_and_update(df, rename_config.before)
 
     # Apply transformations for each time window
-    if rename_config.time_windows:
+    if rename_config and rename_config.time_windows:
         for time_window in rename_config.time_windows:
             time_window_str = time_window.get("time_window")
             regex_patterns = time_window.get("regex", [])
@@ -121,7 +121,7 @@ def rename_waveform_id(df: pd.DataFrame, rename_config: RenameConfig) -> pd.Data
             )
 
     # Apply "after" transformations
-    if rename_config.after:
+    if rename_config and rename_config.after:
         logger.info("Applying 'after' transformations...")
         apply_regex_and_update(df, rename_config.after)
 
