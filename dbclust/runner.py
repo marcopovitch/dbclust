@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import argparse
+import gc
 import logging
 import multiprocessing
 import os
@@ -164,7 +165,7 @@ def dbclust_test(
 
 def dbclust(
     cfg: DBClustConfig,
-    df: Optional[pd.DataFrame] = pd.DataFrame(),
+    df: Optional[pd.DataFrame] = None,
     job_index: Optional[int] = None,
 ) -> None:
     """Detect and localize events given picks
@@ -175,8 +176,13 @@ def dbclust(
         job_index (int): job index, None if in sequential mode
     """
 
+    if df is None:
+        df = pd.DataFrame()
+
     # Time blocks
     if job_index is not None:
+        if job_index < 0 or job_index >= len(cfg.parallel.time_partitions):
+            raise ValueError(f"Invalid job_index {job_index}, out of range.")
         start, stop = cfg.parallel.time_partitions[job_index]
         if job_index == len(cfg.parallel.time_partitions) - 1:
             # get event in the overlapped zone
@@ -189,6 +195,7 @@ def dbclust(
         stop = cfg.pick.end
         # get event in the overlapped zone during the last time_periods round
         last_job = True
+        job_index = 0
 
     msg = "started."
     ic(msg, job_index, start, stop)
@@ -200,12 +207,9 @@ def dbclust(
         # Uses the pandas Dataframe given as function argument.
         con = None
 
-    time_periods = (
-        pd.date_range(start, stop, freq=f"{cfg.time.time_window}min")
-        .to_series()
-        .to_list()
-    )
+    time_periods = list(pd.date_range(start, stop, freq=f"{cfg.time.time_window}min"))
     time_periods += [pd.to_datetime(stop)]
+
     # get unique time_periods sorted
     time_periods = sorted(list(set(time_periods)))
     logger.info(f"[{job_index}] Splitting dataset in {len(time_periods)-1} chunks.")
@@ -276,7 +280,7 @@ def dbclust(
         else:
             df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
 
-        if df_subset.empty:
+        if df_subset.empty and previous_myclust.phases_count() == 0:
             logger.info(f"[{job_index}] Skipping clustering {len(df_subset)} phases.")
             continue
 
@@ -344,6 +348,7 @@ def dbclust(
         # Warning: this function will modify the df_subset DataFrame in place
         # So modification made by rename_waveform_id() could be lost
         # due to metadata update in import_phases()
+        ic(df_subset)
         phases = import_phases(
             df_subset,
             cfg.pick.P_proba_threshold,
@@ -359,6 +364,7 @@ def dbclust(
 
         # clean up
         del df_subset
+        gc.collect()
 
         if logger.level == logging.DEBUG:
             logger.info("previous_myclust:")
@@ -376,14 +382,15 @@ def dbclust(
         # with clusters from the previous round
         # (as some phases come from the overlapped zone)
         logger.info("Check clusters related to the same event (overlapped zone).")
-        (previous_myclust, myclust, nb_cluster_removed) = (
+
+        previous_myclust, myclust, nb_cluster_removed = (
             merge_cluster_with_common_phases(
                 previous_myclust, myclust, cfg.cluster.min_picks_common
             )
         )
 
-        # This is the last round: merge previous_myclust and myclust
         if i == (len(time_periods) - 1) and last_job == True:
+            # This is the last round: merge previous_myclust and myclust
             last_round = True
             logger.info("Last round, merging all remaining clusters.")
             previous_myclust.merge(myclust)
@@ -541,6 +548,7 @@ def dbclust(
             # Save intermediate results periodically
             save_catalog(locator.catalog, cfg, job_index, part=i)
             locator.catalog.clear()
+            gc.collect()
             last_saved_event_count = 0
         else:
             last_saved_event_count += len(locator.catalog)
