@@ -488,8 +488,11 @@ def import_phases(
     phases = []
 
     # Validate DataFrame
-    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-        logger.error("Input DataFrame is either None, not a DataFrame, or empty.")
+    if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+        logger.info("Input DataFrame is either None or empty.")
+        return []
+    elif not isinstance(df, pd.DataFrame):
+        logger.error("Input is not a DataFrame.")
         return []
 
     # Check required columns
