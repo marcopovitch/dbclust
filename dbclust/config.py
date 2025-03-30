@@ -132,7 +132,7 @@ class PickConfig:
                     with open(f, "r") as file:
                         first_line = file.readline().strip()
                         nbcol = first_line.count(",")
-                        if nbcol != 9 - 1:
+                        if nbcol != 10:
                             raise ValueError(
                                 f"{f} is not a csv file or some columns are missing ({nbcol}) !"
                             )
