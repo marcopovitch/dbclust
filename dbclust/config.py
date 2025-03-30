@@ -749,6 +749,7 @@ class PyoctoConfig:
     current_model: Optional[Model] = None
     travel_time_grid_filename: Optional[str] = None
     velocity_model: Optional[VelocityModel1D] = None
+    delegate_dbclust: Optional[bool] = False
 
     def __post_init__(self) -> None:
         if not self.default_model_name:

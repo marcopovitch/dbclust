@@ -87,6 +87,7 @@ def adjust_associator_tolerance(
                 associator,
                 cfg.pyocto.velocity_model,
                 cfg.cluster.min_picks_common,
+                delegate_dbclust=cfg.pyocto.delegate_dbclust,
                 log_level=log_level,
             )
             logger.info(f"Success with pick_match_tolerance: {tolerance:.2f}")
@@ -150,6 +151,7 @@ def dbclust2pyocto(
     associator_cfg: Associator,
     velocity_model: pyocto.VelocityModel1D,
     min_com_phases: int,
+    delegate_dbclust: bool = False,
     log_level=logging.INFO,
 ) -> Optional[Clusterize]:
     """
@@ -250,11 +252,11 @@ def dbclust2pyocto(
     )
 
     if len(pyocto_clusters) == 0 and myclust.n_clusters > 0:
+        if delegate_dbclust:
+            # fixme: for each cluster add a preloc based on the barycenter of the stations
+            logger.info("PyOcto did not find any cluster. Returning original dbclust clusters.")
+            return myclust
         return None
-        # # just in case pyocto does not find any clusters
-        # logger.warning("PyOcto did not find any clusters. Returning original dbclust clusters.")
-        # # fixme: for each cluster add a preloc based on the barycenter of the stations
-        # return myclust
 
     # Clone the original Clusterize object and update it with the new clusters
     newclust = copy.deepcopy(myclust)
