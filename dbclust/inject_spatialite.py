@@ -957,7 +957,7 @@ def create_schema(db_path: str) -> sqlite3.Connection:
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spatial_ref_sys';"
         )
         if cursor.fetchone()[0] == 0:
-            logger.info("Initializing SpatiaLite metadata...")
+            logger.info(f"Initializing SpatiaLite metadata : {db_path}")
             cursor.execute("SELECT InitSpatialMetadata();")
 
         # Create tables
