@@ -174,6 +174,21 @@ def dbclust(
         cfg (Config): dbclust parameters and data
         df (Optional[pd.DataFrame], optional): use df if defined rather than picks from cfg
         job_index (int): job index, None if in sequential mode
+
+    Returns:
+        None
+
+    Comments:
+        - The function is designed to process data in parallel, using the job_index to determine the time window for each job.
+        - It uses duckdb for SQL queries if df is None or empty, otherwise it processes the provided DataFrame.
+        - The function handles clustering, localization, and saving of results to files.
+        - It also includes logic for handling overlapping time periods and merging clusters.
+        - The function uses a temporary directory for intermediate files and cleans up after processing.
+        - The workflow includes deduplication of picks, clustering, localization, and saving results to QuakeML and SQLite formats.
+        - The workflow works on 2 time windows:
+            - previous time window containing the clusters: this is the one that is being processed, taking into account the overlap
+            - current time window containing also the clusters: this is the one that will be processed in the next round
+
     """
 
     if df is None:
@@ -182,7 +197,9 @@ def dbclust(
     # Time blocks
     if job_index is not None:
         if job_index < 0 or job_index >= len(cfg.parallel.time_partitions):
-            raise ValueError(f"Invalid job_index {job_index}, out of range.")
+            logger.error(f"Invalid job_index {job_index}, out of range.")
+            return False
+
         start, stop = cfg.parallel.time_partitions[job_index]
         if job_index == len(cfg.parallel.time_partitions) - 1:
             # get event in the overlapped zone
