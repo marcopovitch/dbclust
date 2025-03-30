@@ -159,7 +159,7 @@ def dbclust_test(
         stop = cfg.pick.end
 
     msg = "test started."
-    ic(msg, job_index, start, stop, df)
+    logger.info(f"{msg} Job index: {job_index}, Start: {start}, Stop: {stop}, DataFrame: {df}")
     return True
 
 
@@ -198,7 +198,7 @@ def dbclust(
         job_index = 0
 
     msg = "started."
-    ic(msg, job_index, start, stop)
+    logger.info(f"{msg} Job index: {job_index}, Start: {start}, Stop: {stop}")
 
     if df is None or df.empty:
         # Uses duckdb
@@ -348,7 +348,6 @@ def dbclust(
         # Warning: this function will modify the df_subset DataFrame in place
         # So modification made by rename_waveform_id() could be lost
         # due to metadata update in import_phases()
-        ic(df_subset)
         phases = import_phases(
             df_subset,
             cfg.pick.P_proba_threshold,
