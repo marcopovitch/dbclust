@@ -365,6 +365,12 @@ class Clusterize(object):
         del pseudo_tt
         self.cluster_merge_based_on_eventid()
 
+    def phases_count(self):
+        """
+        Count the number of phases in the clusters.
+        """
+        return sum(len(cluster) for cluster in self.clusters)
+
     @staticmethod
     def compute_tt_matrix(phases, vmean):
         # optimization : matrix is symmetrical -> use lru_cache
@@ -693,6 +699,8 @@ class Clusterize(object):
         for i in self.noise:
             print(i)
         print("\n")
+
+
 
 
 def _test():
