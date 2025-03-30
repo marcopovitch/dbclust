@@ -86,9 +86,6 @@ def duckdb_init_csv(csv_filenames: list[str], threads: int = 1):
     # Final SQL query
     rqt = f"CREATE VIEW PICKS AS {combined_query};"
 
-    print("Generated SQL query:")
-    print(rqt)
-
     # Initialize the DuckDB connection
     duckdb_con = duckdb.connect(database=":memory:", config=config)
     try:
