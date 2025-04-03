@@ -126,15 +126,20 @@ class PickConfig:
                 if os.path.isdir(f)
             ]
         else:
-            # CSV
+            # CSV columns (9) are:
+            #   station_id, channel, phase_type, phase_time, phase_score,
+            #   phase_evaluation, phase_method, event_id, agency
+            # optional columns:
+            #   month,year
             try:
                 for f in self.filenames:
                     with open(f, "r") as file:
                         first_line = file.readline().strip()
-                        nbcol = first_line.count(",")
-                        if nbcol != 10:
+                        nbcol = len(first_line.split(","))
+                        if nbcol != 9 and nbcol != 11:
                             raise ValueError(
-                                f"{f} is not a csv file or some columns are missing ({nbcol}) !"
+                                f"{f} is not a csv file or some columns are missing ({nbcol}) !\n"
+                                f"{first_line}"
                             )
             except Exception as e:
                 raise e
@@ -351,8 +356,8 @@ class TimeConfig:
     Configuration class for time settings.
     """
 
-    time_window: float = 7  # minutes
-    overlap_window: float = 40  # seconds
+    time_window: int  # minutes
+    overlap_window: int # seconds
 
 
 @dataclass
