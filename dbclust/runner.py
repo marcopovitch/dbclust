@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import psutil
 import pyproj
+os.environ["RAY_DEDUP_LOGS"] = "0"
 import ray
 from dask.distributed import Client
 from dask.distributed import LocalCluster
