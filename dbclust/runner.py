@@ -227,6 +227,9 @@ def dbclust(
     time_periods = list(pd.date_range(start, stop, freq=f"{cfg.time.time_window}min"))
     time_periods += [pd.to_datetime(stop)]
 
+    ic(time_periods)
+    ic(cfg.time.overlap_window)
+
     # get unique time_periods sorted
     time_periods = sorted(list(set(time_periods)))
     logger.info(f"[{job_index}] Splitting dataset in {len(time_periods)-1} chunks.")
@@ -300,6 +303,13 @@ def dbclust(
         if df_subset.empty and previous_myclust.phases_count() == 0:
             logger.info(f"[{job_index}] Skipping clustering {len(df_subset)} phases.")
             continue
+
+        # check if mydate in the df_subset min and max, df_subset is not empty
+        # mydate = pd.to_datetime("2025-03-26 19:45:00")
+        # if df_subset["phase_time"].min() > mydate  or df_subset["phase_time"].max() < mydate:
+        #     logger.info(f"[{job_index}] Skipping clustering {len(df_subset)} phases.")
+        #     continue
+
 
         # remove blacklisted stations
         if cfg.station.blacklist:
@@ -505,8 +515,8 @@ def dbclust(
                     event, origin, None
                 ).pop(-1)
 
-                logger.debug(
-                    "First pick is: %s, last pick is: %s, overlapped zone starts: %s, next overlapped zone starts: %s"
+                logger.info(
+                    "Evtent first pick is: %s, last pick is: %s, overlapped zone starts: %s, next overlapped zone starts: %s"
                     % (first_pick_time, last_pick_time, begin, next_begin)
                 )
 
@@ -554,10 +564,6 @@ def dbclust(
 
         # Write into qml/comments distance from preferred origin and prelocalization
         clustcat = feed_distance_from_preloc_to_pref_origin(clustcat)
-
-        # TODO
-        # Set to manual picks from agency and to automatic pick from phasenet
-        # feed_picks_event_evaluation_mode(clustcat)
 
         # Write partial qml file and clean catalog from memory
         if last_saved_event_count > cfg.catalog.event_flush_count:
