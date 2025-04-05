@@ -2,6 +2,7 @@
 import argparse
 import gc
 import logging
+import math
 import multiprocessing
 import os
 import shutil
@@ -19,6 +20,8 @@ import numpy as np
 import pandas as pd
 import psutil
 import pyproj
+
+os.environ["RAY_DEDUP_LOGS"] = "0"
 import ray
 from dask.distributed import Client
 from dask.distributed import LocalCluster
@@ -159,7 +162,9 @@ def dbclust_test(
         stop = cfg.pick.end
 
     msg = "test started."
-    logger.info(f"{msg} Job index: {job_index}, Start: {start}, Stop: {stop}, DataFrame: {df}")
+    logger.info(
+        f"{msg} Job index: {job_index}, Start: {start}, Stop: {stop}, DataFrame: {df}"
+    )
     return True
 
 
@@ -171,7 +176,7 @@ def dbclust(
     """Detect and localize events given picks
 
     Args:
-        cfg (Config): dbclust parameters and data
+        cfg (DBClustConfig): dbclust parameters and data
         df (Optional[pd.DataFrame], optional): use df if defined rather than picks from cfg
         job_index (int): job index, None if in sequential mode
 
@@ -190,6 +195,11 @@ def dbclust(
             - current time window containing also the clusters: this is the one that will be processed in the next round
 
     """
+    logger.info("")
+    logger.info("")
+    logger.info(
+        f"============== DBClust started (job index: {job_index}) =============="
+    )
 
     if df is None:
         df = pd.DataFrame()
@@ -200,7 +210,6 @@ def dbclust(
             logger.error(f"Invalid job_index {job_index}, out of range.")
             return False
 
-        start, stop = cfg.parallel.time_partitions[job_index]
         if job_index == len(cfg.parallel.time_partitions) - 1:
             # get event in the overlapped zone
             last_job = True
@@ -208,11 +217,11 @@ def dbclust(
             # don't get event in the overlapped zone
             last_job = False
     else:
-        start = cfg.pick.start
-        stop = cfg.pick.end
-        # get event in the overlapped zone during the last time_periods round
+        # get event in the overlapped zone during the last time_divisions round
         last_job = True
         job_index = 0
+
+    start, stop = cfg.parallel.time_partitions[job_index]
 
     msg = "started."
     logger.info(f"{msg} Job index: {job_index}, Start: {start}, Stop: {stop}")
@@ -224,15 +233,23 @@ def dbclust(
         # Uses the pandas Dataframe given as function argument.
         con = None
 
-    time_periods = list(pd.date_range(start, stop, freq=f"{cfg.time.time_window}min"))
-    time_periods += [pd.to_datetime(stop)]
+    window = pd.Timedelta(minutes=cfg.time.time_window)
+    overlap_timedelta = pd.Timedelta(cfg.time.overlap_window, "s")
 
-    ic(time_periods)
-    ic(cfg.time.overlap_window)
+    total_duration = stop - start
+    nb_periods = math.floor(total_duration / window)
+    remainder = total_duration % window
+    adjusted_stop = start + nb_periods * window
+    if remainder > pd.Timedelta(0):
+        adjusted_stop = start + (nb_periods + 1) * window
 
-    # get unique time_periods sorted
-    time_periods = sorted(list(set(time_periods)))
-    logger.info(f"[{job_index}] Splitting dataset in {len(time_periods)-1} chunks.")
+    time_periods = list(
+        pd.date_range(start, adjusted_stop, freq=window, inclusive="left")
+    )
+    time_divisions = [(s, s + window) for s in time_periods]
+
+    logger.info(f"[{job_index}] has {len(time_divisions)} time divisions.")
+    logger.info(f"{time_divisions}")
 
     # Instantiate a new tool (but empty) to get clusters
     previous_myclust = get_clusterize_from_config(cfg, phases=None)
@@ -240,29 +257,25 @@ def dbclust(
     # get a locator
     locator = get_locator_from_config(cfg)
 
-    # keep track of each time period processed
+    # keep track of each time division processed
     last_saved_event_count = 0
-    last_round = False  # over time_periods
+    last_round = False  # over time_divisions
     picks_to_remove = []
 
     # start time looping
-    overlap_timedelta = pd.Timedelta(cfg.time.overlap_window, "s")
-    for i, (begin, end) in enumerate(
-        zip(time_periods[:-1], time_periods[1:]),
-        start=1,
-    ):
-        logger.debug("")
-        logger.debug("================================================")
-        logger.debug("")
-
+    for i, (begin, end) in enumerate(time_divisions, start=1):
         # add the time overlap only if it is not the last round
         if (end + overlap_timedelta) >= cfg.pick.end:
             end = pd.to_datetime(cfg.pick.end)
+            short_window = True
         else:
             end += overlap_timedelta
+            short_window = False
 
+        logger.info("")
+        logger.info("")
         logger.info(
-            f"[{job_index}] Time window extraction #{i}/{len(time_periods)-1} picks from {begin} to {end}."
+            f"============== job index:[{job_index}] Time window extraction with overlap {overlap_timedelta}: #{i}/{len(time_divisions)} picks from {begin} to {end}."
         )
 
         # Extract picks on this time period
@@ -309,7 +322,6 @@ def dbclust(
         # if df_subset["phase_time"].min() > mydate  or df_subset["phase_time"].max() < mydate:
         #     logger.info(f"[{job_index}] Skipping clustering {len(df_subset)} phases.")
         #     continue
-
 
         # remove blacklisted stations
         if cfg.station.blacklist:
@@ -415,10 +427,11 @@ def dbclust(
             )
         )
 
-        if i == (len(time_periods) - 1) and last_job == True:
+        # i starts at 1
+        if i == len(time_divisions) and last_job == True:
             # This is the last round: merge previous_myclust and myclust
             last_round = True
-            logger.info("Last round, merging all remaining clusters.")
+            logger.info("\t==> Last round, merging all remaining clusters.")
             previous_myclust.merge(myclust)
 
         if cfg.pyocto.current_model:
@@ -505,22 +518,29 @@ def dbclust(
             for event in sorted(
                 clustcat.events, key=lambda e: e.preferred_origin().time
             ):
-                next_begin = end - np.timedelta64(cfg.time.overlap_window, "s")
+                # next_begin = end - np.timedelta64(cfg.time.overlap_window, "s")
+                next_begin = end - overlap_timedelta
 
                 origin = event.preferred_origin()
-                first_station, first_phase, first_pick_time = get_picks_from_event(
-                    event, origin, None
-                ).pop(0)
-                last_station, last_phase, last_pick_time = get_picks_from_event(
-                    event, origin, None
-                ).pop(-1)
+
+                picks = get_picks_from_event(event, origin, None)
+                _, _, first_pick_time = picks[0]
+                _, _, last_pick_time = picks[-1]
+
+                # first_station, first_phase, first_pick_time = get_picks_from_event(
+                #     event, origin, None
+                # ).pop(0)
+                # last_station, last_phase, last_pick_time = get_picks_from_event(
+                #     event, origin, None
+                # ).pop(-1)
 
                 logger.info(
-                    "Evtent first pick is: %s, last pick is: %s, overlapped zone starts: %s, next overlapped zone starts: %s"
-                    % (first_pick_time, last_pick_time, begin, next_begin)
+                    f"Event first pick is: {first_pick_time}, last pick is: {last_pick_time}, "
+                    f"overlapped zone starts: {begin}, next overlapped zone starts: {next_begin}, "
+                    f"short_window={short_window}, last_round={last_round}"
                 )
 
-                if not last_round and first_pick_time >= next_begin:
+                if not last_round and first_pick_time >= next_begin and short_window == False:
                     # Event first pick is in overlapped zone,
                     # remove this event and wait the next iteration
                     # as this event will be recreated.
