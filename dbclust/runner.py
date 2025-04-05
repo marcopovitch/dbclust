@@ -2,7 +2,6 @@
 import argparse
 import gc
 import logging
-import math
 import multiprocessing
 import os
 import shutil
@@ -202,6 +201,7 @@ def dbclust(
             logger.error(f"Invalid job_index {job_index}, out of range.")
             return False
 
+        start, stop = cfg.parallel.time_partitions[job_index]
         if job_index == len(cfg.parallel.time_partitions) - 1:
             # get event in the overlapped zone
             last_job = True
@@ -209,11 +209,11 @@ def dbclust(
             # don't get event in the overlapped zone
             last_job = False
     else:
+        start = cfg.pick.start
+        stop = cfg.pick.end
         # get event in the overlapped zone during the last time_periods round
         last_job = True
         job_index = 0
-    
-    start, stop = cfg.parallel.time_partitions[job_index]
 
     msg = "started."
     logger.info(f"{msg} Job index: {job_index}, Start: {start}, Stop: {stop}")
@@ -224,12 +224,9 @@ def dbclust(
     else:
         # Uses the pandas Dataframe given as function argument.
         con = None
-        
-    window = pd.Timedelta(minutes=cfg.time.time_window)
-    total_duration = stop - start
-    nb_periods = math.ceil(total_duration / window)
-    adjusted_stop = start + nb_periods * window
-    time_periods = list(pd.date_range(start, adjusted_stop, freq=window, inclusive="both"))
+
+    time_periods = list(pd.date_range(start, stop, freq=f"{cfg.time.time_window}min"))
+    time_periods += [pd.to_datetime(stop)]
 
     ic(time_periods)
     ic(cfg.time.overlap_window)
@@ -509,24 +506,18 @@ def dbclust(
             for event in sorted(
                 clustcat.events, key=lambda e: e.preferred_origin().time
             ):
-                #next_begin = end - np.timedelta64(cfg.time.overlap_window, "s")
-                next_begin = end - overlap_timedelta
+                next_begin = end - np.timedelta64(cfg.time.overlap_window, "s")
 
                 origin = event.preferred_origin()
-                
-                picks = get_picks_from_event(event, origin, None)
-                _, _, first_pick_time = picks[0]
-                _, _, last_pick_time = picks[-1]
-                
-                # first_station, first_phase, first_pick_time = get_picks_from_event(
-                #     event, origin, None
-                # ).pop(0)
-                # last_station, last_phase, last_pick_time = get_picks_from_event(
-                #     event, origin, None
-                # ).pop(-1)
+                first_station, first_phase, first_pick_time = get_picks_from_event(
+                    event, origin, None
+                ).pop(0)
+                last_station, last_phase, last_pick_time = get_picks_from_event(
+                    event, origin, None
+                ).pop(-1)
 
                 logger.info(
-                    "Event first pick is: %s, last pick is: %s, overlapped zone starts: %s, next overlapped zone starts: %s"
+                    "Evtent first pick is: %s, last pick is: %s, overlapped zone starts: %s, next overlapped zone starts: %s"
                     % (first_pick_time, last_pick_time, begin, next_begin)
                 )
 
