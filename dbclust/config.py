@@ -159,6 +159,7 @@ class PickConfig:
         # check min, max time exists
         if not min or not max:  # pragma: no cover
             raise ValueError(f"Can't find min, max time in {self.filenames}, no data ?")
+
         ic(min, max)
 
         if not self.start:
@@ -357,7 +358,7 @@ class TimeConfig:
     """
 
     time_window: int  # minutes
-    overlap_window: int # seconds
+    overlap_window: int  # seconds
 
 
 @dataclass
@@ -821,8 +822,6 @@ class PyoctoConfig:
 @dataclass
 class ParallelConfig:
     n_workers: int = None
-    # Use Timedelta unit
-    # https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.Timedelta.html
     partition_duration: str = "1D"
     nb_partitions: Optional[int] = None
     time_partitions: Optional[List] = None
@@ -832,38 +831,44 @@ class ParallelConfig:
         if not self.n_workers:
             self.n_workers = os.cpu_count()
 
-    def get_time_partitions(self, time_cfg: TimeConfig, pick_cfg: PickConfig) -> List:
-        # ic(pick_cfg.start, pick_cfg.end)
-        nb_periods = self.get_nb_of_divisions(
-            pick_cfg.start, pick_cfg.end, self.partition_duration
-        )
-        time_divisions = (
-            pd.date_range(
-                start=pick_cfg.start,
-                end=pick_cfg.end,
-                periods=nb_periods,
-                inclusive="both",
-            )
-            .to_series()
-            .to_list()
+    def get_time_partitions(
+        self, time_cfg: "TimeConfig", pick_cfg: "PickConfig"
+    ) -> List:
+        # Convertir proprement en Timestamp et arrondir
+        start = pd.to_datetime(pick_cfg.start).replace(second=0, microsecond=0)
+        original_end = pd.to_datetime(pick_cfg.end)
+
+        end = original_end.replace(second=0, microsecond=0)
+        if original_end > end:
+            end += pd.Timedelta(minutes=1)
+
+        duration = pd.Timedelta(self.partition_duration)
+        total_duration = end - start
+        nb_full_partitions = math.floor(total_duration / duration)
+        remainder = total_duration % duration
+
+        if remainder > pd.Timedelta(0):
+            nb_full_partitions = nb_full_partitions + 1
+        end = start + nb_full_partitions * duration
+        logger.info(
+            f"start: {start}, end: {end}, duration: {duration}, nb_partitions: {nb_full_partitions}"
         )
 
-        if nb_periods == 1:
-            # only one period: use [start, end] without overlap
-            adjusted_time_divisions = [[pick_cfg.start, pick_cfg.end]]
-        else:
-            adjusted_time_divisions = [
-                (start, end + pd.Timedelta(seconds=time_cfg.overlap_window))
-                for start, end in zip(time_divisions, time_divisions[1:])
-            ]
+        time_divisions = pd.date_range(
+            start=start, end=end, freq=duration, inclusive="left"
+        ).to_list()
 
-        self.nb_partitions = len(adjusted_time_divisions)
+        # adjusted_time_divisions = [
+        #     (s, s + duration + pd.Timedelta(seconds=time_cfg.overlap_window))
+        #     for s in time_divisions
+        # ]
+        # self.nb_partitions = len(adjusted_time_divisions)
+        # return adjusted_time_divisions
+
+        adjusted_time_divisions = [(s, s + duration) for s in time_divisions]
+        self.nb_partitions = len(time_divisions)
 
         return adjusted_time_divisions
-
-    @staticmethod
-    def get_nb_of_divisions(start, end, freq):
-        return math.ceil((end - start) / pd.Timedelta(freq))
 
 
 @dataclass
