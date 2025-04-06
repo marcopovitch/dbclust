@@ -372,6 +372,7 @@ class ClusterConfig:
     min_cluster_size: int
     min_station_count: int
     min_station_with_P_and_S: int
+    min_station_score: float
     average_velocity: float
     min_picks_common: int
     max_search_dist: Optional[float] = 0.0

@@ -16,6 +16,7 @@ import tempfile
 import urllib.parse
 import urllib.request
 import warnings
+from collections import defaultdict
 from functools import partial
 from itertools import combinations
 from math import fabs
@@ -118,6 +119,7 @@ class NllLoc(object):
         nll_default_template=None,  # default template to use if no preloc found
         loc_method="EDT_OT_WT_ML",
         tmpdir="/tmp",
+        min_station_score=5.5,
         min_station_with_P_and_S=0,
         double_pass=False,
         force_uncertainty=False,
@@ -154,6 +156,7 @@ class NllLoc(object):
         self.nll_default_template = nll_default_template
         self.loc_method = loc_method
         self.tmpdir = tmpdir
+        self.min_station_score = min_station_score
         self.min_station_with_P_and_S = min_station_with_P_and_S
         self.double_pass = double_pass
         self.force_uncertainty = force_uncertainty
@@ -218,6 +221,42 @@ class NllLoc(object):
 
         count = [len(count[k]) for k in count.keys()]
         return np.array([np.count_nonzero(x >= min_count) for x in count]).sum()
+
+    @staticmethod
+    def get_origin_station_score(event: Event, origin: Origin) -> float:
+        arrivals = origin.arrivals
+        if not arrivals:
+            return 0.0
+
+        station_phases = defaultdict(set)
+
+        for arrival in arrivals:
+            if arrival.time_weight is None or arrival.time_weight == 0:
+                continue  # Ignore les arrivals avec un poids nul
+            pick_id = arrival.pick_id
+            pick = next((p for p in event.picks if p.resource_id == pick_id), None)
+            if pick is None or pick.waveform_id is None:
+                continue
+            net = pick.waveform_id.network_code
+            sta = pick.waveform_id.station_code
+            station_code = f"{net}.{sta}"
+
+            phase = arrival.phase.lower()
+            if phase.startswith("p"):
+                station_phases[station_code].add("P")
+            elif phase.startswith("s"):
+                station_phases[station_code].add("S")
+
+        score = 0.0
+        for phases in station_phases.values():
+            if "P" in phases and "S" in phases:
+                score += 2.0
+            elif "P" in phases:
+                score += 1.0
+            elif "S" in phases:
+                score += 0.5
+
+        return score
 
     def reloc_event(self, event: Event) -> Catalog:
         """Event re-localization using a locator.
@@ -728,6 +767,18 @@ class NllLoc(object):
             o = e.preferred_origin()
             o.quality.used_station_count = self.get_used_station_count(e, o)
             o.quality.used_phase_count = self.get_used_phase_count(e, o)
+
+            station_score = self.get_origin_station_score(e, o)
+            logger.info(
+                f"Origin station score: {station_score} "
+                f"({o.quality.used_station_count} stations, {o.quality.used_phase_count} phases)"
+            )
+            if station_score < self.min_station_score:
+                # station score not enough
+                logger.info(
+                    f"Not enough stations with P and S phases ({station_score})... ignoring it !"
+                )
+                continue
 
             if o.quality.used_phase_count >= self.nll_min_phase:
                 count = self.check_stations_with_P_and_S(
