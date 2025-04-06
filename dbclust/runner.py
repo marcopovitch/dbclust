@@ -193,6 +193,8 @@ def dbclust(
         - The workflow works on 2 time windows:
             - previous time window containing the clusters: this is the one that is being processed, taking into account the overlap
             - current time window containing also the clusters: this is the one that will be processed in the next round
+        - last_job is used to indicate  if the current job is the last one ever
+        - last_partition_job is used to indicate if the current job is the last one in the time partition
 
     """
     logger.info("")
@@ -206,17 +208,21 @@ def dbclust(
 
     # Time blocks
     if job_index is not None:
+        # parallel mode is enabled
+        parallel_mode = True
+
         if job_index < 0 or job_index >= len(cfg.parallel.time_partitions):
             logger.error(f"Invalid job_index {job_index}, out of range.")
             return False
 
         if job_index == len(cfg.parallel.time_partitions) - 1:
-            # get event in the overlapped zone
             last_job = True
         else:
-            # don't get event in the overlapped zone
             last_job = False
     else:
+        # sequential mode
+        parallel_mode = False
+
         # get event in the overlapped zone during the last time_divisions round
         last_job = True
         job_index = 0
@@ -259,13 +265,20 @@ def dbclust(
 
     # keep track of each time division processed
     last_saved_event_count = 0
-    last_round = False  # over time_divisions
     picks_to_remove = []
 
     # start time looping
     for i, (begin, end) in enumerate(time_divisions, start=1):
+        # Check if this is the last time divisions
+        # if there is no other jobs after this one
+        # previous_myclust and myclust will be merged
+        if job_index is not None and i == len(time_divisions):
+            last_partition_job = True
+        else:
+            last_partition_job = False
+
         # add the time overlap only if it is not the last round
-        if (end + overlap_timedelta) >= cfg.pick.end:
+        if end >= cfg.pick.end:
             end = pd.to_datetime(cfg.pick.end)
             short_window = True
         else:
@@ -316,12 +329,6 @@ def dbclust(
         if df_subset.empty and previous_myclust.phases_count() == 0:
             logger.info(f"[{job_index}] Skipping clustering {len(df_subset)} phases.")
             continue
-
-        # check if mydate in the df_subset min and max, df_subset is not empty
-        # mydate = pd.to_datetime("2025-03-26 19:45:00")
-        # if df_subset["phase_time"].min() > mydate  or df_subset["phase_time"].max() < mydate:
-        #     logger.info(f"[{job_index}] Skipping clustering {len(df_subset)} phases.")
-        #     continue
 
         # remove blacklisted stations
         if cfg.station.blacklist:
@@ -427,11 +434,12 @@ def dbclust(
             )
         )
 
-        # i starts at 1
-        if i == len(time_divisions) and last_job == True:
-            # This is the last round: merge previous_myclust and myclust
-            last_round = True
-            logger.info("\t==> Last round, merging all remaining clusters.")
+        if last_partition_job:
+            # This is the last job in the time partition
+            # merge previous_myclust and myclust
+            logger.info(
+                f"==> Last job in the time partition, merging all remaining clusters."
+            )
             previous_myclust.merge(myclust)
 
         if cfg.pyocto.current_model:
@@ -518,29 +526,28 @@ def dbclust(
             for event in sorted(
                 clustcat.events, key=lambda e: e.preferred_origin().time
             ):
-                # next_begin = end - np.timedelta64(cfg.time.overlap_window, "s")
-                next_begin = end - overlap_timedelta
-
                 origin = event.preferred_origin()
-
                 picks = get_picks_from_event(event, origin, None)
                 _, _, first_pick_time = picks[0]
                 _, _, last_pick_time = picks[-1]
 
-                # first_station, first_phase, first_pick_time = get_picks_from_event(
-                #     event, origin, None
-                # ).pop(0)
-                # last_station, last_phase, last_pick_time = get_picks_from_event(
-                #     event, origin, None
-                # ).pop(-1)
+                # check if the event is in the overlapped zone
+                event_in_overlapped_zone = False
+                if short_window == False:
+                    next_begin = end - overlap_timedelta
+                    if first_pick_time > next_begin:
+                        event_in_overlapped_zone = True
+                else:
+                    next_begin = end
 
                 logger.info(
                     f"Event first pick is: {first_pick_time}, last pick is: {last_pick_time}, "
                     f"overlapped zone starts: {begin}, next overlapped zone starts: {next_begin}, "
-                    f"short_window={short_window}, last_round={last_round}"
+                    f"short_window={short_window}, last_job_partition={last_partition_job}, last_job={last_job}, "
+                    f"pick_in_overlapped_zone={event_in_overlapped_zone}"
                 )
 
-                if not last_round and first_pick_time >= next_begin and short_window == False:
+                if not last_job and event_in_overlapped_zone:
                     # Event first pick is in overlapped zone,
                     # remove this event and wait the next iteration
                     # as this event will be recreated.
@@ -553,7 +560,7 @@ def dbclust(
                     clustcat = locator.catalog
                 elif (
                     event.event_type != "not existing"
-                    and not last_round
+                    and not last_job
                     and first_pick_time < next_begin
                     and last_pick_time >= next_begin
                 ):
