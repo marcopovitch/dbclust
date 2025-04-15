@@ -85,6 +85,14 @@ phase_order = ["Pg", "Sg", "Pn", "Sn", "P", "S"]
 time_weight_tolerance = 0.01
 
 
+class LocalizationError(Exception):
+    """Raised when NonLinLoc localization fails."""
+
+    def __init__(self, loc_method: str):
+        super().__init__(f"Localization failed with {loc_method} method.")
+        self.loc_method = loc_method
+
+
 def sort_by_phase(arrival: Arrival) -> int:
     """
     Sorts an Arrival object by its phase.
@@ -184,9 +192,16 @@ class NllLoc(object):
 
         # localization only if is nll_obs_file provided at init level
         if self.nll_obs_file:
-            self.catalog = self.nll_localisation(
-                nll_obs_file, double_pass=self.double_pass
-            )
+            try:
+                self.catalog = self.nll_localisation(
+                    nll_obs_file, double_pass=self.double_pass
+                )
+            except LocalizationError as e:
+                logger.error(f"{e} - Check your input data or parameters.")
+                self.catalog = Catalog()
+            except Exception as e:
+                logger.error(f"Unexpected error during localization: {e}")
+                self.catalog = Catalog()
         else:
             self.catalog = Catalog()
         self.nb_events = len(self.catalog)
@@ -311,7 +326,12 @@ class NllLoc(object):
 
         # NLLoc format only requires pick information, not arrivals.
         myevent.write(self.nll_obs_file, format="NLLOC_OBS")
-        cat = self.nll_localisation(picks=myevent.picks)
+
+        try:
+            cat = self.nll_localisation(picks=myevent.picks)
+        except LocalizationError as e:
+            logger.error(f"{e} - Check your input data or parameters.")
+            cat = Catalog()
 
         # Add the previous event or origin back to this event.
         if cat:
@@ -333,6 +353,7 @@ class NllLoc(object):
         pass_count: int = 0,
         force_model_id: str = None,
         force_template: str = None,
+        force_loc_method: str = None,
     ):
         """
         Perform NonLinLoc localization for seismic events.
@@ -359,6 +380,8 @@ class NllLoc(object):
 
         Raises:
         -------
+        LocalizationError
+            If the localization fails using the specified method.
         Exception
             If there is an error in generating the NLL configuration file or running the NLL binary.
         """
@@ -462,7 +485,9 @@ class NllLoc(object):
             # Apply GAU_ANALYTIC only for the first pass if double_pass is enabled (to speed up the process)
             # Warning: GAU_ANALYTIC do not always work as expected
             # "LOC_METHOD": "GAU_ANALYTIC" if (double_pass and pass_count == 0) else self.loc_method,
-            "LOC_METHOD": self.loc_method,
+            "LOC_METHOD": (
+                self.loc_method if force_loc_method is None else force_loc_method
+            ),
         }
 
         # Generate NLL configuration file
@@ -532,6 +557,13 @@ class NllLoc(object):
                 if self.nll_verbose:
                     print(result.stdout)
                 return Catalog()
+            elif "ERROR: calc_maximum_likelihood_ot:" in line:
+                # localization failed. It appends when using EDT_OT_WT
+                # raise an exception to try relocation with another method
+                loc_method_used = (
+                    self.loc_method if force_loc_method is None else force_loc_method
+                )
+                raise LocalizationError(loc_method_used)
             elif "ERROR" in line:
                 logger.error(line)
                 if self.nll_verbose:
@@ -688,14 +720,25 @@ class NllLoc(object):
             if len(event2.picks):
                 new_nll_obs_file = nll_obs_file + ".2nd_pass"
                 cat2.write(new_nll_obs_file, format="NLLOC_OBS")
-                cat2 = self.nll_localisation(
-                    new_nll_obs_file,
-                    picks=event2.picks,
-                    double_pass=self.double_pass,
-                    pass_count=1,
-                    force_model_id=model_id,
-                    force_template=nll_template,
+                loc_method_used = (
+                    self.loc_method if force_loc_method is None else force_loc_method
                 )
+                try:
+                    cat2 = self.nll_localisation(
+                        new_nll_obs_file,
+                        picks=event2.picks,
+                        double_pass=self.double_pass,
+                        pass_count=1,
+                        force_model_id=model_id,
+                        force_template=nll_template,
+                        force_loc_method=loc_method_used,
+                    )
+                except LocalizationError as ex:
+                    logger.debug(f"{ex} - in double pass")
+                    cat2 = None
+                except Exception as ex:
+                    logger.error(f"Unexpected error during localization: {ex}")
+                    cat2 = None
             else:
                 cat2 = None
 
@@ -758,224 +801,70 @@ class NllLoc(object):
 
     def get_catalog_from_results(self, cat_results: List[Catalog]) -> Catalog:
         """Compute attributes and filter events from catalogs"""
-        mycatalog = Catalog()
+        final_catalog = Catalog()
         for cat in cat_results:
-            if not cat:
+            if not cat or not cat.events:
+                logger.debug("Empty catalog or missing events, skipping.")
                 continue
-            # there is always only one event in the catalog
+
+            # Each catalog is expected to have exactly one event
             e = cat.events[0]
             o = e.preferred_origin()
+
+            # Compute quality attributes
             o.quality.used_station_count = self.get_used_station_count(e, o)
             o.quality.used_phase_count = self.get_used_phase_count(e, o)
 
             station_score = self.get_origin_station_score(e, o)
             logger.info(
-                f"Origin station score: {station_score} "
+                f"Evaluating event: station score = {station_score}, "
                 f"({o.quality.used_station_count} stations, {o.quality.used_phase_count} phases)"
             )
-            if station_score < self.min_station_score:
-                # station score not enough
-                logger.info(
-                    f"Not enough stations with P and S phases ({station_score})... ignoring it !"
+
+            if self.min_station_score is not None:
+                if station_score < self.min_station_score:
+                    # station score not enough
+                    logger.info(
+                        f"Rejected: station score {station_score} < {self.min_station_score}"
+                    )
+                    continue
+                else:
+                    logger.info(
+                        f"Accepted: station score {station_score} ≥ {self.min_station_score}"
+                    )
+                    final_catalog += cat
+                    continue
+
+            # Fallback: use minimum phase and P+S station criteria
+            if o.quality.used_phase_count < self.nll_min_phase:
+                logger.debug(
+                    f"Rejected: insufficient phases ({o.quality.used_phase_count} < {self.nll_min_phase})"
                 )
                 continue
 
-            if o.quality.used_phase_count >= self.nll_min_phase:
-                count = self.check_stations_with_P_and_S(
-                    e, o, self.min_station_with_P_and_S
+            ps_station_count = self.check_stations_with_P_and_S(
+                e, o, self.min_station_with_P_and_S
+            )
+            if ps_station_count < self.min_station_with_P_and_S:
+                logger.info(
+                    f"Rejected: only {ps_station_count}/{self.min_station_with_P_and_S} stations with both P and S, "
+                    f"{o.quality.used_phase_count} phases, {o.quality.used_station_count} stations "
                 )
-                if count >= self.min_station_with_P_and_S:
-                    logger.info(
-                        f"{o.quality.used_phase_count} phases, {o.quality.used_station_count} stations "
-                        f"and {count} (min: {self.min_station_with_P_and_S}) stations with P and S (both)."
-                    )
-                    mycatalog += cat
-                else:
-                    logger.info(
-                        f"Not enough stations with both P and S ({count}, min:{self.min_station_with_P_and_S})"
-                        "... ignoring it !"
-                    )
-            else:
-                logger.debug(
-                    f"Not enough phases ({o.quality.used_phase_count}/{self.nll_min_phase}) for event"
-                    f" ... ignoring it !"
-                )
+                continue
+
+            logger.info(
+                f"Accepted: {o.quality.used_phase_count} phases, "
+                f"{o.quality.used_station_count} stations, "
+                f"{ps_station_count} with both P and S (min: {self.min_station_with_P_and_S})"
+            )
+            final_catalog += cat
 
         # sort events by time
-        self.nb_events = len(self.catalog)
-        if self.nb_events > 1:
-            self.catalog.events = sorted(
-                self.catalog.events, key=lambda e: e.preferred_origin().time
-            )
-        return mycatalog
-
-    def processes_get_localisations_from_nllobs_dir(
-        self, OBS_PATH: str, append: bool = True
-    ) -> Catalog:
-        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        logger.debug(f"Localization of {obs_files_pattern}")
-
-        my_loc_proc = partial(self.nll_localisation, double_pass=self.double_pass)
-        processes = []
-
-        for f in glob.glob(obs_files_pattern):
-            process = multiprocessing.Process(target=my_loc_proc, args=(f,))
-            processes.append(process)
-            process.start()
-
-        for process in processes:
-            process.join()
-
-        cat_results = [process.exitcode for process in processes]
-        mycatalog = self.get_catalog_from_results(cat_results)
-
-        if append is True:
-            self.catalog += mycatalog
-
-        return mycatalog
-
-    def multiproc_get_localisations_from_nllobs_dir(
-        self, OBS_PATH: str, append: bool = True
-    ) -> Catalog:
-        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        logger.debug(f"Localization of {obs_files_pattern}")
-
-        max_workers = multiprocessing.cpu_count()
-        my_loc_proc = partial(self.nll_localisation, double_pass=self.double_pass)
-        with multiprocessing.Pool(processes=max_workers) as pool:
-            cat_results = pool.map(my_loc_proc, glob.glob(obs_files_pattern))
-
-        mycatalog = self.get_catalog_from_results(cat_results)
-
-        if append is True:
-            self.catalog += mycatalog
-
-        return mycatalog
-
-    def ray_multiproc_get_localisations_from_nllobs_dir(
-        self, OBS_PATH: str, append: bool = True
-    ) -> Catalog:
-        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        logger.debug(f"Localization of {obs_files_pattern}")
-
-        my_loc_proc = partial(self.nll_localisation, double_pass=self.double_pass)
-        with Pool() as pool:
-            cat_results = pool.map(my_loc_proc, glob.glob(obs_files_pattern))
-
-        mycatalog = self.get_catalog_from_results(cat_results)
-
-        if append is True:
-            self.catalog += mycatalog
-
-        return mycatalog
-
-    def thread_get_localisations_from_nllobs_dir(
-        self, OBS_PATH: str, append: bool = True
-    ) -> Catalog:
-        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        logger.debug(f"Localization of {obs_files_pattern}")
-
-        max_workers = multiprocessing.cpu_count()
-        my_loc_proc = partial(self.nll_localisation, double_pass=self.double_pass)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            cat_results = list(executor.map(my_loc_proc, glob.glob(obs_files_pattern)))
-
-        mycatalog = self.get_catalog_from_results(cat_results)
-
-        if append is True:
-            self.catalog += mycatalog
-
-        return mycatalog
-
-    def dask_bag_get_localisations_from_nllobs_dir(
-        self, OBS_PATH: str, append: bool = True
-    ) -> Catalog:
-        """
-        nll localisation and export to quakeml
-        warning : network and channel are lost since they are not used by nll
-        use Phase() to get them.
-        if append is True, the obtain catalog is appended to the NllLoc catalog
-
-        returns a catalog
-        """
-        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        logger.debug(f"Localization of {obs_files_pattern}")
-
-        b = db.from_sequence(
-            glob.glob(obs_files_pattern), partition_size=multiprocessing.cpu_count()
+        final_catalog.events = sorted(
+            final_catalog.events, key=lambda e: e.preferred_origin().time
         )
-        cat_results = b.map(
-            lambda x: self.nll_localisation(x, double_pass=self.double_pass)
-        ).compute()
-
-        mycatalog = self.get_catalog_from_results(cat_results)
-
-        if append is True:
-            self.catalog += mycatalog
-
-        return mycatalog
-
-    def ray_get_localisations_from_nllobs_dir(
-        self, OBS_PATH: str, append: bool = True
-    ) -> Catalog:
-        """
-        nll localisation and export to quakeml
-        warning : network and channel are lost since they are not used by nll
-        use Phase() to get them.
-        if append is True, the obtain catalog is appended to the NllLoc catalog
-
-        returns a catalog
-        """
-
-        @ray.remote
-        def remote_nll_localisation(file_path, double_pass):
-            return self.nll_localisation(file_path, double_pass=double_pass)
-
-        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        logger.debug(f"Localization of {obs_files_pattern}")
-
-        delayed_tasks = [
-            remote_nll_localisation.remote(f, double_pass=self.double_pass)
-            for f in glob.glob(obs_files_pattern)
-        ]
-
-        # Récupérer les résultats
-        cat_results = ray.get(delayed_tasks)
-
-        mycatalog = self.get_catalog_from_results(cat_results)
-
-        if append is True:
-            self.catalog += mycatalog
-
-        return mycatalog
-
-    def dask_get_localisations_from_nllobs_dir(
-        self, OBS_PATH: str, append: bool = True
-    ) -> Catalog:
-        """
-        nll localisation and export to quakeml
-        warning : network and channel are lost since they are not used by nll
-        use Phase() to get them.
-        if append is True, the obtain catalog is appended to the NllLoc catalog
-
-        returns a catalog
-        """
-        obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
-        logger.debug(f"Localization of {obs_files_pattern}")
-
-        delayed_tasks = [
-            dask.delayed(self.nll_localisation)(f, double_pass=self.double_pass)
-            for f in glob.glob(obs_files_pattern)
-        ]
-        # execute tasks
-        cat_results = dask.compute(*delayed_tasks)
-
-        mycatalog = self.get_catalog_from_results(cat_results)
-
-        if append is True:
-            self.catalog += mycatalog
-
-        return mycatalog
+        logger.info(f"Total accepted events: {len(final_catalog)}")
+        return final_catalog
 
     def get_localisations_from_nllobs_dir(
         self, OBS_PATH: str, picks: List[Pick] = None, append: bool = True
@@ -992,31 +881,54 @@ class NllLoc(object):
         Returns:
             Catalog: returns a catalog of all computed origins
         """
+        fallback_loc_method = "GAU_ANALYTIC"  # "EDT_OT_WT_ML"
         obs_files_pattern = os.path.join(OBS_PATH, "cluster-*.obs")
         logger.debug(f"Localization of {obs_files_pattern}")
 
         cat_results = []
-        # ic(sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file))
+
         for i, nll_obs_file in enumerate(
             sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file)
         ):
-            if picks:
-                picks_set = picks[i]
-            else:
-                picks_set = None
+            picks_set = picks[i] if picks else None
 
-            # localization
-            cat = self.nll_localisation(
-                nll_obs_file, picks=picks_set, double_pass=self.double_pass
-            )
+            try:
+                cat = self.nll_localisation(
+                    nll_obs_file, picks=picks_set, double_pass=self.double_pass
+                )
+            except LocalizationError as e:
+                logger.warning(
+                    f"{e} - trying with {fallback_loc_method} for {nll_obs_file}"
+                )
+                try:
+                    cat = self.nll_localisation(
+                        nll_obs_file,
+                        picks=picks_set,
+                        double_pass=self.double_pass,
+                        force_loc_method=fallback_loc_method,
+                    )
+                    logger.info(
+                        f"Localization succeeded with {fallback_loc_method} for {nll_obs_file}"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Localization failed even with {fallback_loc_method}: {e}"
+                    )
+                    cat = None
+            except Exception as e:
+                logger.exception(
+                    f"Unexpected localization error for {nll_obs_file}: {e}"
+                )
+                cat = None
+
             if not cat:
-                logger.debug(f"No loc obtained for {nll_obs_file}:/")
+                logger.debug(f"No loc obtained for {nll_obs_file} :/")
                 continue
             cat_results.append(cat)
 
         mycatalog = self.get_catalog_from_results(cat_results)
 
-        if append is True:
+        if append:
             self.catalog += mycatalog
 
         return mycatalog
