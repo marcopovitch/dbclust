@@ -5,6 +5,7 @@ import logging
 import math
 import multiprocessing
 import os
+import random
 import shutil
 import sqlite3
 import sys
@@ -114,6 +115,7 @@ def get_locator_from_config(cfg, log_level=logging.INFO):
         keep_manual_picks=cfg.relocation.keep_manual_picks,
         nll_min_phase=cfg.nll.min_phase,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
+        min_station_score=cfg.cluster.min_station_score,
         quakeml_settings=asdict(cfg.quakeml),
         keep_scat=cfg.nll.enable_scatter,
         #
@@ -137,6 +139,7 @@ def get_clusterize_from_config(cfg, phases=None, log_level=logging.INFO):
         average_velocity=cfg.cluster.average_velocity,
         min_station_count=cfg.cluster.min_station_count,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
+        min_station_score=cfg.cluster.min_station_score,
         max_search_dist=cfg.cluster.max_search_dist,
         P_uncertainty=cfg.pick.P_uncertainty,
         S_uncertainty=cfg.pick.S_uncertainty,
@@ -146,26 +149,6 @@ def get_clusterize_from_config(cfg, phases=None, log_level=logging.INFO):
         log_level=log_level,
     )
     return myclust
-
-
-def dbclust_test(
-    cfg: DBClustConfig,
-    df: Optional[pd.DataFrame] = pd.DataFrame(),
-    job_index: Optional[int] = None,
-) -> None:
-
-    # Time blocks
-    if job_index is not None:
-        start, stop = cfg.parallel.time_partitions[job_index]
-    else:
-        start = cfg.pick.start
-        stop = cfg.pick.end
-
-    msg = "test started."
-    logger.info(
-        f"{msg} Job index: {job_index}, Start: {start}, Stop: {stop}, DataFrame: {df}"
-    )
-    return True
 
 
 def dbclust(
@@ -281,9 +264,17 @@ def dbclust(
         if end >= cfg.pick.end:
             end = pd.to_datetime(cfg.pick.end)
             short_window = True
+
+            # complemntary check
+            if end < begin:
+                # do not skip the last time division
+                # to be able to process the previous_myclust
+                end = begin
+
         else:
             end += overlap_timedelta
             short_window = False
+
 
         logger.info("")
         logger.info("")
@@ -488,37 +479,6 @@ def dbclust(
                     my_obs_path, picks=nll_picks, append=True
                 )
 
-                # multiproc  // version with pool
-                # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
-                #     my_obs_path, append=True
-                # )
-
-                # Ray pool // version with Pool
-                # clustcat = locator.ray_multiproc_get_localisations_from_nllobs_dir(
-                #    my_obs_path, append=True
-                # )
-
-                # Ray // version
-                # clustcat = locator.ray_get_localisations_from_nllobs_dir(
-                #     my_obs_path, append=True
-                # )
-
-                # Dask // version
-                # clustcat = locator.dask_get_localisations_from_nllobs_dir(
-                #     my_obs_path, append=True
-                # )
-
-                # thread // version
-                # clustcat = locator.multiproc_get_localisations_from_nllobs_dir(
-                #     my_obs_path, append=True
-                # )
-
-                # clustcat = locator.processes_get_localisations_from_nllobs_dir(
-                #     my_obs_path, append=True
-                # )
-
-                # fixme
-                # handle scat file here before the directory is deleted
                 if cfg.nll.enable_scatter:
                     logger.warning("FIXME: scatter file not yet handled !")
 
@@ -595,7 +555,6 @@ def dbclust(
         # Write partial qml file and clean catalog from memory
         if last_saved_event_count > cfg.catalog.event_flush_count:
             # Save intermediate results periodically
-            save_catalog(locator.catalog, cfg, job_index, part=i)
             locator.catalog.clear()
             gc.collect()
             last_saved_event_count = 0
@@ -607,6 +566,7 @@ def dbclust(
 
     # Save remaining events
     save_catalog(locator.catalog, cfg, job_index, part=i + 1, finalize=True)
+    logger.info(f"Finalizing job index: {job_index}")
     return True
 
 
@@ -665,57 +625,12 @@ def save_catalog(
                 catalog,
                 enable_quakeml=True,
                 disable_tqdm=True,
+                retries=5,
+                delay=1,
+                backoff="exponential",
             )
         except Exception as e:
             logger.error(f"Error writing catalog to SQLite: {e}")
-
-
-def process_task(cfg, job_arg):
-    job_index = job_arg[0]
-    start, end = job_arg[1]
-    dbclust(cfg=cfg, df=None, job_index=job_index)
-
-
-def run_with_multiproc(cfg: DBClustConfig):
-    func = partial(process_task, cfg)
-    with multiprocessing.Pool(cfg.parallel.n_workers) as pool:
-        results = pool.map(func, enumerate(cfg.parallel.time_partitions, start=0))
-    return results
-
-
-def run_with_ray_multiproc(cfg: DBClustConfig):
-    func = partial(process_task, cfg)
-    with Pool(cfg.parallel.n_workers) as pool:
-        results = pool.map(func, enumerate(cfg.parallel.time_partitions, start=0))
-    return results
-
-
-def run_with_dask(cfg: DBClustConfig):
-    # Cluster initialization
-    cluster = LocalCluster(
-        processes=True,
-        threads_per_worker=1,
-        n_workers=cfg.parallel.n_workers,
-        # dashboard_address="10.0.1.40:8787",
-        # dashboard_address=None,
-        # death_timeout=120,
-    )
-    client = Client(cluster)
-    logger.info(f"Dask running on {cfg.parallel.n_workers} cpu(s)")
-    logger.info(f"Dask dashboard url: {client.dashboard_link}")
-    dask.config.set({"distributed.scheduler.work-stealing": True})
-
-    # Dask stuff
-    delayed_tasks = [
-        dask.delayed(dbclust)(cfg=cfg, job_index=idx)
-        for idx, (start, end) in enumerate(cfg.parallel.time_partitions, start=0)
-    ]
-
-    # Start tasks
-    results = dask.compute(*delayed_tasks)
-    dask.distributed.wait(results)
-    logger.info("DBClust completed !")
-    return results
 
 
 # Ray tasks
@@ -746,8 +661,14 @@ def run_with_ray(cfg: DBClustConfig):
     )
     logger.info(f"Dashboard URL: http://{context.dashboard_url}")
 
+    # Create (idx, (start, end)) pairs so we can shuffle the execution order
+    # without altering the original idx values, which are used to track the last job
+    # and ensure proper partition handling (e.g., quarry blasts in time zones).
+    indexed_partitions = list(enumerate(cfg.parallel.time_partitions, start=0))
+    random.shuffle(indexed_partitions)
+
     # Launch tasks dynamically
-    for idx, (start, end) in enumerate(cfg.parallel.time_partitions, start=0):
+    for idx, (start, end) in indexed_partitions:
         while True:
             # Monitor system resources
             mem_usage = psutil.virtual_memory().percent
@@ -756,7 +677,7 @@ def run_with_ray(cfg: DBClustConfig):
             if mem_usage < memory_threshold and cpu_usage < cpu_threshold:
                 # Launch the task
                 logger.info(
-                    f"Launching task {idx} (Memory: {mem_usage}%, CPU: {cpu_usage}%)"
+                    f"Launching task {idx} [{start} -- {end}] (Memory: {mem_usage}%, CPU: {cpu_usage}%)"
                 )
                 active_tasks.append(run_dbclust_task.remote(cfg, idx))
                 break
@@ -837,17 +758,17 @@ if __name__ == "__main__":
         for idx, (start, end) in enumerate(cfg.parallel.time_partitions, start=0):
             results.append(dbclust(cfg=cfg, df=None, job_index=idx))
     else:
-        # results = dbclust(cfg)
-        # results = run_with_multiproc(cfg)
-        # results = run_with_dask(cfg)  # change the locator accordingly
-        # results = run_with_ray_multiproc(cfg)
         results = run_with_ray(cfg)  # change the locator accordingly
 
     # update spatialite view
     if cfg.catalog.enable_sqlite:
         conn = sqlite3.connect(cfg.catalog.sqlite_db_fullpath)
-        refresh_event_coordinates_view(conn)
-        conn.close()
+        if conn:
+            logger.info("Connected to SQLite database to update view.")
+            refresh_event_coordinates_view(conn)
+            conn.close()
+        else:
+            logger.error("Failed to connect to SQLite database.")
 
     print(results)
     # flush stdout and stderr to have the log in the right order
