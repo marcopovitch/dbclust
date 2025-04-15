@@ -818,6 +818,8 @@ def export_sqlite_to_quakeml(
     """
     # Connect to the SQLite database
     conn = sqlite3.connect(db_path)
+    if not conn:
+        raise Exception(f"Failed to connect to the database at {db_path}")
     cursor = conn.cursor()
 
     # Open the output file for writing
@@ -938,6 +940,9 @@ def create_schema(db_path: str) -> sqlite3.Connection:
     """
     try:
         conn = sqlite3.connect(db_path)
+        if not conn:
+            raise Exception(f"Failed to connect to the database at {db_path}")
+
         conn.execute(
             "PRAGMA journal_mode=WAL;"
         )  # Enable WAL mode for concurrent read/write
@@ -1277,53 +1282,57 @@ def import_catalog_object_to_sqlite_from_file(
     retries: int = 5,
     delay: int = 1,
     disable_tqdm: bool = False,
+    backoff: str = "linear",  # "linear" or "exponential"
 ):
     """
-    Import a catalog of seismic events to a SQLite database with conflict handling.
+    Import a catalog of seismic events into a SQLite database with retry logic and configurable backoff.
 
     Args:
         db_path (str): Path to the SQLite database file.
-        catalog (Catalog): A catalog of seismic events.
-        enable_quakeml (bool, optional): If True, serialize and compress QuakeML content for each event. Defaults to False.
-        retries (int, optional): Number of retry attempts in case of OperationalError. Defaults to 5.
-        delay (int, optional): Delay (in seconds) between retry attempts. Defaults to 1.
+        catalog (Catalog): ObsPy Catalog object containing seismic events.
+        enable_quakeml (bool, optional): If True, serialize and compress QuakeML for each event. Defaults to False.
+        retries (int, optional): Maximum number of retry attempts in case of database lock. Defaults to 5.
+        delay (int, optional): Base delay (in seconds) for retry attempts. Defaults to 1.
+        disable_tqdm (bool, optional): If True, disables progress bars. Defaults to False.
+        backoff (str, optional): Type of delay increase strategy: "linear" or "exponential". Defaults to "linear".
     """
-    attempt = 0
-    while attempt < retries:
+    for attempt in range(1, retries + 1):
+        conn = None
         try:
-            # Connect to the database
             conn = sqlite3.connect(db_path)
+            if not conn:
+                raise Exception(f"Failed to connect to the database at {db_path}")
             logger.info("Connected to the database successfully.")
 
-            # Import the catalog into the SQLite database
             import_catalog_to_sqlite(conn, catalog, enable_quakeml, disable_tqdm)
 
-            # Optional: Additional operations
-            # add_agency_names(conn)
-            # add_compute_localization_quality(conn)
-
-            conn.close()
+            conn.commit()
             logger.info("Catalog imported successfully.")
-            return  # Exit on success
+            return
 
         except sqlite3.OperationalError as e:
             logger.warning(
-                f"Database is locked or unavailable (attempt {attempt + 1}/{retries}): {e}"
+                f"[Attempt {attempt}/{retries}] Database is locked or unavailable: {e}"
             )
-            attempt += 1
-            time.sleep(delay)  # Wait before retrying
-        except Exception as e:
-            logger.error(f"Unexpected error: {e}")
-            raise e  # Raise unexpected errors
-        finally:
-            if "conn" in locals() and conn:
-                conn.close()
 
-    # If we exhausted retries
-    logger.error("Failed to import catalog after multiple attempts.")
-    raise sqlite3.OperationalError(
-        "Unable to access the database after several retries."
-    )
+            if backoff == "exponential":
+                wait_time = delay * (2 ** (attempt - 1))
+            else:  # linear fallback
+                wait_time = delay * attempt
+
+            logger.warning(f"Waiting {wait_time} second(s) before retrying...")
+            time.sleep(wait_time)
+
+        except Exception as e:
+            logger.exception("Unexpected error during catalog import.")
+            raise
+        finally:
+            if conn:
+                conn.close()
+                logger.debug("Database connection closed.")
+
+    logger.error(f"Failed to import catalog after {retries} attempts.")
+    raise sqlite3.OperationalError(f"Unable to access the database after {retries} retries.")
 
 
 def import_catalog_to_sqlite_from_file(
@@ -1418,9 +1427,11 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
     print(f"Exporting view '{view_name}' to '{output_csv}' ...")
 
     conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    if not conn:
+        raise Exception(f"Failed to connect to the database at {db_path}")
 
     # Get column names from the view
+    cursor = conn.cursor()
     cursor.execute(f"SELECT * FROM {view_name} WHERE 1=0;")
     column_names = [desc[0] for desc in cursor.description if desc[0] != "geometry"]
 
@@ -1891,12 +1902,16 @@ if __name__ == "__main__":
 
         # Ensure the database view is up-to-date
         conn = sqlite3.connect(args.database)
+        if not conn:
+            raise Exception(f"Failed to connect to the database at {args.database}")
         refresh_event_coordinates_view(conn)
         conn.close()
 
         # Determine start_time and end_time
         if not args.start_time:
             conn = sqlite3.connect(args.database)
+            if not conn:
+                raise Exception(f"Failed to connect to the database at {args.database}")
             cursor = conn.cursor()
             cursor.execute("SELECT MIN(time) FROM event_coordinates;")
             start_time = cursor.fetchone()[0]
@@ -1909,6 +1924,8 @@ if __name__ == "__main__":
 
         if not args.end_time:
             conn = sqlite3.connect(args.database)
+            if not conn:
+                raise Exception(f"Failed to connect to the database at {args.database}")
             cursor = conn.cursor()
             cursor.execute("SELECT MAX(time) FROM event_coordinates;")
             end_time = cursor.fetchone()[0]
@@ -1960,6 +1977,8 @@ if __name__ == "__main__":
             sys.exit(1)
         # Add discrimination info to the event table
         conn = sqlite3.connect(args.database)
+        if not conn:
+            raise Exception(f"Failed to connect to the database at {args.database}")
         add_discrimination_info(conn, args.add_discrimination)
         refresh_event_coordinates_view(conn)
         conn.close()
@@ -1969,6 +1988,8 @@ if __name__ == "__main__":
             sys.exit(1)
         # Add localisation quality info to the event table
         conn = sqlite3.connect(args.database)
+        if not conn:
+            raise Exception(f"Failed to connect to the database at {args.database}")
         add_compute_localization_quality(conn)
         refresh_event_coordinates_view(conn)
         conn.close()
@@ -1978,6 +1999,8 @@ if __name__ == "__main__":
             sys.exit(1)
         # Add agency names to the event table
         conn = sqlite3.connect(args.database)
+        if not conn:
+            raise Exception(f"Failed to connect to the database at {args.database}")
         add_agency_names(conn)
         refresh_event_coordinates_view(conn)
         conn.close()
@@ -1987,6 +2010,8 @@ if __name__ == "__main__":
             sys.exit(1)
         # Compute GT5 score
         conn = sqlite3.connect(args.database)
+        if not conn:
+            raise Exception(f"Failed to connect to the database at {args.database}")
         add_gt5_score(conn)
         refresh_event_coordinates_view(conn)
         conn.close()
@@ -1996,6 +2021,8 @@ if __name__ == "__main__":
             sys.exit(1)
         # Refresh the event_coordinates view
         conn = sqlite3.connect(args.database)
+        if not conn:
+            raise Exception(f"Failed to connect to the database at {args.database}")
         logger.info("Refreshing event_coordinates view ...")
         # drop and recreate the view
         query = "DROP VIEW IF EXISTS event_coordinates;"
