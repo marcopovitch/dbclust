@@ -268,6 +268,7 @@ class Clusterize(object):
         average_velocity=5,  # km/s
         min_station_count=0,
         min_station_with_P_and_S=2,
+        min_station_score=None,
         max_search_dist=0,  # same as hdbscan cluster_selection_epsilon: default is 0.
         P_uncertainty=0.1,
         S_uncertainty=0.2,
@@ -298,6 +299,7 @@ class Clusterize(object):
         # stations filtering parameters
         self.min_station_count = min_station_count
         self.min_station_with_P_and_S = min_station_with_P_and_S
+        self.min_station_score = min_station_score
 
         # pick filtering parameters
         self.P_uncertainty = P_uncertainty
@@ -548,7 +550,7 @@ class Clusterize(object):
             event_id_counts = Counter([p.event_id for p in cluster if p.event_id])
 
             # count the number of station that have both P and S
-            if self.min_station_with_P_and_S:
+            if self.min_station_score is None and self.min_station_with_P_and_S:
                 stations_with_P_and_S_count = 0
                 for s in stations_list:
                     phase_list = set([p.phase for p in cluster if p.station == s])
