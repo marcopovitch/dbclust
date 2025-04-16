@@ -265,7 +265,7 @@ def dbclust(
             end = pd.to_datetime(cfg.pick.end)
             short_window = True
 
-            # complemntary check
+            # complementary check
             if end < begin:
                 # do not skip the last time division
                 # to be able to process the previous_myclust
@@ -555,6 +555,7 @@ def dbclust(
         # Write partial qml file and clean catalog from memory
         if last_saved_event_count > cfg.catalog.event_flush_count:
             # Save intermediate results periodically
+            save_catalog(locator.catalog, cfg, job_index, part=i)
             locator.catalog.clear()
             gc.collect()
             last_saved_event_count = 0
@@ -599,7 +600,7 @@ def save_catalog(
         )
 
     logger.info(
-        f"Saving catalog: finalizing={finalize}, part={part}, job_index={job_index}"
+        f"Saving catalog: finalizing={finalize}, part={part}, job_index={job_index}, nb_events={len(catalog)}"
     )
 
     # Deduplicate picks and create readable IDs
