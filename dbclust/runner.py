@@ -1,33 +1,29 @@
 #!/usr/bin/env python
 import argparse
+import csv
 import gc
 import logging
 import math
-import multiprocessing
 import os
 import random
 import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import warnings
 from dataclasses import asdict
-from functools import partial
+from typing import List
 from typing import Optional
 
-import dask
-import numpy as np
 import pandas as pd
 import psutil
 import pyproj
 
 os.environ["RAY_DEDUP_LOGS"] = "0"
 import ray
-from dask.distributed import Client
-from dask.distributed import LocalCluster
 from icecream import ic
-from ray.util.multiprocessing import Pool
 
 from dbclust.clusterize import Clusterize
 from dbclust.clusterize import feed_picks_event_ids
@@ -274,7 +270,6 @@ def dbclust(
         else:
             end += overlap_timedelta
             short_window = False
-
 
         logger.info("")
         logger.info("")
@@ -635,76 +630,199 @@ def save_catalog(
 
 
 # Ray tasks
-@ray.remote(max_calls=1, max_retries=5, num_cpus=1)
+@ray.remote(max_calls=1, max_retries=5, num_cpus=1, memory=5 * 1024**3)  # 5 GB
 def run_dbclust_task(cfg, job_index):
-    return dbclust(cfg=cfg, job_index=job_index)
+    """Run a DBClust task with the given configuration and job index.
+    This function is designed to be executed as a Ray task.
+    It initializes the DBClust configuration, runs the clustering and localization process,
+    and returns the results.
+    Args:
+        cfg (DBClustConfig): The configuration object for DBClust.
+        job_index (int): The index of the job to run.
+    Returns:
+        dict: A dictionary containing the task index, duration, peak memory usage, and result.
+    """
+    start_time = time.time()
+    result = dbclust(cfg=cfg, job_index=job_index)
+    end_time = time.time()
+
+    duration_sec = end_time - start_time
+    peak_memory_mb = 0
+
+    return {
+        "task_index": job_index,
+        "duration_sec": duration_sec,
+        "peak_memory_mb": peak_memory_mb,
+        "result": result,
+    }
 
 
-def run_with_ray(cfg: DBClustConfig):
-    # Ray initialization
+
+@ray.remote(max_calls=1, max_retries=5, num_cpus=1, memory=5 * 1024**3)  # 5 GB
+def profiled_run_dbclust_task(cfg, job_index):
+    """Run a DBClust task with profiling for memory usage.
+    This function is designed to be executed as a Ray task.
+    It initializes the DBClust configuration, runs the clustering and localization process,
+    and returns the results along with memory profiling information.
+    Args:
+        cfg (DBClustConfig): The configuration object for DBClust.
+        job_index (int): The index of the job to run.
+    Returns:
+        dict: A dictionary containing the task index, duration, peak memory usage, and result.
+    """
+    process = psutil.Process()
+    peak_rss = {"value": 0}
+    stop_event = threading.Event()
+
+    def monitor():
+        while not stop_event.is_set():
+            try:
+                rss = process.memory_info().rss
+                if rss > peak_rss["value"]:
+                    peak_rss["value"] = rss
+            except Exception:
+                pass
+            time.sleep(0.05)  # every 50 ms
+
+    monitor_thread = threading.Thread(target=monitor)
+    monitor_thread.start()
+
+    try:
+        start_time = time.time()
+        result = dbclust(cfg=cfg, job_index=job_index)
+        end_time = time.time()
+    finally:
+        stop_event.set()
+        monitor_thread.join()
+
+    duration_sec = end_time - start_time
+    peak_memory_mb = peak_rss["value"] / (1024 * 1024)  # in MB
+
+    return {
+        "task_index": job_index,
+        "duration_sec": duration_sec,
+        "peak_memory_mb": peak_memory_mb,
+        "result": result,
+    }
+
+
+def run_with_ray(cfg: DBClustConfig, profile_csv_path="task_profiles.csv"):
     os.environ["RAY_DEDUP_LOGS"] = "0"
     os.environ["RAY_COLOR_PREFIX"] = "1"
     os.environ["RAY_enable_oom_killer"] = "1"
     os.environ["RAY_memory_usage_threshold"] = "0.95"
 
-    # Resource thresholds
-    memory_threshold = 90  # in percentage
-    cpu_threshold = 90  # in percentage
-    active_tasks = []
-    completed_results = []
-
-    # Start Ray
     context = ray.init(
         num_cpus=cfg.parallel.n_workers,
+        _temp_dir=cfg.parallel._temp_dir,
         dashboard_host="0.0.0.0",
         dashboard_port=8265,
-        _temp_dir=cfg.parallel._temp_dir,
     )
     logger.info(f"Dashboard URL: http://{context.dashboard_url}")
 
-    # Create (idx, (start, end)) pairs so we can shuffle the execution order
-    # without altering the original idx values, which are used to track the last job
-    # and ensure proper partition handling (e.g., quarry blasts in time zones).
+    # Shuffle and submit tasks
     indexed_partitions = list(enumerate(cfg.parallel.time_partitions, start=0))
     random.shuffle(indexed_partitions)
 
-    # Launch tasks dynamically
+    futures: List[ray.ObjectRef] = []
     for idx, (start, end) in indexed_partitions:
-        while True:
-            # Monitor system resources
-            mem_usage = psutil.virtual_memory().percent
-            cpu_usage = psutil.cpu_percent(interval=0.1)
+        logger.info(f"Submitting task {idx} [{start} -- {end}]")
+        futures.append(run_dbclust_task.remote(cfg, idx))
+        #futures.append(profiled_run_dbclust_task.remote(cfg, idx))
 
-            if mem_usage < memory_threshold and cpu_usage < cpu_threshold:
-                # Launch the task
-                logger.info(
-                    f"Launching task {idx} [{start} -- {end}] (Memory: {mem_usage}%, CPU: {cpu_usage}%)"
-                )
-                active_tasks.append(run_dbclust_task.remote(cfg, idx))
-                break
-            else:
-                logger.warning(
-                    f"High resource usage (Memory: {mem_usage}%, CPU: {cpu_usage}%) - Waiting..."
-                )
-                time.sleep(1)
+    results = ray.get(futures)
 
-            # Check if tasks are completed
-            if len(active_tasks) >= cfg.parallel.n_workers:
-                ready, not_ready = ray.wait(active_tasks, num_returns=1)
-                results = ray.get(ready)
-                completed_results.extend(results)
-                active_tasks = not_ready
+    # Extract results and profiling data
+    completed_results = []
+    task_profiles = []
+    for r in results:
+        task_profiles.append(
+            {
+                "task_index": r["task_index"],
+                "duration_sec": round(r["duration_sec"], 2),
+                "peak_memory_mb": round(r["peak_memory_mb"], 2),
+            }
+        )
+        completed_results.append(r["result"])
 
-    # Collect remaining tasks
-    while active_tasks:
-        ready, active_tasks = ray.wait(active_tasks, num_returns=1)
-        results = ray.get(ready)
-        completed_results.extend(results)
+    # Write CSV
+    with open(profile_csv_path, "w", newline="") as csvfile:
+        writer = csv.DictWriter(
+            csvfile, fieldnames=["task_index", "duration_sec", "peak_memory_mb"]
+        )
+        writer.writeheader()
+        writer.writerows(task_profiles)
 
+    logger.info(f"Profiling data saved to {profile_csv_path}")
     logger.info("DBClust completed!")
+
     ray.shutdown()
     return completed_results
 
+
+#     # Ray initialization
+#     os.environ["RAY_DEDUP_LOGS"] = "0"
+#     os.environ["RAY_COLOR_PREFIX"] = "1"
+#     os.environ["RAY_enable_oom_killer"] = "1"
+#     os.environ["RAY_memory_usage_threshold"] = "0.95"
+
+#     # Resource thresholds
+#     memory_threshold = 90  # in percentage
+#     cpu_threshold = 90  # in percentage
+#     active_tasks = []
+#     completed_results = []
+
+#     # Start Ray
+#     context = ray.init(
+#         num_cpus=cfg.parallel.n_workers,
+#         dashboard_host="0.0.0.0",
+#         dashboard_port=8265,
+#         _temp_dir=cfg.parallel._temp_dir,
+#     )
+#     logger.info(f"Dashboard URL: http://{context.dashboard_url}")
+
+#     # Create (idx, (start, end)) pairs so we can shuffle the execution order
+#     # without altering the original idx values, which are used to track the last job
+#     # and ensure proper partition handling (e.g., quarry blasts in time zones).
+#     indexed_partitions = list(enumerate(cfg.parallel.time_partitions, start=0))
+#     random.shuffle(indexed_partitions)
+
+#     # Launch tasks dynamically
+#     for idx, (start, end) in indexed_partitions:
+#         while True:
+#             # Monitor system resources
+#             mem_usage = psutil.virtual_memory().percent
+#             cpu_usage = psutil.cpu_percent(interval=0.1)
+
+#             if mem_usage < memory_threshold and cpu_usage < cpu_threshold:
+#                 # Launch the task
+#                 logger.info(
+#                     f"Launching task {idx} [{start} -- {end}] (Memory: {mem_usage}%, CPU: {cpu_usage}%)"
+#                 )
+#                 active_tasks.append(run_dbclust_task.remote(cfg, idx))
+#                 break
+#             else:
+#                 logger.warning(
+#                     f"High resource usage (Memory: {mem_usage}%, CPU: {cpu_usage}%) - Waiting..."
+#                 )
+#                 time.sleep(1)
+
+#             # Check if tasks are completed
+#             if len(active_tasks) >= cfg.parallel.n_workers:
+#                 ready, not_ready = ray.wait(active_tasks, num_returns=1)
+#                 results = ray.get(ready)
+#                 completed_results.extend(results)
+#                 active_tasks = not_ready
+
+#     # Collect remaining tasks
+#     while active_tasks:
+#         ready, active_tasks = ray.wait(active_tasks, num_returns=1)
+#         results = ray.get(ready)
+#         completed_results.extend(results)
+
+#     logger.info("DBClust completed!")
+#     ray.shutdown()
+#     return completed_results
 
 if __name__ == "__main__":
     # default logger
