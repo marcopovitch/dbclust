@@ -213,9 +213,11 @@ def get_best_polygon_for_point(
     if len(sorted_probs) < 2:
         confidence_ratio = 1.0  # If only one polygon is possible, maximum confidence
     else:
-        confidence_ratio = (
-            sorted_probs[0] - sorted_probs[1]
-        )  # Difference between the top two
+        # confidence_ratio = (
+        #     sorted_probs[0] - sorted_probs[1]
+        # )  # Difference between the top two
+        confidence_ratio = sorted_probs[0]
+
 
     # Check if the confidence is sufficient
     if confidence_ratio < eval_threshold:
