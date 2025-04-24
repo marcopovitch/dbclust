@@ -1211,9 +1211,11 @@ class NllLoc(object):
                     continue
 
                 # Check if the station is too close to the epicenter
+                # and if there is multiple phases.
                 if (
                     min_distance_to_epicenter > 0
                     and arrival.distance < min_distance_to_epicenter
+                    and len(polygons_score) > 1
                 ):
                     original_phase = arrival.phase
                     logger.debug(
