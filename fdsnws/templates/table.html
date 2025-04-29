@@ -1,509 +1,191 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Seismic Events Dashboard</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Seismic Events Dashboard</title>
 
-    <!-- Import DataTables and jQuery -->
-    <link rel="stylesheet" href="https://cdn.datatables.net/1.11.5/css/jquery.dataTables.min.css">
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="https://cdn.datatables.net/1.11.5/js/jquery.dataTables.min.js"></script>
+  <!-- jQuery and DataTables -->
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.datatables.net/2.2.2/css/dataTables.dataTables.css" />
+  <script src="https://cdn.datatables.net/2.2.2/js/dataTables.js"></script>
 
- <style>
-        .logo {
-            width: 80px;
-            height: auto;
-            margin-right: 15px;
-        }
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
 
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            background-color: #f0f9ff;
-            background-image: linear-gradient(120deg, #e0f7fa, #bbdefb);
-            padding: 20px;
-        }
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(120deg, #e0f7fa, #bbdefb);
+      margin: 0; padding: 20px;
+    }
 
-        .container {
-            width: 95%;
-            max-width: 1400px;
-            margin: 20px auto;
-            background: white;
-            padding: 25px;
-            border-radius: 15px;
-            box-shadow: 0px 8px 20px rgba(0, 0, 0, 0.15);
-            border-top: 5px solid #42a5f5;
-        }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      background: white;
+      padding: 25px;
+      border-radius: 15px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+      border-top: 5px solid #42a5f5;
+    }
 
-        .header {
-            display: flex;
-            align-items: center;
-            margin-bottom: 25px;
-            border-bottom: 2px solid #e3f2fd;
-            padding-bottom: 15px;
-        }
+    .header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 25px;
+      border-bottom: 2px solid #e3f2fd;
+      padding-bottom: 15px;
+    }
 
-        h2 {
-            margin: 0;
-            color: #1976d2;
-            flex-grow: 1;
-        }
+    .logo { width: 80px; margin-right: 15px; }
+    h2 { margin: 0; color: #1976d2; }
 
-        /* Fix for table width issues */
-        table.dataTable {
-            width: 100% !important;
-            margin: 0 !important;
-        }
+    .info-bar {
+      background-color: #e3f2fd;
+      border-radius: 8px;
+      padding: 12px 15px;
+      margin-bottom: 20px;
+      color: #455a64;
+      display: flex;
+      justify-content: space-between;
+    }
 
-        /* Add padding to the right of header text to space out arrows */
-        table.dataTable thead th {
-            padding-right: 20px !important; /* Adjust the value as needed */
-            position: relative;
-        }
+    .info-bar .event-count {
+      font-weight: bold;
+      color: #1976d2;
+    }
 
-        /* Adjust the position of sorting icons */
-        table.dataTable thead th::after {
-            margin-left: 10px !important; /* Space between text and sorting icon */
-        }
+    .table-container { overflow-x: auto; }
 
-        /* Ensure headers match content columns */
-        table.dataTable thead th,
-        table.dataTable tbody td {
-            padding: 10px;
-            text-align: left;
-            white-space: nowrap;
-        }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
 
-        table.dataTable thead th {
-            background: linear-gradient(to bottom, #42a5f5, #2196f3);
-            color: black;
-            font-weight: bold;
-            border: none;
-        }
+    th {
+      background: linear-gradient(to bottom, #42a5f5, #2196f3);
+      color: white;
+      font-weight: bold;
+      padding: 10px;
+      text-align: left;
+    }
 
-        table.dataTable thead th {
-            display: table-cell; /* Assurez-vous que les cellules sont affichées */
-            visibility: visible; /* Assurez-vous que les cellules sont visibles */
-        }
+    td {
+      padding: 10px;
+      border-bottom: 1px solid #e3f2fd;
+    }
 
+    .numeric-cell { text-align: right; padding-right: 15px; }
 
-        table.dataTable tbody tr {
-            background-color: #ffffff;
-        }
-
-        table.dataTable tbody tr:nth-child(even) {
-            background-color: #f5f9ff;
-        }
-
-        table.dataTable tbody td {
-            border: none;
-            border-bottom: 1px solid #e3f2fd;
-        }
-
-        table.dataTable tbody tr:hover {
-            background-color: #e3f2fd;
-        }
-
-        /* Fix DataTables controls styling */
-        .dataTables_wrapper .dataTables_length,
-        .dataTables_wrapper .dataTables_filter,
-        .dataTables_wrapper .dataTables_info,
-        .dataTables_wrapper .dataTables_paginate {
-            margin: 15px 0;
-            color: #455a64;
-        }
-
-        .dataTables_wrapper .dataTables_length select,
-        .dataTables_wrapper .dataTables_filter input {
-            border: 2px solid #bbdefb;
-            border-radius: 8px;
-            padding: 6px 10px;
-            background-color: #fff;
-        }
-
-        .dataTables_wrapper .dataTables_paginate .paginate_button {
-            border-radius: 5px;
-            background: #f5f9ff;
-            border: 1px solid #bbdefb;
-        }
-
-        .dataTables_wrapper .dataTables_paginate .paginate_button.current,
-        .dataTables_wrapper .dataTables_paginate .paginate_button.current:hover {
-            background: linear-gradient(135deg, #42a5f5, #2196f3) !important;
-            color: white !important;
-            border: 1px solid #1976d2;
-        }
-
-        .dataTables_wrapper .dataTables_paginate .paginate_button:hover {
-            background: #e3f2fd !important;
-            color: #1976d2 !important;
-            border: 1px solid #bbdefb;
-        }
-
-        /* Ensure proper scrolling for wide tables */
-        .dataTables_wrapper {
-            overflow-x: auto;
-            width: 100%;
-        }
-
-        /* Force horizontal scrolling on the table container */
-        .table-container {
-            width: 100%;
-            overflow-x: auto;
-            position: relative;
-            clear: both;
-        }
-
-        .info-bar {
-            background-color: #e3f2fd;
-            border-radius: 8px;
-            padding: 12px 15px;
-            margin-bottom: 20px;
-            color: #455a64;
-            font-size: 15px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .info-bar .event-count {
-            font-weight: bold;
-            color: #1976d2;
-        }
-
-        /* Style for numeric decimal-formatted cells */
-        .numeric-cell {
-            text-align: right;
-        }
-
-        /* Improved loading overlay */
-        .loading-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(255, 255, 255, 0.9);
-            z-index: 1000;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-
-        .loading-content {
-            text-align: center;
-            background-color: white;
-            padding: 30px 50px;
-            border-radius: 10px;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-            max-width: 80%;
-        }
-
-        .spinner {
-            display: inline-block;
-            width: 64px;
-            height: 64px;
-            margin-bottom: 20px;
-        }
-
-        .spinner:after {
-            content: " ";
-            display: block;
-            width: 46px;
-            height: 46px;
-            margin: 1px;
-            border-radius: 50%;
-            border: 5px solid #1976d2;
-            border-color: #1976d2 transparent #1976d2 transparent;
-            animation: spinner 1.2s linear infinite;
-        }
-
-        .loading-title {
-            font-size: 20px;
-            color: #1976d2;
-            font-weight: 600;
-            margin-bottom: 10px;
-        }
-
-        .loading-message {
-            color: #455a64;
-            font-size: 16px;
-            margin: 0;
-        }
-
-        @keyframes spinner {
-            0% {
-                transform: rotate(0deg);
-            }
-            100% {
-                transform: rotate(360deg);
-            }
-        }
-
-        /* Hide table until fully loaded */
-        .hidden-on-load {
-            visibility: hidden;
-        }
-    </style>
+    tr:nth-child(even) { background-color: #f5f9ff; }
+    tr:hover { background-color: #e3f2fd; }
+  </style>
 </head>
+
 <body>
-    <div class="container">
-        <div class="header">
-            <img src="/static/images/dbclust-logo.png" alt="DBClust logo" class="logo">
-            <h2>Seismic Events Dashboard</h2>
-        </div>
-
-        <div class="info-bar">
-            <div>
-                Display seismic event data with additional indicators<br>
-                Click on the event ID to view the QuakeML file
-            </div>
-            <div class="event-count">Events: <span id="event-count">0</span></div>
-        </div>
-
-        <!-- New loading overlay with professional design -->
-        <div class="loading-overlay" id="loadingOverlay">
-            <div class="loading-content">
-                <div class="spinner"></div>
-                <div class="loading-title">Loading Seismic Data</div>
-                <p class="loading-message">Please wait while we retrieve and prepare the seismic events...</p>
-            </div>
-        </div>
-
-        <div class="table-container">
-            <table id="eventsTable" class="display hidden-on-load" style="width:100%">
-                <thead>
-                    <tr>
-                        <th>Event ID</th>
-                        <th>Time</th>
-                        <th>Latitude</th>
-                        <th>Longitude</th>
-                        <th>Depth (km)</th>
-                        <th>RMS</th>
-                        <th>ERH (km)</th>
-                        <th>ERZ (km)</th>
-                        <th>Method</th>
-                        <th>Location Method</th>
-                        <th>Earth Model</th>
-                        <th>Origins</th>
-                        <th>Magnitudes</th>
-                        <th>Magnitude</th>
-                        <th>Magnitude Type</th>
-                        <th>Magnitude Uncertainty</th>
-                        <th>Stations</th>
-                        <th>Phases</th>
-                        <th>P Count</th>
-                        <th>S Count</th>
-                        <th>Min Distance (°)</th>
-                        <th>Max Distance (°)</th>
-                        <th>Median Distance (°)</th>
-                        <th>Azimuthal Gap</th>
-                        <th>Secondary Gap</th>
-                        <th>Exp. Latitude</th>
-                        <th>Exp. Longitude</th>
-                        <th>Exp. Depth (km)</th>
-                        <th>Scatter Volume</th>
-                        <th>Dist from Preloc (km)</th>
-                        <th>Agencies</th>
-                        <th>Agency List</th>
-                        <th>Agency Names</th>
-                        <th>Multiple Agencies</th>
-                        <th>Evaluation Mode</th>
-                        <th>Event Type</th>
-                        <th>Discrimination Prob.</th>
-                        <th>Discrimination Stations</th>
-                        <th>Discrimination Certainty</th>
-                        <th>Quality</th>
-                        <th>Quality Factor</th>
-                        <th>GT5 Status</th>
-                        <th>Delta U</th>
-                        <th>Stations 10km</th>
-                        <th>Stations 30km</th>
-                        <th>Stations 150km</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for event in events %}
-                    <tr>
-                        <td>
-                            <a href="/fdsnws/event/1/query?eventid={{ event['event_id'] | urlencode }}&format=quakeml" target="_blank">
-                                {{ event["event_id"] | escape }}
-                            </a>
-                        </td>
-                        <td>{{ event["time"] }}</td>
-                        <td>{{ event["latitude"] }}</td>
-                        <td>{{ event["longitude"] }}</td>
-                        <td>{{ event["depth_km"] }}</td>
-                        <td>{{ event["rms"] }}</td>
-                        <td>{{ event["erh_km"] }}</td>
-                        <td>{{ event["erz_km"] }}</td>
-                        <td>{{ event["er_method"] }}</td>
-                        <td>{{ event["location_method_id"] }}</td>
-                        <td>{{ event["earth_model_id"] }}</td>
-                        <td>{{ event["nb_origins"] }}</td>
-                        <td>{{ event["nb_magnitudes"] }}</td>
-                        <td>{{ event["magnitude"] }}</td>
-                        <td>{{ event["magnitude_type"] }}</td>
-                        <td>{{ event["magnitude_uncertainty"] }}</td>
-                        <td>{{ event["used_station_count"] }}</td>
-                        <td>{{ event["used_phase_count"] }}</td>
-                        <td>{{ event["P_count"] }}</td>
-                        <td>{{ event["S_count"] }}</td>
-                        <td>{{ event["minimum_distance_deg"] }}</td>
-                        <td>{{ event["maximum_distance_deg"] }}</td>
-                        <td>{{ event["median_distance_deg"] }}</td>
-                        <td>{{ event["azimuthal_gap"] }}</td>
-                        <td>{{ event["secondary_azimuthal_gap"] }}</td>
-                        <td>{{ event["expectation_latitude"] }}</td>
-                        <td>{{ event["expectation_longitude"] }}</td>
-                        <td>{{ event["expectation_depth_km"] }}</td>
-                        <td>{{ event["scatter_volume"] }}</td>
-                        <td>{{ event["dist_from_preloc_km"] }}</td>
-                        <td>{{ event["nb_agencies"] }}</td>
-                        <td>{{ event["agencies_list"] }}</td>
-                        <td>{{ event["agency_names"] }}</td>
-                        <td>{{ event["multiple_same_agencies"] }}</td>
-                        <td>{{ event["evaluation_mode"] }}</td>
-                        <td>{{ event["event_type"] }}</td>
-                        <td>{{ event["discrimination_probability"] }}</td>
-                        <td>{{ event["discrimination_station_count"] }}</td>
-                        <td>{{ event["discrimination_certainty"] }}</td>
-                        <td>{{ event["quality"] }}</td>
-                        <td>{{ event["quality_factor"] }}</td>
-                        <td>{{ event["gt5_status"] }}</td>
-                        <td>{{ event["delta_U"] }}</td>
-                        <td>{{ event["num_stations_10km"] }}</td>
-                        <td>{{ event["num_stations_30km"] }}</td>
-                        <td>{{ event["num_stations_150km"] }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
+  <div class="container">
+    <div class="header">
+      <img src="/static/images/dbclust-logo.png" alt="DBClust logo" class="logo">
+      <h2>Seismic Events Dashboard</h2>
     </div>
 
-    <script>
-        $(document).ready(function() {
+    <div class="info-bar">
+      <div>
+        Display seismic event data with additional indicators<br>
+        Click on the event ID to view the QuakeML file.
+        <p>For a better experience, open this page in <b>Firefox</b>.</p>
+      </div>
+      <div class="event-count">Events: <span id="event-count">0</span></div>
+    </div>
 
-            // Define columns to round with the number of decimals
-            const decimalColumns = {
-                "Latitude": 4,
-                "Longitude": 4,
-                "Depth (km)": 1,
-                "RMS": 2,
-                "ERH (km)": 2,
-                "ERZ (km)": 2,
-                "Magnitude": 2,
-                "Magnitude Uncertainty": 2,
-                "Min Distance (°)": 2,
-                "Max Distance (°)": 2,
-                "Median Distance (°)": 2,
-                "Azimuthal Gap": 2,
-                "Secondary Gap": 2,
-                "Exp. Latitude": 4,
-                "Exp. Longitude": 4,
-                "Exp. Depth (km)": 1,
-                "Scatter Volume": 2,
-                "Dist from Preloc (km)": 2,
-                "Discrimination Prob.": 2,
-                "Discrimination Certainty": 2,
-                "Quality Factor": 2,
-                "Delta U": 2
-            };
+    <div class="table-container">
+      <table id="eventsTable" class="display nowrap" style="width:100%">
+        <thead>
+          <tr>
+            <th>Event ID</th>
+            <th>Time</th>
+            <th>Latitude</th>
+            <th>Longitude</th>
+            <th>Depth (km)</th>
+            <th>Magnitude</th>
+            <th>Type</th>
+            <th>RMS</th>
+            <th>Stations</th>
+            <th>Phases</th>
+            <th>ERH (km)</th>
+            <th>ERZ (km)</th>
+            <th>Method</th>
+            <th>Location Method</th>
+            <th>Earth Model</th>
+            <th>Origins</th>
+            <th>P Count</th>
+            <th>S Count</th>
+            <th>Min Distance (°)</th>
+            <th>Max Distance (°)</th>
+            <th>Azimuthal Gap</th>
+            <th>Agencies</th>
+            <th>Quality</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for event in events %}
+          <tr>
+            <td>
+              <a href="/fdsnws/event/1/query?eventid={{ event.event_id | urlencode }}&format=quakeml" target="_blank">
+                {{ event.event_id | escape }}
+              </a>
+            </td>
+            <td>{{ event.time }}</td>
+            <td class="numeric-cell">{{ event.latitude | round(3) }}</td>
+            <td class="numeric-cell">{{ event.longitude | round(3) }}</td>
+            <td class="numeric-cell">{{ event.depth_km | round(1) }}</td>
+            <td class="numeric-cell">
+                {% if event.magnitude is float %}
+                  {{ event.magnitude | round(1) }}
+                {% else %}
+                  {{ event.magnitude }}
+                {% endif %}
+              </td>
+            <td>{{ event.magnitude_type }}</td>
+            <td class="numeric-cell">{{ event.rms | round(2) }}</td>
+            <td class="numeric-cell">{{ event.used_station_count | int }}</td>
+            <td class="numeric-cell">{{ event.used_phase_count | int }}</td>
+            <td class="numeric-cell">{{ event.erh_km | round(2) }}</td>
+            <td class="numeric-cell">{{ event.erz_km | round(2) }}</td>
+            <td>{{ event.er_method }}</td>
+            <td>{{ event.location_method_id }}</td>
+            <td>{{ event.earth_model_id }}</td>
+            <td class="numeric-cell">{{ event.nb_origins | int }}</td>
+            <td class="numeric-cell">{{ event.P_count | int }}</td>
+            <td class="numeric-cell">{{ event.S_count | int }}</td>
+            <td class="numeric-cell">{{ event.minimum_distance_deg | round(2) }}</td>
+            <td class="numeric-cell">{{ event.maximum_distance_deg | round(2) }}</td>
+            <td class="numeric-cell">{{ event.azimuthal_gap | round(2) }}</td>
+            <td>{{ event.nb_agencies | int }}</td>
+            <td>{{ event.quality }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 
-            // Store indices of columns needing formatting
-            const columnDefs = [];
-            const columnIndexToName = {};
-
-            // Retrieve indices of concerned columns
-            $('#eventsTable thead th').each(function(index) {
-                let columnName = $(this).text().trim(); // Remove spaces around
-
-                if (decimalColumns.hasOwnProperty(columnName)) {
-                    columnIndexToName[index] = columnName;
-                    columnDefs.push({
-                        targets: index,
-                        className: "numeric-cell",
-                        render: function(data, type) {
-                            if (type === "sort" || type === "filter") {
-                                return data;
-                            }
-                            if (data !== null && data !== undefined && !isNaN(parseFloat(data))) {
-                                return parseFloat(data).toFixed(decimalColumns[columnName]);
-                            }
-                            return data;
-                        }
-                    });
-                }
-            });
-
-            // Initialize DataTables with parameters
-            var table = $("#eventsTable").DataTable({
-                scrollX: true,  // Force horizontal scrolling
-                scrollCollapse: true,  // Improve scrolling behavior
-                paging: true,
-                lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
-                pageLength: 25,
-                order: [[1, "desc"]],
-                columnDefs: columnDefs,
-                language: {
-                    search: "Search events:",
-                    lengthMenu: "Show _MENU_ events per page",
-                    info: "Showing _START_ to _END_ of _TOTAL_ events",
-                    infoEmpty: "No events available",
-                    infoFiltered: "(filtered from _MAX_ total events)"
-                },
-                preDrawCallback: function() {
-                    // Keep the table hidden during drawing to prevent visual artifacts
-                    $("#eventsTable").addClass('hidden-on-load');
-                },
-                drawCallback: function() {
-                    // Once drawn, remove hidden class with a slight delay to ensure rendering is complete
-                    setTimeout(function() {
-                        $("#eventsTable").removeClass('hidden-on-load');
-                    }, 100);
-                },
-                initComplete: function() {
-                    // Count and display the number of events
-                    $("#event-count").text(this.api().rows().count());
-
-                    // Make sure columns are properly adjusted
-                    table.columns.adjust();
-
-                    // After a short delay to ensure everything is rendered properly,
-                    // remove the loading overlay with a fade effect
-                    //setTimeout(function() {
-                    //    $("#loadingOverlay").fadeOut(500, function() {
-                    //        $(this).remove();
-                    //    });
-                    //}, 500);
-                }
-            });
-
-            // Adjust columns on window resize
-            $(window).resize(function() {
-                table.columns.adjust();
-            });
-
-            // Add debug logs to check the flow
-            console.log("DataTable initialized");
-
-        });
-
-
-        $(document).ready(function() {
-            // Test du setTimeout en dehors de initComplete
-            setTimeout(function() {
-                console.log("setTimeout fonctionne correctement");
-                $("#loadingOverlay").fadeOut(500, function() {
-                    $(this).remove();
-                });
-            }, 1000); // 1 seconde pour tester
-        });
-
-
-
-    </script>
+  <script>
+    $(document).ready(function () {
+      const table = $('#eventsTable').DataTable({
+        scrollX: true,
+        responsive: false,
+        paging: true,
+        pageLength: 100, // Pagination par défaut à 100
+        lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]], // Options de pagination incluant "All"
+        ordering: true,
+        autoWidth: false,
+        initComplete: function () {
+          $('#event-count').text(this.api().page.info().recordsDisplay);
+        }
+      });
+    });
+  </script>
 </body>
 </html>
