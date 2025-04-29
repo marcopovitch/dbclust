@@ -1623,11 +1623,11 @@ def show_bulletin(
                 info = json.loads(c.text)
             except:
                 continue
-            probability = ""
+            # decode : {'probability': {'name': 'RENASS', 'value': 0.68}}
             if "probability" in info.keys():
-                probability = f"{info['probability']['value']}"
-        else:
-            probability = ""
+                probability = info['probability']['value']
+            else:
+                probability = ""
 
         table.add_row(
             [
