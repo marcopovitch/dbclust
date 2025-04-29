@@ -28,24 +28,24 @@ logging.basicConfig(level=logging.INFO)
 
 class NormalizeSlashesMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Récupérer l'URL complète
+        # Retrieve the full URL
         url_path = request.url.path
 
-        # Vérifier s'il y a des barres obliques multiples
+        # Check if there are multiple slashes
         if "//" in url_path:
-            # Normaliser l'URL en remplaçant plusieurs / consécutifs par un seul /
+            # Normalize the URL by replacing multiple consecutive / with a single /
             normalized_path = re.sub(r"/+", "/", url_path)
 
-            # Reconstruire l'URL complète pour la redirection
+            # Rebuild the full URL for redirection
             query_string = request.url.query
             normalized_url = normalized_path
             if query_string:
                 normalized_url = f"{normalized_path}?{query_string}"
 
-            # Rediriger vers l'URL normalisée
+            # Redirect to the normalized URL
             return RedirectResponse(url=normalized_url, status_code=301)
 
-        # Continuer le traitement normal si l'URL ne contient pas de // consécutifs
+        # Continue normal processing if the URL does not contain consecutive //
         return await call_next(request)
 
 
