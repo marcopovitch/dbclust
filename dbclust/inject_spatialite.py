@@ -711,7 +711,7 @@ def insert_magnitudes(conn: sqlite3.Connection, event: Event) -> None:
                 magnitude.station_count,
                 magnitude.magnitude_type,
                 magnitude.evaluation_mode,
-                magnitude.method_id.id,
+                magnitude.method_id.id if magnitude.method_id else None,
                 (
                     1
                     if event.preferred_magnitude()
@@ -1150,6 +1150,7 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             #
             "CREATE INDEX IF NOT EXISTS idx_events_event_id ON events(event_id);",
             #
+            "CREATE INDEX IF NOT EXISTS idx_origins_time ON origins(time);",
             "CREATE INDEX IF NOT EXISTS idx_origins_id ON origins(id);",
             "CREATE INDEX IF NOT EXISTS idx_origins_event_id ON origins(event_id);",
             "CREATE INDEX IF NOT EXISTS idx_origins_preferred ON origins(preferred);",
@@ -1173,6 +1174,8 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
             "CREATE INDEX IF NOT EXISTS idx_picks_phase_hint ON picks(phase_hint);",
             "CREATE INDEX IF NOT EXISTS idx_picks_agency_id ON picks(agency_id);",
             "CREATE INDEX IF NOT EXISTS idx_picks_probability ON picks(probability);",
+            "CREATE INDEX IF NOT EXISTS idx_picks_station_name_id ON picks(station_name, id);",
+            #
             "CREATE INDEX IF NOT EXISTS idx_arrivals_relabel_action ON arrivals(relabel_action);",
             "CREATE INDEX IF NOT EXISTS idx_arrivals_relabel_previous_phase ON arrivals(relabel_previous_phase);",
             "CREATE INDEX IF NOT EXISTS idx_arrivals_relabel_evaluation_score ON arrivals(relabel_evaluation_score);",
