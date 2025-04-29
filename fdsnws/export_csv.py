@@ -5,39 +5,63 @@ import io
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 
+
 def generate_csv_response(data, delimiter=","):
     if not data:
         return PlainTextResponse("No data available", status_code=404)
+    file_extension = "csv"
 
     output = io.StringIO()
-    writer = csv.writer(output, delimiter=delimiter, quotechar='"', quoting=csv.QUOTE_MINIMAL)
+    writer = csv.writer(
+        output, delimiter=delimiter, quotechar='"', quoting=csv.QUOTE_MINIMAL
+    )
 
     # En-tête FDSNWS-Event
-    writer.writerow([
-        "eventID", "time", "latitude", "longitude", "depth",
-        "author", "catalog", "contributor", "contributorID",
-        "magType", "magnitude", "magAuthor",
-        "eventLocationName", "eventType"
-    ])
+    writer.writerow(
+        [
+            "eventID",
+            "time",
+            "latitude",
+            "longitude",
+            "depth",
+            "author",
+            "catalog",
+            "contributor",
+            "contributorID",
+            "magType",
+            "magnitude",
+            "magAuthor",
+            "eventLocationName",
+            "eventType",
+        ]
+    )
 
     # Écriture des données
     for event in data:
-        writer.writerow([
-            event.get("event_id", ""),
-            event.get("time", ""),
-            event.get("latitude", ""),
-            event.get("longitude", ""),
-            event.get("depth_km", ""),
-            event.get("author", ""),
-            event.get("catalog", ""),
-            event.get("contributor", ""),
-            event.get("contributor_id", ""),
-            event.get("mag_type", ""),
-            event.get("magnitude", ""),
-            event.get("mag_author", ""),
-            event.get("event_location_name", ""),
-            event.get("event_type", ""),
-        ])
+        writer.writerow(
+            [
+                event.get("event_id", ""),
+                event.get("time", ""),
+                event.get("latitude", ""),
+                event.get("longitude", ""),
+                event.get("depth_km", ""),
+                event.get("author", ""),
+                event.get("catalog", ""),
+                event.get("contributor", ""),
+                event.get("contributor_id", ""),
+                event.get("mag_type", ""),
+                event.get("magnitude", ""),
+                event.get("mag_author", ""),
+                event.get("event_location_name", ""),
+                event.get("event_type", ""),
+            ]
+        )
 
     output.seek(0)
-    return StreamingResponse(output, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=events.csv"})
+    return StreamingResponse(
+        output,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=events.{file_extension}"
+        },
+    )
