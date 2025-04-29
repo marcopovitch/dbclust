@@ -3,7 +3,33 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="/static/images/dbclust-bw-192x192.png">
     <title>FDSN Event Search</title>
+
+    <script>
+        function toggleGeoInputs() {
+            const searchType = document.getElementById('geo_search_type').value;
+            const bboxInputs = document.getElementById('bbox-inputs');
+            const circleInputs = document.getElementById('circle-inputs');
+
+            // Hide all fields initially
+            bboxInputs.classList.add('hidden');
+            circleInputs.classList.add('hidden');
+
+            // Display fields based on the selection
+            if (searchType === 'bounding-box') {
+                bboxInputs.classList.remove('hidden');
+            } else if (searchType === 'circular') {
+                circleInputs.classList.remove('hidden');
+            }
+        }
+
+        // Call the function when the page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            toggleGeoInputs();
+        });
+    </script>
+
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -157,12 +183,13 @@
 
                 <label for="geo_search_type">Search Type:</label>
                 <select id="geo_search_type" onchange="toggleGeoInputs()">
+                    <option value="no-constraints" selected>No geographic constraints</option>
                     <option value="bounding-box">Bounding Box</option>
                     <option value="circular">Circular Search</option>
                 </select>
 
                 <!-- Bounding Box Inputs -->
-                <div id="bbox-inputs">
+                <div id="bbox-inputs" class="hidden">
                     <label for="minlatitude">Min Latitude:</label>
                     <input type="number" step="0.01" id="minlatitude" name="minlatitude">
 
@@ -206,21 +233,50 @@
                 <label for="eventid">Event ID:</label>
                 <input type="text" id="eventid" name="eventid">
 
+                <label for="mindepth">Min Depth (km):</label>
+                <input type="number" step="1" id="mindepth" name="mindepth">
+
+                <label for="maxdepth">Max Depth (km):</label>
+                <input type="number" step="1" id="maxdepth" name="maxdepth">
+
                 <label for="minmagnitude">Min Magnitude:</label>
                 <input type="number" step="0.1" id="minmagnitude" name="minmagnitude">
 
                 <label for="maxmagnitude">Max Magnitude:</label>
                 <input type="number" step="0.1" id="maxmagnitude" name="maxmagnitude">
 
+                <label for="Magnitude Type">Magnitude Type:</label>
+                <input type="text" id="magnitudetype" name="magnitudetype">
+            </fieldset>
+
+            <fieldset>
+                <legend>📊 Output Control</legend>
+
                 <label for="format">Format:</label>
                 <select id="format" name="format">
+                    <option value="quakeml" selected>quakeml (default)</option>
                     <option value="text">Text (| delimited)</option>
-                    <option value="csv">Text (, delimited)</option>
+                    <option value="csv">csv (, delimited)</option>
                     <option value="html">html table</option>
                     <option value="json">json</option>
                     <option value="geojson">geojson</option>
-                    <option value="quakeml">quakeml</option>
                 </select>
+
+                <label for="limit">Limit:</label>
+                <input type="number" id="limit" name="limit">
+
+                <label for="offset">Offset:</label>
+                <input type="number" id="offset" name="offset">
+
+                <label for="orderby">Order By:</label>
+                <select id="orderby" name="orderby">
+                    <option value="time">Time Descending (default)</option>
+                    <option value="time-asc">Time Ascending</option>
+                    <option value="magnitude">Magnitude descending</option>
+                    <option value="magnitude-asc">Magnitude ascending</option>
+                </select>
+
+
             </fieldset>
         </form>
 
