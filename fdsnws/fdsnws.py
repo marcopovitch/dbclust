@@ -105,7 +105,7 @@ def create_app(db_path: str, debug=False) -> FastAPI:
         magnitudetype: Optional[str] = Query(None),
         format: Optional[str] = Query("quakeml"),
         limit: Optional[int] = Query(0),
-        offset: Optional[int] = Query(1),
+        offset: Optional[int] = Query(0),
         orderby: Optional[str] = Query(None),
         nodata: int = Query(404),
         includeallorigins: Optional[bool] = Query(False),
@@ -272,4 +272,4 @@ if __name__ == "__main__":
     logging.info(f"Running API on port {args.port}...")
 
     app = create_app(args.db)
-    uvicorn.run(app, host="0.0.0.0", port=args.port)
+    uvicorn.run(app, host="localhost", port=args.port)
