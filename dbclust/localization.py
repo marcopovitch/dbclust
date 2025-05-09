@@ -1505,7 +1505,7 @@ def show_origin(o: Origin, txt: str) -> None:
                     f"{o.latitude:.3f}",
                     f"{o.longitude:.3f}",
                     f"{o.depth:.1f}",
-                    f"{o.quality.standard_error:.3f}",
+                    f"{o.quality.standard_error:.3f}" if o.quality.standard_error else "-",
                     o.quality.used_station_count,
                     o.quality.used_phase_count,
                     azimuthal_gap,
@@ -1618,6 +1618,7 @@ def show_bulletin(
                     f'score: {info["relabel"]["eval_score"]}, {phases_info}'
                 )
 
+        probability = ""
         for c in pick.comments:
             try:
                 info = json.loads(c.text)
@@ -1626,8 +1627,6 @@ def show_bulletin(
             # decode : {'probability': {'name': 'RENASS', 'value': 0.68}}
             if "probability" in info.keys():
                 probability = info['probability']['value']
-            else:
-                probability = ""
 
         table.add_row(
             [
