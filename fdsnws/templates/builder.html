@@ -24,9 +24,10 @@
             }
         }
 
-        // Call the function when the page loads
+        // Call the functions when the page loads
         document.addEventListener('DOMContentLoaded', function() {
             toggleGeoInputs();
+            submitSearch(); // Initialize the URL immediately
         });
     </script>
 
@@ -307,7 +308,11 @@
             document.getElementById('constructed-url').innerHTML = `<a href="${url}" target="_blank">${url}</a>`;
         }
 
+        // Update URL on any form input change
         document.getElementById('search-form').addEventListener('input', submitSearch);
+
+        // Also update URL when the page loads
+        submitSearch();
     </script>
 
 </body>
