@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Seismic Events Dashboard</title>
 
-  <!-- jQuery and DataTables -->
+  <!-- jQuery, Font Awesome, and Tabulator -->
   <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-  <link rel="stylesheet" href="https://cdn.datatables.net/2.2.2/css/dataTables.dataTables.css" />
-  <script src="https://cdn.datatables.net/2.2.2/js/dataTables.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+  <link href="https://unpkg.com/tabulator-tables@5.5.2/dist/css/tabulator.min.css" rel="stylesheet">
+  <script type="text/javascript" src="https://unpkg.com/tabulator-tables@5.5.2/dist/js/tabulator.min.js"></script>
 
   <style>
     *, *::before, *::after { box-sizing: border-box; }
@@ -50,36 +51,112 @@
       justify-content: space-between;
     }
 
+    .info-box {
+      background-color: #fff3f3;
+      border: 1px solid #ffcdd2;
+      border-left: 4px solid #f44336;
+      border-radius: 4px;
+      padding: 12px 15px;
+      margin-bottom: 0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+
+    .info-box-title {
+      font-weight: bold;
+      color: #d32f2f;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+    }
+
+    .info-box-title:before {
+      content: '\f05a';
+      font-family: 'FontAwesome';
+      margin-right: 8px;
+      font-size: 16px;
+    }
+
+    .info-box-content {
+      color: #b71c1c;
+      margin: 0;
+      padding: 0;
+      font-size: 14px;
+    }
+
+    .info-box-content p {
+      margin: 4px 0;
+      line-height: 1.5;
+    }
+
     .info-bar .event-count {
       font-weight: bold;
       color: #1976d2;
     }
 
-    .table-container { overflow-x: auto; }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
+    .table-container {
+      overflow-x: auto;
       margin: 20px 0;
     }
 
-    th {
+    /* Top pagination styles removed */
+
+    /* Tabulator Custom Theme */
+    .tabulator {
+      border: none;
+      background-color: white;
+      font-family: Arial, sans-serif;
+    }
+
+    .tabulator .tabulator-header {
+      background: white;
+      border-bottom: 2px solid #e3f2fd;
+    }
+
+    .tabulator .tabulator-header .tabulator-col {
       background: linear-gradient(to bottom, #42a5f5, #2196f3);
       color: white;
       font-weight: bold;
       padding: 10px;
       text-align: left;
+      border-right: 1px solid rgba(255, 255, 255, 0.2);
     }
 
-    td {
-      padding: 10px;
+    .tabulator .tabulator-header .tabulator-col.tabulator-sortable:hover {
+      background: linear-gradient(to bottom, #64b5f6, #42a5f5);
+    }
+
+    .tabulator .tabulator-header .tabulator-col.tabulator-sortable[aria-sort="asc"],
+    .tabulator .tabulator-header .tabulator-col.tabulator-sortable[aria-sort="desc"] {
+      background: linear-gradient(to bottom, #1976d2, #1565c0);
+    }
+
+    .tabulator .tabulator-row {
       border-bottom: 1px solid #e3f2fd;
     }
 
-    .numeric-cell { text-align: right; padding-right: 15px; }
+    .tabulator .tabulator-row:nth-child(even) {
+      background-color: #f5f9ff;
+    }
 
-    tr:nth-child(even) { background-color: #f5f9ff; }
-    tr:hover { background-color: #e3f2fd; }
+    .tabulator .tabulator-row:hover {
+      background-color: #e3f2fd;
+    }
+
+    .tabulator .tabulator-row .tabulator-cell {
+      padding: 10px;
+      border-right: none;
+    }
+
+    .tabulator .tabulator-row .tabulator-cell.numeric-cell {
+      text-align: right;
+      padding-right: 15px;
+    }
+
+    /* Basic footer styling */
+    .tabulator .tabulator-footer {
+      background-color: #f8f9fa;
+      border-top: 2px solid #e3f2fd;
+    }
   </style>
 </head>
 
@@ -91,99 +168,105 @@
     </div>
 
     <div class="info-bar">
-      <div>
-        Display seismic event data with additional indicators<br>
-        Click on the event ID to view the QuakeML file.
-        <p>For a better experience, open this page in <b>Firefox</b>.</p>
+      <div class="info-box">
+        <div class="info-box-title">Information</div>
+        <div class="info-box-content">
+          <p>Table can be slided to the right to view all columns</p>
+          <p>Columns can be sorted by clicking on column headers</p>
+          <p>Click on the event ID to download the QuakeML file</p>
+        </div>
       </div>
-      <div class="event-count">Events: <span id="event-count">0</span></div>
+      <div class="event-count">Events: <span id="event-count">Loading...</span></div>
     </div>
 
     <div class="table-container">
-      <table id="eventsTable" class="display nowrap" style="width:100%">
-        <thead>
-          <tr>
-            <th>Event ID</th>
-            <th>Time</th>
-            <th>Latitude</th>
-            <th>Longitude</th>
-            <th>Depth (km)</th>
-            <th>Magnitude</th>
-            <th>Type</th>
-            <th>RMS</th>
-            <th>Stations</th>
-            <th>Phases</th>
-            <th>ERH (km)</th>
-            <th>ERZ (km)</th>
-            <th>Method</th>
-            <th>Location Method</th>
-            <th>Earth Model</th>
-            <th>Origins</th>
-            <th>P Count</th>
-            <th>S Count</th>
-            <th>Min Distance (°)</th>
-            <th>Max Distance (°)</th>
-            <th>Azimuthal Gap</th>
-            <th>Agencies</th>
-            <th>Quality</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for event in events %}
-          <tr>
-            <td>
-              <a href="/fdsnws/event/1/query?eventid={{ event.event_id | urlencode }}&format=quakeml" target="_blank">
-                {{ event.event_id | escape }}
-              </a>
-            </td>
-            <td>{{ event.time }}</td>
-            <td class="numeric-cell">{{ event.latitude | round(3) }}</td>
-            <td class="numeric-cell">{{ event.longitude | round(3) }}</td>
-            <td class="numeric-cell">{{ event.depth_km | round(1) }}</td>
-            <td class="numeric-cell">
-                {% if event.magnitude is float %}
-                  {{ event.magnitude | round(1) }}
-                {% else %}
-                  {{ event.magnitude }}
-                {% endif %}
-              </td>
-            <td>{{ event.magnitude_type }}</td>
-            <td class="numeric-cell">{{ event.rms | round(2) }}</td>
-            <td class="numeric-cell">{{ event.used_station_count | int }}</td>
-            <td class="numeric-cell">{{ event.used_phase_count | int }}</td>
-            <td class="numeric-cell">{{ event.erh_km | round(2) }}</td>
-            <td class="numeric-cell">{{ event.erz_km | round(2) }}</td>
-            <td>{{ event.er_method }}</td>
-            <td>{{ event.location_method_id }}</td>
-            <td>{{ event.earth_model_id }}</td>
-            <td class="numeric-cell">{{ event.nb_origins | int }}</td>
-            <td class="numeric-cell">{{ event.P_count | int }}</td>
-            <td class="numeric-cell">{{ event.S_count | int }}</td>
-            <td class="numeric-cell">{{ event.minimum_distance_deg | round(2) }}</td>
-            <td class="numeric-cell">{{ event.maximum_distance_deg | round(2) }}</td>
-            <td class="numeric-cell">{{ event.azimuthal_gap | round(2) }}</td>
-            <td>{{ event.nb_agencies | int }}</td>
-            <td>{{ event.quality }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+      <div id="eventsTable"></div>
     </div>
   </div>
 
   <script>
-    $(document).ready(function () {
-      const table = $('#eventsTable').DataTable({
-        scrollX: true,
-        responsive: false,
-        paging: true,
-        pageLength: 100, // Pagination par défaut à 100
-        lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]], // Options de pagination incluant "All"
-        ordering: true,
-        autoWidth: false,
-        initComplete: function () {
-          $('#event-count').text(this.api().page.info().recordsDisplay);
-        }
+    $(document).ready(function() {
+      // Parse the server-side rendered data into a format Tabulator can use
+      const tableData = [
+        {% for event in events %}
+        {
+          event_id: "{{ event.event_id | escape }}",
+          event_id_link: "/fdsnws/event/1/query?eventid={{ event.event_id | urlencode }}&format=quakeml",
+          time: "{{ event.time }}",
+          latitude: {{ event.latitude }},
+          longitude: {{ event.longitude }},
+          depth_km: {{ event.depth_km }},
+          magnitude: {% if event.magnitude is float %}{{ event.magnitude }}{% else %}"{{ event.magnitude }}"{% endif %},
+          magnitude_type: "{{ event.magnitude_type }}",
+          rms: {{ event.rms }},
+          used_station_count: {{ event.used_station_count }},
+          used_phase_count: {{ event.used_phase_count }},
+          erh_km: {{ event.erh_km }},
+          erz_km: {{ event.erz_km }},
+          er_method: "{{ event.er_method }}",
+          location_method_id: "{{ event.location_method_id }}",
+          earth_model_id: "{{ event.earth_model_id }}",
+          nb_origins: {{ event.nb_origins }},
+          P_count: {{ event.P_count }},
+          S_count: {{ event.S_count }},
+          minimum_distance_deg: {{ event.minimum_distance_deg }},
+          maximum_distance_deg: {{ event.maximum_distance_deg }},
+          azimuthal_gap: {{ event.azimuthal_gap }},
+          nb_agencies: {{ event.nb_agencies }},
+          quality: "{{ event.quality }}"
+        }{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ];
+
+      // Update the event count immediately after data is parsed
+      document.getElementById('event-count').textContent = tableData.length;
+
+      // Top pagination control removed as requested
+
+      // Initialize Tabulator
+      const table = new Tabulator("#eventsTable", {
+        data: tableData,
+        layout: "fitDataTable",
+        pagination: true,
+        paginationSize: 20,
+        paginationSizeSelector: [10, 20, 30, 40, 50, 100, true],
+        paginationButtonCount: 7,  // Show more page buttons
+        paginationCounter: "rows", // Show row count in footer
+        paginationLayout: "bottom",
+        layout: "fitDataStretch",  // Better table layout
+        movableColumns: false,
+        tooltipsHeader: true,  // Enable tooltips on column headers for Safari users
+        columns: [
+          {title: "Event ID", field: "event_id", formatter: function(cell) {
+            const value = cell.getValue();
+            const link = cell.getData().event_id_link;
+            return `<a href="${link}" target="_blank">${value}</a>`;
+          }, headerSort: true},
+          {title: "Time", field: "time", headerSort: true},
+          {title: "Latitude", field: "latitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "Longitude", field: "longitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "Depth (km)", field: "depth_km", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "Magnitude", field: "magnitude", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "Type", field: "magnitude_type", headerSort: true},
+          {title: "RMS", field: "rms", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "Stations", field: "used_station_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "Phases", field: "used_phase_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "ERH (km)", field: "erh_km", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "ERZ (km)", field: "erz_km", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "Method", field: "er_method", headerSort: true},
+          {title: "Location Method", field: "location_method_id", headerSort: true},
+          {title: "Earth Model", field: "earth_model_id", headerSort: true},
+          {title: "Origins", field: "nb_origins", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "P Count", field: "P_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "S Count", field: "S_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "Min Distance (°)", field: "minimum_distance_deg", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "Max Distance (°)", field: "maximum_distance_deg", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "Azimuthal Gap", field: "azimuthal_gap", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "Agencies", field: "nb_agencies", formatter: "number", formatterParams: {precision: 0}, headerSort: true},
+          {title: "Quality", field: "quality", headerSort: true}
+        ],
+        initialSort: [],
+        // We're updating the counter directly after data parsing, so no need for these callbacks
       });
     });
   </script>
