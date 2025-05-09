@@ -1,9 +1,13 @@
 #!/usr/bin/env python
+import logging
 from typing import List
 from typing import Union
 
 import numpy as np
 from obspy.core.event import Event
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def get_arrival_with_distance_gap_greater_than(
@@ -69,6 +73,7 @@ def compute_gap(azimuth_list: List[float]) -> Union[float, None]:
     """
 
     if len(azimuth_list) <= 2:
+        logger.warning("Not enough azimuths to compute gap")
         return None
 
     az_list_sorted = sorted(azimuth_list)
@@ -83,6 +88,13 @@ def compute_gap(azimuth_list: List[float]) -> Union[float, None]:
 
 def compute_azimuthal_gap(azimuths: List[float]) -> Union[float, None]:
     """Calculate the largest angular gap (Azimuthal Gap)."""
+
+    # exclude None values
+    azimuths = [az for az in azimuths if az is not None]
+    logger
+    if len(azimuths) < 2:
+        return None
+
     azimuths = np.sort(np.array(azimuths))
     azimuthal_gaps = np.diff(np.append(azimuths, azimuths[0] + 360))
     return np.max(azimuthal_gaps)
@@ -97,6 +109,8 @@ def compute_secondary_azimuthal_gap(azimuths: List[float]) -> Union[float, None]
     for i in range(len(azimuths)):
         reduced_azimuths = np.delete(azimuths, i)  # Remove one station
         new_gap = compute_azimuthal_gap(reduced_azimuths)
+        if not new_gap:
+            continue
         max_secondary_gap = max(max_secondary_gap, new_gap)
 
     return max_secondary_gap
