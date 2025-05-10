@@ -1,22 +1,31 @@
 #!/usr/bin/env python
 import csv
 import io
+from datetime import datetime
 
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 
+def generate_text_response(results: list[dict]):
+    """
+    Export results to text format.
 
-def generate_text_response(data, delimiter="|"):
-    if not data:
+    Args:
+        results (list of dict): List of event results as dictionaries.
+
+    Returns:
+        StreamingResponse: Response streaming text data.
+    """
+    if not results:
         return PlainTextResponse("No data available", status_code=404)
     file_extension = "txt"
 
     output = io.StringIO()
     writer = csv.writer(
-        output, delimiter=delimiter, quotechar='"', quoting=csv.QUOTE_MINIMAL
+        output, delimiter="|", quotechar='"', quoting=csv.QUOTE_MINIMAL
     )
 
-    # En-tête FDSNWS-Event
+    # FDSNWS-Event header
     writer.writerow(
         [
             "#EventID",
@@ -36,8 +45,8 @@ def generate_text_response(data, delimiter="|"):
         ]
     )
 
-    # Écriture des données
-    for event in data:
+    # Write data
+    for event in results:
         writer.writerow(
             [
                 event.get("event_id", ""),
@@ -58,10 +67,12 @@ def generate_text_response(data, delimiter="|"):
         )
 
     output.seek(0)
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    filename = f"events-{timestamp}.{file_extension}"
     return StreamingResponse(
         output,
-        media_type="text/csv",
+        media_type="text/plain",
         headers={
-            "Content-Disposition": f"attachment; filename=events.{file_extension}"
-        },
+            "Content-Disposition": f"attachment; filename={filename}"
+        }
     )

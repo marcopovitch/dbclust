@@ -1,67 +1,47 @@
 #!/usr/bin/env python
 import csv
 import io
+from datetime import datetime
 
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 
 
-def generate_csv_response(data, delimiter=","):
-    if not data:
+def generate_csv_response(results: list[dict]):
+    """
+    Export results to CSV format.
+
+    Args:
+        results (list of dict): List of event results as dictionaries.
+
+    Returns:
+        StreamingResponse: Response streaming CSV data.
+    """
+    if not results:
         return PlainTextResponse("No data available", status_code=404)
     file_extension = "csv"
 
     output = io.StringIO()
-    writer = csv.writer(
-        output, delimiter=delimiter, quotechar='"', quoting=csv.QUOTE_MINIMAL
+    # Use DictWriter for robust CSV output with column names
+    fieldnames = list(results[0].keys())
+    writer = csv.DictWriter(
+        output,
+        fieldnames=fieldnames,
+        delimiter=",",
+        quotechar='"',
+        quoting=csv.QUOTE_MINIMAL,
     )
+    writer.writeheader()
+    for event in results:
+        writer.writerow(event)
 
-    # En-tête FDSNWS-Event
-    writer.writerow(
-        [
-            "eventID",
-            "time",
-            "latitude",
-            "longitude",
-            "depth",
-            "author",
-            "catalog",
-            "contributor",
-            "contributorID",
-            "magType",
-            "magnitude",
-            "magAuthor",
-            "eventLocationName",
-            "eventType",
-        ]
-    )
-
-    # Écriture des données
-    for event in data:
-        writer.writerow(
-            [
-                event.get("event_id", ""),
-                event.get("time", ""),
-                event.get("latitude", ""),
-                event.get("longitude", ""),
-                event.get("depth_km", ""),
-                event.get("author", ""),
-                event.get("catalog", ""),
-                event.get("contributor", ""),
-                event.get("contributor_id", ""),
-                event.get("mag_type", ""),
-                event.get("magnitude", ""),
-                event.get("mag_author", ""),
-                event.get("event_location_name", ""),
-                event.get("event_type", ""),
-            ]
-        )
-
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    filename = f"events-{timestamp}.csv"
     output.seek(0)
     return StreamingResponse(
         output,
         media_type="text/csv",
         headers={
-            "Content-Disposition": f"attachment; filename=events.{file_extension}"
+            "Content-Disposition": f"attachment; filename={filename}"
         },
     )
