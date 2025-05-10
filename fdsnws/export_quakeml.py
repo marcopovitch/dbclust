@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import io
 import sqlite3
+from datetime import datetime
 
 from fastapi.responses import StreamingResponse
 
@@ -20,43 +21,56 @@ NAMESPACE = {
     "": "http://quakeml.org/xmlns/bed/1.2",
 }
 
-def generate_quake_response(results, conn: sqlite3.Connection):
-    """
-    Generate a streaming QuakeML XML response using a synchronous sqlite3 connection.
 
-    Args:
-        results (list of dict): List of event results with 'event_id' keys.
-        conn (sqlite3.Connection): Open synchronous sqlite3 connection.
+MAX_EVENT_BUFF = 500
 
-    Returns:
-        StreamingResponse: Response streaming XML data.
-    """
+
+def generate_quake_response(event_ids, db_path):
     def quake_generator():
-        event_ids = [result["event_id"] for result in results if "event_id" in result]
-
-        if not event_ids:
-            yield QUAKEML_HEADER
-            yield "    <!-- No seismic events found -->\n"
-            yield QUAKEML_FOOTER
-            return
-
         yield QUAKEML_HEADER
-        cursor = conn.cursor()
-        for event_id in event_ids:
-            cursor.execute("SELECT data FROM quakeml WHERE event_id = ?", (event_id,))
-            row = cursor.fetchone()
-
-            if row:
-                output_buffer = io.BytesIO()
-                process_quakeml_row(row, output_buffer, NAMESPACE)
-                yield output_buffer.getvalue().decode("utf-8") + "\n"
-            else:
-                yield f"    <!-- No QuakeML found for event_id: {event_id} -->\n"
-
+        conn = sqlite3.connect(
+            f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
+        )
+        try:
+            conn.enable_load_extension(True)
+            conn.execute("SELECT load_extension('mod_spatialite');")
+            # Process event_ids in chunks
+            for i in range(0, len(event_ids), MAX_EVENT_BUFF):
+                chunk = event_ids[i : i + MAX_EVENT_BUFF]
+                placeholders = ",".join(["?"] * len(chunk))
+                sql = f"SELECT event_id, data FROM quakeml WHERE event_id IN ({placeholders})"
+                cursor = conn.cursor()
+                cursor.execute(sql, chunk)
+                rows = cursor.fetchall()
+                found_ids = set()
+                for event_id, compressed_data in rows:
+                    found_ids.add(event_id)
+                    # Handle compressed_data as before
+                    if isinstance(compressed_data, memoryview):
+                        compressed_data = compressed_data.tobytes()
+                    elif isinstance(compressed_data, bytes):
+                        pass
+                    elif compressed_data is None:
+                        continue  # skip
+                    else:
+                        raise TypeError(
+                            f"Unexpected type for quakeml.data: {type(compressed_data)}"
+                        )
+                    output_buffer = io.BytesIO()
+                    process_quakeml_row((compressed_data,), output_buffer, NAMESPACE)
+                    yield output_buffer.getvalue().decode("utf-8") + "\n"
+                # For event_ids not found in this batch, yield a comment
+                missing_ids = set(chunk) - found_ids
+                for missing_id in missing_ids:
+                    yield f"    <!-- No QuakeML found for event_id: {missing_id} -->\n"
+        finally:
+            conn.close()
         yield QUAKEML_FOOTER
 
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    filename = f"events-{timestamp}.xml"
     return StreamingResponse(
         quake_generator(),
         media_type="application/xml",
-        headers={"Content-Disposition": 'attachment; filename="events.xml"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
