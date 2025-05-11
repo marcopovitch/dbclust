@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
+import argparse
 import logging
+import re
 import sqlite3
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -21,8 +24,23 @@ from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
 
-logging.basicConfig(level=logging.INFO)
+
+class NormalizeSlashesMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Normalize the path in-place (no redirect)
+        url_path = request.scope.get('path', '')
+        normalized_path = re.sub(r'/+', '/', url_path)
+        if normalized_path != url_path:
+            request.scope['path'] = normalized_path
+        return await call_next(request)
+
+def iso_to_sqlite(dtstr):
+    # Gère les formats ISO 8601 avec ou sans 'Z'
+    dt = datetime.fromisoformat(dtstr.replace('Z', '+00:00'))
+    # Retourne au format SQLite classique
+    return dt.strftime('%Y-%m-%d %H:%M:%S.%f')
 
 def create_app(db_path: str, debug=False):
     app = FastAPI(
@@ -31,6 +49,8 @@ def create_app(db_path: str, debug=False):
         description="FDSN-compliant web service for querying seismic event data (Spatialite)",
         version="1.2.0",
     )
+
+    app.add_middleware(NormalizeSlashesMiddleware)
 
     templates = Jinja2Templates(directory="templates")
     app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -86,12 +106,14 @@ def create_app(db_path: str, debug=False):
         try:
             where = ["1=1"]
             params = []
+            # Time constraints
             if starttime:
                 where.append("time >= ?")
-                params.append(starttime)
+                params.append(iso_to_sqlite(starttime))
             if endtime:
                 where.append("time <= ?")
-                params.append(endtime)
+                params.append(iso_to_sqlite(endtime))
+            # Spatial constraints
             if minlatitude is not None:
                 where.append("latitude >= ?")
                 params.append(minlatitude)
@@ -155,6 +177,8 @@ def create_app(db_path: str, debug=False):
                 params.append(offset)
 
             logging.debug(f"SQL: {sql} | Params: {params}")
+            print(sql)
+            print(params)
             cursor = conn.execute(sql, params)
             columns = [desc[0] for desc in cursor.description]
             results = [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -201,13 +225,55 @@ def create_app(db_path: str, debug=False):
     return app
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--db", required=True, help="Path to the Spatialite database file.")
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--host", default="localhost")
-    parser.add_argument("--debug", action="store_true")
+    # default values
+    DB_PATH = ""
+    PORT = 8000
+    HOST = "localhost"
+    DEBUG = False
+
+    # parse command line arguments
+    parser = argparse.ArgumentParser(
+        description="Run the DBClust API with a specified database."
+    )
+    parser.add_argument(
+        "--db",
+        required=False,
+        default=DB_PATH,
+        help="Path to the SQLite database file.",
+    )
+    parser.add_argument(
+        "--port", type=int, default=PORT, help="Port to run the API on."
+    )
+    parser.add_argument("--host", default=HOST, help="Host to run the API on.")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode.")
     args = parser.parse_args()
 
+    # Validate database path
+    db_path = Path(args.db)
+    if not db_path.exists():
+        logging.error(f"Database path does not exist: {args.db}")
+        sys.exit(1)
+
+    # Validate SQLite database connection
+    try:
+        with sqlite3.connect(args.db) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM event_coordinates LIMIT 1")
+            if not cursor.fetchone():
+                logging.warning("Table 'event_coordinates' does not exist in the database.")
+            else:
+                logging.info("SQLite database connected successfully and contains 'event_coordinates' table.")
+    except sqlite3.Error as e:
+        logging.error(f"Failed to connect to SQLite database: {e}")
+        sys.exit(1)
+
+    # Set logging level
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
+
+    logging.info(f"Using database: {args.db}")
+    logging.info(f"Running API on {args.host}:{args.port}...")
+
     app = create_app(db_path=args.db, debug=args.debug)
-    uvicorn.run(app, host=args.host, port=args.port)
+
+    # Start the server with proper log level for uvicorn
+    uvicorn.run(app, host=args.host, port=args.port, log_level="debug" if args.debug else "info")
