@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -70,6 +71,25 @@ def create_app(db_path: str, debug=False):
     def root_redirect(request: Request):
         return RedirectResponse(url="/static/builder.html")
 
+    @app.get("/fdsnws/event/1/application.wadl")
+    async def get_event_application_wadl():
+        file_path = os.path.join(os.getcwd(), "config", "wadl", "event", "application.wadl")
+        return FileResponse(file_path, media_type="application/xml")
+
+    @app.get("/fdsnws/event/1/catalogs")
+    async def get_event_catalogs():
+        file_path = os.path.join(os.getcwd(), "config", "wadl", "event", "catalogs")
+        return FileResponse(file_path, media_type="application/xml")
+
+    @app.get("/fdsnws/event/1/contributors")
+    async def get_event_contributors():
+        file_path = os.path.join(os.getcwd(), "config", "wadl", "event", "contributors")
+        return FileResponse(file_path, media_type="application/xml")
+
+    @app.get("/fdsnws/event/1/version")
+    async def get_event_version():
+        return "1.2.0"
+
     @app.get("/fdsnws/event/1/query")
     def query_events(
         request: Request,
@@ -102,6 +122,10 @@ def create_app(db_path: str, debug=False):
         includearrivals: Optional[bool] = Query(False),
         includepicks: Optional[bool] = Query(False),
     ):
+        if debug:
+            # force level    to debug
+            logging.getLogger().setLevel(logging.DEBUG)
+
         conn = get_db_connection()
         try:
             where = ["1=1"]
@@ -177,8 +201,6 @@ def create_app(db_path: str, debug=False):
                 params.append(offset)
 
             logging.debug(f"SQL: {sql} | Params: {params}")
-            print(sql)
-            print(params)
             cursor = conn.execute(sql, params)
             columns = [desc[0] for desc in cursor.description]
             results = [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -209,18 +231,6 @@ def create_app(db_path: str, debug=False):
                 raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
         finally:
             conn.close()
-
-    @app.get("/fdsnws/event/1/version")
-    def get_event_version():
-        return {"version": "1.2.0"}
-
-    @app.get("/fdsnws/event/1/catalogs")
-    def get_event_catalogs():
-        return {"catalogs": ["LOCAL"]}
-
-    @app.get("/fdsnws/event/1/contributors")
-    def get_event_contributors():
-        return {"contributors": ["LOCAL"]}
 
     return app
 
