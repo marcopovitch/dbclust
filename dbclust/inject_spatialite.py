@@ -551,21 +551,21 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     P_count = phase_count(event, origin, "P")
     S_count = phase_count(event, origin, "S")
     erz, erh, err_method = get_erh_erz(origin)
-    num_stations_10km = sum(
-        1
-        for arrival in origin.arrivals
-        if arrival.time_weight and arrival.distance * 111.11 <= 10
-    )
-    num_stations_30km = sum(
-        1
-        for arrival in origin.arrivals
-        if arrival.time_weight and arrival.distance * 111.11 <= 30
-    )
-    num_stations_150km = sum(
-        1
-        for arrival in origin.arrivals
-        if arrival.time_weight and arrival.distance * 111.11 <= 150
-    )
+
+    # Some origins may not have arrivals fully populated
+    valid_arrivals = [
+        arrival for arrival in origin.arrivals
+        if arrival.time_weight and hasattr(arrival, "distance") and arrival.distance is not None
+    ]
+
+    if valid_arrivals:
+        num_stations_10km = sum(1 for a in valid_arrivals if a.distance * 111.11 <= 10)
+        num_stations_30km = sum(1 for a in valid_arrivals if a.distance * 111.11 <= 30)
+        num_stations_150km = sum(1 for a in valid_arrivals if a.distance * 111.11 <= 150)
+    else:
+        num_stations_10km = None
+        num_stations_30km = None
+        num_stations_150km = None
 
     scatter_volume = get_scatter_volume(origin)
     expectation_latitude, expectation_longitude, expectation_depth = (
