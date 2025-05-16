@@ -889,6 +889,16 @@ class DBClustConfig:
     fdsnws_event: FdsnConfig
 
     def __init__(self, filename, config_type="std") -> None:
+        # config_type can be "std" or "reloc"
+        # reloc is used for relocation only
+        # std is used for standard processing
+        self.reloc_no_required_keys = [
+            "parallel",
+            "pick",
+            "time",
+            "catalog",
+        ]
+
         self.filename = filename
         logger.info(filename)
         self.config_type = config_type
@@ -898,15 +908,9 @@ class DBClustConfig:
         self.yaml_data = read_config(self.filename)
 
         for key, data_class in self.__annotations__.items():
-            if self.config_type == "reloc" and key in [
-                "parallel",
-                "time",
-                "cluster",
-                "pyocto",
-                "zones",
-                "catalog",
-            ]:
-                logger.warning(f"Missing section '{key}' in yaml file !")
+            if self.config_type == "reloc" and key in self.reloc_no_required_keys:
+                # skip some config not needed for reloc
+                logger.warning(f"Ignoring section '{key}' in yaml file !")
                 continue
             else:
                 if key not in self.yaml_data.keys():
@@ -916,8 +920,6 @@ class DBClustConfig:
                     key,
                     from_dict(data_class=data_class, data=self.yaml_data[key]),
                 )
-        if config_type == "reloc":
-            return
 
         # NLL will discard any location with number of phase < min_phase
         # take into account cluster parameters to set it accordingly
@@ -926,10 +928,12 @@ class DBClustConfig:
             self.cluster.min_station_count + self.cluster.min_station_with_P_and_S
         )
 
-        # parallel
-        self.parallel.time_partitions = self.parallel.get_time_partitions(
-            self.time, self.pick
-        )
+        if config_type != "reloc":
+            # parallel
+            self.parallel.time_partitions = self.parallel.get_time_partitions(
+                self.time, self.pick
+            )
+            assert len(self.parallel.time_partitions)
 
         # Finalize zones
         self.zones.load_zones(self.nll)
@@ -937,19 +941,11 @@ class DBClustConfig:
         # Set default velocity model
         self.quakeml.model_id = self.nll.default_velocity_profile
         # ic(self.quakeml)
-        assert len(self.parallel.time_partitions)
 
     def show(self):
         # debug
         for key, value in self.__annotations__.items():
-            if self.config_type == "reloc" and key in [
-                "parallel",
-                "time",
-                "cluster",
-                "pyocto",
-                "zones",
-                "catalog",
-            ]:
+            if self.config_type == "reloc" and key in self.reloc_no_required_keys:
                 continue
             attribute_value = getattr(self, key)
             ic(key, attribute_value)
