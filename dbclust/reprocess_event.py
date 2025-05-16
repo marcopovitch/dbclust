@@ -1,18 +1,28 @@
 #!/usr/bin/env python
 import argparse
+import concurrent.futures
 import glob
 import logging
 import os
 import sys
 import traceback
 import urllib.parse
+import urllib.request
 from dataclasses import asdict
+from datetime import datetime
+from datetime import timedelta
 from shutil import copyfile
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Tuple
 
+import pandas as pd
 from icecream import ic
 from obspy import read_events
 
 from dbclust.config import DBClustConfig
+from dbclust.localization import LocalizationError
 from dbclust.localization import NllLoc
 from dbclust.localization import reloc_fdsn_event
 from dbclust.localization import show_bulletin
@@ -22,306 +32,495 @@ from dbclust.runner import MyTemporaryDirectory
 
 # Default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger("reloc_fdsn_event")
+logger = logging.getLogger("reprocess_event2")
 logger.setLevel(logging.DEBUG)
 
-def only_one(inputs):
+def round_to_centisecond(dt: datetime) -> datetime:
+    us = dt.microsecond
+    rounded_us = round(us / 10000) * 10000  # 10,000 µs = 1 centième
+    if rounded_us == 1000000:
+        return dt.replace(microsecond=0) + timedelta(seconds=1)
+    return dt.replace(microsecond=rounded_us)
+
+
+def process_file(
+    f: str,
+    locator: NllLoc,
+    cfg: DBClustConfig,
+    enable_plot: bool = False,
+    output_format: str = "QUAKEML",
+    verbose: bool = True,
+) -> str:
     """
-    Check if exactly one of the provided arguments is not None.
+    Process a QuakeML file, relocate the event, and save the result.
 
     Args:
-        inputs (list): A list of input values to check.
+        f (str): Path to the QuakeML file.
+        locator (NllLoc): NllLoc instance for relocation.
+        cfg (DBClustConfig): Configuration object.
+        enable_plot (bool): Whether to enable plotting.
+        output_format (str): Output format for the event file.
 
     Returns:
-        bool: True if exactly one input is not None, False otherwise.
+        str: Status message.
     """
-    non_none_count = sum(1 for item in inputs if item is not None)
-    return non_none_count == 1
+    if not os.path.exists(f):
+        err_msg = f"File {f} does not exist"
+        logging.error(err_msg)
+        return err_msg
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    try:
+        cat = read_events(f)
+
+        if len(cat) == 0:
+            err_msg = f"No event found in QuakeML file {f}"
+            logging.error(err_msg)
+            return err_msg
+        elif len(cat) > 1:
+            err_msg = f"More than one event found in QuakeML file {f}"
+            logging.error(err_msg)
+            return err_msg
+
+        event = cat[0]
+        for p in event.picks:
+            # round the time to centisecond precision as required by obspy/NonLinLoc
+            p.time = round_to_centisecond(p.time)
+
+        o = event.preferred_origin() or event.origins[0]
+        zone, _ = cfg.zones.find_zone(o.latitude, o.longitude)
+        ic(zone["name"])
+
+        try:
+            cat = reloc_fdsn_event(locator, event=event, zone_name=zone["name"])
+        except LocalizationError as e:
+            err_msg = f"Error during relocation: {e}"
+            logging.error(err_msg)
+            return err_msg
+
+        if len(cat) == 0:
+            err_msg = "No relocated event found"
+            logging.error(err_msg)
+            return err_msg
+        elif len(cat) > 1:
+            err_msg = "More than one relocated event found"
+            logging.error(err_msg)
+            return err_msg
+
+        # merge relocated event with original event
+        e = cat[0]
+        e.origins.extend(event.origins)
+        e.origins.sort(key=lambda x: x.creation_info.creation_time or 0, reverse=True)
+        e.picks.extend(event.picks)
+        e.amplitudes.extend(event.amplitudes)
+        e.magnitudes.extend(event.magnitudes)
+
+        # deduplicate picks and make readable ids
+        logger.info("Deduplicate picks and make readable ids")
+        cat = deduplicate_picks_and_make_readable_ids(cat, "eost", "")
+
+        # show relocated event
+        if verbose:
+            show_event(e, "****", header=True)
+            show_bulletin(e, zones=cfg.zones, plot=enable_plot)
+
+        # Create output directory based on year and month
+        event_time = e.preferred_origin().time
+        year = str(event_time.year)
+        month = str(event_time.month).zfill(2)  # Ensure month is 2 digits (e.g., "01" for January)
+
+        # Extract the basename from the input file (without path and extension)
+        input_basename = os.path.basename(f)
+        basename = os.path.splitext(input_basename)[0]
+
+        # Create directory structure
+        output_dir = os.path.join(year, month)
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"Created output directory: {output_dir}")
+
+        # Format the output filename
+        event_id = cat[0].resource_id.id.split("/")[-1]
+        file_extension = output_format.lower()
+        output_filename = f"{basename}.{file_extension}"
+        output_path = os.path.join(output_dir, output_filename)
+
+        # Write the catalog to file
+        logger.info(f"Writing output to: {output_path}")
+        cat.write(output_path, format=output_format)
+
+        # Handle the scatter file if available
+        if locator.scat_file:
+            try:
+                scat_filename = f"{basename}.scat"
+                scat_path = os.path.join(output_dir, scat_filename)
+                logger.info(f"Copying scatter file to: {scat_path}")
+                copyfile(locator.scat_file, scat_path)
+            except (IOError, OSError) as e:
+                logging.error(f"Can't get nll scat file: {e}")
+
+        return "OK"
+    except Exception as e:
+        err_msg = f"Unexpected error processing file {f}: {str(e)}"
+        logging.error(err_msg)
+        logging.error(traceback.format_exc())
+        return err_msg
+
+
+def process_directory(
+    directory: str,
+    locator: NllLoc,
+    cfg: DBClustConfig,
+    enable_plot: bool = False,
+    output_format: str = "QUAKEML",
+    max_workers: int = 4,
+) -> pd.DataFrame:
+    """
+    Process all QuakeML files in a directory using parallel execution.
+
+    Args:
+        directory (str): Directory containing QuakeML files.
+        locator (NllLoc): NllLoc instance for relocation.
+        cfg (DBClustConfig): Configuration object.
+        enable_plot (bool): Whether to enable plotting.
+        output_format (str): Output format for the event file.
+        max_workers (int): Maximum number of parallel workers.
+
+    Returns:
+        pd.DataFrame: DataFrame with processing results.
+    """
+    files = glob.glob(f"{directory}/2021/**/*.qml", recursive=True)
+    #files = glob.glob(f"{directory}/2021/11/*.qml")
+    verbose = False
+
+    results = []
+
+    # Using ThreadPoolExecutor for parallel processing
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                process_file, f, locator, cfg, enable_plot, output_format, verbose
+            ): f
+            for f in files
+        }
+
+        for future in concurrent.futures.as_completed(futures):
+            f = futures[future]
+            try:
+                status = future.result()
+                results.append({"file": f, "status": status})
+            except Exception as exc:
+                results.append({"file": f, "status": f"Generated exception: {exc}"})
+
+    return pd.DataFrame(results)
+
+
+def fetch_event_from_fdsn(event_id: str, fdsnws_url: str, output_file: str) -> None:
+    """
+    Fetch an event from FDSNWS server.
+
+    Args:
+        event_id (str): Event ID to fetch.
+        fdsnws_url (str): FDSNWS server URL.
+        output_file (str): Path to save the event file.
+
+    Raises:
+        urllib.error.HTTPError: If HTTP request fails.
+        Exception: For other errors.
+    """
+    options = "includeallorigins=true&includeallmagnitudes=true&includearrivals=true&nodata=404"
+    url = f"{fdsnws_url}/query?{options}&eventid={event_id}"
+
+    try:
+        logging.info(f"Fetching event from {url}")
+        urllib.request.urlretrieve(url, output_file)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise FileNotFoundError(f"Event {event_id} not found in FDSNWS")
+        else:
+            raise
+
+
+def setup_logging(loglevel: str) -> int:
+    """
+    Setup logging with the specified level.
+
+    Args:
+        loglevel (str): Log level string (debug, info, warning, error).
+
+    Returns:
+        int: Numeric log level.
+
+    Raises:
+        ValueError: If log level is invalid.
+    """
+    numeric_level = getattr(logging, loglevel.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f"Invalid log level: {loglevel}")
+
+    logger.setLevel(numeric_level)
+    return numeric_level
+
+
+def parse_arguments() -> argparse.Namespace:
+    """
+    Parse command line arguments.
+
+    Returns:
+        argparse.Namespace: Parsed arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description="Relocate seismic events using NonLinLoc."
+    )
+
+    # Input source group - mutually exclusive
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        "-e", "--eventid", dest="event_id", help="Event ID to fetch from FDSN", type=str
+    )
+    input_group.add_argument(
+        "--event", dest="event", help="Event file in QuakeML format", type=str
+    )
+    input_group.add_argument(
+        "--dir",
+        dest="dir",
+        help="Directory containing QuakeML files to relocate",
+        type=str,
+    )
+
+    # Configuration
     parser.add_argument(
         "-c",
         "--conf",
-        default=None,
+        required=True,
         dest="profile_conf_file",
-        help="dbclust configuration file.",
-        type=str,
-    )
-    parser.add_argument(
-        "-d",
-        "--dist-km-cutoff",
-        default=None,
-        dest="dist_km_cutoff",
-        help="station cut off distance in km",
-        type=float,
-    )
-    parser.add_argument(
-        "-e",
-        "--eventid",
-        default=None,
-        dest="event_id",
-        help="event id to fetch from FDSN and to relocate",
-        type=str,
-    )
-    parser.add_argument(
-        "--event",
-        default=None,
-        dest="event",
-        help="event file in QuakeML format",
-        type=str,
-    )
-    parser.add_argument(
-        "--dir",
-        default=None,
-        dest="dir",
-        help="Directory containing QuakeML files to relocate",
+        help="dbclust configuration file",
         type=str,
     )
     parser.add_argument(
         "-f",
         "--fdsn-event-profile",
-        default=None,
         dest="fdsn_event_profile",
-        help="fdsn event profile name to use (see conf.yml file)",
+        help="FDSN event profile name to use (see conf.yml file)",
         type=str,
     )
+
+    # Relocation parameters
+    reloc_group = parser.add_argument_group("Relocation parameters")
+    reloc_group.add_argument(
+        "-d",
+        "--dist-km-cutoff",
+        dest="dist_km_cutoff",
+        help="Station cut off distance in km",
+        type=float,
+    )
+    reloc_group.add_argument(
+        "-u",
+        "--use-deactivated-arrivals",
+        dest="use_deactivated_arrivals",
+        help="Force deactivated arrivals use",
+        action="store_true",
+    )
+    reloc_group.add_argument(
+        "-t",
+        "--min-score-threshold-pick-zone",
+        dest="min_score_threshold_pick_zone",
+        help="Minimum score threshold pick zone",
+        type=float,
+    )
+    reloc_group.add_argument(
+        "-r", "--relabel", dest="relabel", help="Enable relabeling", action="store_true"
+    )
+    reloc_group.add_argument(
+        "--force-uncertainty",
+        dest="force_uncertainty",
+        help="Force phase uncertainty (see conf.yml file)",
+        action="store_true",
+    )
+    reloc_group.add_argument(
+        "--single-pass",
+        dest="single_pass",
+        help="NonLinLoc single pass (disables double pass)",
+        action="store_true",
+    )
+    reloc_group.add_argument(
+        "-z",
+        "--zone",
+        dest="zone_name",
+        help="Force zone name to use (default is autodetect from event lat/lon)",
+        type=str,
+    )
+
+    # Output options
+    output_group = parser.add_argument_group("Output options")
+    output_group.add_argument(
+        "-s", "--scat", dest="scat", help="Get xyz scat file", action="store_true"
+    )
+    output_group.add_argument(
+        "--plot", dest="enable_plot", help="Enable plot", action="store_true"
+    )
+    output_group.add_argument(
+        "-o",
+        "--output-format",
+        dest="output_format",
+        default="QUAKEML",
+        help="Output format for the event file",
+        type=str,
+    )
+
+    # Parallel processing
+    parser.add_argument(
+        "--max-workers",
+        dest="max_workers",
+        default=4,
+        help="Maximum number of parallel workers for directory processing",
+        type=int,
+    )
+
+    # Logging
     parser.add_argument(
         "-l",
         "--loglevel",
-        default="INFO",
         dest="loglevel",
-        help="set loglevel (debug, warning, info, error)",
-        type=str,
-    )
-    parser.add_argument(
-        "-u",
-        "--use-deactivated-arrivals",
-        default=False,
-        dest="use_deactivated_arrivals",
-        help="force deactivated arrivals use",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-t",
-        "--min-score-threshold-pick-zone",
-        default=None,
-        dest="min_score_threshold_pick_zone",
-        help="min score threshold pick zone",
-        type=float,
-    )
-    parser.add_argument(
-        "-r",
-        "--relabel",
-        default=False,
-        dest="relabel",
-        help="enable relabeling",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-s",
-        "--scat",
-        default=False,
-        dest="scat",
-        help="get xyz scat file",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--plot",
-        default=False,
-        dest="enable_plot",
-        help="enable plot",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--force-uncertainty",
-        default=False,
-        dest="force_uncertainty",
-        help="force phase uncertainty (see conf.yml file)",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--single-pass",
-        default=False,
-        dest="single_pass",
-        help="Nonlinloc single or double pass",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-z",
-        "--zone",
-        default=None,
-        dest="zone_name",
-        help="force zone name to use (default is autodetect from event lat/lon)",
-        type=str,
-    )
-    parser.add_argument(
-        "-o",
-        "--output-format",
-        default="QUAKEML",
-        dest="output_format",
-        help="output format for the event file",
+        default="INFO",
+        help="Set loglevel (debug, warning, info, error)",
         type=str,
     )
 
-    args = parser.parse_args()
-    if not args.profile_conf_file:
-        logger.error("Please provide a profile configuration file")
-        sys.exit()
-
-    numeric_level = getattr(logging, args.loglevel.upper(), None)
-    if not numeric_level:
-        logger.error("Invalid loglevel '%s' !", args.loglevel.upper())
-        logger.error("loglevel should be: debug, warning, info, error.")
-        sys.exit(255)
-    else:
-        logger.setLevel(numeric_level)
-
-    cfg = DBClustConfig(args.profile_conf_file)
-
-    # Update configuration
-    if args.dist_km_cutoff:
-        cfg.relocation.dist_km_cutoff = args.dist_km_cutoff
-
-    if args.use_deactivated_arrivals:
-        cfg.relocation.use_deactivated_arrivals = args.use_deactivated_arrivals
-
-    if args.force_uncertainty:
-        cfg.relocation.force_uncertainty = args.force_uncertainty
-
-    if args.single_pass:
-        cfg.relocation.double_pass = not args.single_pass
-
-    if args.scat:
-        cfg.nll.enable_scatter = args.scat
-
-    if not args.zone_name:
-        cfg.quakeml.model_id = None
-
-    enable_relabel = args.relabel
-
-    if args.min_score_threshold_pick_zone:
-        cfg.relocation.min_score_threshold_pick_zone = args.min_score_threshold_pick_zone
-
-    # Check event source
-    if not any([args.event_id, args.event, args.dir]):
-        logger.error("Please provide an event source")
-        sys.exit()
-
-    if not only_one([args.event_id, args.event, args.dir]):
-        logger.error("Please provide only one event source")
-        sys.exit()
-
-    if args.fdsn_event_profile:
-        cfg.fdsnws_event.set_url_from_service_name(args.fdsn_event_profile)
-        ic(cfg.fdsnws_event.get_url())
-    elif args.dir and not os.path.exists(args.dir):
-        logger.error("Please provide a valid directory")
-        sys.exit()
-    elif args.event and not os.path.exists(args.event):
-        logger.error("Please provide a valid event file")
-        sys.exit()
+    return parser.parse_args()
 
 
-    with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
-        locator = NllLoc(
-            cfg.nll.nlloc_bin,
-            cfg.nll.scat2latlon_bin,
-            cfg.nll.time_path,
-            tmpdir=tmp_path,
-            double_pass=cfg.relocation.double_pass,
-            gap_dist_max_km=cfg.relocation.gap_dist_max_km,
-            P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
-            S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
-            dist_km_cutoff=cfg.relocation.dist_km_cutoff,
-            use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,
-            keep_manual_picks=cfg.relocation.keep_manual_picks,
-            nll_min_phase=cfg.nll.min_phase,
-            min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
-            quakeml_settings=asdict(cfg.quakeml),
-            nll_verbose=cfg.nll.verbose,
-            keep_scat=cfg.nll.enable_scatter,
-            zones=cfg.zones,
-            force_zone_name=args.zone_name,
-            min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
-            enable_relabel_pick_zone=enable_relabel,
-            enable_cleanup_pick_zone=True,
-            log_level=numeric_level,
-        )
+def main():
+    """Main function to run the relocation process."""
+    try:
+        args = parse_arguments()
 
-        def process_file(f):
-            cat = read_events(f)
-            if len(cat) == 0:
-                logging.error(f"No event found in QuakeML file {f}")
-                return
-            elif len(cat) > 1:
-                logging.error(f"More than one event found in QuakeML file {f}")
-                return
+        try:
+            numeric_level = setup_logging(args.loglevel)
+        except ValueError as e:
+            logger.error(str(e))
+            logger.error("Log level should be: debug, warning, info, error.")
+            sys.exit(255)
 
-            event = cat[0]
-            o = event.preferred_origin() or event.origins[0]
-            zone, _ = cfg.zones.find_zone(o.latitude, o.longitude)
-            ic(zone["name"])
+        # Load configuration
+        try:
+            cfg = DBClustConfig(args.profile_conf_file, config_type="reloc")
+        except Exception as e:
+            logger.error(f"Error loading configuration: {e}")
+            # show traceback
+            logger.error(traceback.format_exc())
+            sys.exit(1)
 
-            cat = reloc_fdsn_event(locator, event=event, zone_name=zone["name"])
-            if len(cat) == 0:
-                logging.error("No relocated event found")
-                return
-            elif len(cat) > 1:
-                logging.error("More than one relocated event found")
-                return
+        # Update configuration from command line arguments
+        if args.dist_km_cutoff:
+            cfg.relocation.dist_km_cutoff = args.dist_km_cutoff
 
-            # merge relocated event with original event
-            e = cat[0]
-            e.origins.extend(event.origins)
-            e.origins.sort(key=lambda x: x.creation_info.creation_time or 0, reverse=True)
-            e.picks.extend(event.picks)
-            e.amplitudes.extend(event.amplitudes)
-            e.magnitudes.extend(event.magnitudes)
+        if args.use_deactivated_arrivals:
+            cfg.relocation.use_deactivated_arrivals = args.use_deactivated_arrivals
 
-            # deduplicate picks and make readable ids
-            logger.info("Deduplicate picks and make readable ids")
-            cat = deduplicate_picks_and_make_readable_ids(cat, "eost", "")
+        if args.force_uncertainty:
+            cfg.relocation.force_uncertainty = args.force_uncertainty
 
-            # show relocated event
-            show_event(e, "****", header=True)
-            show_bulletin(e, zones=cfg.zones, plot=args.enable_plot)
+        if args.single_pass:
+            cfg.relocation.double_pass = not args.single_pass
 
-            event_id = cat[0].resource_id.id.split("/")[-1]
-            file_extension = args.output_format.lower()
-            cat.write(
-                f"{urllib.parse.quote(event_id, safe='')}.{file_extension}",
-                format=args.output_format,
+        if args.scat:
+            cfg.nll.enable_scatter = args.scat
+
+        if not args.zone_name:
+            cfg.quakeml.model_id = None
+
+        if args.min_score_threshold_pick_zone:
+            cfg.relocation.min_score_threshold_pick_zone = (
+                args.min_score_threshold_pick_zone
             )
 
-            if locator.scat_file:
-                try:
-                    copyfile(locator.scat_file, f"{urllib.parse.quote(event_id, safe='')}.scat")
-                except Exception as e:
-                    logging.error("Can't get nll scat file (%s)", e)
+        # Setup FDSNWS URL if needed
+        if args.fdsn_event_profile:
+            cfg.fdsnws_event.set_url_from_service_name(args.fdsn_event_profile)
+            ic(cfg.fdsnws_event.get_url())
 
-        if args.event:
-            process_file(args.event)
-        elif args.dir:
-            for f in glob.glob(f"{args.dir}/*.qml"):
-                process_file(f)
-        else:
-            # fetch directly from FDSNWS url
-            filename = os.path.join(tmp_path, args.event_id + ".xml")
-            options="includeallorigins=true&includeallmagnitudes=true&includearrivals=true&nodata=404"
-            url = cfg.fdsnws_event.get_url() + f"/query?{options}&eventid={args.event_id}"
-            try:
-                urllib.request.urlretrieve(url, filename)
-            except urllib.error.HTTPError as e:
-                # get 404 error
-                if e.code == 404:
-                    logging.error(f"Event: {args.event_id} not found in FDSNWS")
-                    #logging.error(f"URL: {url}")
-                else:
-                    logging.error(f"Error: {e}")
-                sys.exit()
-            except Exception as e:
-                logging.error(f"Error: {e}")
-                traceback.print_exc()
-                sys.exit()
-            process_file(filename)
+        # Validate input sources
+        if args.dir and not os.path.exists(args.dir):
+            logger.error("Please provide a valid directory")
+            sys.exit(1)
+        elif args.event and not os.path.exists(args.event):
+            logger.error("Please provide a valid event file")
+            sys.exit(1)
+
+        with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
+            # Initialize NllLoc
+            locator = NllLoc(
+                cfg.nll.nlloc_bin,
+                cfg.nll.scat2latlon_bin,
+                cfg.nll.time_path,
+                tmpdir=tmp_path,
+                double_pass=cfg.relocation.double_pass,
+                gap_dist_max_km=cfg.relocation.gap_dist_max_km,
+                P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
+                S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
+                dist_km_cutoff=cfg.relocation.dist_km_cutoff,
+                use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,
+                keep_manual_picks=cfg.relocation.keep_manual_picks,
+                nll_min_phase=cfg.nll.min_phase,
+                min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
+                quakeml_settings=asdict(cfg.quakeml),
+                nll_verbose=cfg.nll.verbose,
+                keep_scat=cfg.nll.enable_scatter,
+                zones=cfg.zones,
+                force_zone_name=args.zone_name,
+                min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
+                enable_relabel_pick_zone=args.relabel,
+                enable_cleanup_pick_zone=True,
+                log_level=numeric_level,
+            )
+
+            # Process based on input source
+            if args.event:
+                process_file(
+                    args.event, locator, cfg, args.enable_plot, args.output_format
+                )
+            elif args.dir:
+                results_df = process_directory(
+                    args.dir,
+                    locator,
+                    cfg,
+                    args.enable_plot,
+                    args.output_format,
+                    args.max_workers,
+                )
+                # Save results to CSV
+                csv_file = os.path.join(args.dir, "reprocess_event_status.csv")
+                results_df.to_csv(csv_file, index=False)
+                logger.info(f"Results saved to {csv_file}")
+            else:  # args.event_id
+                # Fetch directly from FDSNWS url
+                filename = os.path.join(tmp_path, f"{args.event_id}.xml")
+                try:
+                    fetch_event_from_fdsn(
+                        args.event_id, cfg.fdsnws_event.get_url(), filename
+                    )
+                    process_file(
+                        filename, locator, cfg, args.enable_plot, args.output_format
+                    )
+                except FileNotFoundError as e:
+                    logger.error(str(e))
+                    sys.exit(1)
+                except urllib.error.HTTPError as e:
+                    logger.error(
+                        f"Error fetching event {args.event_id} from FDSNWS: {e}"
+                    )
+                    sys.exit(1)
+                except Exception as e:
+                    logger.error(
+                        f"Error fetching event {args.event_id} from FDSNWS: {e}"
+                    )
+                    logger.error(traceback.format_exc())
+                    sys.exit(1)
+
+    except Exception as e:
+        logger.error(f"Unhandled error: {e}")
+        logger.error(traceback.format_exc())
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
