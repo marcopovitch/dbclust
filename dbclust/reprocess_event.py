@@ -6,7 +6,6 @@ import logging
 import os
 import sys
 import traceback
-import urllib.parse
 import urllib.request
 from dataclasses import asdict
 from datetime import datetime
@@ -35,9 +34,17 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("reprocess_event2")
 logger.setLevel(logging.DEBUG)
 
+
 def round_to_centisecond(dt: datetime) -> datetime:
+    """
+    Round a datetime object to the nearest centisecond (10 ms).
+    Args:
+        dt (datetime): The datetime object to round.
+    Returns:
+        datetime: The rounded datetime object.
+    """
     us = dt.microsecond
-    rounded_us = round(us / 10000) * 10000  # 10,000 µs = 1 centième
+    rounded_us = round(us / 10000) * 10000
     if rounded_us == 1000000:
         return dt.replace(microsecond=0) + timedelta(seconds=1)
     return dt.replace(microsecond=rounded_us)
@@ -45,9 +52,8 @@ def round_to_centisecond(dt: datetime) -> datetime:
 
 def process_file(
     f: str,
-    locator: NllLoc,
     cfg: DBClustConfig,
-    enable_plot: bool = False,
+    args,
     output_format: str = "QUAKEML",
     verbose: bool = True,
 ) -> str:
@@ -56,9 +62,8 @@ def process_file(
 
     Args:
         f (str): Path to the QuakeML file.
-        locator (NllLoc): NllLoc instance for relocation.
         cfg (DBClustConfig): Configuration object.
-        enable_plot (bool): Whether to enable plotting.
+        args: Command line arguments.
         output_format (str): Output format for the event file.
 
     Returns:
@@ -83,81 +88,112 @@ def process_file(
 
         event = cat[0]
         for p in event.picks:
-            # round the time to centisecond precision as required by obspy/NonLinLoc
+            # round the time to centisecond precision
+            # needed to avoid issues pick matching using obspy/NonLinLoc
             p.time = round_to_centisecond(p.time)
 
         o = event.preferred_origin() or event.origins[0]
         zone, _ = cfg.zones.find_zone(o.latitude, o.longitude)
         ic(zone["name"])
 
-        try:
-            cat = reloc_fdsn_event(locator, event=event, zone_name=zone["name"])
-        except LocalizationError as e:
-            err_msg = f"Error during relocation: {e}"
-            logging.error(err_msg)
-            return err_msg
+        with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
+            locator = NllLoc(
+                cfg.nll.nlloc_bin,
+                cfg.nll.scat2latlon_bin,
+                cfg.nll.time_path,
+                tmpdir=tmp_path,
+                double_pass=cfg.relocation.double_pass,
+                gap_dist_max_km=cfg.relocation.gap_dist_max_km,
+                P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
+                S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
+                dist_km_cutoff=cfg.relocation.dist_km_cutoff,
+                use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,
+                keep_manual_picks=cfg.relocation.keep_manual_picks,
+                nll_min_phase=cfg.nll.min_phase,
+                min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
+                quakeml_settings=asdict(cfg.quakeml),
+                nll_verbose=cfg.nll.verbose,
+                keep_scat=cfg.nll.enable_scatter,
+                zones=cfg.zones,
+                force_zone_name=args.zone_name,
+                min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
+                enable_relabel_pick_zone=args.relabel,
+                enable_cleanup_pick_zone=True,
+                log_level=logging.getLogger().level,
+            )
 
-        if len(cat) == 0:
-            err_msg = "No relocated event found"
-            logging.error(err_msg)
-            return err_msg
-        elif len(cat) > 1:
-            err_msg = "More than one relocated event found"
-            logging.error(err_msg)
-            return err_msg
-
-        # merge relocated event with original event
-        e = cat[0]
-        e.origins.extend(event.origins)
-        e.origins.sort(key=lambda x: x.creation_info.creation_time or 0, reverse=True)
-        e.picks.extend(event.picks)
-        e.amplitudes.extend(event.amplitudes)
-        e.magnitudes.extend(event.magnitudes)
-
-        # deduplicate picks and make readable ids
-        logger.info("Deduplicate picks and make readable ids")
-        cat = deduplicate_picks_and_make_readable_ids(cat, "eost", "")
-
-        # show relocated event
-        if verbose:
-            show_event(e, "****", header=True)
-            show_bulletin(e, zones=cfg.zones, plot=enable_plot)
-
-        # Create output directory based on year and month
-        event_time = e.preferred_origin().time
-        year = str(event_time.year)
-        month = str(event_time.month).zfill(2)  # Ensure month is 2 digits (e.g., "01" for January)
-
-        # Extract the basename from the input file (without path and extension)
-        input_basename = os.path.basename(f)
-        basename = os.path.splitext(input_basename)[0]
-
-        # Create directory structure
-        output_dir = os.path.join(year, month)
-        os.makedirs(output_dir, exist_ok=True)
-        logger.info(f"Created output directory: {output_dir}")
-
-        # Format the output filename
-        event_id = cat[0].resource_id.id.split("/")[-1]
-        file_extension = output_format.lower()
-        output_filename = f"{basename}.{file_extension}"
-        output_path = os.path.join(output_dir, output_filename)
-
-        # Write the catalog to file
-        logger.info(f"Writing output to: {output_path}")
-        cat.write(output_path, format=output_format)
-
-        # Handle the scatter file if available
-        if locator.scat_file:
             try:
-                scat_filename = f"{basename}.scat"
-                scat_path = os.path.join(output_dir, scat_filename)
-                logger.info(f"Copying scatter file to: {scat_path}")
-                copyfile(locator.scat_file, scat_path)
-            except (IOError, OSError) as e:
-                logging.error(f"Can't get nll scat file: {e}")
+                cat = reloc_fdsn_event(locator, event=event, zone_name=zone["name"])
+            except LocalizationError as e:
+                err_msg = f"[{f}] Error during relocation. {e}"
+                logging.error(err_msg)
+                return err_msg
 
-        return "OK"
+            if len(cat) == 0:
+                err_msg = "No relocated event found"
+                logging.error(err_msg)
+                return err_msg
+            elif len(cat) > 1:
+                err_msg = "More than one relocated event found"
+                logging.error(err_msg)
+                return err_msg
+
+            # merge relocated event with original event
+            e = cat[0]
+            e.origins.extend(event.origins)
+            e.origins.sort(
+                key=lambda x: x.creation_info.creation_time or 0, reverse=True
+            )
+            e.picks.extend(event.picks)
+            e.amplitudes.extend(event.amplitudes)
+            e.magnitudes.extend(event.magnitudes)
+
+            # deduplicate picks and make readable ids
+            logger.info("Deduplicate picks and make readable ids")
+            cat = deduplicate_picks_and_make_readable_ids(cat, "eost", "")
+
+            # show relocated event
+            if verbose:
+                show_event(e, "****", header=True)
+                show_bulletin(e, zones=cfg.zones, plot=False)
+
+            # Create output directory based on year and month
+            event_time = e.preferred_origin().time
+            year = str(event_time.year)
+            month = str(event_time.month).zfill(
+                2
+            )  # Ensure month is 2 digits (e.g., "01" for January)
+
+            # Extract the basename from the input file (without path and extension)
+            input_basename = os.path.basename(f)
+            basename = os.path.splitext(input_basename)[0]
+
+            # Create directory structure
+            output_dir = os.path.join(year, month)
+            os.makedirs(output_dir, exist_ok=True)
+            logger.info(f"Created output directory: {output_dir}")
+
+            # Format the output filename
+            event_id = cat[0].resource_id.id.split("/")[-1]
+            file_extension = output_format.lower()
+            output_filename = f"{basename}.{file_extension}"
+            output_path = os.path.join(output_dir, output_filename)
+
+            # Write the catalog to file
+            logger.info(f"Writing output to: {output_path}")
+            cat.write(output_path, format=output_format)
+
+            # Handle the scatter file if available
+            if locator.scat_file:
+                try:
+                    scat_filename = f"{basename}.scat"
+                    scat_path = os.path.join(output_dir, scat_filename)
+                    logger.info(f"Copying scatter file to: {scat_path}")
+                    copyfile(locator.scat_file, scat_path)
+                except (IOError, OSError) as e:
+                    logging.error(f"Can't get nll scat file: {e}")
+
+            return "OK"
     except Exception as e:
         err_msg = f"Unexpected error processing file {f}: {str(e)}"
         logging.error(err_msg)
@@ -167,9 +203,8 @@ def process_file(
 
 def process_directory(
     directory: str,
-    locator: NllLoc,
     cfg: DBClustConfig,
-    enable_plot: bool = False,
+    args,
     output_format: str = "QUAKEML",
     max_workers: int = 4,
 ) -> pd.DataFrame:
@@ -178,9 +213,8 @@ def process_directory(
 
     Args:
         directory (str): Directory containing QuakeML files.
-        locator (NllLoc): NllLoc instance for relocation.
         cfg (DBClustConfig): Configuration object.
-        enable_plot (bool): Whether to enable plotting.
+        args: Command line arguments.
         output_format (str): Output format for the event file.
         max_workers (int): Maximum number of parallel workers.
 
@@ -188,7 +222,7 @@ def process_directory(
         pd.DataFrame: DataFrame with processing results.
     """
     files = glob.glob(f"{directory}/2021/**/*.qml", recursive=True)
-    #files = glob.glob(f"{directory}/2021/11/*.qml")
+    # files = glob.glob(f"{directory}/2021/11/*.qml")
     verbose = False
 
     results = []
@@ -196,9 +230,7 @@ def process_directory(
     # Using ThreadPoolExecutor for parallel processing
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(
-                process_file, f, locator, cfg, enable_plot, output_format, verbose
-            ): f
+            executor.submit(process_file, f, cfg, args, output_format, verbose): f
             for f in files
         }
 
@@ -355,9 +387,6 @@ def parse_arguments() -> argparse.Namespace:
         "-s", "--scat", dest="scat", help="Get xyz scat file", action="store_true"
     )
     output_group.add_argument(
-        "--plot", dest="enable_plot", help="Enable plot", action="store_true"
-    )
-    output_group.add_argument(
         "-o",
         "--output-format",
         dest="output_format",
@@ -446,60 +475,40 @@ def main():
             logger.error("Please provide a valid event file")
             sys.exit(1)
 
-        with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
-            # Initialize NllLoc
-            locator = NllLoc(
-                cfg.nll.nlloc_bin,
-                cfg.nll.scat2latlon_bin,
-                cfg.nll.time_path,
-                tmpdir=tmp_path,
-                double_pass=cfg.relocation.double_pass,
-                gap_dist_max_km=cfg.relocation.gap_dist_max_km,
-                P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
-                S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
-                dist_km_cutoff=cfg.relocation.dist_km_cutoff,
-                use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,
-                keep_manual_picks=cfg.relocation.keep_manual_picks,
-                nll_min_phase=cfg.nll.min_phase,
-                min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
-                quakeml_settings=asdict(cfg.quakeml),
-                nll_verbose=cfg.nll.verbose,
-                keep_scat=cfg.nll.enable_scatter,
-                zones=cfg.zones,
-                force_zone_name=args.zone_name,
-                min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
-                enable_relabel_pick_zone=args.relabel,
-                enable_cleanup_pick_zone=True,
-                log_level=numeric_level,
-            )
-
-            # Process based on input source
-            if args.event:
+        # Process based on input source
+        if args.event:
+            with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
                 process_file(
-                    args.event, locator, cfg, args.enable_plot, args.output_format
-                )
-            elif args.dir:
-                results_df = process_directory(
-                    args.dir,
-                    locator,
+                    args.event,
                     cfg,
-                    args.enable_plot,
+                    args,
                     args.output_format,
-                    args.max_workers,
                 )
-                # Save results to CSV
-                csv_file = os.path.join(args.dir, "reprocess_event_status.csv")
-                results_df.to_csv(csv_file, index=False)
-                logger.info(f"Results saved to {csv_file}")
-            else:  # args.event_id
-                # Fetch directly from FDSNWS url
+        elif args.dir:
+            results_df = process_directory(
+                args.dir,
+                cfg,
+                args,
+                args.output_format,
+                args.max_workers,
+            )
+            # Save results to CSV
+            csv_file = os.path.join(args.dir, "reprocess_event_status.csv")
+            results_df.to_csv(csv_file, index=False)
+            logger.info(f"Results saved to {csv_file}")
+        else:  # args.event_id
+            # Create a temporary directory for the event
+            with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
                 filename = os.path.join(tmp_path, f"{args.event_id}.xml")
                 try:
                     fetch_event_from_fdsn(
                         args.event_id, cfg.fdsnws_event.get_url(), filename
                     )
                     process_file(
-                        filename, locator, cfg, args.enable_plot, args.output_format
+                        filename,
+                        cfg,
+                        args,
+                        args.output_format,
                     )
                 except FileNotFoundError as e:
                     logger.error(str(e))
