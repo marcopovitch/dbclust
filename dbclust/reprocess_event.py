@@ -221,7 +221,7 @@ def process_directory(
     Returns:
         pd.DataFrame: DataFrame with processing results.
     """
-    files = glob.glob(f"{directory}/2021/**/*.qml", recursive=True)
+    files = glob.glob(f"{directory}/**/*.qml", recursive=True)
     # files = glob.glob(f"{directory}/2021/11/*.qml")
     verbose = False
 
@@ -493,7 +493,7 @@ def main():
                 args.max_workers,
             )
             # Save results to CSV
-            csv_file = os.path.join(args.dir, "reprocess_event_status.csv")
+            csv_file = "reprocess_event_status.csv"
             results_df.to_csv(csv_file, index=False)
             logger.info(f"Results saved to {csv_file}")
         else:  # args.event_id
