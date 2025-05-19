@@ -872,7 +872,7 @@ def export_sqlite_to_quakeml(
                 count_query, (start_time, end_time) if start_time and end_time else ()
             )
             count = cursor.fetchone()[0]
-            print(f"Processing {count} events from {start_time} to {end_time}")
+            logger.info(f"Processing {count} events from {start_time} to {end_time}")
 
             query = (
                 # """
@@ -898,7 +898,7 @@ def export_sqlite_to_quakeml(
 
     # Close the database connection
     conn.close()
-    print(f"Concatenated QuakeML written to {output_file}")
+    logger.info(f"Concatenated QuakeML written to {output_file}")
 
 
 def process_quakeml_row(row, output_file, namespaces):
@@ -933,7 +933,7 @@ def process_quakeml_row(row, output_file, namespaces):
             output_file.write(ET.tostring(event, encoding="utf-8"))
 
     except ET.ParseError as e:
-        print(f"Error parsing QuakeML: {e}")
+        logger.error(f"Error parsing QuakeML: {e}")
 
 
 def create_schema(db_path: str) -> sqlite3.Connection:
@@ -1260,7 +1260,7 @@ def register_geometry_for_view(
         (view_name, geometry_column),
     )
     if cursor.fetchone():
-        print(
+        logger.info(
             f"Geometry column '{geometry_column}' is already registered for view '{view_name}' ... removing it."
         )
         # Remove the existing registration manually
@@ -1273,7 +1273,7 @@ def register_geometry_for_view(
         )
 
     # Register the geometry column
-    print(f"Registering geometry column '{geometry_column}' for view '{view_name}'...")
+    logger.info(f"Registering geometry column '{geometry_column}' for view '{view_name}'...")
     cursor.execute(
         """
         INSERT INTO geometry_columns (
@@ -1283,7 +1283,7 @@ def register_geometry_for_view(
         (view_name, geometry_column, geom_type, coord_dim, srid),
     )
     conn.commit()
-    print("Geometry column registered successfully.")
+    logger.info("Geometry column registered successfully.")
 
 
 def import_catalog_object_to_sqlite_from_file(
@@ -1435,7 +1435,7 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
         view_name (str): Name of the view to export.
         output_csv (str): Path to the output CSV file.
     """
-    print(f"Exporting view '{view_name}' to '{output_csv}' ...")
+    logger.info(f"Exporting view '{view_name}' to '{output_csv}' ...")
 
     conn = sqlite3.connect(db_path)
     if not conn:
@@ -1502,7 +1502,7 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
             # Write the row to CSV
             writer.writerow([row_dict.get(col, "") for col in column_names])
 
-    print(
+    logger.info(
         f"View '{view_name}' exported successfully to '{output_csv}' without 'geometry'."
     )
     conn.close()
@@ -1607,7 +1607,7 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
     try:
         discrimination_df = pd.read_csv(csv_file)
     except Exception as e:
-        print(f"Error reading CSV file '{csv_file}': {e}")
+        logger.error(f"Error reading CSV file '{csv_file}': {e}")
         return
 
     # check if the columns exist, and print the missing columns
@@ -1622,13 +1622,13 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
         ]
     ):
         # print the missing columns
-        print(f"CSV file '{csv_file}' is missing required columns.")
-        print(
+        logger.error(f"CSV file '{csv_file}' is missing required columns.")
+        logger.error(
             f"{RED}Required columns: 'event_id', 'predhdq50', 'EqProbaPred hdq50', 'proba_count', 'hdq50mad'{RESET}"
         )
         return
 
-    print(f"Adding discrimination info from '{csv_file}' ...")
+    logger.info(f"Adding discrimination info from '{csv_file}' ...")
 
     # Update the event table with discrimination info
     for index, row in discrimination_df.iterrows():
@@ -1654,7 +1654,7 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
             # TODO: fix this in spectrocnn when station_count is very low
             event_type = "unknown"
 
-        print(
+        logger.debug(
             f"event_id: {event_id}, event_type: {event_type}, probability: {probability}, station_count: {station_count}, certainty: {certainty}"
         )
 
@@ -1867,8 +1867,6 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-
-    print(args)
 
     # check if -i is given
     if args.input:
