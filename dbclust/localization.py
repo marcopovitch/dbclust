@@ -13,6 +13,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import traceback
 import urllib.parse
 import urllib.request
 import warnings
@@ -75,7 +76,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="obspy")
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("localization")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 
 # Define the preferred phase order
@@ -88,9 +89,9 @@ time_weight_tolerance = 0.01
 class LocalizationError(Exception):
     """Raised when NonLinLoc localization fails."""
 
-    def __init__(self, loc_method: str):
-        super().__init__(f"Localization failed with {loc_method} method.")
-        self.loc_method = loc_method
+    def __init__(self, txt: str):
+        super().__init__(f"Localization failed: {txt}")
+        self.txt = txt
 
 
 def sort_by_phase(arrival: Arrival) -> int:
@@ -281,6 +282,10 @@ class NllLoc(object):
 
         Returns:
             Catalog: A catalog containing the re-localized event.
+
+        Raises:
+            LocalizationError: If the localization fails.
+            Exception: If there is an unexpected error during localization.
         """
         myevent = copy.deepcopy(event)
         show_event(myevent, "****", header=True)
@@ -291,6 +296,7 @@ class NllLoc(object):
             # pick = arrival.pick_id.get_referred_object()
             pick = get_pick_from_arrival(myevent, arrival)
             if pick is None:
+                logger.warning("Pick not found for arrival %s", arrival)
                 continue
 
             # Ensure pick phase_hint is the same as arrival phase
@@ -325,13 +331,20 @@ class NllLoc(object):
         )
 
         # NLLoc format only requires pick information, not arrivals.
+        if len(myevent.picks) == 0:
+            logger.warning("No picks found for localization.")
+            raise LocalizationError("no picks found.")
+
         myevent.write(self.nll_obs_file, format="NLLOC_OBS")
 
         try:
             cat = self.nll_localisation(picks=myevent.picks)
         except LocalizationError as e:
-            logger.error(f"{e} - Check your input data or parameters.")
-            cat = Catalog()
+            raise e
+        except Exception as e:
+            logger.error(f"Unexpected error during localization: {e}")
+            traceback.print_exc()
+            raise e
 
         # Add the previous event or origin back to this event.
         if cat:
@@ -339,9 +352,7 @@ class NllLoc(object):
             new_loc.origins.append(orig)
             new_loc.picks.extend(event.picks)
         else:
-            cat = Catalog()
-            cat.append(event)
-            logger.warning("Relocation failed")
+            raise LocalizationError(f"using {self.loc_method} method.")
 
         return cat
 
@@ -439,6 +450,8 @@ class NllLoc(object):
                 f"template: {nll_template}."
             )
 
+        # ic(picks)
+
         if pass_count == 0:
             # get info to create a full Origin for preliminary location
             # (only on the first location iteration)
@@ -471,6 +484,8 @@ class NllLoc(object):
         nll_obs_file_basename = os.path.basename(nll_obs_file)
 
         tmp_path = tempfile.mkdtemp(dir=self.tmpdir)
+        logger.debug(f"Temporary directory created: {tmp_path}")
+
         conf_file = os.path.join(tmp_path, f"{nll_obs_file_basename}.conf")
 
         # path + root filename
@@ -563,7 +578,7 @@ class NllLoc(object):
                 loc_method_used = (
                     self.loc_method if force_loc_method is None else force_loc_method
                 )
-                raise LocalizationError(loc_method_used)
+                raise LocalizationError(f"using {self.loc_method} method.")
             elif "ERROR" in line:
                 logger.error(line)
                 if self.nll_verbose:
@@ -1505,7 +1520,11 @@ def show_origin(o: Origin, txt: str) -> None:
                     f"{o.latitude:.3f}",
                     f"{o.longitude:.3f}",
                     f"{o.depth:.1f}",
-                    f"{o.quality.standard_error:.3f}" if o.quality.standard_error else "-",
+                    (
+                        f"{o.quality.standard_error:.3f}"
+                        if o.quality.standard_error
+                        else "-"
+                    ),
                     o.quality.used_station_count,
                     o.quality.used_phase_count,
                     azimuthal_gap,
@@ -1626,7 +1645,7 @@ def show_bulletin(
                 continue
             # decode : {'probability': {'name': 'RENASS', 'value': 0.68}}
             if "probability" in info.keys():
-                probability = info['probability']['value']
+                probability = info["probability"]["value"]
 
         table.add_row(
             [
@@ -1635,7 +1654,7 @@ def show_bulletin(
                 phase_name,
                 f"{arrival.time_weight:.2f}",
                 f"{arrival.time_residual:.2f}",
-                f"{arrival.distance:.3f}",
+                f"{arrival.distance:.3f}" if arrival.distance else "-",
                 pick.time,
                 pick.evaluation_mode,
                 probability,
@@ -1645,7 +1664,14 @@ def show_bulletin(
         # print(f"{station_name} {phase_name} {arrival.time_weight} {arrival.time_residual} {arrival.distance} {pick.time} {pick.evaluation_mode}")
 
     # print(Event.__str__(event))
-    Q, QS, QD, classif_txt = classify_event(event, debug=True)
+    try:
+        Q, QS, QD, classif_txt = classify_event(event, debug=True)
+    except Exception as e:
+        logger.error(f"Error in classify_event: {e}")
+        Q = 0
+        QS = 0
+        QD = 0
+        classif_txt = "unknown"
     print(f"quality: {Q} ({classif_txt}), QS={QS}, QD={QD}")
     print(table)
 
@@ -1741,7 +1767,14 @@ def reloc_fdsn_event(
 
         # get the default template
 
-    cat = locator.reloc_event(event)
+    try:
+        cat = locator.reloc_event(event)
+    except LocalizationError as e:
+        raise e
+    except Exception as e:
+        logger.exception(f"Unexpected localization error for event {eventid}: {e}")
+        traceback.print_exc()
+        raise e
 
     return cat
 
