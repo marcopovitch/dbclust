@@ -358,6 +358,14 @@ def phase_count(event: Event, origin: Origin, phase_type: str) -> int:
     count = 0
     for arrival in origin.arrivals:
         pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
+        if pick is None:
+            logger.error(
+                f"Pick not found for arrival {arrival.resource_id.id} in event {event.resource_id.id}"
+            )
+            ic(event)
+            ic(origin)
+            ic(arrival)
+            return None
 
         if phase_type in pick.phase_hint.upper():
             count += 1
