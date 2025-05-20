@@ -1407,6 +1407,10 @@ def import_catalog_to_sqlite(
 
     # Process events and insert into SQLite
     # tqdm is used to display a progress bar
+
+    if len(catalog) == 1:
+        disable_tqdm = True
+
     for event in tqdm(catalog, desc="Importing events to SQLite", disable=disable_tqdm):
         # Serialize QuakeML content using format and compress it
         if enable_quakeml:
