@@ -562,14 +562,19 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
 
     # Some origins may not have arrivals fully populated
     valid_arrivals = [
-        arrival for arrival in origin.arrivals
-        if arrival.time_weight and hasattr(arrival, "distance") and arrival.distance is not None
+        arrival
+        for arrival in origin.arrivals
+        if arrival.time_weight
+        and hasattr(arrival, "distance")
+        and arrival.distance is not None
     ]
 
     if valid_arrivals:
         num_stations_10km = sum(1 for a in valid_arrivals if a.distance * 111.11 <= 10)
         num_stations_30km = sum(1 for a in valid_arrivals if a.distance * 111.11 <= 30)
-        num_stations_150km = sum(1 for a in valid_arrivals if a.distance * 111.11 <= 150)
+        num_stations_150km = sum(
+            1 for a in valid_arrivals if a.distance * 111.11 <= 150
+        )
     else:
         num_stations_10km = None
         num_stations_30km = None
@@ -1210,25 +1215,23 @@ def refresh_event_coordinates_view(conn: sqlite3.Connection):
     Args:
         conn: SQLite connection object.
     """
-    cursor = conn.cursor()
+    with conn:
+        cursor = conn.cursor()
+        # Drop the view if it exists
+        cursor.execute("DROP VIEW IF EXISTS event_coordinates;")
 
-    # Drop the view if it exists
-    cursor.execute("DROP VIEW IF EXISTS event_coordinates;")
-    conn.commit()
+        # Recreate the view
+        cursor.execute(EVENT_COORDINATES_VIEW)
 
-    # Recreate the view
-    cursor.execute(EVENT_COORDINATES_VIEW)
-    conn.commit()
-
-    # Register the geometry column
-    register_geometry_for_view(
-        conn=conn,
-        view_name="event_coordinates",
-        geometry_column="geometry",
-        srid=4326,
-        geom_type=1,  # POINT
-        coord_dim=2,  # XY
-    )
+        # Register the geometry column
+        register_geometry_for_view(
+            conn=conn,
+            view_name="event_coordinates",
+            geometry_column="geometry",
+            srid=4326,
+            geom_type=1,  # POINT
+            coord_dim=2,  # XY
+        )
 
 
 def register_geometry_for_view(
@@ -1273,7 +1276,9 @@ def register_geometry_for_view(
         )
 
     # Register the geometry column
-    logger.info(f"Registering geometry column '{geometry_column}' for view '{view_name}'...")
+    logger.info(
+        f"Registering geometry column '{geometry_column}' for view '{view_name}'..."
+    )
     cursor.execute(
         """
         INSERT INTO geometry_columns (
@@ -1343,7 +1348,9 @@ def import_catalog_object_to_sqlite_from_file(
                 logger.debug("Database connection closed.")
 
     logger.error(f"Failed to import catalog after {retries} attempts.")
-    raise sqlite3.OperationalError(f"Unable to access the database after {retries} retries.")
+    raise sqlite3.OperationalError(
+        f"Unable to access the database after {retries} retries."
+    )
 
 
 def import_catalog_to_sqlite_from_file(
@@ -1381,7 +1388,10 @@ def import_catalog_to_sqlite_from_file(
 
 
 def import_catalog_to_sqlite(
-    conn: sqlite3.Connection, catalog: Catalog, enable_quakeml: bool = False, disable_tqdm: bool = False
+    conn: sqlite3.Connection,
+    catalog: Catalog,
+    enable_quakeml: bool = False,
+    disable_tqdm: bool = False,
 ) -> None:
     """
     Export a catalog of seismic events to an SQLite database.
@@ -1662,6 +1672,13 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
             f"event_id: {event_id}, event_type: {event_type}, probability: {probability}, station_count: {station_count}, certainty: {certainty}"
         )
 
+        # Check if the event exists
+        cursor.execute("SELECT 1 FROM events WHERE event_id = ?", (event_id,))
+        if not cursor.fetchone():
+            logger.warning(f"Event ID {event_id} not found in database, skipping...")
+            continue
+
+        # Update the existing event
         cursor.execute(
             """
             UPDATE events
@@ -1669,10 +1686,16 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
                 discrimination_probability = ?,
                 discrimination_station_count = ?,
                 discrimination_certainty = ?
-            WHERE event_id = ?;
+            WHERE event_id = ?
             """,
             (event_type, probability, station_count, certainty, event_id),
         )
+
+        # Check if the update affected any rows
+        if cursor.rowcount == 0:
+            logger.warning(f"No rows were updated for event_id: {event_id}")
+        else:
+            logger.debug(f"Successfully updated event_id: {event_id}")
 
     conn.commit()
 
@@ -1758,299 +1781,430 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-if __name__ == "__main__":
-    # Parse arguments
+def validate_date(date_str: str) -> str:
+    """Validate date string format (YYYY-MM-DD)."""
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+        return date_str
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"Invalid date format: {date_str}. Use YYYY-MM-DD"
+        )
+
+
+def validate_file_exists(file_path: str) -> str:
+    """Validate that a file exists."""
+    if not os.path.exists(file_path):
+        raise argparse.ArgumentTypeError(f"File not found: {file_path}")
+    return file_path
+
+
+def validate_dir_exists(dir_path: str) -> str:
+    """Validate that a directory exists and is writable."""
+    dir_path = os.path.abspath(dir_path)
+    if not os.path.isdir(dir_path):
+        raise argparse.ArgumentTypeError(f"Directory not found: {dir_path}")
+    if not os.access(dir_path, os.W_OK):
+        raise argparse.ArgumentTypeError(f"Directory not writable: {dir_path}")
+    return dir_path
+
+
+def parse_arguments() -> argparse.Namespace:
+    """Parse and validate command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Process QuakeML files and store in SQLite."
+        description="Process QuakeML files and manage seismic event data in a SpatiaLite database.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
+
+    # Database configuration
+    db_group = parser.add_argument_group("Database Configuration")
+    db_group.add_argument(
         "-d",
         "--database",
         default="seismic_data.sqlite",
-        help="Path to the SQLite database.",
+        help="Path to the SQLite database file.",
     )
 
-    ############################
-    # Import catalog to sqlite #
-    ############################
-    parser.add_argument(
-        "-i", "--input", nargs="+", default=None, help="Input QuakeML files."
+    # Import options
+    import_group = parser.add_argument_group("Data Import Options")
+    import_group.add_argument(
+        "-i",
+        "--input",
+        nargs="+",
+        type=validate_file_exists,
+        help="Input QuakeML file(s) to import.",
     )
-    parser.add_argument(
+    import_group.add_argument(
         "-q",
         "--enable-quakeml",
         action="store_true",
-        default=False,
-        help="import full quakeml in the database.",
+        help="Store full QuakeML data in the database (increases size).",
     )
 
-    #####################
-    # Add export to csv #
-    #####################
-    parser.add_argument(
+    # Export options
+    export_group = parser.add_argument_group("Data Export Options")
+    export_group.add_argument(
         "-c",
         "--csv-output",
-        default=None,
-        help="export the view to a csv file.",
+        help="Export event coordinates to a CSV file.",
     )
 
-    #################################
-    # Export QuakeML data to a file #
-    #################################
-    parser.add_argument(
-        "--export-quakeml", required=False, help="Path to the output QuakeML file."
+    # QuakeML export options
+    export_group.add_argument(
+        "--export-quakeml",
+        help="Export events to a QuakeML file.",
+    )
+    export_group.add_argument(
+        "-e",
+        "--event-id",
+        nargs="+",
+        help="Export specific events by ID (use with --export-quakeml).",
+    )
+    export_group.add_argument(
+        "--event-id-csv",
+        type=validate_file_exists,
+        help="CSV file containing event IDs to export (use with --export-quakeml).",
+    )
+    export_group.add_argument(
+        "--start-time",
+        type=validate_date,
+        help="Start time for export (YYYY-MM-DD).",
+    )
+    export_group.add_argument(
+        "--end-time",
+        type=validate_date,
+        help="End time for export (YYYY-MM-DD).",
     )
 
-    # add -e to export quakeml only for a list of specific events (event_id)
-    parser.add_argument(
-        "-e", "--event-id", nargs="+", default=None, help="List of event_id to export."
-    )
-
-    # use csv file to use event_id list
-    parser.add_argument(
-        "--event-id-csv", default=None, help="CSV file containing event_id list."
-    )
-
-    ###########################
-    # export quakeml by month #
-    ###########################
-    parser.add_argument(
-        "--start-time", default=None, help="Start time for the export (YYYY-MM-DD)."
-    )
-    parser.add_argument(
-        "--end-time", default=None, help="End time for the export (YYYY-MM-DD)."
-    )
-
-    ###########################
-    # Add discrimination info #
-    ###########################
-    parser.add_argument(
+    # Database enhancement options
+    enhance_group = parser.add_argument_group("Database Enhancement Options")
+    enhance_group.add_argument(
         "--add-discrimination",
-        default=None,
-        help="Add discrimination info from csv file to the event table.",
+        type=validate_file_exists,
+        help="Add discrimination info from CSV file to events.",
     )
-
-    ############################
-    # Add localization quality #
-    ############################
-    parser.add_argument(
+    enhance_group.add_argument(
         "--add-localization-quality",
         action="store_true",
-        default=False,
-        help="Compute localization quality info to the event table.",
+        help="Compute and add localization quality metrics.",
     )
-
-    ####################
-    # Add agency names #
-    ####################
-    parser.add_argument(
+    enhance_group.add_argument(
         "--add-agency-names",
         action="store_true",
-        default=False,
         help="Add agency names to the event table.",
     )
-
-    #########################
-    # GT5 score computation #
-    #########################
-    parser.add_argument(
+    enhance_group.add_argument(
         "--gt5",
         action="store_true",
-        default=False,
-        help="Compute GT5 score.",
+        help="Compute GT5 quality metrics.",
     )
-
-    ######################################
-    # Refresh the event_coordinates view #
-    ######################################
-    parser.add_argument(
+    enhance_group.add_argument(
         "--refresh-view",
         action="store_true",
-        default=False,
         help="Refresh the event_coordinates view.",
     )
 
     args = parser.parse_args()
 
-    # check if -i is given
-    if args.input:
-        # import quakeml file to sqlite
-        for files in args.input:
-            import_catalog_to_sqlite_from_file(
-                args.database, files, args.enable_quakeml
-            )
-    elif args.csv_output:
-        if os.path.exists(args.database) is False:
-            print(f"Database '{args.database}' does not exist.")
-            sys.exit(1)
-        # output file should not already exist
-        if os.path.exists(args.csv_output):
-            print(f"Output file '{args.csv_output}' already exists.")
-            sys.exit(1)
-        # Export the view to a CSV file
-        export_view_to_csv_exclude_geometry(
-            args.database, "event_coordinates", args.csv_output
-        )
-    elif args.event_id_csv:
-        if os.path.exists(args.database) is False:
-            print(f"Database '{args.database}' does not exist.")
-            sys.exit(1)
-        # read event_id from csv file using pandas
-        print(f"Reading event_id from '{args.event_id_csv}'")
-        event_ids = pd.read_csv(args.event_id_csv)["event_id"].tolist()
-        export_sqlite_to_quakeml(args.database, args.export_quakeml, event_ids)
-    elif args.event_id:
-        if os.path.exists(args.database) is False:
-            print(f"Database '{args.database}' does not exist.")
-            sys.exit(1)
-        # export quakeml only for a list of specific events (event_id)
-        print(f"Exporting QuakeML for event_id: {args.event_id}")
-        export_sqlite_to_quakeml(args.database, args.export_quakeml, args.event_id)
-    elif args.export_quakeml:
-        if os.path.exists(args.database) is False:
-            print(f"Database '{args.database}' does not exist.")
-            sys.exit(1)
-        # Export QuakeML data to a files by year and month
-        print(f"Exporting QuakeML by year and month to {args.export_quakeml}")
+    # Validate argument combinations
+    if args.event_id and not args.export_quakeml:
+        parser.error("--event-id requires --export-quakeml")
+    if args.event_id_csv and not args.export_quakeml:
+        parser.error("--event-id-csv requires --export-quakeml")
+    if (args.start_time or args.end_time) and not args.export_quakeml:
+        parser.error("Time range requires --export-quakeml")
 
-        # Ensure the database view is up-to-date
-        conn = sqlite3.connect(args.database)
-        if not conn:
-            raise Exception(f"Failed to connect to the database at {args.database}")
-        refresh_event_coordinates_view(conn)
-        conn.close()
+    return args
 
-        # Determine start_time and end_time
-        if not args.start_time:
-            conn = sqlite3.connect(args.database)
-            if not conn:
-                raise Exception(f"Failed to connect to the database at {args.database}")
-            cursor = conn.cursor()
-            cursor.execute("SELECT MIN(time) FROM event_coordinates;")
-            start_time = cursor.fetchone()[0]
-            conn.close()
-            # Convert start_time to datetime, handling possible time components
-            start_time = datetime.strptime(start_time.split(" ")[0], "%Y-%m-%d")
-            ic(start_time, type(start_time))
+
+def get_database_time_range(database_path: str) -> tuple[datetime, datetime]:
+    """Get the minimum and maximum time range from the database."""
+    conn = sqlite3.connect(database_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT MIN(time), MAX(time) FROM event_coordinates;")
+    min_time, max_time = cursor.fetchone()
+    conn.close()
+
+    # Convert to datetime objects
+    min_time = (
+        datetime.strptime(min_time.split(" ")[0], "%Y-%m-%d") if min_time else None
+    )
+    max_time = (
+        datetime.strptime(max_time.split(" ")[0], "%Y-%m-%d") if max_time else None
+    )
+
+    return min_time, max_time
+
+
+def export_quakeml_monthly(
+    database_path: str, export_dir: str, start_time: str = None, end_time: str = None
+) -> None:
+    """Export QuakeML data with one file per month."""
+    print(f"Exporting QuakeML by year and month to {export_dir}")
+
+    # Ensure the database view is up-to-date
+    conn = create_schema(database_path)
+    refresh_event_coordinates_view(conn)
+    conn.close()
+
+    # Determine time range
+    db_min, db_max = get_database_time_range(database_path)
+
+    # Convert start_time to datetime if it's a string
+    if start_time:
+        if isinstance(start_time, str):
+            start_dt = datetime.strptime(start_time.split(" ")[0], "%Y-%m-%d")
         else:
-            start_time = datetime.strptime(args.start_time, "%Y-%m-%d")
-
-        if not args.end_time:
-            conn = sqlite3.connect(args.database)
-            if not conn:
-                raise Exception(f"Failed to connect to the database at {args.database}")
-            cursor = conn.cursor()
-            cursor.execute("SELECT MAX(time) FROM event_coordinates;")
-            end_time = cursor.fetchone()[0]
-            conn.close()
-            # Convert end_time to datetime and set it to the end of the month
-            end_time = pd.to_datetime(end_time.split(" ")[0]) + pd.offsets.MonthBegin(1)
-            end_time = end_time.to_pydatetime()
-        else:
-            # Adjust args.end_time to the end of the month if provided
-            end_time = pd.to_datetime(
-                args.end_time.split(" ")[0]
-            ) + pd.offsets.MonthBegin(1)
-            end_time = end_time.to_pydatetime()
-
-        # Loop over months: each month starts on the 1st at 00:00:00
-        months = pd.date_range(start=start_time, end=end_time, freq="MS")
-        ic(months)
-
-        for i in range(len(months) - 1):  # Exclude the last interval
-            month_start = months[i]
-            month_end = months[i + 1]  # Start of the next month
-
-            # Ensure export directory exists
-            os.makedirs(args.export_quakeml, exist_ok=True)
-
-            # Define export file path
-            export_path = os.path.join(
-                args.export_quakeml,
-                f"{month_start:%Y-%m}.qml",
-            )
-
-            # Skip if the file already exists
-            if os.path.exists(export_path):
-                print(f"File '{export_path}' already exists.")
-                continue
-
-            # Log and export QuakeML for the month
-            ic(export_path, month_start, month_end)
-            export_sqlite_to_quakeml(
-                args.database,
-                export_path,
-                start_time=month_start.isoformat(),
-                end_time=month_end.isoformat(),
-            )
-
-    elif args.add_discrimination:
-        if os.path.exists(args.database) is False:
-            print(f"Database '{args.database}' does not exist.")
-            sys.exit(1)
-        # Add discrimination info to the event table
-        conn = sqlite3.connect(args.database)
-        if not conn:
-            raise Exception(f"Failed to connect to the database at {args.database}")
-        add_discrimination_info(conn, args.add_discrimination)
-        refresh_event_coordinates_view(conn)
-        conn.close()
-    elif args.add_localization_quality:
-        if os.path.exists(args.database) is False:
-            print(f"Database '{args.database}' does not exist.")
-            sys.exit(1)
-        # Add localisation quality info to the event table
-        conn = sqlite3.connect(args.database)
-        if not conn:
-            raise Exception(f"Failed to connect to the database at {args.database}")
-        add_compute_localization_quality(conn)
-        refresh_event_coordinates_view(conn)
-        conn.close()
-    elif args.add_agency_names:
-        if os.path.exists(args.database) is False:
-            print(f"Database '{args.database}' does not exist.")
-            sys.exit(1)
-        # Add agency names to the event table
-        conn = sqlite3.connect(args.database)
-        if not conn:
-            raise Exception(f"Failed to connect to the database at {args.database}")
-        add_agency_names(conn)
-        refresh_event_coordinates_view(conn)
-        conn.close()
-    elif args.gt5:
-        if os.path.exists(args.database) is False:
-            print(f"Database '{args.database}' does not exist.")
-            sys.exit(1)
-        # Compute GT5 score
-        conn = sqlite3.connect(args.database)
-        if not conn:
-            raise Exception(f"Failed to connect to the database at {args.database}")
-        add_gt5_score(conn)
-        refresh_event_coordinates_view(conn)
-        conn.close()
-    elif args.refresh_view:
-        if os.path.exists(args.database) is False:
-            print(f"Database '{args.database}' does not exist.")
-            sys.exit(1)
-        # Refresh the event_coordinates view
-        conn = sqlite3.connect(args.database)
-        if not conn:
-            raise Exception(f"Failed to connect to the database at {args.database}")
-        logger.info("Refreshing event_coordinates view ...")
-        # drop and recreate the view
-        query = "DROP VIEW IF EXISTS event_coordinates;"
-        conn.execute(query)
-        conn.commit()
-        logger.info("Dropped event_coordinates view.")
-        query = EVENT_COORDINATES_VIEW
-        conn.execute(query)
-        conn.commit()
-        logger.info("Created event_coordinates view.")
-        conn.close()
+            start_dt = start_time
     else:
-        # Create the database schema
-        try:
-            conn = create_schema(args.database)
-        except Exception as e:
-            logger.error(f"Error creating schema: {e}")
+        start_dt = db_min
+
+    # Convert end_time to datetime and adjust to end of month if needed
+    if end_time:
+        if isinstance(end_time, str):
+            end_dt = pd.to_datetime(end_time.split(" ")[0]) + pd.offsets.MonthBegin(1)
+        else:
+            end_dt = pd.to_datetime(end_time) + pd.offsets.MonthBegin(1)
+        end_dt = end_dt.to_pydatetime()
+    else:
+        # If db_max is a string, parse it first
+        max_time_str = (
+            db_max if isinstance(db_max, str) else db_max.strftime("%Y-%m-%d")
+        )
+        end_dt = pd.to_datetime(max_time_str) + pd.offsets.MonthBegin(1)
+        end_dt = end_dt.to_pydatetime()
+
+    # Loop over months
+    months = pd.date_range(start=start_dt, end=end_dt, freq="MS")
+    print(f"Exporting months from {start_dt} to {end_dt}")
+
+    for i in range(len(months) - 1):  # Exclude the last interval
+        month_start = months[i]
+        month_end = months[i + 1]  # Start of the next month
+
+        # Ensure export directory exists
+        os.makedirs(export_dir, exist_ok=True)
+
+        # Define export file path
+        export_path = os.path.join(export_dir, f"{month_start:%Y-%m}.qml")
+
+        # Skip if the file already exists
+        if os.path.exists(export_path):
+            print(f"File '{export_path}' already exists. Skipping...")
+            continue
+
+        print(f"Exporting {export_path}...")
+        export_sqlite_to_quakeml(
+            database_path,
+            export_path,
+            start_time=month_start.isoformat(),
+            end_time=month_end.isoformat(),
+        )
+
+
+def export_quakeml_single(
+    database_path: str,
+    output_file: str,
+    event_ids: list = None,
+    event_id_csv: str = None,
+    start_time: str = None,
+    end_time: str = None,
+) -> None:
+    """Export QuakeML data to a single file."""
+    # Handle event IDs from CSV if provided
+    if event_id_csv:
+        print(f"Reading event IDs from {event_id_csv}...")
+        event_ids = pd.read_csv(event_id_csv)["event_id"].tolist()
+
+    print(f"Exporting to {output_file}...")
+    export_sqlite_to_quakeml(
+        database_path,
+        output_file,
+        event_ids=event_ids,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+
+def handle_quakeml_export(args) -> None:
+    """Handle QuakeML export based on the provided arguments."""
+    if not args.export_quakeml:
+        return
+
+    try:
+        if os.path.isdir(args.export_quakeml) or args.export_quakeml.endswith(os.sep):
+            export_quakeml_monthly(
+                database_path=args.database,
+                export_dir=args.export_quakeml,
+                start_time=args.start_time,
+                end_time=args.end_time,
+            )
+        else:
+            export_quakeml_single(
+                database_path=args.database,
+                output_file=args.export_quakeml,
+                event_ids=args.event_id,
+                event_id_csv=args.event_id_csv,
+                start_time=args.start_time,
+                end_time=args.end_time,
+            )
+    except Exception as e:
+        print(f"Error during QuakeML export: {str(e)}", file=sys.stderr)
         sys.exit(1)
+
+
+def apply_database_enhancements(args) -> None:
+    """Apply database enhancements based on the provided arguments."""
+    conn = None
+    try:
+        if any(
+            [
+                args.add_discrimination,
+                args.add_localization_quality,
+                args.add_agency_names,
+                args.gt5,
+                args.refresh_view,
+            ]
+        ):
+            conn = create_schema(args.database)
+
+            if args.add_discrimination:
+                print("Adding discrimination info...")
+                add_discrimination_info(conn, args.add_discrimination)
+
+            if args.add_localization_quality:
+                print("Computing localization quality...")
+                add_compute_localization_quality(conn)
+
+            if args.add_agency_names:
+                print("Adding agency names...")
+                add_agency_names(conn)
+
+            if args.gt5:
+                print("Computing GT5 metrics...")
+                add_gt5_score(conn)
+
+            if any(
+                [
+                    args.add_discrimination,
+                    args.add_localization_quality,
+                    args.add_agency_names,
+                    args.gt5,
+                    args.refresh_view,
+                ]
+            ):
+                print("Refreshing event coordinates view...")
+                refresh_event_coordinates_view(conn)
+    except Exception as e:
+        print(f"Error applying database enhancements: {str(e)}", file=sys.stderr)
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+def main():
+    """Main entry point for the script."""
+    args = parse_arguments()
+    conn = None
+
+    try:
+        # Ensure database exists for operations that require it
+        db_operations = [
+            args.csv_output,
+            args.export_quakeml,
+            args.add_discrimination,
+            args.add_localization_quality,
+            args.add_agency_names,
+            args.gt5,
+            args.refresh_view,
+        ]
+
+        if any(db_operations) and not os.path.exists(args.database):
+            print(f"Error: Database '{args.database}' does not exist.", file=sys.stderr)
+            sys.exit(1)
+
+        # Handle input files
+        if args.input:
+            for input_file in args.input:
+                print(f"Importing {input_file}...")
+                import_catalog_to_sqlite_from_file(
+                    args.database, input_file, args.enable_quakeml
+                )
+
+        # Handle CSV export
+        if args.csv_output:
+            if os.path.exists(args.csv_output):
+                print(
+                    f"Error: Output file '{args.csv_output}' already exists.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            # Ensure the view is up-to-date before exporting
+            print("Refreshing event_coordinates view...")
+            conn = create_schema(args.database)
+            try:
+                refresh_event_coordinates_view(conn)
+                print("Successfully refreshed event_coordinates view")
+            finally:
+                conn.close()
+
+            print(f"Exporting to {args.csv_output}...")
+            export_view_to_csv_exclude_geometry(
+                args.database, "event_coordinates", args.csv_output
+            )
+
+        # Handle QuakeML export
+        handle_quakeml_export(args)
+
+        # Database enhancements
+        if any(
+            [
+                args.add_discrimination,
+                args.add_localization_quality,
+                args.add_agency_names,
+                args.gt5,
+                args.refresh_view,
+            ]
+        ):
+            conn = create_schema(args.database)
+
+            if args.add_discrimination:
+                print("Adding discrimination info...")
+                add_discrimination_info(conn, args.add_discrimination)
+
+            if args.add_localization_quality:
+                print("Computing localization quality...")
+                add_compute_localization_quality(conn)
+
+            if args.add_agency_names:
+                print("Adding agency names...")
+                add_agency_names(conn)
+
+            if args.gt5:
+                print("Computing GT5 score...")
+                add_gt5_score(conn)
+
+            if any(
+                [
+                    args.add_discrimination,
+                    args.add_localization_quality,
+                    args.add_agency_names,
+                    args.gt5,
+                    args.refresh_view,
+                ]
+            ):
+                print("Refreshing event coordinates view...")
+                refresh_event_coordinates_view(conn)
+
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        if conn:
+            conn.close()
+
+
+if __name__ == "__main__":
+    main()
