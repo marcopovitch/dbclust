@@ -143,8 +143,13 @@
     }
 
     .tabulator .tabulator-row .tabulator-cell {
-      padding: 10px;
-      border-right: none;
+      padding: 6px 4px;
+      border-right: 1px solid #e0e0e0;
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.2;
     }
 
     .tabulator .tabulator-row .tabulator-cell.numeric-cell {
@@ -198,22 +203,45 @@
           depth_km: {{ event.depth_km }},
           magnitude: {% if event.magnitude is float %}{{ event.magnitude }}{% else %}"{{ event.magnitude }}"{% endif %},
           magnitude_type: "{{ event.magnitude_type }}",
+          magnitude_uncertainty: {{ event.magnitude_uncertainty if event.magnitude_uncertainty is not none else 'null' }},
           rms: {{ event.rms }},
           used_station_count: {{ event.used_station_count }},
           used_phase_count: {{ event.used_phase_count }},
           erh_km: {{ event.erh_km }},
           erz_km: {{ event.erz_km }},
-          er_method: "{{ event.er_method }}",
-          location_method_id: "{{ event.location_method_id }}",
-          earth_model_id: "{{ event.earth_model_id }}",
+          er_method: "{{ event.er_method or '' }}",
+          location_method_id: "{{ event.location_method_id or '' }}",
+          earth_model_id: "{{ event.earth_model_id or '' }}",
           nb_origins: {{ event.nb_origins }},
+          nb_magnitudes: {{ event.nb_magnitudes or 0 }},
           P_count: {{ event.P_count }},
           S_count: {{ event.S_count }},
           minimum_distance_deg: {{ event.minimum_distance_deg }},
           maximum_distance_deg: {{ event.maximum_distance_deg }},
+          median_distance_deg: {{ event.median_distance_deg if event.median_distance_deg is not none else 'null' }},
           azimuthal_gap: {{ event.azimuthal_gap }},
+          secondary_azimuthal_gap: {{ event.secondary_azimuthal_gap if event.secondary_azimuthal_gap is not none else 'null' }},
+          expectation_latitude: {{ event.expectation_latitude if event.expectation_latitude is not none else 'null' }},
+          expectation_longitude: {{ event.expectation_longitude if event.expectation_longitude is not none else 'null' }},
+          expectation_depth_km: {{ event.expectation_depth_km if event.expectation_depth_km is not none else 'null' }},
+          scatter_volume: {{ event.scatter_volume if event.scatter_volume is not none else 'null' }},
+          dist_from_preloc_km: {{ event.dist_from_preloc_km if event.dist_from_preloc_km is not none else 'null' }},
           nb_agencies: {{ event.nb_agencies }},
-          quality: "{{ event.quality }}"
+          agencies_list: "{{ event.agencies_list or '' }}",
+          agency_names: "{{ event.agency_names or '' }}",
+          multiple_same_agencies: {{ 1 if event.multiple_same_agencies else 0 }},
+          evaluation_mode: "{{ event.evaluation_mode or '' }}",
+          event_type: "{{ event.event_type or '' }}",
+          discrimination_probability: {{ event.discrimination_probability if event.discrimination_probability is not none else 'null' }},
+          discrimination_station_count: {{ event.discrimination_station_count or 0 }},
+          discrimination_certainty: "{{ event.discrimination_certainty or '' }}",
+          quality: "{{ event.quality or '' }}",
+          quality_factor: {{ event.quality_factor if event.quality_factor is not none else 'null' }},
+          gt5_status: "{{ event.gt5_status or '' }}",
+          delta_U: {{ event.delta_U if event.delta_U is not none else 'null' }},
+          num_stations_10km: {{ event.num_stations_10km or 0 }},
+          num_stations_30km: {{ event.num_stations_30km or 0 }},
+          num_stations_150km: {{ event.num_stations_150km or 0 }}
         }{% if not loop.last %},{% endif %}
         {% endfor %}
       ];
@@ -242,28 +270,72 @@
             const link = cell.getData().event_id_link;
             return `<a href="${link}" target="_blank">${value}</a>`;
           }, headerSort: true},
-          {title: "Time", field: "time", headerSort: true},
-          {title: "Latitude", field: "latitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "Longitude", field: "longitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "Depth (km)", field: "depth_km", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "Magnitude", field: "magnitude", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "Type", field: "magnitude_type", headerSort: true},
-          {title: "RMS", field: "rms", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "Stations", field: "used_station_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "Phases", field: "used_phase_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "ERH (km)", field: "erh_km", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "ERZ (km)", field: "erz_km", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "Method", field: "er_method", headerSort: true},
-          {title: "Location Method", field: "location_method_id", headerSort: true},
-          {title: "Earth Model", field: "earth_model_id", headerSort: true},
-          {title: "Origins", field: "nb_origins", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "P Count", field: "P_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "S Count", field: "S_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "Min Distance (°)", field: "minimum_distance_deg", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "Max Distance (°)", field: "maximum_distance_deg", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "Azimuthal Gap", field: "azimuthal_gap", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "Agencies", field: "nb_agencies", formatter: "number", formatterParams: {precision: 0}, headerSort: true},
-          {title: "Quality", field: "quality", headerSort: true}
+          {title: "<span title='Time'>Time</span>", field: "time", headerSort: true},
+          {title: "<span title='Latitude'>Latitude</span>", field: "latitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Longitude'>Longitude</span>", field: "longitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Depth in kilometers'>Depth<br>(km)</span>", field: "depth_km", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Magnitude'>Magnitude</span>", field: "magnitude", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Magnitude Type'>Type</span>", field: "magnitude_type", headerSort: true},
+          {title: "<span title='Magnitude Uncertainty'>Mag<br>Uncertainty</span>", field: "magnitude_uncertainty", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Root Mean Square of travel time residuals'>RMS</span>", field: "rms", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Number of Stations Used'>Stations</span>", field: "used_station_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Number of Phases Used'>Phases</span>", field: "used_phase_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Error in Horizontal (km)'>ERH<br>(km)</span>", field: "erh_km", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(1);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Error in Depth (km)'>ERZ<br>(km)</span>", field: "erz_km", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(1);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Error Method'>Method</span>", field: "er_method", headerSort: true, width: 120},
+          {title: "<span title='Location Method'>Loc<br>Method</span>", field: "location_method_id", headerSort: true, width: 120},
+          {title: "<span title='Earth Model'>Earth<br>Model</span>", field: "earth_model_id", headerSort: true, width: 120},
+          {title: "<span title='Number of Origins'>Origins</span>", field: "nb_origins", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Number of Magnitudes'>Magnitudes<br>count</span>", field: "nb_magnitudes", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='P-wave Phase Count'>P<br>count</span>", field: "P_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='S-wave Phase Count'>S<br>count</span>", field: "S_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Minimum Distance (degrees)'>Min<br>Dist (°)</span>", field: "minimum_distance_deg", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(3);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Maximum Distance (degrees)'>Max<br>Dist (°)</span>", field: "maximum_distance_deg", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(3);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Median Distance (degrees)'>Med<br>Dist (°)</span>", field: "median_distance_deg", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(3);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Azimuthal Gap (degrees)'>Az<br>Gap</span>", field: "azimuthal_gap", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Secondary Azimuthal Gap (degrees)'>2nd Az<br>Gap</span>", field: "secondary_azimuthal_gap", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell", width: 120},
+          {title: "<span title='Expected Latitude'>Exp<br>Lat</span>", field: "expectation_latitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Expected Longitude'>Exp<br>Lon</span>", field: "expectation_longitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Expected Depth (km)'>Exp<br>Depth (km)</span>", field: "expectation_depth_km", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Scatter Volume (km³)'>Scatter<br>Volume</span>", field: "scatter_volume", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Distance from Preliminary Location (km)'>Dist from<br>Preloc (km)</span>", field: "dist_from_preloc_km", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Number of Reporting Agencies'>Num. of<br>Agencies</span>", field: "nb_agencies", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='List of Reporting Agency Codes'>Agencies</span>", field: "agencies_list", headerSort: true, width: 150},
+          {title: "<span title='Full Names of Reporting Agencies'>Agency<br>Names</span>", field: "agency_names", headerSort: true, width: 150},
+          {title: "<span title='Multiple Solutions from Same Agency'>Multiple<br>Same Agencies</span>", field: "multiple_same_agencies", headerSort: true, formatter: "tickCross", formatterParams: {allowTruthy: true}, width: 170},
+          {title: "<span title='Evaluation Mode (Automatic/Manual)'>Evaluation<br>Mode</span>", field: "evaluation_mode", headerSort: true, width: 150},
+          {title: "<span title='Type of Seismic Event'>Event<br>Type</span>", field: "event_type", headerSort: true, width: 150},
+          {title: "<span title='Discrimination Probability (0-1)'>Discrim.<br>Probability</span>", field: "discrimination_probability", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Number of Stations Used for Discrimination'>Discrim.<br>Station Count</span>", field: "discrimination_station_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Discrimination Certainty Level'>Discrim.<br>Certainty</span>", field: "discrimination_certainty", headerSort: true, width: 150},
+          {title: "<span title='Event Quality Indicator'>Quality</span>", field: "quality", headerSort: true, width: 150},
+          {title: "<span title='Quality Factor (0-1)'>Quality<br>Factor</span>", field: "quality_factor", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='GT5 Processing Status'>GT5<br>Status</span>", field: "gt5_status", headerSort: true, width: 120},
+          {title: "<span title='Delta U (Uncertainty Parameter)'>DeltaU</span>", field: "delta_U", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Number of Stations within 10km'>Num Stations<br>within 10km</span>", field: "num_stations_10km", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Number of Stations within 30km'>Num Stations<br>within 30km</span>", field: "num_stations_30km", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Number of Stations within 150km'>Num Stations<br>within 150km</span>", field: "num_stations_150km", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"}
         ],
         initialSort: [],
         // We're updating the counter directly after data parsing, so no need for these callbacks
