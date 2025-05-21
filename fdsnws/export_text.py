@@ -16,8 +16,6 @@ def generate_text_response(results: list[dict]):
     Returns:
         StreamingResponse: Response streaming text data.
     """
-    if not results:
-        return PlainTextResponse("No data available", status_code=404)
     file_extension = "txt"
 
     output = io.StringIO()
