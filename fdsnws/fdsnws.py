@@ -38,9 +38,9 @@ class NormalizeSlashesMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 def iso_to_sqlite(dtstr):
-    # Gère les formats ISO 8601 avec ou sans 'Z'
+    # Handles ISO 8601 formats with or without 'Z'
     dt = datetime.fromisoformat(dtstr.replace('Z', '+00:00'))
-    # Retourne au format SQLite classique
+    # Return in standard SQLite format
     return dt.strftime('%Y-%m-%d %H:%M:%S.%f')
 
 def create_app(db_path: str, debug=False):
@@ -50,6 +50,9 @@ def create_app(db_path: str, debug=False):
         description="FDSN-compliant web service for querying seismic event data (Spatialite)",
         version="1.2.0",
     )
+
+    # Store the database path in the app's state
+    app.state.db_name = os.path.basename(db_path)
 
     app.add_middleware(NormalizeSlashesMiddleware)
 
@@ -89,6 +92,12 @@ def create_app(db_path: str, debug=False):
     @app.get("/fdsnws/event/1/version")
     async def get_event_version():
         return "1.2.0"
+
+    @app.get("/api/db-info")
+    async def get_db_info():
+        return {
+            "db_name": app.state.db_name
+        }
 
     @app.get("/fdsnws/event/1/query")
     def query_events(
