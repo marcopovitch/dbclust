@@ -39,7 +39,26 @@
     }
 
     .logo { width: 80px; margin-right: 15px; }
-    h2 { margin: 0; color: #1976d2; }
+    .header-text { flex-grow: 1; }
+    h2 { margin: 0 0 5px 0; color: #1976d2; }
+
+    .db-info {
+      font-size: 13px;
+      color: #546e7a;
+      margin-top: 2px;
+    }
+
+    .db-label {
+      font-weight: bold;
+      color: #0a58ca;
+      margin-right: 5px;
+    }
+
+    .db-name {
+      font-family: monospace;
+      color: #0a58ca;
+      cursor: help;
+    }
 
     .info-bar {
       background-color: #e3f2fd;
@@ -169,7 +188,13 @@
   <div class="container">
     <div class="header">
       <img src="/static/images/dbclust-logo.png" alt="DBClust logo" class="logo">
-      <h2>Seismic Events Dashboard</h2>
+      <div class="header-text">
+        <h2>Seismic Events Dashboard</h2>
+        <div class="db-info">
+          <span class="db-label">Database:</span>
+          <span class="db-name" id="dbName">Loading...</span>
+        </div>
+      </div>
     </div>
 
     <div class="info-bar">
@@ -341,6 +366,19 @@
         // We're updating the counter directly after data parsing, so no need for these callbacks
       });
     });
+
+    // Fetch and display database info
+    fetch('/api/db-info')
+      .then(response => response.json())
+      .then(data => {
+        const dbNameElement = document.getElementById('dbName');
+        dbNameElement.textContent = data.db_name;
+      })
+      .catch(error => {
+        const dbNameElement = document.getElementById('dbName');
+        dbNameElement.textContent = 'Unknown';
+        dbNameElement.style.color = '#dc3545';
+      });
   </script>
 </body>
 </html>
