@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/png" href="/static/images/dbclust-bw-192x192.png">
     <title>FDSN Event Search</title>
-
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script>
         function toggleGeoInputs() {
             const searchType = document.getElementById('geo_search_type').value;
@@ -159,6 +159,32 @@
         .hidden {
             display: none;
         }
+
+        .header-text {
+            flex-grow: 1;
+        }
+
+        .db-info {
+            background-color: #e2f3ff;
+            padding: 4px 12px;
+            border-radius: 4px;
+            margin-top: 5px;
+            font-size: 13px;
+            display: inline-block;
+            border-left: 4px solid #0d6efd;
+        }
+
+        .db-label {
+            font-weight: bold;
+            color: #0a58ca;
+            margin-right: 8px;
+        }
+
+        .db-name {
+            font-family: monospace;
+            color: #0a58ca;
+            cursor: help;
+        }
     </style>
 </head>
 <body>
@@ -166,7 +192,13 @@
     <div class="container">
         <div class="header">
             <img src="/static/images/dbclust-logo.png" alt="DBClust logo" class="logo">
-            <h2>Search for Seismic Events</h2>
+            <div class="header-text">
+                <h2>Search for Seismic Events</h2>
+                <div class="db-info" id="dbInfo">
+                    <span class="db-label">Database:</span>
+                    <span class="db-name" id="dbName">Loading...</span>
+                </div>
+            </div>
         </div>
 
         <form id="search-form">
@@ -313,6 +345,19 @@
 
         // Also update URL when the page loads
         submitSearch();
+
+        // Fetch and display database info
+        fetch('/api/db-info')
+            .then(response => response.json())
+            .then(data => {
+                const dbNameElement = document.getElementById('dbName');
+                dbNameElement.textContent = data.db_name;
+            })
+            .catch(error => {
+                const dbNameElement = document.getElementById('dbName');
+                dbNameElement.textContent = 'Unknown';
+                dbNameElement.style.color = '#dc3545';
+            });
     </script>
 
 </body>
