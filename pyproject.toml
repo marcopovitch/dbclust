@@ -1,22 +1,52 @@
-[build-system]
-requires = ["setuptools>=42"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "dbclust"
-version = "0.1"
+version = "0.2"
 description = ""
 authors = [
     { name = "Marc Grunberg", email = "marc.grunberg@unistra.fr" }
 ]
-classifiers = []
-keywords = []
+readme = "README.md"
+requires-python = ">=3.10"
 dependencies = [
-    "numpy",
+    "alphabetic_timestamp",
+    "dacite",
+    "dateparser",
     "duckdb",
-    "ray",
+    "fastapi",
+    "fastparquet",
+    "geopandas",
+    "hdbscan",
+    "icecream",
+    "jinja2",
+    "numpy",
     "obspy",
+    "pandas",
+    "plotly",
+    "plotext",
+    "prettytable",
+    "pyocto",
+    "pyproj",
+    "ray",
+    "rich",
+    "scikit-learn",
+    "scipy",
+    "starlette",
+    "tqdm",
+    "uvicorn",
+    "spatialite>=0.0.3",
+    "psutil>=7.0.0",
+    "pre-commit>=4.2.0",
 ]
 
-[tool.setuptools]
-packages = { find = {} }
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dbclust", "fdsnws"]
+
+[project.scripts]
+fdsnws-server = "fdsnws.server:main"
+dbclust = "dbclust.runner:main"
+injectdb = "dbclust.inject_spatialite:main"
+
+[project.urls]
+"Homepage" = "https://github.com/marcopovitch/dbclust"
+"Bug Tracker" = "https://github.com/marcopovitch/dbclust/issues"
