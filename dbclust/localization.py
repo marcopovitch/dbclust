@@ -27,8 +27,6 @@ from typing import Optional
 from typing import Tuple
 from typing import Union
 
-import dask
-import dask.bag as db
 import dateparser
 import geopandas as gpd
 import numpy as np
@@ -68,6 +66,8 @@ from dbclust.plot import plot_arrival_time
 from dbclust.quakeml import deduplicate_picks
 from dbclust.relabel import get_best_polygon_for_point
 from dbclust.relabel import relabel_phase_and_comment_arrival
+#import dask
+#import dask.bag as db
 
 # Disable warnings from obspy
 # UserWarning: Setting attribute ... which is not a default attribute
