@@ -13,7 +13,6 @@ from math import sqrt
 from typing import List
 from typing import Tuple
 
-import dask.bag as db
 import hdbscan
 import numpy as np
 import pandas as pd
@@ -31,6 +30,7 @@ from tqdm import tqdm
 from dbclust.phase import import_phases
 from dbclust.phase import Phase
 from dbclust.quakeml import deduplicate_picks
+#import dask.bag as db
 
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -417,15 +417,15 @@ class Clusterize(object):
         tt_matrix = matrix_upper1 + matrix_upper2.T
         return tt_matrix
 
-    @staticmethod
-    def dask_compute_tt_matrix(phases, vmean):
-        """Optimization to compute tt_matrix in //"""
-        # data = [sorted((p1, p2)) for p1 in phases for p2 in phases]
-        data = product(phases, repeat=2)
-        b = db.from_sequence(data)
-        tt_matrix_tmp = b.map(lambda x: compute_tt(*x, vmean)).compute()
-        tt_matrix = np.array(tt_matrix_tmp).reshape((len(phases), len(phases)))
-        return tt_matrix
+    # @staticmethod
+    # def dask_compute_tt_matrix(phases, vmean):
+    #     """Optimization to compute tt_matrix in //"""
+    #     # data = [sorted((p1, p2)) for p1 in phases for p2 in phases]
+    #     data = product(phases, repeat=2)
+    #     b = db.from_sequence(data)
+    #     tt_matrix_tmp = b.map(lambda x: compute_tt(*x, vmean)).compute()
+    #     tt_matrix = np.array(tt_matrix_tmp).reshape((len(phases), len(phases)))
+    #     return tt_matrix
 
     @staticmethod
     def get_clusters(phases, pseudo_tt, max_search_dist, min_cluster_size):
