@@ -280,7 +280,8 @@ def classify_Michele_mod(
             - "A": High quality (qf <= 0.25).
             - "B": Good quality (0.25 < qf <= 0.5).
             - "C": Moderate quality (0.5 < qf <= 0.75).
-            - "D": Poor quality (qf > 0.75).
+            - "D": Poor quality (qf > 0.75 and qf <= 1).
+            - "E": Very poor quality (qf > 1.0)"
 
     Notes:
     ------
@@ -328,7 +329,9 @@ def classify_Michele_mod(
         q = "B"
     elif qf <= 0.75:
         q = "C"
-    else:
+    elif qf <= 1:
         q = "D"
+    else:
+        q = "E"
 
     return qf, q
