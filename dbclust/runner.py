@@ -824,7 +824,7 @@ def run_with_ray(cfg: DBClustConfig, profile_csv_path="task_profiles.csv"):
 #     ray.shutdown()
 #     return completed_results
 
-if __name__ == "__main__":
+def main():
     # default logger
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
     logger = logging.getLogger("dbclust")
@@ -894,3 +894,6 @@ if __name__ == "__main__":
     sys.stdout.flush()
     sys.stderr.flush()
     sys.exit(0)
+
+if __name__ == "__main__":
+    main()
