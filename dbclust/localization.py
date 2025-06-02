@@ -76,7 +76,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="obspy")
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("localization")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 # Define the preferred phase order
@@ -1797,6 +1797,7 @@ def make_preloc_origin(
         logger.debug("Preloc: no preloc file")
         return None, None
 
+    logger.debug(f"Preloc: reading {o_parameters_file} and {picks_file}")
     with open(o_parameters_file) as vel:
         _ = vel.readline().strip()
         _ = vel.readline().strip()
@@ -1806,6 +1807,10 @@ def make_preloc_origin(
         preloc_depth_m = float(vel.readline().strip())
         _ = float(vel.readline().strip())
         model_name_used = vel.readline().strip()
+    logger.debug(
+        f"Preloc: time={preloc_time}, lat={preloc_lat}, lon={preloc_lon}, "
+        f"depth={preloc_depth_m}, model={model_name_used}"
+    )
 
     preloc_origin = Origin()
     preloc_origin.evaluation_mode = "automatic"
