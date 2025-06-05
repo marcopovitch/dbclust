@@ -1,0 +1,26 @@
+
+services:
+  dbclust:
+    image: dbclust:0.2
+    container_name: dbclust
+    hostname: dbclust
+    volumes:
+      - /Users/marc/Data/DBClust:/data
+      - /Users/marc/Dockers/routine/nll/data/times:/nll/times
+      - /Users/marc/github/dbclust/nll_template:/nll/nll_template
+    environment:
+      - PYTHONUNBUFFERED=1
+    shm_size: 12gb
+    ports:
+      - "8265:8265"  # Ray.io dashboard
+    command: dbclust -c /data/of/dbclust-of-docker.yml
+
+  fdsnws:
+    image: dbclust:0.2
+    container_name: fdsnws
+    hostname: fdsnws
+    volumes:
+      - /Users/marc/Data/DBClust:/data
+    ports:
+      - "8000:8000"  # FastAPI port for fdsnws
+    command: fdsnws-server --db /data/of/db/ritter-test.db --host 0.0.0.0 --port 8000
