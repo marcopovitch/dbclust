@@ -24,7 +24,7 @@ dependencies = [
     "plotly",
     "plotext",
     "prettytable",
-    "pyocto",
+    "pyocto>=0.1.8",
     "pyproj",
     "ray",
     "rich",
@@ -36,6 +36,8 @@ dependencies = [
     "spatialite>=0.0.3",
     "psutil>=7.0.0",
     "pre-commit>=4.2.0",
+    "pyrocko>=2025.1.10",
+    "visidata>=3.1.1",
 ]
 
 [tool.setuptools.packages.find]
