@@ -102,6 +102,11 @@ def process_file(
                 cfg.nll.scat2latlon_bin,
                 cfg.nll.time_path,
                 tmpdir=tmp_path,
+                #
+                force_uncertainty=cfg.relocation.force_uncertainty,
+                P_uncertainty= cfg.relocation.P_uncertainty,
+                S_uncertainty=cfg.relocation.S_uncertainty,
+                #
                 double_pass=cfg.relocation.double_pass,
                 gap_dist_max_km=cfg.relocation.gap_dist_max_km,
                 P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
@@ -364,8 +369,11 @@ def parse_arguments() -> argparse.Namespace:
     reloc_group.add_argument(
         "--force-uncertainty",
         dest="force_uncertainty",
-        help="Force phase uncertainty (see conf.yml file)",
-        action="store_true",
+        nargs=2,
+        metavar=("P_uncertainty", "S_uncertainty"),
+        type=float,
+        help="Force phase uncertainty: provide P_uncertainty and S_uncertainty",
+        default=None,
     )
     reloc_group.add_argument(
         "--single-pass",
@@ -446,7 +454,13 @@ def main():
             cfg.relocation.use_deactivated_arrivals = args.use_deactivated_arrivals
 
         if args.force_uncertainty:
-            cfg.relocation.force_uncertainty = args.force_uncertainty
+            cfg.relocation.force_uncertainty = True
+            cfg.relocation.P_uncertainty = args.force_uncertainty[0]
+            cfg.relocation.S_uncertainty = args.force_uncertainty[1]
+        else:
+            cfg.relocation.force_uncertainty = False
+            cfg.relocation.P_uncertainty = None
+            cfg.relocation.S_uncertainty = None
 
         if args.single_pass:
             cfg.relocation.double_pass = not args.single_pass
