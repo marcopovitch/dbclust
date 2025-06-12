@@ -323,6 +323,7 @@ class NllLoc(object):
                 continue
 
             mypicks.append(pick)
+
         myevent.picks = mypicks
 
         self.nll_obs_file = os.path.join(self.tmpdir, "nll_obs.txt")
@@ -1576,6 +1577,7 @@ def show_bulletin(
         "residual",
         "dist(deg)",
         "time",
+        "uncertainty",
         "evaluation",
         "proba",
         "relabel",
@@ -1656,6 +1658,7 @@ def show_bulletin(
                 f"{arrival.time_residual:.2f}",
                 f"{arrival.distance:.3f}" if arrival.distance else "-",
                 pick.time,
+                pick.time_errors.uncertainty if hasattr(pick, "time_errors") else "-",
                 pick.evaluation_mode,
                 probability,
                 relabel,
