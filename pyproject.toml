@@ -46,6 +46,9 @@ dev = [
     "isort"
 ]
 
+[tool.uv]
+package = true
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dbclust", "fdsnws"]
@@ -54,6 +57,7 @@ include = ["dbclust", "fdsnws"]
 fdsnws-server = "fdsnws.server:main"
 dbclust = "dbclust.runner:main"
 injectdb = "dbclust.inject_spatialite:main"
+relocate = "dbclust.reprocess_event:main"
 
 [project.urls]
 "Homepage" = "https://github.com/marcopovitch/dbclust"
