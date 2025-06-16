@@ -11,10 +11,6 @@ from dataclasses import asdict
 from datetime import datetime
 from datetime import timedelta
 from shutil import copyfile
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Tuple
 
 import pandas as pd
 from icecream import ic
@@ -32,7 +28,7 @@ from dbclust.runner import MyTemporaryDirectory
 # Default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("reprocess_event2")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 
 def round_to_centisecond(dt: datetime) -> datetime:

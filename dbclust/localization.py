@@ -1,12 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import concurrent.futures
 import copy
 import glob
-import io
 import json
 import logging
-import multiprocessing
 import os
 import re
 import shlex
@@ -18,12 +15,10 @@ import urllib.parse
 import urllib.request
 import warnings
 from collections import defaultdict
-from functools import partial
 from itertools import combinations
 from math import fabs
 from math import isclose
 from typing import List
-from typing import Optional
 from typing import Tuple
 from typing import Union
 
@@ -31,7 +26,6 @@ import dateparser
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import ray
 from icecream import ic
 from jinja2 import Template
 from obspy import Catalog
@@ -49,7 +43,6 @@ from obspy.core.event import WaveformStreamID
 from obspy.geodetics import gps2dist_azimuth
 from obspy.geodetics import kilometer2degrees
 from prettytable import PrettyTable
-from ray.util.multiprocessing import Pool
 from shapely import distance
 from shapely import prepare
 from shapely import within
