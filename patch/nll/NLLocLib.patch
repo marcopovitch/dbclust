@@ -1,0 +1,10 @@
+--- NLLocLib.c.orig	2025-06-02 15:36:50
++++ NLLocLib.c	2025-06-02 15:37:25
+@@ -1574,6 +1574,7 @@
+                 ntry = 0; // 20160925 AJL - bug fix, to reset event fields as if new event
+                 continue;
+             } else {
++		*pi_end_of_input = 1;
+                 break;
+             }
+         }

@@ -1,0 +1,14 @@
+--- core.py.orig	2025-06-02 18:01:30
++++ core.py	2025-06-02 18:06:04
+@@ -376,7 +376,10 @@
+         # try to determine original pick for each arrival
+         for pick_ in original_picks:
+             wid = pick_.waveform_id
+-            if station == wid.station_code and phase == pick_.phase_hint:
++            #if station == wid.station_code and phase == pick_.phase_hint:
++            # There can be several picks of the same phase for the same station.
++            # Beware of NLL, which truncates time
++            if station == wid.station_code and phase == pick_.phase_hint and np.fabs(pick_.time - pick.time) < 1e-3:
+                 pick = pick_
+                 break
+         else:
