@@ -1354,7 +1354,7 @@ def import_catalog_object_to_sqlite_from_file(
 
 
 def import_catalog_to_sqlite_from_file(
-    db_path: str, catalog_file: str, enable_quakeml: bool = False
+    conn: sqlite3.Connection , catalog_file: str, enable_quakeml: bool = False
 ):
     """
     Import a catalog of seismic events from a file to a SQLite database.
@@ -1365,13 +1365,6 @@ def import_catalog_to_sqlite_from_file(
         enable_quakeml (bool, optional): If True, serialize and compress QuakeML content for each event. Defaults to False.
     """
 
-    # Create the database schema
-    try:
-        conn = create_schema(db_path)
-    except Exception as e:
-        logger.error(f"Error creating schema: {e}")
-        raise e
-
     # # Read QuakeML file
     logger.info(f"Reading catalog from file '{catalog_file}'...")
     catalog = read_events(catalog_file)
@@ -1381,10 +1374,6 @@ def import_catalog_to_sqlite_from_file(
 
     # extract agency names and stats to event table
     add_agency_names(conn)
-
-    # Register the geometry column for the 'event_coordinates' view
-    register_geometry_for_view(conn, "event_coordinates", "geometry")
-    conn.close()
 
 
 def import_catalog_to_sqlite(
@@ -2126,11 +2115,22 @@ def main():
 
         # Handle input files
         if args.input:
+            # Create the database schema
+            try:
+                conn = create_schema(args.database)
+            except Exception as e:
+                logger.error(f"Error creating schema: {e}")
+                raise e
+
             for input_file in args.input:
                 print(f"Importing {input_file}...")
+
                 import_catalog_to_sqlite_from_file(
-                    args.database, input_file, args.enable_quakeml
+                    conn, input_file, args.enable_quakeml
                 )
+
+            register_geometry_for_view(conn, "event_coordinates", "geometry")
+            conn.close()
 
         # Handle CSV export
         if args.csv_output:
