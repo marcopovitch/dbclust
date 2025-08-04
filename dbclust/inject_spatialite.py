@@ -35,7 +35,8 @@ from obspy.core.event import Origin
 from tqdm import tqdm
 
 from dbclust.gt5 import compute_gt5_score
-from dbclust.localization_quality import classify_Michele_mod
+from dbclust.localization_quality import classify_Michele_mod2
+from dbclust.localization_quality import haversine_distance
 
 # Suppress UserWarnings in ObsPy
 warnings.filterwarnings("ignore", category=UserWarning, module="obspy")
@@ -585,6 +586,23 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
         get_expectation_localization(origin)
     )
 
+    # distance in km between the horizontal coordinates of the origin and
+    # the expectation coordinates
+    if expectation_latitude is not None and expectation_longitude is not None:
+        dloch = haversine_distance(
+            origin.latitude, origin.longitude,
+            expectation_latitude, expectation_longitude,
+        )
+    else:
+        dloch = None
+
+    # distance in km between the depth of the origin and the expectation depth
+    dz = (
+        abs(origin.depth - expectation_depth) / 1000.0
+        if expectation_depth is not None
+        else None
+    )
+
     # Get only the relevant info from the origin method ID
     origin_method_id = getattr(getattr(origin, "method_id", None), "id", "unknown")
     if isinstance(origin_method_id, str) and "/" in origin_method_id:
@@ -619,7 +637,21 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
 
     # compute Michele et al. quality factor
     try:
-        quality_factor, quality = classify_Michele_mod(
+        # Log des valeurs des paramètres pour le débogage
+        logger.debug(f"Calling classify_Michele_mod2 with parameters:")
+        logger.debug(f"  rms: {rms}")
+        logger.debug(f"  erh: {erh}")
+        logger.debug(f"  erz: {erz}")
+        logger.debug(f"  used_phase_count: {q.used_phase_count}")
+        logger.debug(f"  minimum_distance: {q.minimum_distance}")
+        logger.debug(f"  median_distance: {q.median_distance}")
+        logger.debug(f"  azimuthal_gap: {azimuthal_gap}")
+        logger.debug(f"  secondary_azimuthal_gap: {secondary_azimuthal_gap}")
+        logger.debug(f"  scatter_volume: {scatter_volume}")
+        logger.debug(f"  dloch: {dloch}")
+        logger.debug(f"  dz: {dz}")
+
+        quality_factor, quality = classify_Michele_mod2(
             rms,
             erh,
             erz,
@@ -629,6 +661,8 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
             azimuthal_gap,
             secondary_azimuthal_gap,
             scatter_volume,
+            dloch,
+            dz,
         )
     except Exception as e:
         logger.debug(f"Error classifying Michele mod: {e}")
@@ -1354,7 +1388,7 @@ def import_catalog_object_to_sqlite_from_file(
 
 
 def import_catalog_to_sqlite_from_file(
-    conn: sqlite3.Connection , catalog_file: str, enable_quakeml: bool = False
+    conn: sqlite3.Connection, catalog_file: str, enable_quakeml: bool = False
 ):
     """
     Import a catalog of seismic events from a file to a SQLite database.
@@ -1721,7 +1755,13 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
             o.median_distance,
             o.azimuthal_gap,
             o.secondary_azimuthal_gap,
-            o.scatter_volume
+            o.scatter_volume,
+            o.latitude,
+            o.longitude,
+            o.depth,
+            o.expectation_latitude,
+            o.expectation_longitude,
+            o.expectation_depth
         FROM
             origins AS o;
         """
@@ -1741,12 +1781,27 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
             azimuthal_gap,
             secondary_azimuthal_gap,
             scatter_volume,
+            origin_latitude,
+            origin_longitude,
+            origin_depth,
+            expectation_latitude,
+            expectation_longitude,
+            expectation_depth,
         ) = row
 
         if None in row:
             continue
 
-        quality_factor, quality = classify_Michele_mod(
+        dloch = haversine_distance(
+            origin_longitude,
+            origin_latitude,
+            expectation_longitude,
+            expectation_latitude,
+        )
+
+        dz = abs(origin_depth - expectation_depth) / 1000.0
+
+        quality_factor, quality = classify_Michele_mod2(
             rms,
             erh,
             erz,
@@ -1756,6 +1811,8 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
             azimuthal_gap,
             secondary_azimuthal_gap,
             scatter_volume,
+            dloch,
+            dz,
         )
 
         # Update the database with the computed quality and quality_factor
