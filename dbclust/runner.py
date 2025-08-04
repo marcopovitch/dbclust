@@ -308,7 +308,11 @@ def dbclust(
             elapsed_time = time.time() - start_time
             logger.info(f"Query time: {elapsed_time:.2f} s")
 
-            df_subset["phase_time"] = df_subset["phase_time"].dt.tz_localize("UTC")
+            if df_subset["phase_time"].dt.tz is None:
+                df_subset["phase_time"] = df_subset["phase_time"].dt.tz_localize("UTC")
+            else:
+                df_subset["phase_time"] = df_subset["phase_time"].dt.tz_convert("UTC")
+
         else:
             df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
 
