@@ -779,28 +779,35 @@ class PyoctoConfig:
             self.path, self.default_model_name
         )
 
-        self.create_travel_time_grid_file(
+        profil_model = self.create_travel_time_grid_file(
             self.current_model.velocity_model, self.travel_time_grid_filename
         )
 
-        # Create 1D velocity model
-        self.velocity_model = self.create_velocity_model()
+        # get first P and S velocity from profil_model
+        # to define velocity model above surface
+        vp0 = profil_model["vp"].iloc[0]
+        vs0 = profil_model["vs"].iloc[0]
+        print(f"Using P velocity {vp0} and S velocity {vs0} from model {self.default_model_name}")
 
-    def create_velocity_model(self) -> VelocityModel1D:
+        # Create 1D velocity model
+        self.velocity_model = self.create_velocity_model(vp0=vp0, vs0=vs0)
+        #self.velocity_model = self.create_velocity_model()
+
+    def create_velocity_model(self, vp0=None, vs0=None) -> VelocityModel1D:
         tolerance = self.current_model.velocity_model.tolerance
         velocity_model = VelocityModel1D(
             path=self.travel_time_grid_filename,
             tolerance=tolerance,
             # association_cutoff_distance=None,
             # location_cutoff_distance=None,
-            # surface_p_velocity=None,
-            # surface_s_velocity=None,
+            surface_p_velocity=vp0,
+            surface_s_velocity=vs0,
         )
         return velocity_model
 
     def create_travel_time_grid_file(
         self, vmodel: VelocityModel, filename: str
-    ) -> None:
+    ) -> pd.DataFrame:
         # create dataframe
         profil_model = pd.DataFrame(
             {
@@ -810,6 +817,8 @@ class PyoctoConfig:
             }
         )
 
+
+
         # create travel time grid
         VelocityModel1D.create_model(
             profil_model,
@@ -818,6 +827,8 @@ class PyoctoConfig:
             vmodel.max_vertical_dist_km,
             filename,
         )
+
+        return profil_model
 
 
 @dataclass
