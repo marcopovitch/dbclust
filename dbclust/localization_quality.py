@@ -4,11 +4,31 @@ from typing import List
 from typing import Tuple
 
 import numpy as np
+from geopy.distance import geodesic
 from icecream import ic
 from obspy.core.event import Event
 from obspy.core.event import Origin
+from scipy.special import expit
 
 from dbclust.localization_error import get_erh_erz
+
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """
+    Calculates the distance in km between two points using the Haversine formula.
+
+    Args:
+        lat1, lon1: Latitude and longitude of the first point.
+        lat2, lon2: Latitude and longitude of the second point.
+
+    Returns:
+        Distance in kilometers.
+    """
+    try:
+        return geodesic((lat1, lon1), (lat2, lon2)).kilometers
+    except Exception as e:
+        logger.error(f"Error calculating distance: {str(e)}")
+        return float("inf")
 
 
 def chauvenet_filter(data: List[float]) -> np.ndarray:
@@ -330,6 +350,90 @@ def classify_Michele_mod(
     elif qf <= 0.75:
         q = "C"
     elif qf <= 1:
+        q = "D"
+    else:
+        q = "E"
+
+    return qf, q
+
+
+def classify_Michele_mod2(
+    rms: float,
+    erh: float,
+    erz: float,
+    nbpha: int,
+    dmin: float,
+    dmed: float,
+    gap: float,
+    gap2: float,
+    scatvol: float,
+    dloch: float,
+    dz: float,
+) -> Tuple[float, str]:
+    """
+    Classification using a modified version of Michele et al. 2019
+    -----------------------------
+
+    Input Attributes:
+        - RMS (root mean square of residuals)
+        - ERH (horizontal error)
+        - ERZ (vertical error)
+        - NBPHA (number of phases used)
+        - DMIN (minimum distance to the nearest station in degree)
+        - DMED (median distance of stations used in degree)
+        - GAP (maximum azimuthal gap)
+        - GAP2 (seconday azimuthal gap)
+        - SCATVOL (scatter volume from NonLinLoc)
+        - DLOCH (difference of location horizontal in km between location and expected location)
+        - DZ (differnce of depth in km between depth and expected depth)
+
+    Calculate quality factor from a modified version of Michele et al. 2019:
+    qf = sqrt( sum(params_norm**2)/len(params_norm) )
+
+    return the quality factor and the associated quality
+    """
+    nbpha_sigmoid = 1 - expit(0.3 * (nbpha - 21))
+    params = {
+        "rms": rms,
+        "erh": erh,
+        "erz": erz,
+        "nbpha_sigmoid": nbpha_sigmoid,
+        "min_dist": dmin,
+        "med_dist": dmed,
+        "azgap": gap,
+        "azgap2": gap2,
+        "scat_vol": scatvol,
+        "dloch": dloch,
+        "dz": np.abs(dz),
+    }
+    params2b = ["nbpha_sigmoid"]
+
+    normvals2mad = {
+        "rms": 1.0,
+        "erh": 10.5,
+        "erz": 9.5,
+        "used_phase_count": 17.0,
+        "min_dist": 0.8,
+        "med_dist": 2.4,
+        "azgap": 360.0,
+        "azgap2": 360.0,
+        "scat_vol": 271.0,
+        "dloch": 4.9,
+        "dz": 9.5,
+    }
+
+    qf = [
+        params[key] / normvals2mad[key] for key in params.keys() if key not in params2b
+    ] + [params[key] for key in params2b]
+    qf = np.sqrt(np.sum(np.array(qf) ** 2) / len(params))
+
+    if qf <= 0.2:
+        q = "A"
+    elif qf <= 0.4:
+        q = "B"
+    elif qf <= 0.6:
+        q = "C"
+    elif qf <= 1.0:
         q = "D"
     else:
         q = "E"
