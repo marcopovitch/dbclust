@@ -107,42 +107,42 @@ def adjust_associator_tolerance(
     return None
 
 
-def create_velocity_model(velocity_cfg: dict, model_path: str) -> None:
-    """
-    Create a 1D velocity model and save it to the specified path.
+# def create_velocity_model(velocity_cfg: dict, model_path: str) -> None:
+#     """
+#     Create a 1D velocity model and save it to the specified path.
 
-    Parameters:
-        velocity_cfg (dict): Configuration dictionary containing the following keys:
-            - "depth" (list or array-like): Depth values for the model.
-            - "vp" (list or array-like): P-wave velocities for a given depths list.
-            - "vs" (list or array-like): S-wave velocities for a given  depths list.
-            - "grid_spacing_km" (float): Grid spacing in kilometers.
-            - "max_horizontal_dist_km" (float): Maximum distance in the horizontal direction in kilometers.
-            - "max_vertical_dist_km" (float): Maximum distance in the vertical direction in kilometers.
-        model_path (str): Path where the velocity model will be saved.
+#     Parameters:
+#         velocity_cfg (dict): Configuration dictionary containing the following keys:
+#             - "depth" (list or array-like): Depth values for the model.
+#             - "vp" (list or array-like): P-wave velocities for a given depths list.
+#             - "vs" (list or array-like): S-wave velocities for a given  depths list.
+#             - "grid_spacing_km" (float): Grid spacing in kilometers.
+#             - "max_horizontal_dist_km" (float): Maximum distance in the horizontal direction in kilometers.
+#             - "max_vertical_dist_km" (float): Maximum distance in the vertical direction in kilometers.
+#         model_path (str): Path where the velocity model will be saved.
 
-    Returns:
-        None
-    """
-    model = pd.DataFrame(
-        {
-            "depth": velocity_cfg["depth"],
-            "vp": velocity_cfg["vp"],
-            "vs": velocity_cfg["vs"],
-        }
-    )
+#     Returns:
+#         None
+#     """
+#     model = pd.DataFrame(
+#         {
+#             "depth": velocity_cfg["depth"],
+#             "vp": velocity_cfg["vp"],
+#             "vs": velocity_cfg["vs"],
+#         }
+#     )
 
-    pyocto.VelocityModel1D.create_model(
-        model,
-        velocity_cfg["grid_spacing_km"],  # Grid spacing in kilometer
-        velocity_cfg[
-            "max_horizontal_dist_km"
-        ],  # Maximum distance in horizontal direction in km
-        velocity_cfg[
-            "max_vertical_dist_km"
-        ],  # Maximum distance in vertical direction in km
-        model_path,
-    )
+#     pyocto.VelocityModel1D.create_model(
+#         model,
+#         velocity_cfg["grid_spacing_km"],  # Grid spacing in kilometer
+#         velocity_cfg[
+#             "max_horizontal_dist_km"
+#         ],  # Maximum distance in horizontal direction in km
+#         velocity_cfg[
+#             "max_vertical_dist_km"
+#         ],  # Maximum distance in vertical direction in km
+#         model_path,
+#     )
 
 
 def dbclust2pyocto(
