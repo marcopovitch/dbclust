@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # System dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends\
     build-essential \
     gfortran \
     curl \
@@ -48,6 +48,6 @@ RUN patch --batch --forward \
     $(python3 -c "import obspy.io.nlloc.core; print(obspy.io.nlloc.core.__file__)") < /app/patch/obspy/obspy.io.nlloc.core.py.patch
 
 # Ray.io dashboard and FastAPI port for fdsnws
-EXPOSE 8000, 8265
+EXPOSE 8000 8265
 
 CMD ["dbclust"]
