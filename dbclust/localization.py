@@ -1419,8 +1419,15 @@ class NllLoc(object):
         Returns:
             None
         """
-        with open(templatefile) as file_:
-            template = Template(file_.read())
+        try
+            with open(templatefile) as file_:
+                template = Template(file_.read())
+        except FileNotFoundError:
+            logger.error(f"Template file {templatefile} not found.")
+            raise LocalizationError(
+                f"Template file {templatefile} not found."
+            )
+            
         t = template.render(tags)
         with open(outfilename, "w") as out_fh:
             out_fh.write(t)
