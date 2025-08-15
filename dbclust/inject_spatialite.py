@@ -590,8 +590,10 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     # the expectation coordinates
     if expectation_latitude is not None and expectation_longitude is not None:
         dloch = haversine_distance(
-            origin.latitude, origin.longitude,
-            expectation_latitude, expectation_longitude,
+            origin.latitude,
+            origin.longitude,
+            expectation_latitude,
+            expectation_longitude,
         )
     else:
         dloch = None
@@ -865,6 +867,8 @@ def export_sqlite_to_quakeml(
     """
     # Connect to the SQLite database
     conn = sqlite3.connect(db_path)
+    conn.enable_load_extension(True)
+    conn.load_extension("mod_spatialite")
     if not conn:
         raise Exception(f"Failed to connect to the database at {db_path}")
     cursor = conn.cursor()
@@ -1350,6 +1354,8 @@ def import_catalog_object_to_sqlite_from_file(
         conn = None
         try:
             conn = sqlite3.connect(db_path)
+            conn.enable_load_extension(True)
+            conn.load_extension("mod_spatialite")
             if not conn:
                 raise Exception(f"Failed to connect to the database at {db_path}")
             logger.info("Connected to the database successfully.")
@@ -1462,7 +1468,9 @@ def import_catalog_to_sqlite(
             raise
 
 
-def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv: str):
+def export_view_to_csv_exclude_geometry(
+    db_path: str, view_name: str, output_csv: str, batch_size: int = 10000
+):
     """
     Export a SQLite view to a CSV file, excluding the 'geometry' column. Format the 'time'
     column using UTCDateTime from ObsPy and apply rounding on specific numeric columns.
@@ -1471,78 +1479,125 @@ def export_view_to_csv_exclude_geometry(db_path: str, view_name: str, output_csv
         db_path (str): Path to the SQLite database.
         view_name (str): Name of the view to export.
         output_csv (str): Path to the output CSV file.
+        batch_size (int): Number of rows to process at a time. Default is 10000.
     """
     logger.info(f"Exporting view '{view_name}' to '{output_csv}' ...")
 
-    conn = sqlite3.connect(db_path)
-    if not conn:
-        raise Exception(f"Failed to connect to the database at {db_path}")
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.enable_load_extension(True)
+        conn.load_extension("mod_spatialite")
 
-    # Get column names from the view
-    cursor = conn.cursor()
-    cursor.execute(f"SELECT * FROM {view_name} WHERE 1=0;")
-    column_names = [desc[0] for desc in cursor.description if desc[0] != "geometry"]
+        cursor = conn.cursor()
 
-    # Query the view excluding the geometry column
-    selected_columns = ", ".join(column_names)
-    cursor.execute(f"SELECT {selected_columns} FROM {view_name} ORDER BY time;")
+        # Get column names from the view
+        cursor.execute(f"SELECT * FROM {view_name} LIMIT 0;")
+        column_names = [
+            desc[0] for desc in cursor.description if desc[0].lower() != "geometry"
+        ]
 
-    rows = cursor.fetchall()
+        # Columns to round and their precision
+        round_columns = {
+            "time_errors": 2,
+            "depth": 1,
+            "depth_km": 1,
+            "quality_factor": 2,
+            "scatter_volume": 2,
+            "azimuthal_gap": 2,
+            "secondary_azimuthal_gap": 2,
+            "minimum_distance": 2,
+            "maximum_distance": 2,
+            "median_distance": 2,
+            "minimum_distance_deg": 2,
+            "maximum_distance_deg": 2,
+            "median_distance_deg": 2,
+            "rms": 2,
+            "erh": 2,
+            "erz": 2,
+            "erh_km": 2,
+            "erz_km": 2,
+            "expectation_depth": 1,
+            "expectation_depth_km": 1,
+            "magnitude": 2,
+            "magnitude_uncertainty": 2,
+            "uncertainty": 2,
+            "dist_km_from_preloc": 2,
+            "dist_from_preloc_km": 2,
+            "discrimination_probability": 2,
+            "discrimination_certainty": 2,
+            "delta_U": 2,
+        }
 
-    # Write to CSV
-    with open(output_csv, mode="w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow(column_names)  # Write the header
+        # Write to CSV in chunks
+        with open(output_csv, mode="w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(column_names)  # Write the header
 
-        # use tqdm to display a progress bar
-        for row in tqdm(rows, desc="Exporting rows to CSV"):
-            row_dict = dict(zip(column_names, row))
+            offset = 0
+            total_processed = 0
 
-            # Format the 'time' column using UTCDateTime
-            if "time" in row_dict and row_dict["time"]:
-                row_dict["time"] = UTCDateTime(row_dict["time"]).isoformat(sep=" ")
+            while True:
+                # Fetch rows in batches
+                query = f"""
+                SELECT {", ".join(f'"{col}"' for col in column_names)} 
+                FROM {view_name} 
+                ORDER BY time
+                LIMIT {batch_size} OFFSET {offset};
+                """
 
-            # Apply rounding to specific columns
-            for col, precision in [
-                ("time_errors", 2),
-                ("depth", 1),
-                ("depth_km", 1),
-                ("quality_factor", 2),
-                ("scatter_volume", 2),
-                ("azimuthal_gap", 2),
-                ("secondary_azimuthal_gap", 2),
-                ("minimum_distance", 2),
-                ("maximum_distance", 2),
-                ("median_distance", 2),
-                ("minimum_distance_deg", 2),
-                ("maximum_distance_deg", 2),
-                ("median_distance_deg", 2),
-                ("rms", 2),
-                ("erh", 2),
-                ("erz", 2),
-                ("erh_km", 2),
-                ("erz_km", 2),
-                ("expectation_depth", 1),
-                ("expectation_depth_km", 1),
-                ("magnitude", 2),
-                ("magnitude_uncertainty", 2),
-                ("uncertainty", 2),
-                ("dist_km_from_preloc", 2),
-                ("dist_from_preloc_km", 2),
-                ("discrimination_probability", 2),
-                ("discrimination_certainty", 2),
-                ("delta_U", 2),
-            ]:
-                if col in row_dict and row_dict[col] is not None:
-                    row_dict[col] = round(row_dict[col], precision)
+                cursor.execute(query)
+                rows = cursor.fetchall()
 
-            # Write the row to CSV
-            writer.writerow([row_dict.get(col, "") for col in column_names])
+                if not rows:
+                    break  # No more rows to process
 
-    logger.info(
-        f"View '{view_name}' exported successfully to '{output_csv}' without 'geometry'."
-    )
-    conn.close()
+                # Process batch
+                for row in rows:
+                    processed_row = list(row)
+
+                    # Process time column
+                    time_idx = (
+                        column_names.index("time") if "time" in column_names else -1
+                    )
+                    if time_idx >= 0 and processed_row[time_idx]:
+                        try:
+                            processed_row[time_idx] = UTCDateTime(
+                                processed_row[time_idx]
+                            ).isoformat(sep=" ")
+                        except:
+                            pass  # Keep original value if conversion fails
+
+                    # Process numeric columns
+                    for col, precision in round_columns.items():
+                        if col in column_names:
+                            col_idx = column_names.index(col)
+                            if processed_row[col_idx] is not None and isinstance(
+                                processed_row[col_idx], (int, float)
+                            ):
+                                try:
+                                    processed_row[col_idx] = round(
+                                        float(processed_row[col_idx]), precision
+                                    )
+                                except (ValueError, TypeError):
+                                    pass  # Keep original value if conversion fails
+
+                    writer.writerow(processed_row)
+
+                total_processed += len(rows)
+                offset += batch_size
+                logger.info(f"Processed {total_processed} rows...")
+
+                # Commit changes to the database to free memory
+                conn.commit()
+
+        logger.info(f"Successfully exported {total_processed} rows to '{output_csv}'")
+
+    except Exception as e:
+        logger.error(f"Error exporting view to CSV: {str(e)}")
+        raise
+    finally:
+        if "conn" in locals():
+            conn.close()
 
 
 def add_agency_names(conn: sqlite3.Connection) -> None:
@@ -1966,6 +2021,8 @@ def parse_arguments() -> argparse.Namespace:
 def get_database_time_range(database_path: str) -> tuple[datetime, datetime]:
     """Get the minimum and maximum time range from the database."""
     conn = sqlite3.connect(database_path)
+    conn.enable_load_extension(True)
+    conn.load_extension("mod_spatialite")
     cursor = conn.cursor()
     cursor.execute("SELECT MIN(time), MAX(time) FROM event_coordinates;")
     min_time, max_time = cursor.fetchone()
