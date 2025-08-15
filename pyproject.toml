@@ -39,6 +39,7 @@ dependencies = [
     "visidata>=3.1.1",
     "python-dateutil>=2.9.0.post0",
     "kaleido>=1.0.0",
+    "geopy>=2.4.1",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +61,7 @@ fdsnws-server = "fdsnws.server:main"
 dbclust = "dbclust.runner:main"
 injectdb = "dbclust.inject_spatialite:main"
 relocate = "dbclust.reprocess_event:main"
+csv2parquet = "dbclust.csv2parquet:main"
 
 [project.urls]
 "Homepage" = "https://github.com/marcopovitch/dbclust"
