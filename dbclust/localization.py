@@ -905,6 +905,9 @@ class NllLoc(object):
                 cat = self.nll_localisation(
                     nll_obs_file, picks=picks_set, double_pass=self.double_pass
                 )
+            except FileNotFoundError as e:
+                logger.error(f"{e}")
+                sys.exit(1)
             except LocalizationError as e:
                 logger.warning(
                     f"{e} - trying with {fallback_loc_method} for {nll_obs_file}"
@@ -1419,8 +1422,15 @@ class NllLoc(object):
         Returns:
             None
         """
-        with open(templatefile) as file_:
-            template = Template(file_.read())
+        try:
+            with open(templatefile) as file_:
+                template = Template(file_.read())
+        except FileNotFoundError:
+            logger.error(f"Template file {templatefile} not found.")
+            raise FileNotFoundError(
+                f"Template file {templatefile} not found. Please check the path."
+            )
+            
         t = template.render(tags)
         with open(outfilename, "w") as out_fh:
             out_fh.write(t)
