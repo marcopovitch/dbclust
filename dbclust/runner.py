@@ -1,14 +1,15 @@
 #!/usr/bin/env python
+
+import os
+import sys
 import argparse
 import csv
 import gc
 import logging
 import math
-import os
 import random
 import shutil
 import sqlite3
-import sys
 import tempfile
 import threading
 import time
@@ -35,10 +36,15 @@ from dbclust.db import duckdb_init
 from dbclust.dbclust2pyocto import adjust_associator_tolerance
 from dbclust.inject_spatialite import import_catalog_object_to_sqlite_from_file
 from dbclust.inject_spatialite import refresh_event_coordinates_view
+from dbclust.inject_spatialite import load_spatialite
 from dbclust.localization import NllLoc
 from dbclust.localization import show_event
 from dbclust.phase import import_phases
-from dbclust.preprocessing_picks import deduplicate_picks_by_time
+
+# from dbclust.preprocessing_picks import deduplicate_picks_by_time
+from dbclust.preprocessing_picks import (
+    safe_deduplicate_picks_by_time as deduplicate_picks_by_time,
+)
 from dbclust.quakeml import deduplicate_picks_and_make_readable_ids
 from dbclust.quakeml import feed_distance_from_preloc_to_pref_origin
 from dbclust.rename import rename_waveform_id
@@ -587,6 +593,7 @@ def save_catalog(
         part (Optional[int]): The part number for splitting the catalog, used for naming files.
         finalize (bool): If True, the catalog is saved as a final output.
     """
+
     # Determine file name based on job index and part
     if job_index is not None:
         qml_filename = os.path.join(
@@ -661,7 +668,6 @@ def run_dbclust_task(cfg, job_index):
     }
 
 
-
 @ray.remote(max_calls=1, max_retries=5, num_cpus=1, memory=5 * 1024**3)  # 5 GB
 def profiled_run_dbclust_task(cfg, job_index):
     """Run a DBClust task with profiling for memory usage.
@@ -711,18 +717,24 @@ def profiled_run_dbclust_task(cfg, job_index):
 
 
 def run_with_ray(cfg: DBClustConfig, profile_csv_path="task_profiles.csv"):
+    import multiprocessing as mp
+
+    mp.set_start_method("spawn", force=True)
+
     os.environ["RAY_DEDUP_LOGS"] = "0"
     os.environ["RAY_COLOR_PREFIX"] = "1"
     os.environ["RAY_enable_oom_killer"] = "1"
     os.environ["RAY_memory_usage_threshold"] = "0.95"
 
+    # Initialize Ray
     context = ray.init(
         num_cpus=cfg.parallel.n_workers,
         _temp_dir=cfg.parallel._temp_dir,
         dashboard_host="0.0.0.0",
         dashboard_port=8265,
+        include_dashboard=True
     )
-    logger.info(f"Dashboard URL: http://{context.dashboard_url}")
+    logger.info(f"Dashboard URL: {context.dashboard_url}")
 
     # Shuffle and submit tasks
     indexed_partitions = list(enumerate(cfg.parallel.time_partitions, start=0))
@@ -732,7 +744,7 @@ def run_with_ray(cfg: DBClustConfig, profile_csv_path="task_profiles.csv"):
     for idx, (start, end) in indexed_partitions:
         logger.info(f"Submitting task {idx} [{start} -- {end}]")
         futures.append(run_dbclust_task.remote(cfg, idx))
-        #futures.append(profiled_run_dbclust_task.remote(cfg, idx))
+        # futures.append(profiled_run_dbclust_task.remote(cfg, idx))
 
     results = ray.get(futures)
 
@@ -763,70 +775,6 @@ def run_with_ray(cfg: DBClustConfig, profile_csv_path="task_profiles.csv"):
     ray.shutdown()
     return completed_results
 
-
-#     # Ray initialization
-#     os.environ["RAY_DEDUP_LOGS"] = "0"
-#     os.environ["RAY_COLOR_PREFIX"] = "1"
-#     os.environ["RAY_enable_oom_killer"] = "1"
-#     os.environ["RAY_memory_usage_threshold"] = "0.95"
-
-#     # Resource thresholds
-#     memory_threshold = 90  # in percentage
-#     cpu_threshold = 90  # in percentage
-#     active_tasks = []
-#     completed_results = []
-
-#     # Start Ray
-#     context = ray.init(
-#         num_cpus=cfg.parallel.n_workers,
-#         dashboard_host="0.0.0.0",
-#         dashboard_port=8265,
-#         _temp_dir=cfg.parallel._temp_dir,
-#     )
-#     logger.info(f"Dashboard URL: http://{context.dashboard_url}")
-
-#     # Create (idx, (start, end)) pairs so we can shuffle the execution order
-#     # without altering the original idx values, which are used to track the last job
-#     # and ensure proper partition handling (e.g., quarry blasts in time zones).
-#     indexed_partitions = list(enumerate(cfg.parallel.time_partitions, start=0))
-#     random.shuffle(indexed_partitions)
-
-#     # Launch tasks dynamically
-#     for idx, (start, end) in indexed_partitions:
-#         while True:
-#             # Monitor system resources
-#             mem_usage = psutil.virtual_memory().percent
-#             cpu_usage = psutil.cpu_percent(interval=0.1)
-
-#             if mem_usage < memory_threshold and cpu_usage < cpu_threshold:
-#                 # Launch the task
-#                 logger.info(
-#                     f"Launching task {idx} [{start} -- {end}] (Memory: {mem_usage}%, CPU: {cpu_usage}%)"
-#                 )
-#                 active_tasks.append(run_dbclust_task.remote(cfg, idx))
-#                 break
-#             else:
-#                 logger.warning(
-#                     f"High resource usage (Memory: {mem_usage}%, CPU: {cpu_usage}%) - Waiting..."
-#                 )
-#                 time.sleep(1)
-
-#             # Check if tasks are completed
-#             if len(active_tasks) >= cfg.parallel.n_workers:
-#                 ready, not_ready = ray.wait(active_tasks, num_returns=1)
-#                 results = ray.get(ready)
-#                 completed_results.extend(results)
-#                 active_tasks = not_ready
-
-#     # Collect remaining tasks
-#     while active_tasks:
-#         ready, active_tasks = ray.wait(active_tasks, num_returns=1)
-#         results = ray.get(ready)
-#         completed_results.extend(results)
-
-#     logger.info("DBClust completed!")
-#     ray.shutdown()
-#     return completed_results
 
 def main():
     # default logger
@@ -859,6 +807,7 @@ def main():
         help="loglevel (debug,warning,info,error)",
         type=str,
     )
+
     args = parser.parse_args()
     if not args.configfile:
         parser.print_help()
@@ -883,9 +832,11 @@ def main():
     else:
         results = run_with_ray(cfg)  # change the locator accordingly
 
-    # update spatialite view
+    # Update the catalog view in SQLite if enabled
     if cfg.catalog.enable_sqlite:
         conn = sqlite3.connect(cfg.catalog.sqlite_db_fullpath)
+        load_spatialite(conn)
+
         if conn:
             logger.info("Connected to SQLite database to update view.")
             refresh_event_coordinates_view(conn)
@@ -898,6 +849,7 @@ def main():
     sys.stdout.flush()
     sys.stderr.flush()
     sys.exit(0)
+
 
 if __name__ == "__main__":
     main()
