@@ -3,6 +3,7 @@ from typing import List, Union
 import sqlite3
 import logging
 import numpy as np
+from obspy.core.event import Origin
 
 from dbclust.gap import compute_azimuthal_gap
 from dbclust.gap import compute_secondary_azimuthal_gap
