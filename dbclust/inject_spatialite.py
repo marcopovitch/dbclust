@@ -15,6 +15,7 @@ import time
 import warnings
 import xml.etree.ElementTree as ET
 import zlib
+from collections import defaultdict
 from datetime import datetime
 from io import BytesIO
 from typing import Dict
@@ -92,15 +93,15 @@ EVENT_COORDINATES_VIEW = """
         e.discrimination_certainty,
         o.quality, o.quality_factor,
         o.gt5_status, o.delta_U, o.num_stations_10km, o.num_stations_30km, o.num_stations_150km,
+        COALESCE(o.station_score, 0.0) AS station_score,
+        COALESCE(o.avg_prob_p, 0.0) AS avg_prob_p,
+        COALESCE(o.avg_prob_s, 0.0) AS avg_prob_s,
+        COALESCE(o.avg_prob_total, 0.0) AS avg_prob_total,
         o.geometry
     FROM
         events AS e
-    JOIN
-        origins AS o
-        ON e.event_id = o.event_id AND o.preferred = 1  -- INNER JOIN because a preferred origin always exists
-    LEFT JOIN
-        magnitudes AS m
-        ON e.event_id = m.event_id AND m.preferred = 1
+        JOIN origins AS o ON e.event_id = o.event_id AND o.preferred = 1  -- INNER JOIN because a preferred origin always exists
+        LEFT JOIN magnitudes AS m ON o.id = m.origin_id AND m.preferred = 1
     WHERE
         COALESCE(e.event_type, '') NOT IN ('not existing', 'not locatable');
 """
@@ -131,6 +132,143 @@ RELABELING_VIEW = """
     WHERE
         o.preferred = TRUE;
 """
+
+
+def load_spatialite(conn, logger=None):
+    """
+    Load SpatiaLite with better error handling and bus error prevention.
+    """
+    # Check if already loaded using a more robust method
+    try:
+        # Test if SpatiaLite functions are available
+        conn.execute("SELECT InitSpatialMetaData(1)")
+        if logger:
+            logger.debug("SpatiaLite already initialized on this connection")
+        return True
+    except sqlite3.OperationalError:
+        # SpatiaLite not loaded yet, continue
+        pass
+    except Exception as e:
+        if logger:
+            logger.debug(f"SpatiaLite check failed: {e}")
+
+    try:
+        # Enable loading extensions with better error handling
+        conn.enable_load_extension(True)
+
+        # Try loading SpatiaLite with specific error handling for macOS
+        spatialite_paths = [
+            "mod_spatialite",  # Try system path first (safest)
+            "/opt/homebrew/lib/mod_spatialite.dylib",  # Apple Silicon Mac
+            "/usr/local/lib/mod_spatialite.dylib",  # Intel Mac
+            "/usr/lib/libspatialite.so.7",  # Linux newer
+            "/usr/lib/libspatialite.so",  # Linux
+        ]
+
+        for i, path in enumerate(spatialite_paths):
+            try:
+                if logger:
+                    logger.debug(f"Attempting to load SpatiaLite from: {path}")
+
+                # Create a test connection to avoid corrupting the main one
+                if i > 0:  # For file paths, check if they exist
+                    if not os.path.exists(path):
+                        continue
+
+                conn.load_extension(path)
+
+                # Verify the extension loaded correctly
+                conn.execute("SELECT sqlite_version(), spatialite_version()")
+
+                if logger:
+                    logger.info(f"SpatiaLite loaded successfully from {path}")
+                return True
+
+            except sqlite3.OperationalError as e:
+                if "cannot open shared object file" in str(
+                    e
+                ) or "image not found" in str(e):
+                    continue  # Try next path
+                elif "already loaded" in str(e):
+                    if logger:
+                        logger.info("SpatiaLite already loaded")
+                    return True
+                else:
+                    if logger:
+                        logger.debug(f"Failed to load from {path}: {e}")
+                    continue
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Unexpected error loading from {path}: {e}")
+                continue
+
+        if logger:
+            logger.warning("Could not load SpatiaLite from any known path")
+        return False
+
+    except Exception as e:
+        if logger:
+            logger.error(f"Critical error loading SpatiaLite: {e}")
+        return False
+    finally:
+        try:
+            conn.enable_load_extension(False)
+        except:
+            pass
+
+
+def create_safe_connection(db_path: str, logger=None):
+    """
+    Create a SQLite connection with safe settings to prevent bus errors.
+    """
+    conn = None
+    try:
+        # Use connection WITHOUT autocommit mode to avoid transaction conflicts
+        conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+
+        # Set PRAGMA settings BEFORE any transactions start
+        # These must be set outside of transactions
+        pragmas_outside_transaction = [
+            ("journal_mode", "WAL"),  # Better concurrency
+            ("synchronous", "NORMAL"),  # Good balance of safety/performance
+            ("busy_timeout", "30000"),  # Longer timeout for busy databases
+        ]
+
+        # These can be set anytime
+        pragmas_anytime = [
+            ("cache_size", "-2000"),  # Memory cache
+            ("temp_store", "MEMORY"),  # Store temp tables in memory
+            ("foreign_keys", "ON"),  # Enable foreign key constraints
+        ]
+
+        # Set critical pragmas first (outside transaction)
+        for pragma, value in pragmas_outside_transaction:
+            try:
+                conn.execute(f"PRAGMA {pragma}={value};")
+                conn.commit()  # Ensure pragma is applied
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Could not set PRAGMA {pragma}: {e}")
+
+        # Set other pragmas
+        for pragma, value in pragmas_anytime:
+            try:
+                conn.execute(f"PRAGMA {pragma}={value};")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Could not set PRAGMA {pragma}: {e}")
+
+        return conn
+
+    except Exception as e:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+        if logger:
+            logger.error(f"Failed to create safe connection: {e}")
+        raise
 
 
 def get_event_agencies_ids(event: Event) -> list:
@@ -435,119 +573,154 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
         quakeml (str): The QuakeML XML string representing the event.
 
     Raises:
-        Exception: If any database operation fails, the transaction is rolled back and the exception is raised.
+        Exception: If any database operation fails.
     """
-    conn.enable_load_extension(True)
-    conn.load_extension("mod_spatialite")
 
     def insert_event_data():
-        with conn:
-            logger.debug(f"Inserting event {event.resource_id.id}.")
+        logger.debug(f"Inserting event {event.resource_id.id}.")
 
-            # Insert full QuakeML data
-            logger.debug(f"Inserting QuakeML data for event {event.resource_id.id}.")
+        # Insert full QuakeML data
+        logger.debug(f"Inserting QuakeML data for event {event.resource_id.id}.")
 
-            conn.execute(
-                """
-                INSERT INTO quakeml (event_id, data)
-                VALUES (?, ?)
-                """,
-                (event.resource_id.id, quakeml),
+        conn.execute(
+            """
+            INSERT INTO quakeml (event_id, data)
+            VALUES (?, ?)
+            """,
+            (event.resource_id.id, quakeml),
+        )
+
+        # Insert event metadata
+        all_agencies_ids = get_event_agencies_ids(event)
+        agencies_list_str = json.dumps(all_agencies_ids)
+        logger.debug(f"Agencies list: {agencies_list_str}")
+
+        conn.execute(
+            """
+            INSERT INTO events (event_id, event_type, dist_km_from_preloc, nb_agencies, agencies_list, nb_origins, nb_magnitudes)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.resource_id.id,
+                event.event_type,
+                get_distance_km_info(event),
+                len(all_agencies_ids),
+                agencies_list_str,
+                len(event.origins),
+                len(event.magnitudes),
+            ),
+        )
+
+        # Insert origins
+        logger.debug(f"Inserting origins for event {event.resource_id.id}.")
+        for origin in event.origins:
+            insert_origin(conn, origin, event)
+
+        # Insert picks
+        logger.debug(f"Inserting picks for event {event.resource_id.id}.")
+        cursor = conn.cursor()
+        for pick in event.picks:
+            agency_id = (
+                pick.creation_info.agency_id
+                if pick.creation_info and hasattr(pick.creation_info, "agency_id")
+                else None
             )
+            probability = get_pick_probability(pick)
 
-            # Insert event metadata
-            all_agencies_ids = get_event_agencies_ids(event)
-            agencies_list_str = json.dumps(all_agencies_ids)
-            logger.debug(f"Agencies list: {agencies_list_str}")
+            # Check if the pick ID already exists, and to which event it belongs
+            cursor.execute("SELECT id FROM picks WHERE id = ?", (pick.resource_id.id,))
+            if cursor.fetchone():
+                # Pick ID already exists in the database related to another event
+                cursor.execute(
+                    "SELECT event_id FROM picks WHERE id = ?",
+                    (pick.resource_id.id,),
+                )
+                event_id = cursor.fetchone()[0]
+                logger.warning(
+                    f"[{event.resource_id.id}] ID '{pick.resource_id.id}' already exists in event {event_id}. Pick will not be inserted."
+                )
+                continue
 
             conn.execute(
                 """
-                INSERT INTO events (event_id, event_type, dist_km_from_preloc, nb_agencies, agencies_list, nb_origins, nb_magnitudes)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO picks (
+                    id, event_id, station_name, pick_time, uncertainty,
+                    evaluation_mode, phase_hint, agency_id, probability)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    pick.resource_id.id,
                     event.resource_id.id,
-                    event.event_type,
-                    get_distance_km_info(event),
-                    len(all_agencies_ids),
-                    agencies_list_str,
-                    len(event.origins),
-                    len(event.magnitudes),
+                    f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}",
+                    to_datetime(pick.time),
+                    pick.time_errors.uncertainty if pick.time_errors else None,
+                    pick.evaluation_mode,
+                    pick.phase_hint,
+                    agency_id,
+                    probability,
                 ),
             )
 
-            # Insert origins
-            logger.debug(f"Inserting origins for event {event.resource_id.id}.")
-            for origin in event.origins:
-                insert_origin(conn, origin, event)
+        # Insert arrivals and collect phase information for station score calculation
+        logger.debug(f"Inserting arrivals for event {event.resource_id.id}.")
+        for origin in event.origins:
+            insert_arrivals(conn, origin)
 
-            # Insert picks
-            logger.debug(f"Inserting picks for event {event.resource_id.id}.")
-            cursor = conn.cursor()
-            for pick in event.picks:
-                agency_id = (
-                    pick.creation_info.agency_id
-                    if pick.creation_info and hasattr(pick.creation_info, "agency_id")
-                    else None
-                )
-                probability = get_pick_probability(pick)
+            # Calculate station score for this origin
+            station_score = 0.0
+            station_phases = defaultdict(set)
 
-                # Check if the pick ID already exists, and to which event it belongs
-                cursor.execute(
-                    "SELECT id FROM picks WHERE id = ?", (pick.resource_id.id,)
-                )
-                if cursor.fetchone():
-                    # Pick ID already exists in the database related to another event
-                    # it is something possible in the case of close events in QuakeML-RT.
-                    # This is something that should be handled in the future.
-
-                    # get event_id  of the pick
-                    cursor.execute(
-                        "SELECT event_id FROM picks WHERE id = ?",
-                        (pick.resource_id.id,),
-                    )
-                    event_id = cursor.fetchone()[0]
-                    logger.warning(
-                        f"[{event.resource_id.id}] ID '{pick.resource_id.id}' already exists in event {event_id}. Pick will not be inserted."
-                    )
+            # Group phases by station
+            for arrival in origin.arrivals:
+                if arrival.time_weight is None or arrival.time_weight == 0:
                     continue
 
-                conn.execute(
-                    """
-                    INSERT INTO picks (
-                        id, event_id, station_name, pick_time, uncertainty,
-                        evaluation_mode, phase_hint, agency_id, probability)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        pick.resource_id.id,
-                        event.resource_id.id,
-                        f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}",
-                        to_datetime(pick.time),
-                        pick.time_errors.uncertainty,
-                        pick.evaluation_mode,
-                        pick.phase_hint,
-                        agency_id,
-                        probability,
-                    ),
-                )
+                pick_id = arrival.pick_id
+                pick = next((p for p in event.picks if p.resource_id == pick_id), None)
+                if pick is None or pick.waveform_id is None:
+                    continue
 
-            # Insert arrivals
-            logger.debug(f"Inserting arrivals for event {event.resource_id.id}.")
-            for origin in event.origins:
-                insert_arrivals(conn, origin)
+                net = pick.waveform_id.network_code
+                sta = pick.waveform_id.station_code
+                station_code = f"{net}.{sta}"
 
-            # Insert magnitudes
-            logger.debug(
-                f"Inserting magnitude for event {event.resource_id.id} with origin_id {origin.resource_id.id}."
+                # Add phase type to the station's set of phases
+                phase = arrival.phase.lower() if arrival.phase else ""
+                if phase.startswith("p"):
+                    station_phases[station_code].add("P")
+                elif phase.startswith("s"):
+                    station_phases[station_code].add("S")
+
+            # Calculate score based on phase combinations
+            for phases in station_phases.values():
+                if "P" in phases and "S" in phases:
+                    station_score += 2.0
+                elif "P" in phases:
+                    station_score += 1.0
+                elif "S" in phases:
+                    station_score += 0.5
+
+            # Update the origin with the calculated station score
+            cursor.execute(
+                "UPDATE origins SET station_score = ? WHERE id = ?",
+                (station_score, origin.resource_id.id),
             )
-            insert_magnitudes(conn, event)
-            insert_station_magnitudes(conn, event)
+            logger.debug(
+                f"Updated station score for origin {origin.resource_id.id}: {station_score}"
+            )
 
-            logger.debug(f"Event {event.resource_id.id} successfully inserted.")
+        # Insert magnitudes
+        logger.debug(
+            f"Inserting magnitude for event {event.resource_id.id} with origin_id {origin.resource_id.id}."
+        )
+        insert_magnitudes(conn, event)
+        insert_station_magnitudes(conn, event)
+
+        logger.debug(f"Event {event.resource_id.id} successfully inserted.")
 
     try:
         execute_with_retry(conn, insert_event_data)
+        #insert_event_data()
     except Exception as e:
         logger.error(f"Failed to insert event {event.resource_id.id}: {e}")
         raise
@@ -614,15 +787,10 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     if isinstance(earth_model_id, str) and "/" in earth_model_id:
         earth_model_id = earth_model_id.rsplit("/", 1)[-1]
 
-    # compute GT5 score
-    try:
-        gt5_status, gt5_details = compute_gt5_score(origin)
-        delta_U = gt5_details.get("delta_U", None)
-    except Exception as e:
-        logger.debug(f"Error computing GT5 score: {e}")
-        gt5_status = None
-        delta_U = None
-        gt5_details = None
+    # GT5 score will be computed by the compute_gt5_score function when called with --gt5
+    gt5_status = None
+    delta_U = None
+    gt5_details = None
 
     # fix azimuthal gap
     if (q.azimuthal_gap is None or q.azimuthal_gap == 0) and gt5_details:
@@ -866,11 +1034,12 @@ def export_sqlite_to_quakeml(
         end_time (str, optional): End time for filtering events. Defaults to None.
     """
     # Connect to the SQLite database
-    conn = sqlite3.connect(db_path)
-    conn.enable_load_extension(True)
-    conn.load_extension("mod_spatialite")
-    if not conn:
-        raise Exception(f"Failed to connect to the database at {db_path}")
+    conn = create_safe_connection(db_path, logging)
+    spatialite_loaded = load_spatialite(conn, logging)
+    if not spatialite_loaded:
+        # error
+        raise Exception("Failed to load SpatiaLite")
+
     cursor = conn.cursor()
 
     # Open the output file for writing
@@ -990,21 +1159,11 @@ def create_schema(db_path: str) -> sqlite3.Connection:
         sqlite3.Connection: The connection object to the SQLite database.
     """
     try:
-        conn = sqlite3.connect(db_path)
-        if not conn:
-            raise Exception(f"Failed to connect to the database at {db_path}")
-
-        conn.execute(
-            "PRAGMA journal_mode=WAL;"
-        )  # Enable WAL mode for concurrent read/write
-        conn.execute("PRAGMA foreign_keys = ON;")  # Enable foreign key constraints
-        conn.enable_load_extension(True)
-
-        try:
-            conn.load_extension("mod_spatialite")
-        except sqlite3.OperationalError as e:
-            logger.error(f"Failed to load SpatiaLite extension: {e}")
-            raise
+        conn = create_safe_connection(db_path, logging)
+        spatialite_loaded = load_spatialite(conn, logging)
+        if not spatialite_loaded:
+            # error
+            raise Exception("Failed to load SpatiaLite")
 
         cursor = conn.cursor()
 
@@ -1139,7 +1298,11 @@ def create_tables(cursor: sqlite3.Cursor) -> None:
                 delta_U DOUBLE,
                 gt5_status BOOLEAN,
                 evaluation_mode TEXT,
-                preferred BOOLEAN
+                preferred BOOLEAN,
+                station_score DOUBLE,
+                avg_prob_p DOUBLE,
+                avg_prob_s DOUBLE,
+                avg_prob_total DOUBLE
             );
             """,
             """
@@ -1255,6 +1418,10 @@ def refresh_event_coordinates_view(conn: sqlite3.Connection):
     """
     with conn:
         cursor = conn.cursor()
+
+        # Ensure all required columns exist
+        ensure_required_columns_exist(conn)
+
         # Drop the view if it exists
         cursor.execute("DROP VIEW IF EXISTS event_coordinates;")
 
@@ -1331,64 +1498,68 @@ def register_geometry_for_view(
 
 def import_catalog_object_to_sqlite_from_file(
     db_path: str,
-    catalog: Catalog,
+    catalog,
     enable_quakeml: bool = False,
-    retries: int = 5,
-    delay: int = 1,
+    retries: int = 3,
+    delay: int = 2,
     disable_tqdm: bool = False,
-    backoff: str = "linear",  # "linear" or "exponential"
+    backoff: str = "exponential",
 ):
     """
-    Import a catalog of seismic events into a SQLite database with retry logic and configurable backoff.
-
-    Args:
-        db_path (str): Path to the SQLite database file.
-        catalog (Catalog): ObsPy Catalog object containing seismic events.
-        enable_quakeml (bool, optional): If True, serialize and compress QuakeML for each event. Defaults to False.
-        retries (int, optional): Maximum number of retry attempts in case of database lock. Defaults to 5.
-        delay (int, optional): Base delay (in seconds) for retry attempts. Defaults to 1.
-        disable_tqdm (bool, optional): If True, disables progress bars. Defaults to False.
-        backoff (str, optional): Type of delay increase strategy: "linear" or "exponential". Defaults to "linear".
+    Import a catalog of seismic events into a SQLite database.
+    Exit immediately if connection or SpatiaLite loading fails.
     """
+
+    # Ensure the database file exists
+    if not os.path.exists(db_path):
+        try:
+            open(db_path, "w").close()
+        except Exception as e:
+            logging.error(f"Cannot create or modify database file {db_path}: {e}")
+            raise
+
+    last_exception = None
+
     for attempt in range(1, retries + 1):
         conn = None
         try:
-            conn = sqlite3.connect(db_path)
-            conn.enable_load_extension(True)
-            conn.load_extension("mod_spatialite")
-            if not conn:
-                raise Exception(f"Failed to connect to the database at {db_path}")
-            logger.info("Connected to the database successfully.")
+            # Create connection
+            conn = create_safe_connection(db_path, logging)
+            logging.info("Connected to the database successfully.")
 
+            # Load SpatiaLite -> must succeed
+            if not load_spatialite(conn, logging):
+                raise RuntimeError("Failed to load SpatiaLite extension")
+
+            # Import catalog
             import_catalog_to_sqlite(conn, catalog, enable_quakeml, disable_tqdm)
-
-            conn.commit()
-            logger.info("Catalog imported successfully.")
+            logging.info("Catalog imported successfully.")
             return
 
         except sqlite3.OperationalError as e:
-            logger.warning(
-                f"[Attempt {attempt}/{retries}] Database is locked or unavailable: {e}"
-            )
+            last_exception = e
+            logging.warning(f"[Attempt {attempt}/{retries}] Database error: {e}")
 
-            if backoff == "exponential":
-                wait_time = delay * (2 ** (attempt - 1))
-            else:  # linear fallback
-                wait_time = delay * attempt
-
-            logger.warning(f"Waiting {wait_time} second(s) before retrying...")
-            time.sleep(wait_time)
+            if attempt < retries:
+                wait_time = delay * (2 ** (attempt - 1)) if backoff == "exponential" else delay * attempt
+                logging.warning(f"Waiting {wait_time} second(s) before retrying...")
+                time.sleep(wait_time)
 
         except Exception as e:
-            logger.exception("Unexpected error during catalog import.")
-            raise
+            last_exception = e
+            logging.error(f"Fatal error during catalog import: {e}")
+            break
+
         finally:
             if conn:
-                conn.close()
-                logger.debug("Database connection closed.")
+                try:
+                    conn.close()
+                except Exception as e:
+                    logging.warning(f"Error closing connection: {e}")
 
-    logger.error(f"Failed to import catalog after {retries} attempts.")
-    raise sqlite3.OperationalError(
+    # All attempts failed
+    logging.error(f"Failed to import catalog after {retries} attempts.")
+    raise last_exception or sqlite3.OperationalError(
         f"Unable to access the database after {retries} retries."
     )
 
@@ -1416,56 +1587,55 @@ def import_catalog_to_sqlite_from_file(
     add_agency_names(conn)
 
 
-def import_catalog_to_sqlite(
-    conn: sqlite3.Connection,
-    catalog: Catalog,
-    enable_quakeml: bool = False,
-    disable_tqdm: bool = False,
-) -> None:
-    """
-    Export a catalog of seismic events to an SQLite database.
-    This function creates the necessary schema in the SQLite database,
-    processes each event in the catalog, and inserts the event data into
-    the database. Optionally, it can serialize and compress QuakeML content
-    for each event.
+def import_catalog_to_sqlite(conn, catalog, enable_quakeml=False, disable_tqdm=False):
 
-    Args:
-        database (str): Path to the SQLite database file.
-        catalog (Catalog): A catalog of seismic events to be exported.
-        enable_quakeml (bool, optional): If True, serialize and compress
-            QuakeML content for each event. Defaults to False.
+    # batch transactions for performance
+    BATCH_SIZE = 100  # Commit every 100 events
 
-    Raises:
-        Exception: If there is an error processing an event, it will be caught
-            and printed, but the function will continue processing the remaining
-            events.
+    success_count = 0
+    error_count = 0
+    batch_count = 0
 
-    Returns:
-        None
-    """
+    conn.execute("BEGIN IMMEDIATE;")
 
-    # Process events and insert into SQLite
-    # tqdm is used to display a progress bar
+    try:
+        for i, event in enumerate(catalog):
+            try:
+                if enable_quakeml:
+                    quakeml_data = compress_quakeml_data(event, format="QUAKEML")
+                else:
+                    quakeml_data = None
 
-    if len(catalog) == 1:
-        disable_tqdm = True
+                inject_event(conn, event, quakeml_data)
+                success_count += 1
+                batch_count += 1
 
-    for event in tqdm(catalog, desc="Importing events to SQLite", disable=disable_tqdm):
-        # Serialize QuakeML content using format and compress it
-        if enable_quakeml:
-            quakeml_data = compress_quakeml_data(event, format="QUAKEML")
-        else:
-            quakeml_data = None
+                # Periodic commit to avoid excessively long transactions
+                if batch_count >= BATCH_SIZE:
+                    conn.commit()
+                    logging.info(f"Committed batch of {batch_count} events")
+                    batch_count = 0
+                    if i < len(catalog) - 1:  # not the last iteration
+                        conn.execute("BEGIN IMMEDIATE;")
 
-        try:
-            inject_event(conn, event, quakeml_data)
-        except sqlite3.IntegrityError as e:
-            # not unique exception
-            logger.warning(f"event {event.resource_id.id}: {e}")
-            continue
-        except Exception as e:
-            logger.error(f"event {event.resource_id.id}: {e}")
-            raise
+            except sqlite3.IntegrityError as e:
+                error_count += 1
+                logging.warning(f"Event {event.resource_id.id} skipped: {e}")
+                continue
+
+        # Final commit if there are remaining events in the batch
+        if batch_count > 0:
+            conn.commit()
+            logging.info(f"Final commit of {batch_count} events")
+
+        logging.info(
+            f"Import completed. Success: {success_count}, Errors: {error_count}"
+        )
+
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"Fatal error, rolling back current batch: {e}")
+        raise
 
 
 def export_view_to_csv_exclude_geometry(
@@ -1484,9 +1654,11 @@ def export_view_to_csv_exclude_geometry(
     logger.info(f"Exporting view '{view_name}' to '{output_csv}' ...")
 
     try:
-        conn = sqlite3.connect(db_path)
-        conn.enable_load_extension(True)
-        conn.load_extension("mod_spatialite")
+        conn = create_safe_connection(db_path, logging)
+        spatialite_loaded = load_spatialite(conn, logging)
+        if not spatialite_loaded:
+            # error
+            raise Exception("Failed to load SpatiaLite")
 
         cursor = conn.cursor()
 
@@ -1518,6 +1690,9 @@ def export_view_to_csv_exclude_geometry(
             "erz_km": 2,
             "expectation_depth": 1,
             "expectation_depth_km": 1,
+            "avg_prob_p": 2,
+            "avg_prob_s": 2,
+            "avg_prob_total": 2,
             "magnitude": 2,
             "magnitude_uncertainty": 2,
             "uncertainty": 2,
@@ -1912,10 +2087,27 @@ def validate_dir_exists(dir_path: str) -> str:
 
 def parse_arguments() -> argparse.Namespace:
     """Parse and validate command line arguments."""
+    # Create the top-level parser
     parser = argparse.ArgumentParser(
         description="Process QuakeML files and manage seismic event data in a SpatiaLite database.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+
+    # Add a custom action to track if any unknown arguments are encountered
+    class CustomHelpAction(argparse.Action):
+        def __call__(self, parser, namespace, values, option_string=None):
+            parser.print_help()
+            parser.exit(status=2)
+
+    parser.register("action", "help", CustomHelpAction)
+
+    # Add a custom action to track if any unknown arguments are encountered
+    class CustomHelpAction(argparse.Action):
+        def __call__(self, parser, namespace, values, option_string=None):
+            parser.print_help()
+            parser.exit(status=2)
+
+    parser.register("action", "help", CustomHelpAction)
 
     # Database configuration
     db_group = parser.add_argument_group("Database Configuration")
@@ -1977,35 +2169,50 @@ def parse_arguments() -> argparse.Namespace:
         help="End time for export (YYYY-MM-DD).",
     )
 
-    # Database enhancement options
-    enhance_group = parser.add_argument_group("Database Enhancement Options")
-    enhance_group.add_argument(
+    # Database enhancements
+    enhancement_group = parser.add_argument_group("Database Enhancements")
+    enhancement_group.add_argument(
+        "--compute-station-scores",
+        action="store_true",
+        help="Compute and store station scores for all origins.",
+    )
+    enhancement_group.add_argument(
         "--add-discrimination",
         type=validate_file_exists,
         help="Add discrimination info from CSV file to events.",
     )
-    enhance_group.add_argument(
+    enhancement_group.add_argument(
         "--add-localization-quality",
         action="store_true",
         help="Compute and add localization quality metrics.",
     )
-    enhance_group.add_argument(
+    enhancement_group.add_argument(
         "--add-agency-names",
         action="store_true",
         help="Add agency names to the event table.",
     )
-    enhance_group.add_argument(
+    enhancement_group.add_argument(
         "--gt5",
         action="store_true",
         help="Compute GT5 quality metrics.",
     )
-    enhance_group.add_argument(
+    enhancement_group.add_argument(
+        "--compute-prob-avg",
+        action="store_true",
+        help="Compute average probabilities for P, S and total picks.",
+    )
+    enhancement_group.add_argument(
         "--refresh-view",
         action="store_true",
         help="Refresh the event_coordinates view.",
     )
 
-    args = parser.parse_args()
+    # Parse known arguments first to check for help
+    args, remaining = parser.parse_known_args()
+
+    # If there are remaining arguments, they are unknown
+    if remaining:
+        parser.error(f"Unrecognized arguments: {' '.join(remaining)}")
 
     # Validate argument combinations
     if args.event_id and not args.export_quakeml:
@@ -2015,14 +2222,36 @@ def parse_arguments() -> argparse.Namespace:
     if (args.start_time or args.end_time) and not args.export_quakeml:
         parser.error("Time range requires --export-quakeml")
 
+    # Validate at least one action is specified if no input files are provided
+    if not args.input and not any(
+        [
+            args.csv_output,
+            args.export_quakeml,
+            args.add_discrimination,
+            args.add_localization_quality,
+            args.add_agency_names,
+            args.gt5,
+            args.compute_prob_avg,
+            args.compute_station_scores,
+            args.refresh_view,
+        ]
+    ):
+        parser.error(
+            "No action requested. Please specify at least one action (import, export, or enhancement option)"
+        )
+
     return args
 
 
-def get_database_time_range(database_path: str) -> tuple[datetime, datetime]:
+def get_database_time_range(db_path: str) -> tuple[datetime, datetime]:
     """Get the minimum and maximum time range from the database."""
-    conn = sqlite3.connect(database_path)
-    conn.enable_load_extension(True)
-    conn.load_extension("mod_spatialite")
+
+    conn = create_safe_connection(db_path, logging)
+    spatialite_loaded = load_spatialite(conn, logging)
+    if not spatialite_loaded:
+        # error
+        raise Exception("Failed to load SpatiaLite")
+
     cursor = conn.cursor()
     cursor.execute("SELECT MIN(time), MAX(time) FROM event_coordinates;")
     min_time, max_time = cursor.fetchone()
@@ -2156,20 +2385,200 @@ def handle_quakeml_export(args) -> None:
         sys.exit(1)
 
 
+def compute_origin_station_score(conn: sqlite3.Connection) -> None:
+    """
+    Compute and update station scores for all origins in the database.
+
+    The score is calculated based on the number of P and S phases per station:
+    - 2.0 points for stations with both P and S phases
+    - 1.0 point for stations with only P phase
+    - 0.5 points for stations with only S phase
+
+    The total score is stored in the 'station_score' column of the origins table.
+    """
+    logger.info("Computing station scores for all origins...")
+    cursor = conn.cursor()
+
+    # Add station_score column if it doesn't exist
+    cursor.execute("PRAGMA table_info(origins)")
+    columns = [col[1] for col in cursor.fetchall()]
+
+    if "station_score" not in columns:
+        cursor.execute("ALTER TABLE origins ADD COLUMN station_score FLOAT DEFAULT 0.0")
+
+    # Get only preferred origins
+    cursor.execute("SELECT id FROM origins WHERE preferred = 1")
+    origins = cursor.fetchall()
+
+    for (origin_id,) in origins:
+        # Get all valid arrivals for this origin with their phase information
+        cursor.execute(
+            """
+            SELECT 
+                p.station_name,
+                LOWER(a.name) as phase
+            FROM arrivals a
+            JOIN picks p ON a.pick_id = p.id
+            WHERE a.origin_id = ? 
+            AND a.time_weight > 0
+            AND p.station_name IS NOT NULL
+        """,
+            (origin_id,),
+        )
+
+        # Group phases by station
+        station_phases = {}
+        for station_name, phase in cursor.fetchall():
+            if station_name not in station_phases:
+                station_phases[station_name] = set()
+            if phase.startswith("p"):
+                station_phases[station_name].add("P")
+            elif phase.startswith("s"):
+                station_phases[station_name].add("S")
+
+        # Calculate score
+        score = 0.0
+        for phases in station_phases.values():
+            if "P" in phases and "S" in phases:
+                score += 2.0
+            elif "P" in phases:
+                score += 1.0
+            elif "S" in phases:
+                score += 0.5
+
+        # Update the origin with the computed score
+        cursor.execute(
+            "UPDATE origins SET station_score = ? WHERE id = ?", (score, origin_id)
+        )
+
+    conn.commit()
+    logger.info("Station scores computation completed")
+
+
+def compute_average_probabilities(conn):
+    """Compute and store average probabilities for P, S and all picks."""
+    logger.info("Computing average probabilities for all origins...")
+
+    cursor = conn.cursor()
+
+    # Ensure required columns exist in origins table
+    ensure_required_columns_exist(conn)
+
+    # Get all origins
+    cursor.execute("SELECT id FROM origins WHERE preferred = 1")
+    origins = cursor.fetchall()
+
+    for (origin_id,) in origins:
+        # For manual picks, probability is 1.0
+        cursor.execute(
+            """
+        WITH pick_probs AS (
+            SELECT 
+                p.id,
+                p.phase_hint,
+                CASE 
+                    WHEN p.evaluation_mode = 'manual' THEN 1.0 
+                    ELSE COALESCE(p.probability, 0.0) 
+                END as prob
+            FROM arrivals a
+            JOIN picks p ON a.pick_id = p.id
+            WHERE a.origin_id = ?
+        )
+        UPDATE origins
+        SET 
+            avg_prob_p = (
+                SELECT COALESCE(AVG(prob), 0.0)
+                FROM pick_probs
+                WHERE phase_hint LIKE 'P%'
+            ),
+            avg_prob_s = (
+                SELECT COALESCE(AVG(prob), 0.0)
+                FROM pick_probs
+                WHERE phase_hint LIKE 'S%'
+            ),
+            avg_prob_total = (
+                SELECT COALESCE(AVG(prob), 0.0)
+                FROM pick_probs
+            )
+        WHERE id = ?
+        """,
+            (origin_id, origin_id),
+        )
+
+    conn.commit()
+    logger.info("Average probabilities computation completed")
+
+
+def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
+    """
+    Ensure all required columns exist in the database tables.
+
+    Args:
+        conn: SQLite database connection
+    """
+    try:
+        cursor = conn.cursor()
+
+        # Check and add columns to origins
+        cursor.execute("PRAGMA table_info(origins)")
+        origin_columns = [col[1] for col in cursor.fetchall()]
+
+        if "station_score" not in origin_columns:
+            logger.info("Adding station_score column to origins table...")
+            cursor.execute(
+                "ALTER TABLE origins ADD COLUMN station_score DOUBLE DEFAULT 0.0"
+            )
+
+        if "avg_prob_p" not in origin_columns:
+            logger.info("Adding avg_prob_p column to origins table...")
+            cursor.execute(
+                "ALTER TABLE origins ADD COLUMN avg_prob_p DOUBLE DEFAULT 0.0"
+            )
+
+        if "avg_prob_s" not in origin_columns:
+            logger.info("Adding avg_prob_s column to origins table...")
+            cursor.execute(
+                "ALTER TABLE origins ADD COLUMN avg_prob_s DOUBLE DEFAULT 0.0"
+            )
+
+        if "avg_prob_total" not in origin_columns:
+            logger.info("Adding avg_prob_total column to origins table...")
+            cursor.execute(
+                "ALTER TABLE origins ADD COLUMN avg_prob_total DOUBLE DEFAULT 0.0"
+            )
+
+        conn.commit()
+        logger.info("All required columns verified/added successfully.")
+
+    except Exception as e:
+        logger.error(f"Error ensuring required columns exist: {e}")
+        raise
+
+
 def apply_database_enhancements(args) -> None:
     """Apply database enhancements based on the provided arguments."""
+    print("Applying database enhancements...")
     conn = None
     try:
         if any(
             [
+                args.compute_station_scores,
                 args.add_discrimination,
                 args.add_localization_quality,
                 args.add_agency_names,
                 args.gt5,
+                args.compute_prob_avg,
                 args.refresh_view,
             ]
         ):
             conn = create_schema(args.database)
+
+            # Always ensure all supplemental columns exist
+            ensure_required_columns_exist(conn)
+
+            if args.compute_station_scores:
+                print("Computing station scores...")
+                compute_origin_station_score(conn)
 
             if args.add_discrimination:
                 print("Adding discrimination info...")
@@ -2183,16 +2592,22 @@ def apply_database_enhancements(args) -> None:
                 print("Adding agency names...")
                 add_agency_names(conn)
 
+            if args.compute_prob_avg:
+                print("Computing average probabilities...")
+                compute_average_probabilities(conn)
+
             if args.gt5:
                 print("Computing GT5 metrics...")
-                add_gt5_score(conn)
+                compute_gt5_score(conn)
 
             if any(
                 [
+                    args.compute_station_scores,
                     args.add_discrimination,
                     args.add_localization_quality,
                     args.add_agency_names,
                     args.gt5,
+                    args.compute_prob_avg,
                     args.refresh_view,
                 ]
             ):
@@ -2208,6 +2623,8 @@ def apply_database_enhancements(args) -> None:
 
 def main():
     """Main entry point for the script."""
+    import sys
+
     args = parse_arguments()
     conn = None
 
@@ -2220,6 +2637,8 @@ def main():
             args.add_localization_quality,
             args.add_agency_names,
             args.gt5,
+            args.compute_prob_avg,
+            args.compute_station_scores,
             args.refresh_view,
         ]
 
@@ -2273,44 +2692,27 @@ def main():
         handle_quakeml_export(args)
 
         # Database enhancements
-        if any(
-            [
-                args.add_discrimination,
-                args.add_localization_quality,
-                args.add_agency_names,
-                args.gt5,
-                args.refresh_view,
-            ]
-        ):
-            conn = create_schema(args.database)
+        # Apply database enhancements if any enhancement option is specified
+        enhancement_options = {
+            "add_discrimination": args.add_discrimination,
+            "add_localization_quality": args.add_localization_quality,
+            "add_agency_names": args.add_agency_names,
+            "gt5": args.gt5,
+            "compute_prob_avg": args.compute_prob_avg,
+            "compute_station_scores": args.compute_station_scores,
+            "refresh_view": args.refresh_view,
+        }
+        print(
+            f"Enhancement options detected: {[k for k, v in enhancement_options.items() if v]}"
+        )
 
-            if args.add_discrimination:
-                print("Adding discrimination info...")
-                add_discrimination_info(conn, args.add_discrimination)
-
-            if args.add_localization_quality:
-                print("Computing localization quality...")
-                add_compute_localization_quality(conn)
-
-            if args.add_agency_names:
-                print("Adding agency names...")
-                add_agency_names(conn)
-
-            if args.gt5:
-                print("Computing GT5 score...")
-                add_gt5_score(conn)
-
-            if any(
-                [
-                    args.add_discrimination,
-                    args.add_localization_quality,
-                    args.add_agency_names,
-                    args.gt5,
-                    args.refresh_view,
-                ]
-            ):
-                print("Refreshing event coordinates view...")
-                refresh_event_coordinates_view(conn)
+        active_enhancements = [k for k, v in enhancement_options.items() if v]
+        if active_enhancements:
+            print(f"Applying database enhancements: {', '.join(active_enhancements)}")
+            apply_database_enhancements(args)
+            print("Database enhancements completed successfully")
+        else:
+            print("No database enhancement options specified")
 
     except Exception as e:
         print(f"Error: {str(e)}", file=sys.stderr)
