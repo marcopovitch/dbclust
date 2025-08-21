@@ -59,8 +59,9 @@ from dbclust.plot import plot_arrival_time
 from dbclust.quakeml import deduplicate_picks
 from dbclust.relabel import get_best_polygon_for_point
 from dbclust.relabel import relabel_phase_and_comment_arrival
-#import dask
-#import dask.bag as db
+
+# import dask
+# import dask.bag as db
 
 # Disable warnings from obspy
 # UserWarning: Setting attribute ... which is not a default attribute
@@ -77,6 +78,68 @@ phase_order = ["Pg", "Sg", "Pn", "Sn", "P", "S"]
 
 # set time_weight tolerance
 time_weight_tolerance = 0.01
+
+
+import os
+import shlex
+import tempfile
+
+def safe_subprocess_run(args, *, env=None, cwd=None, text=True):
+    """
+    Simplified replacement for subprocess.run(..., stdout=PIPE, stderr=STDOUT, text=True)
+    using posix_spawnp (safe for macOS).
+    """
+    if isinstance(args, str):
+        args = shlex.split(args)
+
+    env = env or os.environ.copy()
+
+    # Temporary file to capture stdout/stderr
+    fd, tmpfile = tempfile.mkstemp()
+    os.close(fd)
+    fd_out = os.open(tmpfile, os.O_WRONLY | os.O_TRUNC)
+
+    file_actions = [
+        (os.POSIX_SPAWN_DUP2, fd_out, 1),  # stdout
+        (os.POSIX_SPAWN_DUP2, fd_out, 2),  # stderr
+    ]
+
+    # Temporarily change working directory if requested
+    old_cwd = None
+    if cwd:
+        old_cwd = os.getcwd()
+        os.chdir(cwd)
+
+    try:
+        pid = os.posix_spawnp(
+            args[0],
+            args,
+            env,
+            file_actions=file_actions,
+        )
+    finally:
+        if cwd and old_cwd:
+            os.chdir(old_cwd)
+        os.close(fd_out)
+
+    # Wait for process to finish
+    _, status = os.waitpid(pid, 0)
+    returncode = os.waitstatus_to_exitcode(status)
+
+    # Read output
+    with open(tmpfile, "r", errors="replace") as f:
+        output = f.read()
+    os.unlink(tmpfile)
+
+    # Result object similar to subprocess
+    class Result:
+        pass
+
+    result = Result()
+    result.returncode = returncode
+    result.stdout = output if text else output.encode()
+
+    return result
 
 
 class LocalizationError(Exception):
@@ -241,7 +304,7 @@ class NllLoc(object):
 
         for arrival in arrivals:
             if arrival.time_weight is None or arrival.time_weight == 0:
-                continue  # Ignore les arrivals avec un poids nul
+                continue
             pick_id = arrival.pick_id
             pick = next((p for p in event.picks if p.resource_id == pick_id), None)
             if pick is None or pick.waveform_id is None:
@@ -457,6 +520,7 @@ class NllLoc(object):
                 preloc_origin, preloc_picks_list = make_preloc_origin(
                     vel_file, picks_file, sta_file, self.quakeml_settings
                 )
+                #logger.info("Preloc origin created: %s", preloc_origin, exc_info=True)
             else:
                 # pyocto has not generated a preloc (or used to relocate the event)
                 # due to clusters obtained from dbscan only.
@@ -509,22 +573,32 @@ class NllLoc(object):
         ####################
         # NLL Localization #
         ####################
+
         cmde = f"{self.nll_bin} {conf_file}"
         logger.debug(cmde)
 
-        try:
-            result = subprocess.run(
-                shlex.split(cmde),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            logger.error(e)
-            return Catalog()
-        except Exception as e:
-            logger.error(e)
-            return Catalog()
+        result = safe_subprocess_run(            
+            shlex.split(cmde),
+            env={"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"},
+        )
+        #logger.info(f"Result of NLL localization: {result.returncode}") 
+        #logger.info(f"Output: {result.stdout}")
+        
+        # try:
+        #     result = subprocess.run(
+        #         shlex.split(cmde),
+        #         stdout=subprocess.PIPE,
+        #         stderr=subprocess.STDOUT,
+        #         text=True,
+        #     )
+
+        # except subprocess.CalledProcessError as e:
+        #     logger.error(e)
+        #     return Catalog()
+        # except Exception as e:
+        #     logger.error(e)
+        #     return Catalog()
+
 
         if result.returncode != 0:
             logger.error(
@@ -1430,7 +1504,7 @@ class NllLoc(object):
             raise FileNotFoundError(
                 f"Template file {templatefile} not found. Please check the path."
             )
-            
+
         t = template.render(tags)
         with open(outfilename, "w") as out_fh:
             out_fh.write(t)
