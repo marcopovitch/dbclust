@@ -1,10 +1,11 @@
 
 services:
   dbclust:
-    image: dbclust:0.2
+    image: dbclust:1.0
     container_name: dbclust
     hostname: dbclust
     volumes:
+      - /Users/marc/gitlab/alps_catalog:/alps
       - /Users/marc/Data/DBClust:/data
       - /Users/marc/Dockers/routine/nll/data/times:/nll/times
       - /Users/marc/github/dbclust/nll_template:/nll/nll_template
@@ -13,10 +14,12 @@ services:
     shm_size: 12gb
     ports:
       - "8265:8265"  # Ray.io dashboard
-    command: dbclust -c /data/of/dbclust-of-docker.yml
+    #command: dbclust -c /data/of/dbclust-of-docker.yml
+    command: /usr/bin/bash
+
 
   fdsnws:
-    image: dbclust:0.2
+    image: dbclust:1.0
     container_name: fdsnws
     hostname: fdsnws
     volumes:
