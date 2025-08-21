@@ -1,14 +1,38 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+import os
 import logging
-
 import pandas as pd
+from contextlib import contextmanager
 from icecream import ic
 from pandas.core.groupby import GroupBy
 from sklearn.cluster import DBSCAN
 
 logger = logging.getLogger("pick_preproc")
 logger.setLevel(logging.INFO)
+
+
+@contextmanager
+def omp_single_thread():
+    """Context manager to temporarily set OMP_NUM_THREADS=1."""
+    old_val = os.environ.get("OMP_NUM_THREADS")
+    os.environ["OMP_NUM_THREADS"] = "1"
+    try:
+        yield
+    finally:
+        # Restore previous value
+        if old_val is None:
+            os.environ.pop("OMP_NUM_THREADS", None)
+        else:
+            os.environ["OMP_NUM_THREADS"] = old_val
+
+
+# This function is a wrapper to ensure that deduplication runs in a single thread.
+# This is necessary to avoid issues with scikit-learn and libtiff when using multiple threads.
+# At least on macOS
+def safe_deduplicate_picks_by_time(*args, **kwargs):
+    with omp_single_thread():
+        return deduplicate_picks_by_time(*args, **kwargs)
 
 
 def get_index(group: GroupBy, debug=False) -> int:
