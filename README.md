@@ -91,7 +91,7 @@ For the dbclust application, you can use:
 docker-compose up -d dbclust
 ```
 
-and use your browser to access to ray.io dashboard `http://localhost:8265`.
+and use your browser to access the ray.io dashboard at `http://localhost:8265`.
 
 For the fdsnws service, use:
 
