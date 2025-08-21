@@ -6,7 +6,7 @@ authors = [
     { name = "Marc Grunberg", email = "marc.grunberg@unistra.fr" }
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12, <3.13"
 dependencies = [
     "alphabetic_timestamp",
     "dacite",
@@ -24,22 +24,22 @@ dependencies = [
     "plotly",
     "plotext",
     "prettytable",
-    "pyocto>=0.1.8",
+    "pyocto",
     "pyproj",
-    "ray",
+    "ray[default]",
     "rich",
     "scikit-learn",
     "scipy",
     "starlette",
     "tqdm",
     "uvicorn",
-    "spatialite>=0.0.3",
-    "psutil>=7.0.0",
-    "pyrocko>=2025.1.10",
-    "visidata>=3.1.1",
-    "python-dateutil>=2.9.0.post0",
-    "kaleido>=1.0.0",
-    "geopy>=2.4.1",
+    "spatialite",
+    "psutil",
+    "pyrocko",
+    "visidata",
+    "python-dateutil",
+    "kaleido",
+    "geopy",
 ]
 
 [project.optional-dependencies]
