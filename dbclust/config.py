@@ -752,6 +752,7 @@ class PyoctoConfig:
     default_model_name: str
     path: str
     models: List[Model]
+    enable:  Optional[bool] = True
     # associator and velocity_model are in current_model.keys()
     current_model: Optional[Model] = None
     travel_time_grid_filename: Optional[str] = None
