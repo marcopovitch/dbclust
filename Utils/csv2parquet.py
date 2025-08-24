@@ -102,7 +102,7 @@ def repartition_parquet(parquet_file_in: str, parquet_file_out: str) -> None:
         conn.close()
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Convert CSV to Parquet file")
     parser.add_argument(
         "-i",
@@ -164,3 +164,7 @@ if __name__ == "__main__":
 
     # remove the temporary parquet file
     shutil.rmtree(tmp_parquet)
+
+
+if __name__ == "__main__":
+    main()
