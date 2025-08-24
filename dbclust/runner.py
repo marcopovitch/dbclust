@@ -14,6 +14,8 @@ import tempfile
 import threading
 import time
 import warnings
+import multiprocessing as mp
+
 from dataclasses import asdict
 from typing import List
 from typing import Optional
@@ -438,7 +440,7 @@ def dbclust(
             )
             previous_myclust.merge(myclust)
 
-        if cfg.pyocto.current_model:
+        if cfg.pyocto.enable and cfg.pyocto.current_model:
             try:
                 result = adjust_associator_tolerance(
                     previous_myclust,
@@ -717,9 +719,6 @@ def profiled_run_dbclust_task(cfg, job_index):
 
 
 def run_with_ray(cfg: DBClustConfig, profile_csv_path="task_profiles.csv"):
-    import multiprocessing as mp
-
-    mp.set_start_method("spawn", force=True)
 
     os.environ["RAY_DEDUP_LOGS"] = "0"
     os.environ["RAY_COLOR_PREFIX"] = "1"
@@ -732,7 +731,7 @@ def run_with_ray(cfg: DBClustConfig, profile_csv_path="task_profiles.csv"):
         _temp_dir=cfg.parallel._temp_dir,
         dashboard_host="0.0.0.0",
         dashboard_port=8265,
-        include_dashboard=True
+        include_dashboard=True,
     )
     logger.info(f"Dashboard URL: {context.dashboard_url}")
 
@@ -852,4 +851,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # To avoid fork on macOS 
+    #mp.set_start_method("spawn", force=True)
+    
     main()
