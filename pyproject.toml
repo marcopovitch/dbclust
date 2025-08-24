@@ -40,6 +40,7 @@ dependencies = [
     "python-dateutil",
     "kaleido",
     "geopy",
+    "dask[complete]",
 ]
 
 [project.optional-dependencies]
@@ -54,14 +55,14 @@ package = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["dbclust", "fdsnws"]
+include = ["dbclust", "fdsnws", "Utils"]
 
 [project.scripts]
 fdsnws-server = "fdsnws.server:main"
 dbclust = "dbclust.runner:main"
 injectdb = "dbclust.inject_spatialite:main"
 relocate = "dbclust.reprocess_event:main"
-csv2parquet = "dbclust.csv2parquet:main"
+csv2parquet = "Utils.csv2parquet:main"
 
 [project.urls]
 "Homepage" = "https://github.com/marcopovitch/dbclust"
