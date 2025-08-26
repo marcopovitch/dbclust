@@ -453,11 +453,20 @@ def dbclust(
                 )
             except pyproj.exceptions.CRSError as e:
                 logger.error(f"Aborting process adjust_associator_tolerance().")
+                # Check if we do not propagate previous_myclust forever
+                if begin == end:
+                    logger.info("Cleaning previous_myclust.")
+                    previous_myclust = get_clusterize_from_config(cfg, phases=None)
                 continue
 
             if result is None:
                 # flush stdout and stderr to have the log in the right order
                 logger.error("Failed to process with any pick_match_tolerance.")
+                # Check if we do not propagate previous_myclust forever
+                logger.debug(f"begin={begin}, end={end}")
+                if begin == end:
+                    logger.info("Cleaning previous_myclust.")
+                    previous_myclust = get_clusterize_from_config(cfg, phases=None)
                 continue
             else:
                 previous_myclust = result
