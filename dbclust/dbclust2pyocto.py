@@ -180,9 +180,28 @@ def dbclust2pyocto(
         stations = get_stations_from_cluster(cluster)
         picks = get_picks_from_cluster(cluster)
 
+        # define a safe range around the stations coordinates in percentage
+        # of the latitude and longitude range
+        range_percent = 1
+        lat_safe_range_deg = range_percent * (
+            stations["latitude"].max() - stations["latitude"].min()
+        )
+        lon_safe_range_deg = range_percent * (
+            stations["longitude"].max() - stations["longitude"].min()
+        )
+
         # Set spatial parameters for the associator
-        lat_range = (stations["latitude"].min(), stations["latitude"].max())
-        lon_range = (stations["longitude"].min(), stations["longitude"].max())
+        lat_range = (
+            stations["latitude"].min() - lat_safe_range_deg,
+            stations["latitude"].max() + lat_safe_range_deg,
+        )
+        lon_range = (
+            stations["longitude"].min() - lon_safe_range_deg,
+            stations["longitude"].max() + lon_safe_range_deg,
+        ) 
+        
+        logger.info(f"range lat: {lat_range}, lon: {lon_range}")
+        
 
         try:
             associator = pyocto.OctoAssociator.from_area(
@@ -210,7 +229,9 @@ def dbclust2pyocto(
         except pyproj.exceptions.CRSError as e:
             # Skip processing if CRS error occurs, likely due to too far away stations
             logger.error(f"CRS error occurred. Skipping processing: {e}")
-            logger.error(f"Check stations coordinates ! lat_range: {lat_range}, lon_range: {lon_range}")
+            logger.error(
+                f"Check stations coordinates ! lat_range: {lat_range}, lon_range: {lon_range}"
+            )
             ic(picks)
             raise
 
@@ -254,7 +275,9 @@ def dbclust2pyocto(
     if len(pyocto_clusters) == 0 and myclust.n_clusters > 0:
         if delegate_dbclust:
             # fixme: for each cluster add a preloc based on the barycenter of the stations
-            logger.info("PyOcto did not find any cluster. Returning original dbclust clusters.")
+            logger.info(
+                "PyOcto did not find any cluster. Returning original dbclust clusters."
+            )
             return myclust
         return None
 
