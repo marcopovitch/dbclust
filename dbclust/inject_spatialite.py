@@ -109,28 +109,41 @@ EVENT_COORDINATES_VIEW = """
 RELABELING_VIEW = """
     CREATE VIEW IF NOT EXISTS relabeling AS
     SELECT
-        a.id AS arrival_id,
-        a.origin_id,
-        a.pick_id,
+        e.event_id,
+        o.time,
+        o.latitude, o.longitude,
+        o.depth / 1000.0 AS depth_km,
+        o.rms,
+        o.erh AS erh_km,
+        o.erz AS erz_km,
+        o.quality, 
+        o.quality_factor,
+        -- a.id AS arrival_id,
+        -- a.origin_id,
+        -- a.pick_id,
         p.station_name,
-        a.name as station,
+        a.name AS phase_name,
+        p.pick_time,
         a.time_weight,
         a.time_residual,
-        p.evaluation_mode,
-        p.probability,
-        a.distance,
+        -- p.evaluation_mode,
+        -- p.probability,
+        a.distance AS distance_deg,
         a.relabel_action,
         a.relabel_previous_phase,
         a.relabel_evaluation_score,
         a.relabel_scores
     FROM
-        arrivals a
+        events e
     JOIN
-        origins o ON a.origin_id = o.id
+        origins o ON o.event_id = e.event_id
+    JOIN
+        arrivals a ON a.origin_id = o.id
     JOIN
         picks p ON a.pick_id = p.id
     WHERE
-        o.preferred = TRUE;
+        o.preferred = 1
+        AND a.time_weight != 0;
 """
 
 
@@ -217,14 +230,21 @@ def load_spatialite(conn, logger=None):
             pass
 
 
-def create_safe_connection(db_path: str, logger=None):
+def create_safe_connection(db_path: str, uri=False, logger=None):
     """
     Create a SQLite connection with safe settings to prevent bus errors.
     """
     conn = None
     try:
         # Use connection WITHOUT autocommit mode to avoid transaction conflicts
-        conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+        if uri:
+            conn = sqlite3.connect(
+                db_path, timeout=30, check_same_thread=False, uri=True
+            )
+        else: 
+            conn = sqlite3.connect(
+                db_path, timeout=30, check_same_thread=False
+            )
 
         # Set PRAGMA settings BEFORE any transactions start
         # These must be set outside of transactions

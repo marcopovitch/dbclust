@@ -5,7 +5,7 @@ from datetime import datetime
 
 from fastapi.responses import StreamingResponse
 
-from dbclust.inject_spatialite import process_quakeml_row
+from dbclust.inject_spatialite import process_quakeml_row, create_safe_connection
 
 QUAKEML_HEADER = """<?xml version="1.0" encoding="UTF-8"?>
 <q:quakeml xmlns:q="http://quakeml.org/xmlns/quakeml/1.2" xmlns="http://quakeml.org/xmlns/bed/1.2">
@@ -28,12 +28,8 @@ MAX_EVENT_BUFF = 500
 def generate_quake_response(event_ids, db_path):
     def quake_generator():
         yield QUAKEML_HEADER
-        conn = sqlite3.connect(
-            f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
-        )
         try:
-            conn.enable_load_extension(True)
-            conn.execute("SELECT load_extension('mod_spatialite');")
+            conn = create_safe_connection(f"file:{db_path}?mode=ro", uri=True)
             # Process event_ids in chunks
             for i in range(0, len(event_ids), MAX_EVENT_BUFF):
                 chunk = event_ids[i : i + MAX_EVENT_BUFF]

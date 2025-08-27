@@ -21,6 +21,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from dbclust.inject_spatialite import create_safe_connection
+
 from fdsnws.export_csv import generate_csv_response
 from fdsnws.export_geojson import generate_geojson_response
 from fdsnws.export_quakeml import generate_quake_response
@@ -66,54 +68,54 @@ def create_app(db_path: str, debug=False):
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     # Dependency: get a read-only connection and load spatialite
-    def get_db_connection():
-        conn = sqlite3.connect(
-            f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
-        )
-        try:
-            conn.enable_load_extension(True)
-            spatialite_paths = [
-                "/opt/homebrew/lib/mod_spatialite.dylib",
-                "/usr/local/lib/mod_spatialite.dylib",
-                "mod_spatialite",
-            ]
+    # def get_db_connection():
+    #     conn = sqlite3.connect(
+    #         f"file:{db_path}?mode=ro", uri=True, check_same_thread=False
+    #     )
+    #     try:
+    #         conn.enable_load_extension(True)
+    #         spatialite_paths = [
+    #             "/opt/homebrew/lib/mod_spatialite.dylib",
+    #             "/usr/local/lib/mod_spatialite.dylib",
+    #             "mod_spatialite",
+    #         ]
 
-            loaded = False
-            for path in spatialite_paths:
-                try:
-                    conn.load_extension(path)
-                    loaded = True
-                    break
-                except Exception as e:
-                    logging.debug(f"Could not load spatialite from {path}: {e}")
+    #         loaded = False
+    #         for path in spatialite_paths:
+    #             try:
+    #                 conn.load_extension(path)
+    #                 loaded = True
+    #                 break
+    #             except Exception as e:
+    #                 logging.debug(f"Could not load spatialite from {path}: {e}")
 
-            if not loaded:
-                error_msg = """
-                Could not load Spatialite extension. This extension is required for spatial operations.
+    #         if not loaded:
+    #             error_msg = """
+    #             Could not load Spatialite extension. This extension is required for spatial operations.
 
-                Installation instructions:
+    #             Installation instructions:
 
-                On macOS (using Homebrew):
-                    brew install libspatialite
+    #             On macOS (using Homebrew):
+    #                 brew install libspatialite
 
-                On Debian/Ubuntu:
-                    sudo apt-get install libsqlite3-mod-spatialite
+    #             On Debian/Ubuntu:
+    #                 sudo apt-get install libsqlite3-mod-spatialite
 
-                For more details, see the project's documentation or README.
-                """
-                logging.error(error_msg)
-                raise HTTPException(status_code=500, detail=error_msg)
+    #             For more details, see the project's documentation or README.
+    #             """
+    #             logging.error(error_msg)
+    #             raise HTTPException(status_code=500, detail=error_msg)
 
-        except Exception as e:
-            error_msg = f"""
-            Failed to load Spatialite extension: {e}
+    #     except Exception as e:
+    #         error_msg = f"""
+    #         Failed to load Spatialite extension: {e}
 
-            This usually means the Spatialite system library is not installed or not in the library path.
-            Please check the installation instructions above or in the project's documentation.
-            """
-            logging.error(error_msg)
-            raise HTTPException(status_code=500, detail=error_msg)
-        return conn
+    #         This usually means the Spatialite system library is not installed or not in the library path.
+    #         Please check the installation instructions above or in the project's documentation.
+    #         """
+    #         logging.error(error_msg)
+    #         raise HTTPException(status_code=500, detail=error_msg)
+    #     return conn
 
     @app.get("/")
     def root_redirect(request: Request):
@@ -182,7 +184,8 @@ def create_app(db_path: str, debug=False):
             # force level    to debug
             logging.getLogger().setLevel(logging.DEBUG)
 
-        conn = get_db_connection()
+        #conn = get_db_connection()
+        conn = create_safe_connection(f"file:{db_path}?mode=ro", uri=True)
         try:
             where = ["1=1"]
             params = []
