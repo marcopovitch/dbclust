@@ -175,7 +175,7 @@ def process_file(
             logger.info(f"Created output directory: {output_dir}")
 
             # Format the output filename
-            event_id = cat[0].resource_id.id.split("/")[-1]
+            #event_id = cat[0].resource_id.id.split("/")[-1]
             file_extension = output_format.lower()
             output_filename = f"{basename}.{file_extension}"
             output_path = os.path.join(output_dir, output_filename)
