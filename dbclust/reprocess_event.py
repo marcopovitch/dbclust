@@ -100,7 +100,7 @@ def process_file(
                 tmpdir=tmp_path,
                 #
                 force_uncertainty=cfg.relocation.force_uncertainty,
-                P_uncertainty= cfg.relocation.P_uncertainty,
+                P_uncertainty=cfg.relocation.P_uncertainty,
                 S_uncertainty=cfg.relocation.S_uncertainty,
                 #
                 double_pass=cfg.relocation.double_pass,
@@ -165,20 +165,24 @@ def process_file(
                 2
             )  # Ensure month is 2 digits (e.g., "01" for January)
 
-            # Extract the basename from the input file (without path and extension)
-            input_basename = os.path.basename(f)
-            basename = os.path.splitext(input_basename)[0]
-
-            # Create directory structure
-            output_dir = os.path.join(year, month)
-            os.makedirs(output_dir, exist_ok=True)
-            logger.info(f"Created output directory: {output_dir}")
-
-            # Format the output filename
-            #event_id = cat[0].resource_id.id.split("/")[-1]
-            file_extension = output_format.lower()
-            output_filename = f"{basename}.{file_extension}"
-            output_path = os.path.join(output_dir, output_filename)
+            
+            if args.output_name:
+                # Use the provided output name and directory
+                output_path = args.output_name
+                output_dir = os.path.dirname(output_path)
+                os.makedirs(output_dir, exist_ok=True)
+            else:
+                # Extract the basename from the input file (without path and extension)
+                input_basename = os.path.basename(f)
+                basename = os.path.splitext(input_basename)[0]
+                
+                # Create directory structure
+                output_dir = os.path.join(year, month)
+                os.makedirs(output_dir, exist_ok=True)
+                logger.info(f"Created output directory: {output_dir}")
+                file_extension = output_format.lower()
+                output_filename = f"{basename}.{file_extension}"
+                output_path = os.path.join(output_dir, output_filename)
 
             # Write the catalog to file
             logger.info(f"Writing output to: {output_path}")
@@ -392,7 +396,15 @@ def parse_arguments() -> argparse.Namespace:
     )
     output_group.add_argument(
         "-o",
-        "--output-format",
+        "--output",
+        dest="output_name",
+        default=None,
+        help="Output name for the event file",
+        type=str,
+    )
+
+    output_group.add_argument(
+        "--format",
         dest="output_format",
         default="QUAKEML",
         help="Output format for the event file",
@@ -440,6 +452,12 @@ def main():
             logger.error(f"Error loading configuration: {e}")
             # show traceback
             logger.error(traceback.format_exc())
+            sys.exit(1)
+            
+        if args.output_name and os.path.isfile(args.output_name):
+            logger.error(
+                f"Error: file {args.output_name} already exists. Please remove it first."
+            )
             sys.exit(1)
 
         # Update configuration from command line arguments
