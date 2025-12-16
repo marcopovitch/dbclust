@@ -16,6 +16,13 @@ def parse_arguments():
     parser.add_argument("--from", dest="from_time", help="Start time filter (YYYY-MM-DD)", type=str)
     parser.add_argument("--to", dest="to_time", help="End time filter (YYYY-MM-DD)", type=str)
     parser.add_argument("-r", "--region", default="", help="Region name for the title", type=str)
+    parser.add_argument(
+        "--marker-size",
+        dest="marker_size",
+        default=1.0,
+        type=float,
+        help="Marker size for Δt points (default: 1.0)",
+    )
     return parser.parse_args()
 
 
@@ -47,6 +54,12 @@ def main():
     df["delta_seconds"] = df["time"].diff().dt.total_seconds()
     df_deltas = df.dropna(subset=["delta_seconds"])
 
+    positive_deltas = df_deltas[df_deltas["delta_seconds"] > 0]["delta_seconds"]
+    if len(positive_deltas) == 0:
+        min_positive_delta = 1.0
+    else:
+        min_positive_delta = float(positive_deltas.min())
+
     # Compute daily histogram
     df["date"] = df["time"].dt.date
     daily_counts = df.groupby("date").size()
@@ -54,7 +67,8 @@ def main():
 
     # Create subplots with shared x-axis
     fig, (ax1, ax2) = plt.subplots(
-        nrows=2, ncols=1, figsize=(16, 8), sharex=True,
+        nrows=2, ncols=1, figsize=(20, 10), sharex=True,
+        constrained_layout=True,
         gridspec_kw={"height_ratios": [1, 2], "hspace": 0.1}
     )
 
@@ -65,8 +79,16 @@ def main():
     ax1.grid(True, linestyle="--", alpha=0.3)
 
     # Lower plot: delta times (log scale)
-    ax2.plot(df_deltas["time"], df_deltas["delta_seconds"], marker="o", linestyle="None", markersize=1, label="Time delta")
+    ax2.plot(
+        df_deltas["time"],
+        df_deltas["delta_seconds"],
+        marker="o",
+        linestyle="None",
+        markersize=float(args.marker_size),
+        label="Time delta",
+    )
     ax2.set_yscale("log")
+    ax2.set_ylim(bottom=min_positive_delta)
     ax2.set_xlabel("Time")
     ax2.set_ylabel("Δt (seconds)")
     ax2.grid(True, linestyle="--", alpha=0.3)
@@ -85,12 +107,14 @@ def main():
 
     for label, seconds in reference_lines.items():
         ax2.axhline(y=seconds, color="red", linestyle="--", linewidth=1)
+        y_text = seconds / 1.15
+        if y_text <= min_positive_delta:
+            y_text = min_positive_delta
         ax2.text(
-            df_deltas["time"].min(), seconds * 1.05, label,
-            color="red", fontsize=9, va="bottom"
+            df_deltas["time"].min(), y_text, label,
+            color="red", fontsize=9, va="top"
         )
 
-    plt.tight_layout()
     fig.savefig(args.output_file)
     print(f"Plot saved to {args.output_file}")
 
