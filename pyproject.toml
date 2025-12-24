@@ -41,6 +41,7 @@ dependencies = [
     "kaleido",
     "geopy",
     "dask[complete]",
+    "parsl>=2025.12.22",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +61,7 @@ include = ["dbclust", "fdsnws", "Utils"]
 [project.scripts]
 fdsnws-server = "fdsnws.server:main"
 dbclust = "dbclust.runner:main"
+dbclust-parsl = "dbclust.runner_parsl:main"
 injectdb = "dbclust.inject_spatialite:main"
 relocate = "dbclust.reprocess_event:main"
 csv2parquet = "Utils.csv2parquet:main"
