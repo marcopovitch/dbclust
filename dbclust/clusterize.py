@@ -167,7 +167,7 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
         cluster_found = False
         event_ids = []
         for a in o.arrivals:
-            if cluster_found == True:
+            if cluster_found:
                 break
             if a.time_weight and a.time_residual:
                 pick = next(
@@ -185,7 +185,7 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
                             event_ids = list(set([p.event_id for p in c if p.event_id]))
                             cluster_found = True
                             break
-                    if cluster_found == True:
+                    if cluster_found:
                         break
 
         # event_ids = list(set([p.event_id for p in chain(*clusters) if p.event_id]))
@@ -351,7 +351,8 @@ class Clusterize(object):
             try:
                 logger.info(f"TT matrix: {compute_tt.cache_info()}")
                 compute_tt.cache_clear()
-            except:
+            except AttributeError:
+                # compute_tt may not have cache_info if lru_cache is not used
                 pass
 
         if tt_matrix_fname and tt_matrix_save:
@@ -628,7 +629,7 @@ class Clusterize(object):
 
                         vel_file = os.path.join(OBS_PATH, f"cluster-{i}.vel")
                         logger.debug(f"writing to file {vel_file}: {zone['template']}")
-                        with open(vel_file, "w") as vel:
+                        with open(vel_file, "w", encoding="utf-8") as vel:
                             vel.write(zone["velocity_profile"] + "\n")
                             vel.write(zone["template"] + "\n")
                             vel.write(f"{hypo['time']}\n")
@@ -640,7 +641,7 @@ class Clusterize(object):
 
                         picks_file = os.path.join(OBS_PATH, f"cluster-{i}-picks.csv")
                         logger.debug(f"writing file {picks_file}")
-                        with open(picks_file, "w") as picks:
+                        with open(picks_file, "w", encoding="utf-8") as picks:
                             header = ",".join(hypo["picks_col_names"])
                             picks.write(f"{header}\n")
                             for fields in hypo["phases"]:
@@ -649,7 +650,7 @@ class Clusterize(object):
 
                         sta_file = os.path.join(OBS_PATH, f"cluster-{i}-sta.csv")
                         logger.debug(f"writing file {sta_file}")
-                        with open(sta_file, "w") as sta:
+                        with open(sta_file, "w", encoding="utf-8") as sta:
                             header = ",".join(hypo["coords_col_names"])
                             sta.write(f"{header}\n")
                             for fields in hypo["coords"]:
