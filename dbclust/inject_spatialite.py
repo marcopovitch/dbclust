@@ -35,6 +35,7 @@ from obspy.core.event import Magnitude
 from obspy.core.event import Origin
 from tqdm import tqdm
 
+from dbclust.db import validate_sql_identifier
 from dbclust.gt5 import compute_gt5_score
 from dbclust.localization_quality import classify_Michele_mod2
 from dbclust.localization_quality import haversine_distance
@@ -62,6 +63,7 @@ EVENT_COORDINATES_VIEW = """
     CREATE VIEW IF NOT EXISTS event_coordinates AS
     SELECT
         e.event_id,
+        o.id AS origin_id,
         o.time,
         o.latitude, o.longitude,
         o.depth / 1000.0 AS depth_km,
@@ -226,7 +228,7 @@ def load_spatialite(conn, logger=None):
     finally:
         try:
             conn.enable_load_extension(False)
-        except:
+        except (sqlite3.Error, AttributeError):
             pass
 
 
@@ -241,10 +243,8 @@ def create_safe_connection(db_path: str, uri=False, logger=None):
             conn = sqlite3.connect(
                 db_path, timeout=30, check_same_thread=False, uri=True
             )
-        else: 
-            conn = sqlite3.connect(
-                db_path, timeout=30, check_same_thread=False
-            )
+        else:
+            conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
 
         # Set PRAGMA settings BEFORE any transactions start
         # These must be set outside of transactions
@@ -284,7 +284,7 @@ def create_safe_connection(db_path: str, uri=False, logger=None):
         if conn:
             try:
                 conn.close()
-            except:
+            except sqlite3.Error:
                 pass
         if logger:
             logger.error(f"Failed to create safe connection: {e}")
@@ -303,7 +303,7 @@ def get_event_agencies_ids(event: Event) -> list:
     for comment in event.comments:
         try:
             info = json.loads(comment.text)
-        except:
+        except (json.JSONDecodeError, TypeError):
             continue
 
         if "event_ids" in info.keys():
@@ -323,7 +323,7 @@ def get_distance_km_info(event: Event) -> float:
     for comment in event.comments:
         try:
             info = json.loads(comment.text)
-        except:
+        except (json.JSONDecodeError, TypeError):
             continue
         if "preloc_distance_km" in info.keys():
             dist_km = info["preloc_distance_km"]
@@ -344,7 +344,7 @@ def get_scatter_volume(origin: Origin) -> float:
     for comment in origin.comments:
         try:
             info = json.loads(comment.text)
-        except:
+        except (json.JSONDecodeError, TypeError):
             continue
         if "scatter_volume" in info.keys():
             scatter_volume = info["scatter_volume"]
@@ -367,14 +367,15 @@ def get_expectation_localization(origin: Origin) -> Tuple[float, float, float]:
     for comment in origin.comments:
         try:
             info = json.loads(comment.text)
-        except:
+        except (json.JSONDecodeError, TypeError):
             continue
 
         data = info.get("expectation")
         if data:
             expectation_latitude = data.get("latitude")
             expectation_longitude = data.get("longitude")
-            expectation_depth = data.get("depth") * 1000.0
+            depth = data.get("depth")
+            expectation_depth = depth * 1000.0 if depth is not None else None
             break
     return expectation_latitude, expectation_longitude, expectation_depth
 
@@ -393,7 +394,7 @@ def get_pick_probability(pick):
     for comment in pick.comments:
         try:
             info = json.loads(comment.text)
-        except:
+        except (json.JSONDecodeError, TypeError):
             continue
         if "probability" in info.keys():
             probability = info["probability"]["value"]
@@ -437,22 +438,22 @@ def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
             + (origin.longitude_errors.uncertainty * deg_longitude_km) ** 2
         )
         method = "origin_errors"
-    except:
+    except (AttributeError, TypeError):
         try:
             erh = origin.origin_uncertainty.horizontal_uncertainty / 1000.0
             method = "origin_uncertainty"
-        except:
+        except (AttributeError, TypeError):
             erh = None
             method = "unknown"
 
     try:
         erz = origin.depth_errors.uncertainty / 1000.0
         method = "origin_errors"
-    except:
+    except (AttributeError, TypeError):
         try:
             erz = origin.origin_uncertainty.depth_uncertainty / 1000.0
             method = "origin_uncertainty"
-        except:
+        except (AttributeError, TypeError):
             erz = None
             method = "unknown"
 
@@ -655,9 +656,10 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
                     "SELECT event_id FROM picks WHERE id = ?",
                     (pick.resource_id.id,),
                 )
-                event_id = cursor.fetchone()[0]
+                row = cursor.fetchone()
+                existing_event_id = row[0] if row else "unknown"
                 logger.warning(
-                    f"[{event.resource_id.id}] ID '{pick.resource_id.id}' already exists in event {event_id}. Pick will not be inserted."
+                    f"[{event.resource_id.id}] ID '{pick.resource_id.id}' already exists in event {existing_event_id}. Pick will not be inserted."
                 )
                 continue
 
@@ -740,7 +742,7 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
 
     try:
         execute_with_retry(conn, insert_event_data)
-        #insert_event_data()
+        # insert_event_data()
     except Exception as e:
         logger.error(f"Failed to insert event {event.resource_id.id}: {e}")
         raise
@@ -1103,7 +1105,8 @@ def export_sqlite_to_quakeml(
             cursor.execute(
                 count_query, (start_time, end_time) if start_time and end_time else ()
             )
-            count = cursor.fetchone()[0]
+            row = cursor.fetchone()
+            count = row[0] if row else 0
             logger.info(f"Processing {count} events from {start_time} to {end_time}")
 
             query = (
@@ -1191,7 +1194,8 @@ def create_schema(db_path: str) -> sqlite3.Connection:
         cursor.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spatial_ref_sys';"
         )
-        if cursor.fetchone()[0] == 0:
+        row = cursor.fetchone()
+        if row is None or row[0] == 0:
             logger.info(f"Initializing SpatiaLite metadata : {db_path}")
             cursor.execute("SELECT InitSpatialMetadata();")
 
@@ -1211,7 +1215,8 @@ def create_schema(db_path: str) -> sqlite3.Connection:
         cursor.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='idx_origins_geometry';"
         )
-        if cursor.fetchone()[0] == 0:
+        row = cursor.fetchone()
+        if row is None or row[0] == 0:
             try:
                 logger.info(
                     "Creating spatial index for 'geometry' column in 'origins' table..."
@@ -1482,38 +1487,78 @@ def register_geometry_for_view(
     if not cursor.fetchone():
         raise ValueError(f"The view '{view_name}' does not exist.")
 
-    # Check if the geometry is already registered
-    cursor.execute(
-        "SELECT * FROM geometry_columns WHERE f_table_name=? AND f_geometry_column=?;",
-        (view_name, geometry_column),
-    )
-    if cursor.fetchone():
-        logger.info(
-            f"Geometry column '{geometry_column}' is already registered for view '{view_name}' ... removing it."
+    # Clean previous registrations (if any) in both tables to avoid duplicates
+    try:
+        cursor.execute(
+            "DELETE FROM views_geometry_columns WHERE view_name = ?;",
+            (view_name,),
         )
-        # Remove the existing registration manually
+    except Exception as e:
+        logger.debug(f"No views_geometry_columns cleanup needed: {e}")
+
+    try:
+        # In case older code incorrectly registered the view in geometry_columns
+        cursor.execute(
+            "DELETE FROM geometry_columns WHERE f_table_name = ?;",
+            (view_name,),
+        )
+    except Exception as e:
+        logger.debug(f"No geometry_columns cleanup needed: {e}")
+
+    # Register the view in views_geometry_columns
+    # Map the view's geometry to the base table 'origins'.
+    base_table = "origins"
+    base_geom_col = "geometry"
+    view_rowid_col = "origin_id"  # provided by EVENT_COORDINATES_VIEW
+
+    logger.info(
+        f"Registering view geometry: view='{view_name}', geom='{geometry_column}', base='{base_table}.{base_geom_col}', rowid='{view_rowid_col}'"
+    )
+
+    # Detect schema of views_geometry_columns and insert accordingly
+    cursor.execute("PRAGMA table_info(views_geometry_columns);")
+    vg_cols = [row[1] for row in cursor.fetchall()]
+
+    if {"geometry_type", "coord_dimension", "srid"}.issubset(set(vg_cols)):
+        # Newer schema with explicit geometry metadata
         cursor.execute(
             """
-            DELETE FROM geometry_columns
-            WHERE f_table_name=? AND f_geometry_column=?;
+            INSERT INTO views_geometry_columns (
+                view_name, view_geometry, view_rowid,
+                f_table_name, f_geometry_column,
+                read_only, geometry_type, coord_dimension, srid
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?);
             """,
-            (view_name, geometry_column),
+            (
+                view_name,
+                geometry_column,
+                view_rowid_col,
+                base_table,
+                base_geom_col,
+                geom_type,
+                coord_dim,
+                srid,
+            ),
         )
-
-    # Register the geometry column
-    logger.info(
-        f"Registering geometry column '{geometry_column}' for view '{view_name}'..."
-    )
-    cursor.execute(
-        """
-        INSERT INTO geometry_columns (
-            f_table_name, f_geometry_column, geometry_type, coord_dimension, srid, spatial_index_enabled
-        ) VALUES (?, ?, ?, ?, ?, 0);
-        """,
-        (view_name, geometry_column, geom_type, coord_dim, srid),
-    )
+    else:
+        # Older schema without geometry_type/coord_dimension/srid
+        cursor.execute(
+            """
+            INSERT INTO views_geometry_columns (
+                view_name, view_geometry, view_rowid,
+                f_table_name, f_geometry_column, read_only
+            ) VALUES (?, ?, ?, ?, ?, 1);
+            """,
+            (
+                view_name,
+                geometry_column,
+                view_rowid_col,
+                base_table,
+                base_geom_col,
+            ),
+        )
     conn.commit()
-    logger.info("Geometry column registered successfully.")
+    logger.info("View geometry registered successfully in views_geometry_columns.")
 
 
 def import_catalog_object_to_sqlite_from_file(
@@ -1533,7 +1578,8 @@ def import_catalog_object_to_sqlite_from_file(
     # Ensure the database file exists
     if not os.path.exists(db_path):
         try:
-            open(db_path, "w").close()
+            with open(db_path, "w"):
+                pass  # Create empty file
         except Exception as e:
             logging.error(f"Cannot create or modify database file {db_path}: {e}")
             raise
@@ -1561,7 +1607,11 @@ def import_catalog_object_to_sqlite_from_file(
             logging.warning(f"[Attempt {attempt}/{retries}] Database error: {e}")
 
             if attempt < retries:
-                wait_time = delay * (2 ** (attempt - 1)) if backoff == "exponential" else delay * attempt
+                wait_time = (
+                    delay * (2 ** (attempt - 1))
+                    if backoff == "exponential"
+                    else delay * attempt
+                )
                 logging.warning(f"Waiting {wait_time} second(s) before retrying...")
                 time.sleep(wait_time)
 
@@ -1673,6 +1723,9 @@ def export_view_to_csv_exclude_geometry(
     """
     logger.info(f"Exporting view '{view_name}' to '{output_csv}' ...")
 
+    # Validate view name to prevent SQL injection
+    view_name = validate_sql_identifier(view_name)
+
     try:
         conn = create_safe_connection(db_path, logging)
         spatialite_loaded = load_spatialite(conn, logging)
@@ -1759,7 +1812,7 @@ def export_view_to_csv_exclude_geometry(
                             processed_row[time_idx] = UTCDateTime(
                                 processed_row[time_idx]
                             ).isoformat(sep=" ")
-                        except:
+                        except (ValueError, TypeError):
                             pass  # Keep original value if conversion fails
 
                     # Process numeric columns
@@ -1886,10 +1939,9 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
     Add discrimination info to the event table from a CSV file.
 
     Args:
-        db_path (str): Path to the SQLite database.
+        conn: SQLite database connection
         csv_file (str): Path to the CSV file containing discrimination info.
     """
-    cursor = conn.cursor()
 
     try:
         discrimination_df = pd.read_csv(csv_file)
@@ -1897,80 +1949,94 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
         logger.error(f"Error reading CSV file '{csv_file}': {e}")
         return
 
-    # check if the columns exist, and print the missing columns
-    if not all(
-        col in discrimination_df.columns
-        for col in [
+    cursor = conn.cursor()
+    try:
+        # Start transaction
+        cursor.execute("BEGIN TRANSACTION")
+
+        # Check if the columns exist
+        required_columns = [
             "event_id",  # event_id
             "predhdq50",  # event_type
             "EqProbaPred hdq50",  # discrimination_probability
             "proba_count",  # discrimination_station_count
             "hdq50mad",  # discrimination_certainty
         ]
-    ):
-        # print the missing columns
-        logger.error(f"CSV file '{csv_file}' is missing required columns.")
-        logger.error(
-            f"{RED}Required columns: 'event_id', 'predhdq50', 'EqProbaPred hdq50', 'proba_count', 'hdq50mad'{RESET}"
-        )
-        return
 
-    logger.info(f"Adding discrimination info from '{csv_file}' ...")
+        missing_columns = [
+            col for col in required_columns if col not in discrimination_df.columns
+        ]
+        if missing_columns:
+            logger.error(
+                f"CSV file '{csv_file}' is missing required columns: {', '.join(missing_columns)}"
+            )
+            logger.error(f"{RED}Required columns: {', '.join(required_columns)}{RESET}")
+            cursor.execute("ROLLBACK")
+            return
 
-    # Update the event table with discrimination info
-    for index, row in discrimination_df.iterrows():
-        event_id = row["event_id"]
-        # hdq50mad is the median absolute deviation of hdq50,
-        # used as a measure of certainty,
-        # the lower the value the more certain the prediction
-        certainty = row["hdq50mad"]
-        probability = (
-            row["EqProbaPred hdq50"]
-            if row["EqProbaPred hdq50"] > 0.5
-            else 1 - row["EqProbaPred hdq50"]
-        )
-        station_count = row["proba_count"]
-        predhdq50 = row["predhdq50"]
+        logger.info(f"Adding discrimination info from '{csv_file}'...")
 
-        # Determine the event type based on the probability
-        if predhdq50 == 0:
-            event_type = "earthquake"
-        elif predhdq50 == 1:
-            event_type = "quarry blast"
+        # Prepare data for batch update
+        updates = []
+        for _, row in discrimination_df.iterrows():
+            try:
+                event_id = row["event_id"]
+                certainty = row["hdq50mad"]
+                probability = (
+                    row["EqProbaPred hdq50"]
+                    if row["EqProbaPred hdq50"] > 0.5
+                    else 1 - row["EqProbaPred hdq50"]
+                )
+                station_count = row["proba_count"]
+                predhdq50 = row["predhdq50"]
+
+                # Determine event type
+                event_type = "unknown"
+                if predhdq50 == 0:
+                    event_type = "earthquake"
+                elif predhdq50 == 1:
+                    event_type = "quarry blast"
+
+                updates.append(
+                    (event_type, probability, station_count, certainty, event_id)
+                )
+
+            except Exception as e:
+                logger.warning(f"Error processing row {_}: {e}")
+                continue
+
+        # Perform batch update
+        if updates:
+            try:
+                cursor.executemany(
+                    """
+                    UPDATE events
+                    SET event_type = ?,
+                        discrimination_probability = ?,
+                        discrimination_station_count = ?,
+                        discrimination_certainty = ?
+                    WHERE event_id = ?
+                    """,
+                    updates,
+                )
+                logger.info(f"Updated {len(updates)} events with discrimination info")
+                conn.commit()
+
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"Error updating events: {e}")
+                raise
         else:
-            # TODO: fix this in spectrocnn when station_count is very low
-            event_type = "unknown"
+            logger.warning("No valid updates to process")
+            conn.rollback()
 
-        logger.debug(
-            f"event_id: {event_id}, event_type: {event_type}, probability: {probability}, station_count: {station_count}, certainty: {certainty}"
-        )
-
-        # Check if the event exists
-        cursor.execute("SELECT 1 FROM events WHERE event_id = ?", (event_id,))
-        if not cursor.fetchone():
-            logger.warning(f"Event ID {event_id} not found in database, skipping...")
-            continue
-
-        # Update the existing event
-        cursor.execute(
-            """
-            UPDATE events
-            SET event_type = ?,
-                discrimination_probability = ?,
-                discrimination_station_count = ?,
-                discrimination_certainty = ?
-            WHERE event_id = ?
-            """,
-            (event_type, probability, station_count, certainty, event_id),
-        )
-
-        # Check if the update affected any rows
-        if cursor.rowcount == 0:
-            logger.warning(f"No rows were updated for event_id: {event_id}")
-        else:
-            logger.debug(f"Successfully updated event_id: {event_id}")
-
-    conn.commit()
+    except Exception as e:
+        logger.error(f"Unexpected error in add_discrimination_info: {e}")
+        try:
+            conn.rollback()
+        except Exception as rollback_error:
+            logger.error(f"Error during rollback: {rollback_error}")
+        raise
 
 
 def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
@@ -2673,7 +2739,7 @@ def main():
                 conn = create_schema(args.database)
             except Exception as e:
                 logger.error(f"Error creating schema: {e}")
-                raise e
+                raise
 
             for input_file in args.input:
                 print(f"Importing {input_file}...")
