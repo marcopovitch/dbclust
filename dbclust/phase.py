@@ -134,7 +134,8 @@ class Phase:
         # Update instance attributes with the fetched data
         self.coord = {"latitude": lat, "longitude": lon, "elevation": elev}
         self.location = loc or self.location
-        self.channel = chans[-1] if "P" in self.phase.upper() else chans[0]
+        if chans:
+            self.channel = chans[-1] if "P" in self.phase.upper() else chans[0]
 
     @staticmethod
     def _fallback_coordinates(
@@ -307,7 +308,7 @@ def inventory2df(inventory: Inventory) -> pd.DataFrame:
 
 def get_missing_info_from_df(df: pd.DataFrame, loc: str, chan: str) -> List[str]:
     if loc is not None and chan is not None:
-        df.loc[df["Location"] == loc, :]
+        df = df.loc[df["Location"] == loc, :]
         # channel is specified: use it to filter
         re_chan = f"^{chan}"
         df = df[df["Channel"].str.contains(re_chan, regex=True)]
@@ -316,7 +317,7 @@ def get_missing_info_from_df(df: pd.DataFrame, loc: str, chan: str) -> List[str]
         try:
             # sometimes SampleRate is not defined
             max_sample_rate = df["SampleRate"].max()
-        except:
+        except (KeyError, TypeError):
             pass
         else:
             df = df[df["SampleRate"] == max_sample_rate]
