@@ -37,6 +37,15 @@ from dbclust.db import duckdb_init_parquet
 from dbclust.inject_spatialite import create_schema
 from dbclust.read_yml import read_config
 
+
+# Configure icecream to flush output immediately (needed for Parsl)
+def _ic_output(s):
+    sys.stderr.write(s + '\n')
+    sys.stderr.flush()
+
+
+ic.configureOutput(outputFunction=_ic_output)
+
 # default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("dbclust_config")
@@ -64,8 +73,8 @@ class FilesConfig:
         for dir in [self.tmp_path, self.obs_path]:
             try:
                 os.makedirs(dir, exist_ok=True)
-            except Exception as e:
-                raise e(f"{dir}")
+            except OSError as e:
+                raise OSError(f"Cannot create directory {dir}: {e}") from e
 
 
 @dataclass
@@ -116,8 +125,8 @@ class PickConfig:
             for f in self.filenames:
                 try:
                     fastparquet.ParquetFile(f)
-                except:
-                    raise ValueError(f"{f} is not parquet formated !")
+                except Exception as e:
+                    raise ValueError(f"{f} is not parquet formated: {e}")
 
             # add all parquet files in the directory and subdirectories for duckdb
             self.filenames = [
@@ -133,7 +142,7 @@ class PickConfig:
             #   month,year
             try:
                 for f in self.filenames:
-                    with open(f, "r") as file:
+                    with open(f, "r", encoding="utf-8") as file:
                         first_line = file.readline().strip()
                         nbcol = len(first_line.split(","))
                         if nbcol != 9 and nbcol != 11:
@@ -141,8 +150,8 @@ class PickConfig:
                                 f"{f} is not a csv file or some columns are missing ({nbcol}) !\n"
                                 f"{first_line}"
                             )
-            except Exception as e:
-                raise e
+            except Exception:
+                raise
 
         # set min, max time from data
         ic(self.filenames, self.type)
@@ -153,7 +162,11 @@ class PickConfig:
             conn = duckdb_init(self.filenames, self.type)
 
         rqt = "SELECT MIN(phase_time), MAX(phase_time) FROM PICKS"
-        min, max = conn.sql(rqt).fetchall().pop()
+        results = conn.sql(rqt).fetchall()
+        if not results:
+            conn.close()
+            raise ValueError(f"No data found in {self.filenames}")
+        min, max = results[0]
         conn.close()
 
         # check min, max time exists
@@ -326,8 +339,8 @@ class StationConfig:
                     raise FileNotFoundError(f"File {f} does not exist !")
                 try:
                     df = pd.read_csv(f, dtype=dtype_dict)
-                except Exception as e:
-                    raise e
+                except Exception:
+                    raise
 
                 # if no elevation defined set to 0.0
                 df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
@@ -511,7 +524,7 @@ class CatalogConfig:
                 try:
                     os.makedirs(self.qml_path)
                 except OSError as e:
-                    raise e(f"Can't create directory {self.qml_path}")
+                    raise OSError(f"Can't create directory {self.qml_path}: {e}") from e
 
             if not os.access(self.qml_path, os.W_OK):
                 raise PermissionError(f"Can't write in {self.qml_path} directory.")
@@ -523,7 +536,7 @@ class CatalogConfig:
                 try:
                     os.makedirs(self.sqlite_db_path)
                 except OSError as e:
-                    raise e(f"Can't create directory {self.sqlite_db_path}")
+                    raise OSError(f"Can't create directory {self.sqlite_db_path}: {e}") from e
 
             if not os.access(self.sqlite_db_path, os.W_OK):
                 raise PermissionError(
@@ -909,6 +922,7 @@ class DBClustConfig:
             "pick",
             "time",
             "catalog",
+            "station",
         ]
 
         self.filename = filename
@@ -980,10 +994,10 @@ def is_valid_url(url: str, syntax_only: bool = False) -> bool:
         if parsed_url.scheme and parsed_url.netloc:
             if syntax_only:
                 return True
-            with urlopen(url):
+            with urlopen(url, timeout=10):
                 pass
             return True
-    except URLError:
+    except (URLError, TimeoutError):
         pass
 
     return False
