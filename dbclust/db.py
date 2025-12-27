@@ -1,7 +1,25 @@
 #!/usr/bin/env python
+import re
 from typing import List
 
 import duckdb
+
+
+def validate_sql_identifier(name: str) -> str:
+    """Validate and sanitize SQL identifier (table/view/column name).
+
+    Args:
+        name: The SQL identifier to validate.
+
+    Returns:
+        The validated identifier (unchanged if valid).
+
+    Raises:
+        ValueError: If the name contains invalid characters.
+    """
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", name):
+        raise ValueError(f"Invalid SQL identifier: {name}")
+    return name
 
 
 def duckdb_init(filenames: List[str], file_type: str):
