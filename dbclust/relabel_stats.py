@@ -82,7 +82,7 @@ def export_phase_relabeling(cat: Catalog = None) -> pd.DataFrame:
             for c in arrival.comments:
                 try:
                     info = json.loads(c.text)
-                except:
+                except (json.JSONDecodeError, TypeError):
                     continue
 
                 if "relabel" in info.keys():
