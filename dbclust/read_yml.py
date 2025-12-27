@@ -7,7 +7,7 @@ def ymljoin(loader, node):
 
 
 def yml_read_config(filename: str):
-    with open(filename, "r") as ymlfile:
+    with open(filename, "r", encoding="utf-8") as ymlfile:
         cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
     return cfg
 
