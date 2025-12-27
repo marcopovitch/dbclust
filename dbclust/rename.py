@@ -41,7 +41,11 @@ def apply_regex_to_row(row, patterns: Optional[List[Dict[str, str]]]) -> tuple:
             new_full_key = re.sub(pattern, replacement, full_key)
             if new_full_key != full_key:
                 logger.info(f"match found: {full_key} -> {new_full_key}")
-                net, sta, loc, chan = new_full_key.split(".")
+                parts = new_full_key.split(".")
+                if len(parts) != 4:
+                    logger.warning(f"Invalid rename result: {new_full_key}, expected 4 parts")
+                    continue
+                net, sta, loc, chan = parts
                 station_id = f"{net}.{sta}"
                 channel = f"{loc}.{chan}"
                 return station_id, channel
