@@ -26,6 +26,7 @@ import parsl
 from parsl.app.app import python_app
 from parsl.config import Config
 from parsl.executors import ThreadPoolExecutor
+from concurrent.futures import as_completed
 
 from icecream import ic
 
@@ -369,6 +370,8 @@ def dbclust(
         # remove picks in respect to the number of station per minutes in df_subset
         if cfg.station.frequency_threshold:
             total_duration_in_minutes = (end - begin).total_seconds() / 60
+            if total_duration_in_minutes == 0:
+                total_duration_in_minutes = 1.0  # Avoid division by zero
             grouped = df_subset.groupby("station_id")
             station_counts = grouped.size()
             # min_time = grouped["phase_time"].min()
@@ -505,12 +508,15 @@ def dbclust(
             ):
                 origin = event.preferred_origin()
                 picks = get_picks_from_event(event, origin, None)
+                if not picks:
+                    logger.warning(f"Event {event.resource_id.id} has no picks, skipping")
+                    continue
                 _, _, first_pick_time = picks[0]
                 _, _, last_pick_time = picks[-1]
 
                 # check if the event is in the overlapped zone
                 event_in_overlapped_zone = False
-                if short_window == False:
+                if not short_window:
                     next_begin = end - overlap_timedelta
                     if first_pick_time > next_begin:
                         event_in_overlapped_zone = True
@@ -701,6 +707,7 @@ def profiled_run_dbclust_task(cfg, job_index):
     from dbclust.runner_parsl import dbclust
 
     process = psutil.Process()
+    peak_rss_lock = threading.Lock()
     peak_rss = {"value": 0}
     stop_event = threading.Event()
 
@@ -708,13 +715,14 @@ def profiled_run_dbclust_task(cfg, job_index):
         while not stop_event.is_set():
             try:
                 rss = process.memory_info().rss
-                if rss > peak_rss["value"]:
-                    peak_rss["value"] = rss
+                with peak_rss_lock:
+                    if rss > peak_rss["value"]:
+                        peak_rss["value"] = rss
             except Exception:
                 pass
             time.sleep(0.05)  # every 50 ms
 
-    monitor_thread = threading.Thread(target=monitor)
+    monitor_thread = threading.Thread(target=monitor, daemon=True)
     monitor_thread.start()
 
     try:
@@ -771,6 +779,7 @@ def run_with_parsl(cfg: DBClustConfig, profile_csv_path="task_profiles.csv"):
     config = Config(
         executors=[executor],
         run_dir=cfg.parallel._temp_dir if cfg.parallel._temp_dir else "runinfo",
+        retries=3,  # Retry failed tasks up to 3 times
     )
 
     # Load Parsl configuration
@@ -778,8 +787,11 @@ def run_with_parsl(cfg: DBClustConfig, profile_csv_path="task_profiles.csv"):
 
     logger.info(f"Parsl initialized with {cfg.parallel.n_workers} workers")
 
-    # Shuffle and submit tasks
+    # Build mapping of task_index -> time partition for progress tracking
     indexed_partitions = list(enumerate(cfg.parallel.time_partitions, start=0))
+    partition_map = {idx: (start, end) for idx, (start, end) in indexed_partitions}
+
+    # Shuffle for load balancing
     random.shuffle(indexed_partitions)
 
     futures: List = []
@@ -788,29 +800,60 @@ def run_with_parsl(cfg: DBClustConfig, profile_csv_path="task_profiles.csv"):
         futures.append(run_dbclust_task(cfg, idx))
         # futures.append(profiled_run_dbclust_task(cfg, idx))
 
-    # Wait for all tasks to complete and collect results
-    results = [f.result() for f in futures]
-
-    # Extract results and profiling data
+    # Process results as they complete (progressive memory release)
     completed_results = []
     task_profiles = []
-    for r in results:
-        task_profiles.append(
-            {
+    nb_tasks = len(futures)
+
+    # CSV fieldnames with progress tracking columns
+    csv_fieldnames = [
+        "task_index",
+        "duration_sec",
+        "peak_memory_mb",
+        "completed_count",
+        "total_tasks",
+        "progress_pct",
+        "completion_time",
+        "time_partition_start",
+        "time_partition_end",
+    ]
+
+    # Write CSV header immediately
+    with open(profile_csv_path, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=csv_fieldnames)
+        writer.writeheader()
+
+    for completed_future in as_completed(futures):
+        try:
+            r = completed_future.result()
+            completed_count = len(completed_results) + 1
+            progress_pct = round(100.0 * completed_count / nb_tasks, 1)
+            partition_start, partition_end = partition_map[r["task_index"]]
+
+            task_profile = {
                 "task_index": r["task_index"],
                 "duration_sec": round(r["duration_sec"], 2),
                 "peak_memory_mb": round(r["peak_memory_mb"], 2),
+                "completed_count": completed_count,
+                "total_tasks": nb_tasks,
+                "progress_pct": progress_pct,
+                "completion_time": pd.Timestamp.now().isoformat(),
+                "time_partition_start": str(partition_start),
+                "time_partition_end": str(partition_end),
             }
-        )
-        completed_results.append(r["result"])
+            task_profiles.append(task_profile)
+            completed_results.append(r["result"])
 
-    # Write CSV
-    with open(profile_csv_path, "w", newline="") as csvfile:
-        writer = csv.DictWriter(
-            csvfile, fieldnames=["task_index", "duration_sec", "peak_memory_mb"]
-        )
-        writer.writeheader()
-        writer.writerows(task_profiles)
+            # Append to CSV incrementally
+            with open(profile_csv_path, "a", newline="", encoding="utf-8") as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=csv_fieldnames)
+                writer.writerow(task_profile)
+
+            logger.info(
+                f"Task {r['task_index']} completed ({completed_count}/{nb_tasks} - {progress_pct}%)"
+            )
+        except Exception as e:
+            logger.error(f"Task failed with error: {e}")
 
     logger.info(f"Profiling data saved to {profile_csv_path}")
     logger.info("DBClust completed!")
