@@ -45,22 +45,22 @@ def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
             + (origin.longitude_errors.uncertainty * deg_longitude_km) ** 2
         )
         method = "origin_errors"
-    except:
+    except (AttributeError, TypeError):
         try:
             erh = origin.origin_uncertainty.horizontal_uncertainty / 1000.0
             method = "origin_uncertainty"
-        except:
+        except (AttributeError, TypeError):
             erh = np.nan
             method = "unknown"
 
     try:
         erz = origin.depth_errors.uncertainty / 1000.0
         method = "origin_errors"
-    except:
+    except (AttributeError, TypeError):
         try:
             erz = origin.origin_uncertainty.depth_uncertainty / 1000.0
             method = "origin_uncertainty"
-        except:
+        except (AttributeError, TypeError):
             erz = np.nan
             method = "unknown"
 
