@@ -102,6 +102,31 @@ docker-compose up -d fdsnws
 and use your browser to access to the fdsnws service at `http://localhost:8000`.
 
 
+## Updating Git Dependencies with uv
+
+When using `dbclust` as a git dependency in another project (e.g., `dbclust @ git+https://github.com/marcopovitch/dbclust@dbclust2`), `uv sync` will **not** automatically fetch new commits. The `uv.lock` file pins dependencies to specific commit hashes for reproducibility.
+
+To update to the latest version:
+
+```bash
+# Update only dbclust
+uv lock --upgrade-package dbclust
+uv sync
+
+# Or update all packages
+uv lock --upgrade
+uv sync
+```
+
+If you encounter issues, you can reset everything:
+
+```bash
+# Nuclear option: delete lock, venv, and cache
+rm -rf .venv uv.lock
+uv cache clean
+uv sync
+```
+
 ## Usage
 
 ### Command-line Arguments
