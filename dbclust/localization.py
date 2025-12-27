@@ -396,12 +396,12 @@ class NllLoc(object):
 
         try:
             cat = self.nll_localisation(picks=myevent.picks)
-        except LocalizationError as e:
-            raise e
+        except LocalizationError:
+            raise
         except Exception as e:
             logger.error(f"Unexpected error during localization: {e}")
             traceback.print_exc()
-            raise e
+            raise
 
         # Add the previous event or origin back to this event.
         if cat:
@@ -463,12 +463,10 @@ class NllLoc(object):
             logger.error("No NLL_OBS file given !")
             return Catalog()
 
-        if double_pass != None:
+        if double_pass is not None:
             # force double pass
             self.double_pass = double_pass
-        else:
-            # use the value defined in locator
-            pass
+        # else: use the value defined in locator
 
         # use default template
         if not force_template:
@@ -498,7 +496,7 @@ class NllLoc(object):
         preloc_origin = None
         # get velocity model to use thanks to preliminary location
         if os.path.exists(vel_file):
-            with open(vel_file) as vel:
+            with open(vel_file, encoding="utf-8") as vel:
                 model_id = vel.readline().strip()
                 nll_template = vel.readline().strip()
 
@@ -566,9 +564,9 @@ class NllLoc(object):
         # Generate NLL configuration file
         try:
             self.replace(nll_template, conf_file, tags)
-        except Exception as e:
+        except Exception:
             ic(nll_template, conf_file, tags)
-            raise e
+            raise
 
         ####################
         # NLL Localization #
@@ -1497,7 +1495,7 @@ class NllLoc(object):
             None
         """
         try:
-            with open(templatefile) as file_:
+            with open(templatefile, encoding="utf-8") as file_:
                 template = Template(file_.read())
         except FileNotFoundError:
             logger.error(f"Template file {templatefile} not found.")
@@ -1516,7 +1514,7 @@ class NllLoc(object):
         for e in self.catalog.events:
             try:
                 nll_obs = self.event_cluster_mapping[e.resource_id.id]
-            except:
+            except KeyError:
                 nll_obs = ""
             show_event(e, nll_obs)
 
@@ -1704,7 +1702,7 @@ def show_bulletin(
         for c in arrival.comments:
             try:
                 info = json.loads(c.text)
-            except:
+            except (json.JSONDecodeError, TypeError):
                 continue
             relabel = ""
             if "relabel" in info.keys():
@@ -1720,7 +1718,7 @@ def show_bulletin(
         for c in pick.comments:
             try:
                 info = json.loads(c.text)
-            except:
+            except (json.JSONDecodeError, TypeError):
                 continue
             # decode : {'probability': {'name': 'RENASS', 'value': 0.68}}
             if "probability" in info.keys():
@@ -1801,12 +1799,12 @@ def reloc_fdsn_event(
         logger.debug(link)
 
         try:
-            with urllib.request.urlopen(link) as f:
+            with urllib.request.urlopen(link, timeout=30) as f:
                 cat = read_events(f.read())
         except Exception as e:
             raise ValueError(
-                f"Error with {link}, cant't get/read eventid {eventid} ({e})"
-            )
+                f"Error with {link}, can't get/read eventid {eventid} ({e})"
+            ) from e
 
         if not cat:
             raise ValueError(f"[{eventid}] no such eventid !")
@@ -1849,12 +1847,12 @@ def reloc_fdsn_event(
 
     try:
         cat = locator.reloc_event(event)
-    except LocalizationError as e:
-        raise e
+    except LocalizationError:
+        raise
     except Exception as e:
         logger.exception(f"Unexpected localization error for event {eventid}: {e}")
         traceback.print_exc()
-        raise e
+        raise
 
     return cat
 
@@ -1878,7 +1876,7 @@ def make_preloc_origin(
         return None, None
 
     logger.debug(f"Preloc: reading {o_parameters_file} and {picks_file}")
-    with open(o_parameters_file) as vel:
+    with open(o_parameters_file, encoding="utf-8") as vel:
         _ = vel.readline().strip()
         _ = vel.readline().strip()
         preloc_time = UTCDateTime(dateparser.parse(vel.readline().strip()))
@@ -1956,15 +1954,10 @@ def make_preloc_origin(
         pick.creation_info = CreationInfo(agency_id=preloc_origin.agency_id)
         # pick.evaluation_mode = "automatic"
         # pick.method_id = p.method
-        net, sta = row["station"].split(".")[:2]
-        try:
-            loc = row["station"].split(".")[2]
-        except:
-            loc = ""
-        try:
-            chan = row["station"].split(".")[3]
-        except:
-            chan = ""
+        parts = row["station"].split(".")
+        net, sta = parts[:2] if len(parts) >= 2 else (parts[0] if parts else "", "")
+        loc = parts[2] if len(parts) > 2 else ""
+        chan = parts[3] if len(parts) > 3 else ""
 
         pick.waveform_id = WaveformStreamID(
             network_code=net,
