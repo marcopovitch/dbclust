@@ -8,8 +8,12 @@ import geopandas as gpd
 import pandas as pd
 from shapely import wkb
 
+from dbclust.db import validate_sql_identifier
+
 
 def create_filtered_view(conn: sqlite3.Connection, shape_table: str) -> None:
+    # Validate table name to prevent SQL injection
+    shape_table = validate_sql_identifier(shape_table)
     query = f"""
     CREATE VIEW IF NOT EXISTS event_coordinates_filtered AS
     SELECT
@@ -88,6 +92,8 @@ def get_spatialite_connection(db_path: str) -> sqlite3.Connection:
 
 def import_shapefile_to_db(conn: sqlite3.Connection, shapefile_path: str, table_name: str) -> None:
     """Import a shapefile into the SQLite database with Spatialite."""
+    # Validate table name to prevent SQL injection
+    table_name = validate_sql_identifier(table_name)
 
     # Read the shapefile with geopandas
     gdf = gpd.read_file(shapefile_path)
