@@ -846,12 +846,30 @@ class PyoctoConfig:
 
 
 @dataclass
+class SlurmConfig:
+    """Configuration for SLURM cluster execution with Parsl."""
+
+    enabled: bool = False
+    partition: str = "grant"
+    account: Optional[str] = None
+    nodes_per_block: int = 1
+    cores_per_node: int = 32
+    max_workers_per_node: int = 32
+    walltime: str = "72:00:00"
+    worker_init: str = "module load python; conda activate dbclust"
+    scheduler_options: str = ""
+    max_blocks: int = 10
+    min_blocks: int = 0
+
+
+@dataclass
 class ParallelConfig:
     n_workers: int = None
     partition_duration: str = "1D"
     nb_partitions: Optional[int] = None
     time_partitions: Optional[List] = None
     _temp_dir: Optional[str] = "/tmp/ray"
+    executor: Optional[str] = "parsl_thread"  # parsl_thread, parsl_hte, ray, dask
 
     def __post_init__(self):
         if not self.n_workers:
@@ -912,6 +930,7 @@ class DBClustConfig:
     zones: Zones
     parallel: ParallelConfig
     fdsnws_event: FdsnConfig
+    slurm: Optional[SlurmConfig] = None
 
     def __init__(self, filename, config_type="std") -> None:
         # config_type can be "std" or "reloc"
@@ -924,6 +943,8 @@ class DBClustConfig:
             "catalog",
             "station",
         ]
+        # Optional config sections (not required in YAML)
+        self.optional_keys = ["slurm"]
 
         self.filename = filename
         logger.info(filename)
@@ -938,6 +959,20 @@ class DBClustConfig:
                 # skip some config not needed for reloc
                 logger.warning(f"Ignoring section '{key}' in yaml file !")
                 continue
+            elif key in self.optional_keys:
+                # Optional sections: use defaults if not in YAML
+                if key in self.yaml_data.keys():
+                    # Extract inner type from Optional[X] -> X
+                    inner_type = data_class.__args__[0] if hasattr(data_class, "__args__") else data_class
+                    setattr(
+                        self,
+                        key,
+                        from_dict(data_class=inner_type, data=self.yaml_data[key]),
+                    )
+                else:
+                    # Use default values from dataclass
+                    inner_type = data_class.__args__[0] if hasattr(data_class, "__args__") else data_class
+                    setattr(self, key, inner_type())
             else:
                 if key not in self.yaml_data.keys():
                     raise ValueError(f"Missing section '{key}' in yaml file !")
