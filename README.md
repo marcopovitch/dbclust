@@ -180,7 +180,11 @@ parallel:
 
 ### macOS Considerations
 
-On macOS, Python's multiprocessing has known limitations due to the default `spawn` method and security restrictions. **Running DBClust inside Docker is strongly recommended on macOS** for reliable parallel execution.
+On macOS, using multiprocessing-based parallelism runtimes (Ray, Dask, Parsl HTE) in combination with multithreaded numerical libraries (NumPy/SciPy/ObsPy using OpenBLAS, MKL, or Accelerate) can cause native crashes (Bus error, Segmentation fault).
+
+This issue is due to unsafe interactions between fork/spawn and BLAS libraries, which are not fully fork-safe on macOS. This is not a Python bug but a platform limitation.
+
+**Running DBClust inside Docker is strongly recommended on macOS** for reliable parallel execution.
 
 #### Recommended Setup for macOS
 
@@ -191,6 +195,20 @@ On macOS, Python's multiprocessing has known limitations due to the default `spa
    - `parsl_hte` - Good multi-process parallelism
 
 The `parsl_thread` executor is limited by Python's Global Interpreter Lock (GIL) and is not recommended for CPU-intensive workloads.
+
+#### Environment Variables for Native macOS Execution
+
+If you need to run outside Docker on macOS, these environment variables limit internal multithreading in numerical libraries to avoid unsafe interactions with multiprocessing on macOS, but they do not guarantee full stability in all cases.
+
+```bash
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+```
+
+These settings restrict internal threading in OpenMP, OpenBLAS, MKL, Apple’s vecLib, and NumExpr, helping to reduce thread contention and the risk of native crashes.
 
 ### SLURM Support (Experimental)
 
@@ -233,7 +251,8 @@ slurm:
 
 ## License
 
-This project is licensed under the terms of the [LICENSE](LICENSE) file.
+MIT License with Commons Clause.
+Commercial use is prohibited without explicit permission from the author.
 
 ## Acknowledgements
 
