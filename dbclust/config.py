@@ -734,6 +734,9 @@ class Associator:
     n_p_picks: int
     n_s_picks: int
     n_p_and_s_picks: int
+    # Optional parameters to limit lat/lon ranges calculated from station coordinates
+    max_lat_range: Optional[Tuple[float, float]] = None  # (lat_min, lat_max)
+    max_lon_range: Optional[Tuple[float, float]] = None  # (lon_min, lon_max)
 
 
 @dataclass
