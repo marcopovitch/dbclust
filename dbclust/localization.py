@@ -7,7 +7,6 @@ import logging
 import os
 import re
 import shlex
-import subprocess
 import sys
 import tempfile
 import traceback
@@ -26,7 +25,6 @@ import dateparser
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from icecream import ic
 from jinja2 import Template
 from obspy import Catalog
 from obspy import read_events
@@ -43,9 +41,6 @@ from obspy.core.event import WaveformStreamID
 from obspy.geodetics import gps2dist_azimuth
 from obspy.geodetics import kilometer2degrees
 from prettytable import PrettyTable
-from shapely import distance
-from shapely import prepare
-from shapely import within
 from shapely.geometry import Point
 
 from dbclust.config import Zone
@@ -59,9 +54,6 @@ from dbclust.plot import plot_arrival_time
 from dbclust.quakeml import deduplicate_picks
 from dbclust.relabel import get_best_polygon_for_point
 from dbclust.relabel import relabel_phase_and_comment_arrival
-
-# import dask
-# import dask.bag as db
 
 # Disable warnings from obspy
 # UserWarning: Setting attribute ... which is not a default attribute
@@ -79,10 +71,6 @@ phase_order = ["Pg", "Sg", "Pn", "Sn", "P", "S"]
 # set time_weight tolerance
 time_weight_tolerance = 0.01
 
-
-import os
-import shlex
-import tempfile
 
 def safe_subprocess_run(args, *, env=None, cwd=None, text=True):
     """
@@ -518,7 +506,7 @@ class NllLoc(object):
                 preloc_origin, preloc_picks_list = make_preloc_origin(
                     vel_file, picks_file, sta_file, self.quakeml_settings
                 )
-                #logger.info("Preloc origin created: %s", preloc_origin, exc_info=True)
+                # logger.info("Preloc origin created: %s", preloc_origin, exc_info=True)
             else:
                 # pyocto has not generated a preloc (or used to relocate the event)
                 # due to clusters obtained from dbscan only.
@@ -565,7 +553,7 @@ class NllLoc(object):
         try:
             self.replace(nll_template, conf_file, tags)
         except Exception:
-            ic(nll_template, conf_file, tags)
+            logger.error(f"Failed to generate NLL config: template={nll_template}, conf={conf_file}, tags={tags}")
             raise
 
         ####################
@@ -575,38 +563,25 @@ class NllLoc(object):
         cmde = f"{self.nll_bin} {conf_file}"
         logger.debug(cmde)
 
-        result = safe_subprocess_run(            
+        result = safe_subprocess_run(
             shlex.split(cmde),
             env={"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"},
         )
-        #logger.info(f"Result of NLL localization: {result.returncode}") 
-        #logger.info(f"Output: {result.stdout}")
-        
-        # try:
-        #     result = subprocess.run(
-        #         shlex.split(cmde),
-        #         stdout=subprocess.PIPE,
-        #         stderr=subprocess.STDOUT,
-        #         text=True,
-        #     )
-
-        # except subprocess.CalledProcessError as e:
-        #     logger.error(e)
-        #     return Catalog()
-        # except Exception as e:
-        #     logger.error(e)
-        #     return Catalog()
-
-
         if result.returncode != 0:
             logger.error(
                 f"!!! Something went wrong using: {cmde}, "
                 f"returned code is {result.returncode}\n"
                 f"{result.stdout}"
             )
-            for p in picks:
+            for p in (picks if picks else []):
                 logger.error(p)
             return Catalog()
+
+        # Initialize variables that may be set conditionally in the loop
+        scatter_volume = None
+        expect_lat = None
+        expect_lon = None
+        expect_depth = None
 
         # check from stdout if there is any missing station grid file
         for line in result.stdout.splitlines():
@@ -632,8 +607,9 @@ class NllLoc(object):
                 logger.warning(f"This is not fatal: {line}")
             elif "x-sheet" in line:
                 l = line.split()
+                station_name = l[2] if len(l) > 2 else "unknown"
                 logger.warning(
-                    f"Station {l[2]} outside velocity bounding box coordinates: localization aborted by NonLinLoc !"
+                    f"Station {station_name} outside velocity bounding box coordinates: localization aborted by NonLinLoc !"
                 )
                 if self.nll_verbose:
                     print(result.stdout)
@@ -644,7 +620,7 @@ class NllLoc(object):
                 loc_method_used = (
                     self.loc_method if force_loc_method is None else force_loc_method
                 )
-                raise LocalizationError(f"using {self.loc_method} method.")
+                raise LocalizationError(f"using {loc_method_used} method.")
             elif "ERROR" in line:
                 logger.error(line)
                 if self.nll_verbose:
@@ -659,7 +635,7 @@ class NllLoc(object):
             elif "ExpectLat" in line:
                 # get expectation hypocenter
                 l = line.split()
-                if len(l) > 1:
+                if len(l) > 6:
                     expect_lat = float(l[2])
                     expect_lon = float(l[4])
                     expect_depth = float(l[6])
@@ -686,14 +662,7 @@ class NllLoc(object):
             cmde = f"{self.scat2latlon_bin} {decim_factor} {tmp_path} {tmp_path}/last"
             logger.debug(cmde)
             try:
-                result = subprocess.run(
-                    shlex.split(cmde),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
-            except subprocess.CalledProcessError as e:
-                logger.error(e)
+                result = safe_subprocess_run(shlex.split(cmde))
             except Exception as e:
                 logger.error(e)
 
@@ -740,15 +709,17 @@ class NllLoc(object):
         o.creation_info.version = pass_count + 1
 
         # store into comment scatter volume
-        o.comments.append(Comment(text='{"scatter_volume": %s}' % (scatter_volume)))
+        if scatter_volume is not None:
+            o.comments.append(Comment(text='{"scatter_volume": %s}' % (scatter_volume)))
 
         # store into comment expectation hypocenter
-        o.comments.append(
-            Comment(
-                text='{"expectation": {"latitude": %s, "longitude": %s, "depth": %s}}'
-                % (expect_lat, expect_lon, expect_depth)
+        if expect_lat is not None and expect_lon is not None and expect_depth is not None:
+            o.comments.append(
+                Comment(
+                    text='{"expectation": {"latitude": %s, "longitude": %s, "depth": %s}}'
+                    % (expect_lat, expect_lon, expect_depth)
+                )
             )
-        )
 
         if self.force_uncertainty:
             for pick in e.picks:
@@ -1039,7 +1010,9 @@ class NllLoc(object):
 
         for a in arrivals_to_unset:
             pick = get_pick_from_arrival(event, a)
-            assert pick, f"Can't find pick for arrival {a.pick_id}"
+            if pick is None:
+                logger.error(f"Can't find pick for arrival {a.pick_id}")
+                continue
 
             logger.debug(
                 f"Unset arrival time_weight due to gap_dist_max_km >= ({gap_dist_max_km} km): "
@@ -1911,13 +1884,9 @@ def make_preloc_origin(
         author = quakeml_settings["author"]
     else:
         author = "DBClust"
+
     preloc_origin.creation_info = CreationInfo(
-        agency_id=preloc_origin.agency_id,
-        author=author,
         creation_time=UTCDateTime.now(),
-    )
-    preloc_origin.creation_info = CreationInfo(
-        creation_time=UTCDateTime(),
         agency_id=preloc_origin.agency_id,
         author=author,
         version="0",
