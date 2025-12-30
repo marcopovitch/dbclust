@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import sqlite3
 import sys
@@ -251,7 +252,7 @@ def create_safe_connection(db_path: str, uri=False, logger=None):
         pragmas_outside_transaction = [
             ("journal_mode", "WAL"),  # Better concurrency
             ("synchronous", "NORMAL"),  # Good balance of safety/performance
-            ("busy_timeout", "30000"),  # Longer timeout for busy databases
+            ("busy_timeout", "60000"),  # 60s timeout for busy databases
         ]
 
         # These can be set anytime
@@ -569,16 +570,19 @@ def to_datetime(utc_datetime: UTCDateTime) -> datetime:
     )
 
 
-def execute_with_retry(conn, operation, retries=5, delay=0.1):
+def execute_with_retry(conn, operation, retries=10, delay=0.5):
     """Execute an operation with retry logic in case of database lock."""
-    while retries > 0:
+    attempts = 0
+    while attempts < retries:
         try:
             operation()
             return
         except sqlite3.OperationalError as e:
             if "locked" in str(e):
-                retries -= 1
-                time.sleep(delay)
+                attempts += 1
+                # Add random jitter to avoid synchronized retries
+                jitter = random.uniform(0, delay)
+                time.sleep(delay + jitter)
             else:
                 raise
     raise sqlite3.OperationalError("Database is locked after multiple attempts")
