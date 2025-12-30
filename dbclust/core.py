@@ -619,8 +619,8 @@ def save_catalog(
                 catalog,
                 enable_quakeml=True,
                 disable_tqdm=True,
-                retries=5,
-                delay=1,
+                retries=15,
+                delay=2,
                 backoff="exponential",
             )
         except Exception as e:
