@@ -198,8 +198,23 @@ def dbclust2pyocto(
         lon_range = (
             stations["longitude"].min() - lon_safe_range_deg,
             stations["longitude"].max() + lon_safe_range_deg,
-        ) 
-        
+        )
+
+        # Apply maximum range limits if defined in config
+        if associator_cfg.max_lat_range is not None:
+            lat_range = (
+                max(lat_range[0], associator_cfg.max_lat_range[0]),
+                min(lat_range[1], associator_cfg.max_lat_range[1]),
+            )
+            logger.debug(f"lat_range bounded by max_lat_range: {lat_range}")
+
+        if associator_cfg.max_lon_range is not None:
+            lon_range = (
+                max(lon_range[0], associator_cfg.max_lon_range[0]),
+                min(lon_range[1], associator_cfg.max_lon_range[1]),
+            )
+            logger.debug(f"lon_range bounded by max_lon_range: {lon_range}")
+
         logger.info(f"range lat: {lat_range}, lon: {lon_range}")
         
 
