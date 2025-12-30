@@ -1,16 +1,16 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from typing import List
+import logging
 from typing import Tuple
 
 import numpy as np
 from geopy.distance import geodesic
-from icecream import ic
 from obspy.core.event import Event
-from obspy.core.event import Origin
 from scipy.special import expit
 
 from dbclust.localization_error import get_erh_erz
+
+logger = logging.getLogger("dbclust")
 
 
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -31,7 +31,7 @@ def haversine_distance(lat1, lon1, lat2, lon2):
         return float("inf")
 
 
-def chauvenet_filter(data: List[float]) -> np.ndarray:
+def chauvenet_filter(data) -> np.ndarray:
     """
     Filters out data points that do not meet Chauvenet's criterion.
 
@@ -48,6 +48,10 @@ def chauvenet_filter(data: List[float]) -> np.ndarray:
     mean = np.mean(data)
     std_dev = np.std(data)
     N = len(data)
+
+    # Handle edge case: if std_dev is 0, all points are identical
+    if std_dev == 0:
+        return data
 
     # Calculate the threshold probability
     threshold_prob = 1.0 / (2 * N)
@@ -106,11 +110,15 @@ def classify_event(
             - and a textual representation of the classification.
 
     Raises:
-        ValueError: If the specified origin_id is not found in the event.
+        ValueError: If the specified origin_id is not found in the event or if no origin is available.
     """
 
     if origin_id is None:
         origin = event.preferred_origin()
+        if origin is None:
+            raise ValueError(
+                f"No preferred origin found for event {event.resource_id.id}"
+            )
     else:
         for o in event.origins:
             if o.resource_id.id == origin_id:
@@ -137,18 +145,11 @@ def classify_event(
     )
 
     if debug:
-        ic(
-            origin.quality.standard_error,
-            erh,
-            erz,
-            origin.quality.used_station_count,
-            origin.quality.azimuthal_gap,
-            origin.quality.minimum_distance * 111.1,
-            origin.depth / 1000.0,
-            quality,
-            qs,
-            qd,
-            error_method,
+        logger.debug(
+            f"classify_event: rms={origin.quality.standard_error}, erh={erh}, erz={erz}, "
+            f"stations={origin.quality.used_station_count}, gap={origin.quality.azimuthal_gap}, "
+            f"dmin={origin.quality.minimum_distance * 111.1}, depth={origin.depth / 1000.0}, "
+            f"quality={quality}, qs={qs}, qd={qd}, error_method={error_method}"
         )
 
     return quality, qs, qd, get_classification_text(quality)
@@ -229,9 +230,9 @@ def classify(
         # get the nearest integer
         val = round(val)
 
-    for k, v in levels.items():
-        if v == val:
-            q = k
+    # Reverse lookup: find quality letter for computed value
+    reverse_levels = {v: k for k, v in levels.items()}
+    q = reverse_levels.get(val, "D")
 
     return q, qs, qd
 
@@ -337,6 +338,10 @@ def classify_Michele_mod(
         "azgap2": 359.0,
         "scat_vol": 13900.0,
     }
+
+    # Handle division by zero for nbpha (used_phase_count)
+    if nbpha == 0:
+        return float("inf"), "E"
 
     qf = [
         params[key] / normvalschauv[key] for key in params.keys() if key not in params2
