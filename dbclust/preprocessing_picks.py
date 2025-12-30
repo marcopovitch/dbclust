@@ -4,8 +4,6 @@ import os
 import logging
 import pandas as pd
 from contextlib import contextmanager
-from icecream import ic
-from pandas.core.groupby import GroupBy
 from sklearn.cluster import DBSCAN
 
 logger = logging.getLogger("pick_preproc")
@@ -35,7 +33,7 @@ def safe_deduplicate_picks_by_time(*args, **kwargs):
         return deduplicate_picks_by_time(*args, **kwargs)
 
 
-def get_index(group: GroupBy, debug=False) -> int:
+def get_index(group: pd.DataFrame, debug=False) -> int:
     """
     Determines the index of the pick with the highest phase_score.
     If there are multiple picks with the highest score, it returns the index of the median phase_time,
@@ -63,7 +61,10 @@ def get_index(group: GroupBy, debug=False) -> int:
         # multiple picks with the highest phase_score
 
         # check if there are manual picks
-        manual_df = group[group["phase_evaluation"] == "manual"]
+        if "phase_evaluation" in group.columns:
+            manual_df = group[group["phase_evaluation"] == "manual"]
+        else:
+            manual_df = pd.DataFrame()
 
         # prioritize manual picks
         if len(manual_df) >= 1:
@@ -128,6 +129,11 @@ def deduplicate_picks_by_time(
     for phase in ("P", "S"):
         logger.debug(f"Working on {phase}.")
         phase_df = df[df["phase_type"].str.contains(phase)].copy()
+
+        # skip if no picks for this phase
+        if phase_df.empty:
+            logger.debug(f"No {phase} picks found, skipping.")
+            continue
 
         # create numeric_time for time distance computation
         min_timestamp = phase_df["phase_time"].min()

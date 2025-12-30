@@ -14,7 +14,6 @@ from typing import Union
 import numpy as np
 import pandas as pd
 from dateutil import parser
-from icecream import ic
 from obspy import Inventory
 from obspy import read_inventory
 from obspy import UTCDateTime
@@ -306,7 +305,7 @@ def inventory2df(inventory: Inventory) -> pd.DataFrame:
     return df
 
 
-def get_missing_info_from_df(df: pd.DataFrame, loc: str, chan: str) -> List[str]:
+def get_missing_info_from_df(df: pd.DataFrame, loc: Optional[str], chan: Optional[str]) -> tuple:
     if loc is not None and chan is not None:
         df = df.loc[df["Location"] == loc, :]
         # channel is specified: use it to filter
@@ -326,7 +325,7 @@ def get_missing_info_from_df(df: pd.DataFrame, loc: str, chan: str) -> List[str]
     df = df.sort_values(by=["StartTime", "Channel"])
 
     if len(df) == 0:
-        return [None] * 5
+        return (None, None, None, None, None)
     elif len(df) < 3:
         rows = df["Channel"].iloc[0]
         new_chans = [rows]
@@ -353,7 +352,7 @@ def get_station_info_from_inventory(
     inventory: Inventory,
     loc: Optional[str] = None,
     chan: Optional[str] = None,
-) -> List[Optional[float]]:
+) -> tuple:
     """
     Get station coordinates and channel information from an inventory object.
 
@@ -376,29 +375,29 @@ def get_station_info_from_inventory(
     """
     logger.debug(f"Fetching station info from inventory for {network}.{station}...")
 
-    # Prepare regex pattern for channel and location
+    # Prepare regex pattern for channel and location for inventory.select()
     re_chan = chan[:2] + "?" if chan else "*"
-    loc = loc or "*"
+    select_loc = loc if loc is not None else "*"
 
     try:
         # Select matching station entries from the inventory
         inv = inventory.select(
             network=network,
             station=station,
-            location=loc,
+            location=select_loc,
             channel=re_chan,
             starttime=time_search_begin,
             # endtime=time_search_end,
         )
     except Exception as e:
         logger.error(f"Error selecting data from inventory: {e}")
-        return [None, None, None, None, []]
+        return (None, None, None, None, [])
 
     # Convert inventory to a DataFrame for easier processing
     df = inventory2df(inv)
     if df.empty:
         logger.debug(f"No matching data found in inventory for {network}.{station}.")
-        return [None, None, None, None, []]
+        return (None, None, None, None, [])
 
     # Use helper function to filter and extract required data
     return get_missing_info_from_df(df, loc, chan)
@@ -413,7 +412,7 @@ def get_station_info_from_fdsnws(
     fdsnws_station_url: str,
     loc: Optional[str] = None,
     chan: Optional[str] = None,
-) -> list:
+) -> tuple:
     """Get station coordinates from fdsnws, find all channels
 
     Args:
@@ -425,7 +424,7 @@ def get_station_info_from_fdsnws(
         chan (Optional[str], optional): channel. Defaults to None.
 
     Returns:
-        list: station's latitude, longitude, elevation, channels
+        tuple: station's latitude, longitude, elevation, location, channels
     """
     logger.debug(f"Getting station info from fdsnws: {network}.{station}")
     # if not time_search:
@@ -443,10 +442,10 @@ def get_station_info_from_fdsnws(
 
     try:
         df = pd.read_csv(url, sep="|", skipinitialspace=True, dtype=str)
-    except BaseException as e:
+    except Exception:
         # logger.error("The exception: {}".format(e))
         # logger.debug(url)
-        return [None] * 5
+        return (None, None, None, None, None)
 
     # Network|Station|Location|Channel|Latitude|Longitude|Elevation|Depth|
     df.columns = df.columns.str.replace("#", "")
@@ -486,15 +485,12 @@ def import_phases(
     Returns:
         List[Phase]: List of Phase objects created from the DataFrame.
     """
-    phases = []
+    phases: List[Phase] = []
 
     # Validate DataFrame
-    if df is None or (isinstance(df, pd.DataFrame) and df.empty):
-        logger.info("Input DataFrame is either None or empty.")
-        return []
-    elif not isinstance(df, pd.DataFrame):
-        logger.error("Input is not a DataFrame.")
-        return []
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        logger.info("Input DataFrame is None, not a DataFrame, or empty.")
+        return phases
 
     # Check required columns
     required_columns = ["station_id", "phase_type", "phase_time", "phase_score"]
@@ -502,12 +498,16 @@ def import_phases(
     if missing_columns:
         logger.error(f"Missing required columns: {missing_columns}")
         logger.error(f"Available columns: {list(df.columns)}")
-        return []
+        return phases
 
     # Handle optional "channel" column
-    df = df.fillna("")
-    if "channel" in df.columns and not df["channel"].empty:
-        df["station_id"] = df["station_id"] + "." + df["channel"]
+    if "channel" in df.columns:
+        channel = df["channel"].fillna("").astype(str)
+
+        # Append channel only if at least one non-empty value exists
+        if (channel.str.strip() != "").any():
+            df = df.copy()
+            df["station_id"] = df["station_id"].astype(str) + "." + channel
 
     # Filter by phase score thresholds
     df = df.loc[
@@ -519,8 +519,9 @@ def import_phases(
     for row in df.itertuples(index=False):
         try:
             # Split station ID into components
-            components = row.station_id.split(".")
-            net, sta = components[:2]
+            components = str(row.station_id).split(".")
+            net = components[0] if len(components) > 0 else None
+            sta = components[1] if len(components) > 1 else None
             loc = components[2] if len(components) > 2 else None
             chan = components[3] if len(components) > 3 else None
         except ValueError as e:
@@ -532,6 +533,12 @@ def import_phases(
         method = getattr(row, "phase_method", None)
         event_id = getattr(row, "event_id", None)
         agency = getattr(row, "agency", None)
+        
+        # Time uncertainty
+        phase_type = str(row.phase_type).upper()
+        time_uncertainty = (
+            P_uncertainty if phase_type.startswith("P") else S_uncertainty
+        )
 
         # Create Phase object
         try:
@@ -542,9 +549,7 @@ def import_phases(
                 channel=chan[:2] if chan else None,
                 phase=row.phase_type,
                 time=row.phase_time,
-                time_uncertainty=(
-                    P_uncertainty if "P" in row.phase_type.upper() else S_uncertainty
-                ),
+                time_uncertainty=time_uncertainty,
                 proba=row.phase_score,
                 evaluation=evaluation,
                 method=method,
