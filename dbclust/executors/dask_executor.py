@@ -61,6 +61,7 @@ class DaskExecutor(ExecutorBase):
         super().__init__(cfg)
         self.cluster = None
         self.client = None
+        self.cfg_future = None  # Scattered config reference
 
     @property
     def name(self) -> str:
@@ -99,6 +100,9 @@ class DaskExecutor(ExecutorBase):
             direct_to_workers=True,
         )
 
+        # Pre-distribute config to workers (avoids repeated serialization)
+        self.cfg_future = self.client.scatter(self.cfg, broadcast=True)
+
         logger.info(
             f"Dask LocalCluster initialized with {self.cfg.parallel.n_workers} workers"
         )
@@ -115,7 +119,7 @@ class DaskExecutor(ExecutorBase):
         """
         start, end = self.cfg.parallel.time_partitions[job_index]
         logger.info(f"Submitting task {job_index} [{start} -- {end}]")
-        return self.client.submit(_run_dbclust_task, self.cfg, job_index)
+        return self.client.submit(_run_dbclust_task, self.cfg_future, job_index)
 
     def wait_for_results(self, futures: List[Any]) -> Generator:
         """Wait for Dask futures and yield results as they complete.
