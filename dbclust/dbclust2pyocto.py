@@ -179,15 +179,19 @@ def dbclust2pyocto(
         # Extract station and pick data for the cluster
         stations = get_stations_from_cluster(cluster)
         picks = get_picks_from_cluster(cluster)
-
+        
         # define a safe range around the stations coordinates in percentage
         # of the latitude and longitude range
-        range_percent = 1
+        range_percent = 0.01  # 1%
         lat_safe_range_deg = range_percent * (
             stations["latitude"].max() - stations["latitude"].min()
         )
         lon_safe_range_deg = range_percent * (
             stations["longitude"].max() - stations["longitude"].min()
+        )
+        logger.info(
+            f"Cluster#{i} safe range lat: {lat_safe_range_deg} deg, "
+            f"lon: {lon_safe_range_deg} deg"
         )
 
         # Set spatial parameters for the associator
@@ -217,6 +221,21 @@ def dbclust2pyocto(
 
         logger.info(f"range lat: {lat_range}, lon: {lon_range}")
         
+        # list all stations lat/lon to check if they are inside the defined range
+        mask_outside = (
+            stations["latitude"].isna()
+            | stations["longitude"].isna()
+            | (stations["latitude"] < lat_range[0])
+            | (stations["latitude"] > lat_range[1])
+            | (stations["longitude"] < lon_range[0])
+            | (stations["longitude"] > lon_range[1])
+        )
+
+        for row in stations.loc[mask_outside].itertuples():
+            logger.warning(
+                f"Station {row.id} at lat: {row.latitude}, lon: {row.longitude} "
+                "is outside the defined range."
+            )
 
         try:
             associator = pyocto.OctoAssociator.from_area(
