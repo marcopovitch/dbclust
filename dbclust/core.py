@@ -42,12 +42,13 @@ logger = logging.getLogger("dbclust")
 # CSV fieldnames for progress tracking
 CSV_FIELDNAMES = [
     "task_index",
+    "start_time",
+    "completion_time",
     "duration_sec",
     "peak_memory_mb",
     "completed_count",
     "total_tasks",
     "progress_pct",
-    "completion_time",
     "time_partition_start",
     "time_partition_end",
 ]
