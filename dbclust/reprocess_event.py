@@ -23,7 +23,7 @@ from dbclust.localization import reloc_fdsn_event
 from dbclust.localization import show_bulletin
 from dbclust.localization import show_event
 from dbclust.quakeml import deduplicate_picks_and_make_readable_ids
-from dbclust.runner import MyTemporaryDirectory
+from dbclust.core import MyTemporaryDirectory
 
 # Default logger
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
