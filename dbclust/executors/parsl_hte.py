@@ -37,11 +37,36 @@ def _run_dbclust_task(cfg, job_index):
     Returns:
         Dictionary with task_index, duration_sec, peak_memory_mb, and result.
     """
+    import logging
+    import os
     import time
+
     from dbclust.core import dbclust
 
+    # Configure root logger to capture all dbclust-related logs
+    log_dir = cfg.parallel._temp_dir if cfg.parallel._temp_dir else "runinfo"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"dbclust_task_{job_index}.log")
+
+    # Add file handler to root logger to capture all logs
+    file_handler = logging.FileHandler(log_file, mode="w")
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    file_handler.setLevel(logging.INFO)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+
     start_time = time.time()
-    result = dbclust(cfg=cfg, job_index=job_index)
+    try:
+        result = dbclust(cfg=cfg, job_index=job_index)
+    finally:
+        # Clean up handler
+        file_handler.close()
+        root_logger.removeHandler(file_handler)
+
     end_time = time.time()
 
     duration_sec = end_time - start_time
@@ -106,11 +131,14 @@ class ParslHTEExecutor(ExecutorBase):
             logging.getLogger(logger_name).setLevel(logging.WARNING)
 
         # Configure HighThroughputExecutor for true multi-process parallelism
+        run_dir = self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo"
         executor = HighThroughputExecutor(
             label="dbclust_hte",
             max_workers_per_node=self.cfg.parallel.n_workers,
             cores_per_worker=1,
             provider=self._get_provider(),
+            worker_debug=True,
+            worker_logdir_root=run_dir,
         )
 
         config = Config(
