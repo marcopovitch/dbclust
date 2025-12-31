@@ -37,9 +37,13 @@ class ExecutorBase(ABC):
             cfg: DBClust configuration containing parallel execution settings.
         """
         self.cfg = cfg
-        self.profile_csv_path = os.path.join(
+        self.profile_csv_path = cfg.parallel.task_profiles_path or os.path.join(
             cfg.catalog.qml_path, "task_profiles.csv"
         )
+        self.summary_csv_path = cfg.parallel.execution_summary_path or os.path.join(
+            cfg.catalog.qml_path, "execution_summary.csv"
+        )
+        self.run_start_time = None
 
     @property
     @abstractmethod
@@ -102,6 +106,7 @@ class ExecutorBase(ABC):
         Returns:
             List of results from all tasks.
         """
+        self.run_start_time = datetime.now()
         logger.info(f"Starting parallel execution with {self.name}")
         logger.info(f"Number of workers: {self.cfg.parallel.n_workers}")
         logger.info(f"Number of time partitions: {len(self.cfg.parallel.time_partitions)}")
@@ -133,6 +138,7 @@ class ExecutorBase(ABC):
         results = self._process_results(futures, future_to_index, partition_map)
 
         self.cleanup()
+        self._write_execution_summary(results)
         logger.info(f"Parallel execution completed with {self.name}")
 
         return results
@@ -169,21 +175,28 @@ class ExecutorBase(ABC):
             progress_pct = (completed_count / total_tasks) * 100
 
             # Get partition times
-            start_time, end_time = partition_map.get(job_index, (None, None))
+            partition_start, partition_end = partition_map.get(job_index, (None, None))
+
+            # Calculate task start_time from completion_time - duration
+            completion_time = datetime.now()
+            task_start_time = datetime.fromtimestamp(
+                completion_time.timestamp() - duration
+            )
 
             # Write to CSV
             with open(self.profile_csv_path, "a", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
                 writer.writerow({
                     "task_index": job_index,
+                    "start_time": task_start_time.isoformat(),
+                    "completion_time": completion_time.isoformat(),
                     "duration_sec": f"{duration:.2f}",
                     "peak_memory_mb": f"{peak_memory_mb:.1f}" if peak_memory_mb else "N/A",
                     "completed_count": completed_count,
                     "total_tasks": total_tasks,
                     "progress_pct": f"{progress_pct:.1f}",
-                    "completion_time": datetime.now().isoformat(),
-                    "time_partition_start": str(start_time) if start_time else "N/A",
-                    "time_partition_end": str(end_time) if end_time else "N/A",
+                    "time_partition_start": str(partition_start) if partition_start else "N/A",
+                    "time_partition_end": str(partition_end) if partition_end else "N/A",
                 })
 
             logger.info(
@@ -193,3 +206,27 @@ class ExecutorBase(ABC):
             results.append(result)
 
         return results
+
+    def _write_execution_summary(self, results: List[Any]) -> None:
+        """Write the execution summary CSV file.
+
+        Args:
+            results: List of results from all completed tasks.
+        """
+        end_time = datetime.now()
+        if self.run_start_time is None:
+            self.run_start_time = end_time
+        total_duration = (end_time - self.run_start_time).total_seconds()
+
+        os.makedirs(os.path.dirname(self.summary_csv_path), exist_ok=True)
+        with open(self.summary_csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["key", "value"])
+            writer.writerow(["executor", self.name])
+            writer.writerow(["start_time", self.run_start_time.isoformat()])
+            writer.writerow(["end_time", end_time.isoformat()])
+            writer.writerow(["total_duration_sec", f"{total_duration:.2f}"])
+            writer.writerow(["n_workers", self.cfg.parallel.n_workers])
+            writer.writerow(["total_tasks", len(results)])
+
+        logger.info(f"Execution summary written to {self.summary_csv_path}")
