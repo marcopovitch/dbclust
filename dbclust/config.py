@@ -735,8 +735,8 @@ class Associator:
     n_s_picks: int
     n_p_and_s_picks: int
     # Optional parameters to limit lat/lon ranges calculated from station coordinates
-    max_lat_range: Optional[Tuple[float, float]] = None  # (lat_min, lat_max)
-    max_lon_range: Optional[Tuple[float, float]] = None  # (lon_min, lon_max)
+    max_lat_range: Optional[List[float]] = None  # [lat_min, lat_max]
+    max_lon_range: Optional[List[float]] = None  # [lon_min, lon_max]
 
 
 @dataclass
@@ -873,6 +873,8 @@ class ParallelConfig:
     time_partitions: Optional[List] = None
     _temp_dir: Optional[str] = "/tmp/ray"
     executor: Optional[str] = "parsl_thread"  # parsl_thread, parsl_hte, ray, dask
+    task_profiles_path: Optional[str] = None  # Chemin vers task_profiles.csv
+    execution_summary_path: Optional[str] = None  # Chemin vers execution_summary.csv
 
     def __post_init__(self):
         if not self.n_workers:
