@@ -124,7 +124,7 @@ def process_file(
             )
 
             try:
-                cat = reloc_fdsn_event(locator, event=event, zone_name=zone["name"])
+                cat = reloc_fdsn_event(locator, event=event, zone_name=args.zone_name)
             except LocalizationError as e:
                 err_msg = f"[{f}] Error during relocation. {e}"
                 logging.error(err_msg)
