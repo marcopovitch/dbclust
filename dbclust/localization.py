@@ -318,6 +318,57 @@ class NllLoc(object):
 
         return score
 
+    def _get_zone_and_template(
+        self, lat: float, lon: float, vel_file: str = None
+    ) -> Tuple:
+        """
+        Detect zone and return appropriate template/model_id.
+
+        Args:
+            lat: origin latitude
+            lon: origin longitude
+            vel_file: path to .vel file (prelocalization), if exists
+
+        Returns:
+            Tuple (zone, nll_template, model_id)
+        """
+        zone = None
+        nll_template = self.nll_template
+        model_id = (
+            self.quakeml_settings.get("model_id") if self.quakeml_settings else None
+        )
+
+        if not self.zones:
+            return zone, nll_template, model_id
+        
+        logger.info(f"Detecting zone for lat: {lat}, lon: {lon}")
+
+        # Zone detection
+        if self.force_zone_name:
+            zone = self.zones.get_zone_from_name(self.force_zone_name)
+        else:
+            zone, _ = self.zones.find_zone(lat, lon)
+
+        # If no preloc and zone found, use the zone's template
+        # Note: zone can be a pd.Series (row) or empty GeoDataFrame
+        zone_is_valid = zone is not None and len(zone) > 0
+        if (
+            zone_is_valid
+            and (vel_file is None or not os.path.exists(vel_file))
+            and zone["template"]
+        ):
+            nll_template = zone["template"]
+            model_id = zone["velocity_profile"]
+            zone_name = zone["name"]
+            logger.info(
+                f"Zone '{zone_name}' found. "
+                f"Using template: {nll_template}, model: {model_id}"
+            )
+            
+        logger.info(f"Using template: {nll_template}, model: {model_id}")
+
+        return zone, nll_template, model_id
+
     def reloc_event(self, event: Event) -> Catalog:
         """Event re-localization using a locator.
 
@@ -553,7 +604,9 @@ class NllLoc(object):
         try:
             self.replace(nll_template, conf_file, tags)
         except Exception:
-            logger.error(f"Failed to generate NLL config: template={nll_template}, conf={conf_file}, tags={tags}")
+            logger.error(
+                f"Failed to generate NLL config: template={nll_template}, conf={conf_file}, tags={tags}"
+            )
             raise
 
         ####################
@@ -573,7 +626,7 @@ class NllLoc(object):
                 f"returned code is {result.returncode}\n"
                 f"{result.stdout}"
             )
-            for p in (picks if picks else []):
+            for p in picks if picks else []:
                 logger.error(p)
             return Catalog()
 
@@ -713,7 +766,11 @@ class NllLoc(object):
             o.comments.append(Comment(text='{"scatter_volume": %s}' % (scatter_volume)))
 
         # store into comment expectation hypocenter
-        if expect_lat is not None and expect_lon is not None and expect_depth is not None:
+        if (
+            expect_lat is not None
+            and expect_lon is not None
+            and expect_depth is not None
+        ):
             o.comments.append(
                 Comment(
                     text='{"expectation": {"latitude": %s, "longitude": %s, "depth": %s}}'
@@ -738,34 +795,37 @@ class NllLoc(object):
             # unset arrival with gap in distance > dist_max
             event2 = self.unset_arrival_gap_dist_km(event2, self.gap_dist_max_km)
 
-            # Clean up picks outside of the polygons defined in zones
-            if self.use_pick_zone and self.zones and self.enable_cleanup_pick_zone:
-                # To be done:
-                # 1. remove picks/arrivals with time_weight set to 0
-                # 2. remove picks/arrivals with duplicated phases
-                # 3. remove picks/arrivals with distance > dist_km_cutoff
-                # 4. relabel pick within zone
-                if self.force_zone_name:
-                    zone = self.zones.get_zone_from_name(self.force_zone_name)
-                else:
-                    zone, _ = self.zones.find_zone(o.latitude, o.longitude)
+            # Detect zone based on first pass location (for pick cleanup)
+            zone, zone_template, zone_model_id = self._get_zone_and_template(
+                o.latitude, o.longitude
+            )
+            # Update template/model_id only if:
+            # - No preloc (.vel doesn't exist)
+            # - No forced zone (self.force_zone_name is None) - if zone is forced, template was already set
+            # - No forced template from caller
+            if (
+                not os.path.exists(vel_file)
+                and not self.force_zone_name
+                and not force_template
+                and zone_template
+            ):
+                # No preloc and no forced zone: use detected zone's template for the second pass
+                nll_template = zone_template
+                model_id = zone_model_id
+                logger.info(
+                    f"Second pass: using zone '{zone['name']}' template: {nll_template}, model: {model_id}"
+                )
 
-                # keep track of relabel for later user
-                # as info on the event will be lost
-                if len(zone.picks_delimiter):
+            # Clean up picks based on zone polygons
+            if self.use_pick_zone and self.zones and self.enable_cleanup_pick_zone:
+                if zone is not None and len(zone) > 0 and len(zone.picks_delimiter):
                     event2, relabel_dict = self.cleanup_picks_and_relabel_picks(
                         event2, zone, eval_threshold=self.min_score_threshold_pick_zone
                     )
                 else:
-                    # no zone found: use default cleanup
                     event2 = self.cleanup_pick_phase(event2)
                     relabel_dict = {}
             else:
-                # legacy code to clean up pick :
-                # 1. with bad residual
-                # 2. with time_weight set to 0
-                # 3. with distance > dist_km_cutoff
-                # 4. with duplicated phases
                 event2 = self.cleanup_pick_phase(event2)
                 relabel_dict = {}
 
@@ -1787,36 +1847,38 @@ def reloc_fdsn_event(
         eventid = event.resource_id.id
 
     if locator.zones:
+        # Set force_zone_name if provided
         if zone_name:
             logger.info(f"Forcing zone to {zone_name}.")
-            zone = locator.zones.get_zone_from_name(zone_name)
-        else:
-            # Find the zone and set the velocity model and the nll template
-            origin = event.preferred_origin() or event.origins[0]
-            zone, _ = locator.zones.find_zone(origin.latitude, origin.longitude)
-        if zone.empty:
-            locator.zones.show_zones()
-            raise ValueError(f"Zone {zone_name} not found.")
+            locator.force_zone_name = zone_name
 
-        locator.quakeml_settings["model_id"] = zone.velocity_profile
-        logger.info(
-            f"Using {zone['name']} zone, {locator.quakeml_settings['model_id']} model_id for event {eventid}."
+        origin = event.preferred_origin() or event.origins[0]
+        zone, nll_template, model_id = locator._get_zone_and_template(
+            origin.latitude, origin.longitude
         )
 
-        # Set the nll template according to the zone
-        if zone.empty:
+        if zone is None or len(zone) == 0:
             locator.zones.show_zones()
             raise ValueError(
-                f'No template defined for zone {locator.quakeml_settings["model_id"]} !'
+                f"Zone not found for coordinates ({origin.latitude}, {origin.longitude})."
             )
-        locator.nll_template = zone["template"]
 
-    else:
-        logger.warning(
-            f'No zones defined, using default velocity model {locator.quakeml_settings["model_id"]}.'
+        if locator.quakeml_settings and model_id:
+            locator.quakeml_settings["model_id"] = model_id
+        if nll_template:
+            locator.nll_template = nll_template
+        logger.info(
+            f"Using zone '{zone['name']}' for event {eventid}."
         )
-
-        # get the default template
+    else:
+        default_model = (
+            locator.quakeml_settings.get("model_id", "unknown")
+            if locator.quakeml_settings
+            else "unknown"
+        )
+        logger.warning(
+            f"No zones defined, using default velocity model {default_model}."
+        )
 
     try:
         cat = locator.reloc_event(event)
