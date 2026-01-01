@@ -313,6 +313,7 @@ class StationConfig:
                 self.inventory.extend(
                     read_inventory(
                         f,
+                        level="channel",  # Don't load responses (memory optimization)
                     )
                 )
                 self.info_sta = self.inventory
