@@ -6,9 +6,9 @@ better CPU utilization for CPU-bound tasks.
 """
 
 import logging
-import time
+import os
 from concurrent.futures import as_completed
-from typing import Any, Generator, List
+from typing import Any, Generator, List, Dict
 
 import parsl
 from parsl.app.app import python_app
@@ -23,7 +23,7 @@ logger = logging.getLogger("dbclust")
 
 
 @python_app
-def _run_dbclust_task(cfg, job_index):
+def _run_dbclust_task(cfg: DBClustConfig, job_index: int) -> Dict:
     """Parsl python_app wrapper for dbclust task execution.
 
     This function is decorated with @python_app to enable parallel execution
@@ -109,6 +109,14 @@ class ParslHTEExecutor(ExecutorBase):
         if hasattr(parsl, "set_stream_logger"):
             parsl.set_stream_logger(level=logging.WARNING)
 
+        configured_workers = self.cfg.parallel.n_workers
+        if isinstance(configured_workers, int) and configured_workers > 0:
+            max_workers = configured_workers
+            worker_source = "config"
+        else:
+            max_workers = os.cpu_count() or 1
+            worker_source = "auto-detected"
+
         # Silence all parsl loggers including HTE subloggers
         for logger_name in [
             "parsl",
@@ -134,7 +142,7 @@ class ParslHTEExecutor(ExecutorBase):
         run_dir = self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo"
         executor = HighThroughputExecutor(
             label="dbclust_hte",
-            max_workers_per_node=self.cfg.parallel.n_workers,
+            max_workers_per_node=max_workers,
             cores_per_worker=1,
             provider=self._get_provider(),
             worker_debug=True,
@@ -149,7 +157,8 @@ class ParslHTEExecutor(ExecutorBase):
 
         parsl.load(config)
         logger.info(
-            f"Parsl HighThroughputExecutor initialized with {self.cfg.parallel.n_workers} workers"
+            "Parsl HighThroughputExecutor initialized with "
+            f"{max_workers} workers ({worker_source})"
         )
 
     def submit_task(self, job_index: int) -> Any:
