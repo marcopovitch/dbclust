@@ -7,6 +7,7 @@ excellent scalability and can run on a single machine or across a cluster.
 import logging
 import os
 import time
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from typing import Any, Generator, List
 
 import ray
@@ -18,7 +19,9 @@ logger = logging.getLogger("dbclust")
 
 
 # Ray task must be defined at module level
-@ray.remote(max_calls=1, max_retries=5, num_cpus=1, memory=5 * 1024**3)  # 5 GB
+# max_calls used to be pinned to 1 to guard against potential memory leaks,
+# but keeping workers alive is required for full CPU utilization.
+@ray.remote(max_retries=5, num_cpus=1, memory=5 * 1024**3)  # 5 GB
 def _run_dbclust_task(cfg, job_index):
     """Ray remote function for dbclust task execution.
 
@@ -32,6 +35,7 @@ def _run_dbclust_task(cfg, job_index):
     Returns:
         Dictionary with task_index, duration_sec, peak_memory_mb, and result.
     """
+    import gc
     import logging
     import os
     import time
@@ -43,34 +47,52 @@ def _run_dbclust_task(cfg, job_index):
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"dbclust_task_{job_index}.log")
 
-    # Get dbclust logger and redirect to file only (no console)
-    dbclust_logger = logging.getLogger("dbclust")
-    dbclust_logger.setLevel(logging.INFO)
-    dbclust_logger.propagate = False  # Don't propagate to root logger (console)
+    # Silence root logger and attach a dedicated file handler
+    root_logger = logging.getLogger()
+    original_root_handlers = root_logger.handlers[:]
+    original_root_level = root_logger.level
+    for handler in original_root_handlers:
+        root_logger.removeHandler(handler)
 
-    # Remove existing handlers to avoid console output
-    original_handlers = dbclust_logger.handlers[:]
-    for handler in original_handlers:
-        dbclust_logger.removeHandler(handler)
-
-    # Add file handler
     file_handler = logging.FileHandler(log_file, mode="w")
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
     file_handler.setLevel(logging.INFO)
-    dbclust_logger.addHandler(file_handler)
+    root_logger.addHandler(file_handler)
+    root_logger.setLevel(logging.INFO)
+
+    # Ensure dbclust logger forwards to root
+    dbclust_logger = logging.getLogger("dbclust")
+    original_handlers = dbclust_logger.handlers[:]
+    original_propagate = dbclust_logger.propagate
+    for handler in original_handlers:
+        dbclust_logger.removeHandler(handler)
+    dbclust_logger.setLevel(logging.INFO)
+    dbclust_logger.propagate = True
+
+    # Redirect stdout/stderr so prints also land in the log file
+    io_redirect_stack = ExitStack()
+    stdout_stream = open(log_file, "a", buffering=1)
+    io_redirect_stack.enter_context(stdout_stream)
+    io_redirect_stack.enter_context(redirect_stdout(stdout_stream))
+    io_redirect_stack.enter_context(redirect_stderr(stdout_stream))
 
     start_time = time.time()
     try:
         result = dbclust(cfg=cfg, job_index=job_index)
     finally:
         # Clean up: restore original handlers
+        io_redirect_stack.close()
         file_handler.close()
-        dbclust_logger.removeHandler(file_handler)
+        root_logger.removeHandler(file_handler)
         for handler in original_handlers:
             dbclust_logger.addHandler(handler)
-        dbclust_logger.propagate = True
+        dbclust_logger.propagate = original_propagate
+        for handler in original_root_handlers:
+            root_logger.addHandler(handler)
+        root_logger.setLevel(original_root_level)
+        gc.collect()
 
     end_time = time.time()
 
@@ -112,14 +134,22 @@ class RayExecutor(ExecutorBase):
         os.environ["RAY_enable_oom_killer"] = "1"
         os.environ["RAY_memory_usage_threshold"] = "0.95"
 
+        configured_workers = self.cfg.parallel.n_workers
+        if isinstance(configured_workers, int) and configured_workers > 0:
+            total_cpus = configured_workers
+            cpu_source = "config"
+        else:
+            total_cpus = os.cpu_count() or 1
+            cpu_source = "auto-detected"
+
         self.context = ray.init(
-            num_cpus=self.cfg.parallel.n_workers,
+            num_cpus=total_cpus,
             _temp_dir=self.cfg.parallel._temp_dir,
             dashboard_host="0.0.0.0",
             dashboard_port=8265,
             include_dashboard=True,
         )
-        logger.info(f"Ray initialized with {self.cfg.parallel.n_workers} CPUs")
+        logger.info(f"Ray initialized with {total_cpus} CPUs ({cpu_source})")
         logger.info(f"Dashboard URL: {self.context.dashboard_url}")
 
     def submit_task(self, job_index: int) -> Any:
