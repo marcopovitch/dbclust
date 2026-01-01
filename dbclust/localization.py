@@ -340,7 +340,7 @@ class NllLoc(object):
 
         if not self.zones:
             return zone, nll_template, model_id
-        
+
         logger.info(f"Detecting zone for lat: {lat}, lon: {lon}")
 
         # Zone detection
@@ -364,7 +364,7 @@ class NllLoc(object):
                 f"Zone '{zone_name}' found. "
                 f"Using template: {nll_template}, model: {model_id}"
             )
-            
+
         logger.info(f"Using template: {nll_template}, model: {model_id}")
 
         return zone, nll_template, model_id
@@ -703,7 +703,7 @@ class NllLoc(object):
             cat = read_events(nll_output, picks=picks)
         except Exception as e:
             # No localization
-            logger.debug(e)
+            logger.warning(f"Localization failed: unable to read NLL output ({e})")
             return Catalog()
 
         ####################
@@ -785,6 +785,14 @@ class NllLoc(object):
                 elif "S" in pick.phase_hint.upper():
                     pick.time_errors.uncertainty = self.S_uncertainty
 
+        # Log successful first pass localization
+        logger.info(
+            f"Pass {pass_count + 1} localization: "
+            f"lat={o.latitude:.4f}, lon={o.longitude:.4f}, depth={o.depth/1000:.1f}km, "
+            f"RMS={o.quality.standard_error:.3f}, phases={o.quality.used_phase_count}, "
+            f"model={model_id}"
+        )
+
         # try a relocation
         if self.double_pass and pass_count == 0:
             logger.debug("Starting double pass relocation.")
@@ -846,12 +854,13 @@ class NllLoc(object):
                         force_loc_method=loc_method_used,
                     )
                 except LocalizationError as ex:
-                    logger.debug(f"{ex} - in double pass")
+                    logger.warning(f"Localization failed in second pass: {ex}")
                     cat2 = None
                 except Exception as ex:
-                    logger.error(f"Unexpected error during localization: {ex}")
+                    logger.warning(f"Localization failed in second pass: unexpected error ({ex})")
                     cat2 = None
             else:
+                logger.warning("Localization failed: no picks remaining for second pass")
                 cat2 = None
 
             if cat2:
@@ -890,6 +899,7 @@ class NllLoc(object):
                 # e = deduplicate_picks(e)
             else:
                 # can't relocate: set it to "not existing"
+                logger.warning("Localization failed: second pass relocation unsuccessful")
                 e.event_type = "not existing"
                 if not self.keep_not_existing_event:
                     # do not keep "not existing" event
@@ -1867,9 +1877,7 @@ def reloc_fdsn_event(
             locator.quakeml_settings["model_id"] = model_id
         if nll_template:
             locator.nll_template = nll_template
-        logger.info(
-            f"Using zone '{zone['name']}' for event {eventid}."
-        )
+        logger.info(f"Using zone '{zone['name']}' for event {eventid}.")
     else:
         default_model = (
             locator.quakeml_settings.get("model_id", "unknown")
