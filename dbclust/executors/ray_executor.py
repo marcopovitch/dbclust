@@ -32,11 +32,46 @@ def _run_dbclust_task(cfg, job_index):
     Returns:
         Dictionary with task_index, duration_sec, peak_memory_mb, and result.
     """
+    import logging
+    import os
     import time
+
     from dbclust.core import dbclust
 
+    # Configure file logging for this worker task
+    log_dir = cfg.parallel._temp_dir if cfg.parallel._temp_dir else "runinfo"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"dbclust_task_{job_index}.log")
+
+    # Get dbclust logger and redirect to file only (no console)
+    dbclust_logger = logging.getLogger("dbclust")
+    dbclust_logger.setLevel(logging.INFO)
+    dbclust_logger.propagate = False  # Don't propagate to root logger (console)
+
+    # Remove existing handlers to avoid console output
+    original_handlers = dbclust_logger.handlers[:]
+    for handler in original_handlers:
+        dbclust_logger.removeHandler(handler)
+
+    # Add file handler
+    file_handler = logging.FileHandler(log_file, mode="w")
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    file_handler.setLevel(logging.INFO)
+    dbclust_logger.addHandler(file_handler)
+
     start_time = time.time()
-    result = dbclust(cfg=cfg, job_index=job_index)
+    try:
+        result = dbclust(cfg=cfg, job_index=job_index)
+    finally:
+        # Clean up: restore original handlers
+        file_handler.close()
+        dbclust_logger.removeHandler(file_handler)
+        for handler in original_handlers:
+            dbclust_logger.addHandler(handler)
+        dbclust_logger.propagate = True
+
     end_time = time.time()
 
     duration_sec = end_time - start_time
