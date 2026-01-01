@@ -189,7 +189,7 @@ def dbclust2pyocto(
         lon_safe_range_deg = range_percent * (
             stations["longitude"].max() - stations["longitude"].min()
         )
-        logger.info(
+        logger.debug(
             f"Cluster#{i} safe range lat: {lat_safe_range_deg} deg, "
             f"lon: {lon_safe_range_deg} deg"
         )
