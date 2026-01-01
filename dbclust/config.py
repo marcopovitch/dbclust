@@ -430,7 +430,7 @@ class NonLinLocConfig:
     verbose: bool
     enable_scatter: bool
     default_template_file: Optional[str] = None
-    min_phase: Optional[int] = -1  # no limit
+    min_phase: Optional[int] = 4 
 
     def __post_init__(self) -> None:
         if not os.path.exists(self.nlloc_bin):
@@ -868,7 +868,7 @@ class SlurmConfig:
 
 @dataclass
 class ParallelConfig:
-    n_workers: int = None
+    n_workers: Optional[int] = None
     partition_duration: str = "1D"
     nb_partitions: Optional[int] = None
     time_partitions: Optional[List] = None
@@ -991,9 +991,9 @@ class DBClustConfig:
         # NLL will discard any location with number of phase < min_phase
         # take into account cluster parameters to set it accordingly
         # use -1 to not set a limit
-        self.nll.min_phase = (
-            self.cluster.min_station_count + self.cluster.min_station_with_P_and_S
-        )
+        # self.nll.min_phase = (
+        #     self.cluster.min_station_count + self.cluster.min_station_with_P_and_S
+        # )
 
         if config_type != "reloc":
             # parallel
