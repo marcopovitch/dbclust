@@ -452,6 +452,28 @@ class NllLoc(object):
 
         return cat
 
+    def _load_nll_event(
+        self, nll_output_path: str, tmp_path: str, picks: List[Pick], stdout_text: str
+    ) -> Catalog | None:
+        """Load NonLinLoc results and handle diagnostics."""
+        if not os.path.exists(nll_output_path):
+            logger.warning(
+                f"Localization failed: NLL output file not found: {nll_output_path}"
+            )
+            logger.warning(f"NLL stdout:\n{stdout_text}")
+            try:
+                files = os.listdir(tmp_path)
+                logger.info(f"Files in {tmp_path}: {files}")
+            except Exception:
+                logger.info("Unable to list temporary directory contents", exc_info=True)
+            return None
+
+        try:
+            return read_events(nll_output_path, picks=picks)
+        except Exception as exc:
+            logger.warning(f"Localization failed: unable to read NLL output ({exc})")
+            return None
+
     def nll_localisation(
         self,
         nll_obs_file: str = None,
@@ -640,6 +662,9 @@ class NllLoc(object):
         for line in result.stdout.splitlines():
             if "WARNING: cannot open grid buffer file" in line:
                 logger.error(line)
+            elif "WARNING: too few observations to locate" in line:
+                logger.error(line)
+                return Catalog()
             elif any(k in line for k in ("ABORTED", "IGNORED", "REJECTED")):
                 # check if location was rejected
                 why = (
@@ -698,12 +723,8 @@ class NllLoc(object):
 
         # Read results
         nll_output = os.path.join(tmp_path, "last.hyp")
-        try:
-            # use picks to map picks information
-            cat = read_events(nll_output, picks=picks)
-        except Exception as e:
-            # No localization
-            logger.warning(f"Localization failed: unable to read NLL output ({e})")
+        cat = self._load_nll_event(nll_output, tmp_path, picks, result.stdout)
+        if cat is None:
             return Catalog()
 
         ####################
