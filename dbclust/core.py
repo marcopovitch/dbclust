@@ -28,7 +28,7 @@ from dbclust.db import duckdb_init
 from dbclust.dbclust2pyocto import adjust_associator_tolerance
 from dbclust.inject_spatialite import import_catalog_object_to_sqlite_from_file
 from dbclust.localization import NllLoc
-from dbclust.localization import show_event
+from dbclust.localization import format_event
 from dbclust.phase import import_phases
 from dbclust.preprocessing_picks import (
     safe_deduplicate_picks_by_time as deduplicate_picks_by_time,
@@ -514,7 +514,8 @@ def dbclust(
                 )
 
                 if not last_job and event_in_overlapped_zone:
-                    show_event(event, "***D")
+                    for line in format_event(event, "***D"):
+                        logger.info(line)
                     logger.info(
                         f"Found event in overlapped zone to be (D)eleted ({event.resource_id.id})"
                     )
@@ -527,7 +528,8 @@ def dbclust(
                     and first_pick_time < next_begin
                     and last_pick_time >= next_begin
                 ):
-                    show_event(event, "***P")
+                    for line in format_event(event, "***P"):
+                        logger.info(line)
                     logger.info(
                         f"Found event between normal and overlapped zone where picks must be (P)runed ({event.resource_id.id})"
                     )
@@ -537,7 +539,8 @@ def dbclust(
                             event, origin, next_begin
                         )
                 else:
-                    show_event(event, "****")
+                    for line in format_event(event, "****"):
+                        logger.info(line)
         else:
             logger.info("No event found in theses clusters.")
 
