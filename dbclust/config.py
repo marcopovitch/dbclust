@@ -216,7 +216,7 @@ class FdsnConfig:
 
 @dataclass
 class RenameConfig:
-    """Manage renaming rules for station codes with time-based conditions.
+    r"""Manage renaming rules for station codes with time-based conditions.
 
     example:
 
