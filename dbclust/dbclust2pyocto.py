@@ -14,8 +14,6 @@ from typing import Union
 import pandas as pd
 import pyocto
 import pyproj
-from icecream import ic
-
 from dbclust.clusterize import cluster_share_eventid
 from dbclust.clusterize import Clusterize
 from dbclust.config import Associator
@@ -34,7 +32,6 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("dbclust2pyocto")
 logger.setLevel(logging.INFO)
 
-ic.configureOutput(outputFunction=lambda msg: sys.stdout.write(msg + "\n"))
 
 
 class MultipleEventIDsWithSameAgencyError(Exception):
@@ -266,7 +263,7 @@ def dbclust2pyocto(
             logger.error(
                 f"Check stations coordinates ! lat_range: {lat_range}, lon_range: {lon_range}"
             )
-            ic(picks)
+            logger.info(f"picks: {picks}")
             raise
 
         associator.transform_stations(stations)
@@ -443,7 +440,7 @@ def aggregate_pick_to_cluster_with_common_event_id(
         # Count the occurrences of event_id in the cluster
         event_id_counts = Counter([p.event_id for p in cluster if p.event_id])
         if event_id_counts:
-            ic(event_id_counts)
+            logger.info(f"event_id_counts: {event_id_counts}")
 
         # count the number of agency in each event_id in event_id_counts
         event_id_agency = {}
@@ -463,7 +460,7 @@ def aggregate_pick_to_cluster_with_common_event_id(
                     agency_event_map[agency] = set()
                 agency_event_map[agency].add(event_id)
         if agency_event_map:
-            ic(agency_event_map)
+            logger.info(f"agency_event_map: {agency_event_map}")
 
         # Detect agencies associated with multiple event_ids
         duplicate_agency_event_ids = {
