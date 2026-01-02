@@ -693,7 +693,7 @@ class NllLoc(object):
                     print(result.stdout)
                 return Catalog()
             elif "ERROR: calc_maximum_likelihood_ot:" in line:
-                # localization failed. It appends when using EDT_OT_WT
+                # localization failed. It happens when using EDT_OT_WT
                 # raise an exception to try relocation with another method
                 loc_method_used = (
                     self.loc_method if force_loc_method is None else force_loc_method
@@ -876,7 +876,24 @@ class NllLoc(object):
                     )
                 except LocalizationError as ex:
                     logger.warning(f"Localization failed in second pass: {ex}")
-                    cat2 = None
+                    # retry a relocation with forced LOC_METHOD = "GAU_ANALYTIC"
+                    if loc_method_used != "GAU_ANALYTIC":
+                        logger.info("Retrying localization with GAU_ANALYTIC as last resort")
+                        try:
+                            cat2 = self.nll_localisation(
+                                new_nll_obs_file,
+                                picks=event2.picks,
+                                double_pass=self.double_pass,
+                                pass_count=1,
+                                force_model_id=model_id,
+                                force_template=nll_template,
+                                force_loc_method="GAU_ANALYTIC",
+                            )
+                        except Exception as ex2:
+                            logger.warning(f"Localization failed with GAU_ANALYTIC fallback: {ex2}")
+                            cat2 = None
+                    else:
+                        cat2 = None
                 except Exception as ex:
                     logger.warning(f"Localization failed in second pass: unexpected error ({ex})")
                     cat2 = None
@@ -1572,15 +1589,30 @@ class NllLoc(object):
             out_fh.write(t)
             logger.debug(f"Template {templatefile} rendered as {outfilename}")
 
-    def show_localizations(self) -> None:
-        print("%d events in catalog:" % len(self.catalog))
-        print("Text, T0, lat, lon, depth(m), RMS, sta_count, phase_count, gap1, gap2")
+    def show_localizations(self, output: str = "stdout", log_level: int = logging.INFO) -> None:
+        """Show all localizations in the catalog.
+
+        Args:
+            output: Output destination, either "stdout" or "logger"
+            log_level: Logging level to use when output="logger" (default: logging.INFO)
+        """
+        lines = []
+        lines.append("%d events in catalog:" % len(self.catalog))
+        lines.append("Text, T0, lat, lon, depth(m), RMS, sta_count, phase_count, gap1, gap2")
         for e in self.catalog.events:
             try:
                 nll_obs = self.event_cluster_mapping[e.resource_id.id]
             except KeyError:
                 nll_obs = ""
-            show_event(e, nll_obs)
+            lines.extend(format_event(e, nll_obs))
+
+        # Output the buffer
+        if output == "logger":
+            for line in lines:
+                logger.log(log_level, line)
+        else:
+            for line in lines:
+                print(line)
 
 
 def get_pick_from_arrival(event: Event, arrival: Arrival) -> Pick:
@@ -1598,32 +1630,54 @@ def get_pick_from_arrival(event: Event, arrival: Arrival) -> Pick:
     return pick
 
 
-def show_event(event: Event, txt: str = "", header: bool = False):
+def format_event(event: Event, txt: str = "", header: bool = False) -> List[str]:
+    """Format event information as a list of strings.
+
+    Args:
+        event: The event to format
+        txt: Text prefix for the event
+        header: Whether to include a header line
+
+    Returns:
+        List of formatted strings
+    """
+    lines = []
     if header:
-        print(
+        lines.append(
             "Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2, model, locator"
         )
 
     o_pref = event.preferred_origin()
 
     if hasattr(event, "event_type") and event.event_type == "not existing":
-        show_origin(o_pref, "FAKE")
+        lines.append(format_origin(o_pref, "FAKE"))
     else:
-        show_origin(o_pref, txt)
+        lines.append(format_origin(o_pref, txt))
 
     for o in event.origins:
         if o == o_pref:
             continue
-        show_origin(o, " |__")
+        lines.append(format_origin(o, " |__"))
+
+    return lines
 
 
-def show_origin(o: Origin, txt: str) -> None:
-    # if hasattr(o, "quality") and o.quality.azimuthal_gap:
-    #     azimuthal_gap = f"{o.quality.azimuthal_gap:.1f}"
-    # else:
-    #     # logger.warning("No azimuthal_gap defined !")
-    #     azimuthal_gap = "-"
+def show_event(event: Event, txt: str = "", header: bool = False):
+    """Print event information to stdout."""
+    for line in format_event(event, txt, header):
+        print(line)
 
+
+def format_origin(o: Origin, txt: str) -> str:
+    """Format origin information as a string.
+
+    Args:
+        o: The origin to format
+        txt: Text prefix for the origin
+
+    Returns:
+        Formatted string
+    """
     azimuthal_gap = o.get("quality", {}).get("azimuthal_gap", None)
     if not azimuthal_gap:
         azimuths = [
@@ -1650,31 +1704,34 @@ def show_origin(o: Origin, txt: str) -> None:
     else:
         secondary_azimuthal_gap = f"{secondary_azimuthal_gap:.1f}"
 
-    print(
-        ", ".join(
-            map(
-                str,
-                [
-                    txt,
-                    o.time,
-                    f"{o.latitude:.3f}",
-                    f"{o.longitude:.3f}",
-                    f"{o.depth:.1f}",
-                    (
-                        f"{o.quality.standard_error:.3f}"
-                        if o.quality.standard_error
-                        else "-"
-                    ),
-                    o.quality.used_station_count,
-                    o.quality.used_phase_count,
-                    azimuthal_gap,
-                    secondary_azimuthal_gap,
-                    o.earth_model_id.id.split("/")[-1] if o.earth_model_id else "",
-                    o.method_id.id.split("/")[-1] if o.method_id else "",
-                ],
-            )
+    return ", ".join(
+        map(
+            str,
+            [
+                txt,
+                o.time,
+                f"{o.latitude:.3f}",
+                f"{o.longitude:.3f}",
+                f"{o.depth:.1f}",
+                (
+                    f"{o.quality.standard_error:.3f}"
+                    if o.quality.standard_error
+                    else "-"
+                ),
+                o.quality.used_station_count,
+                o.quality.used_phase_count,
+                azimuthal_gap,
+                secondary_azimuthal_gap,
+                o.earth_model_id.id.split("/")[-1] if o.earth_model_id else "",
+                o.method_id.id.split("/")[-1] if o.method_id else "",
+            ],
         )
     )
+
+
+def show_origin(o: Origin, txt: str) -> None:
+    """Print origin information to stdout."""
+    print(format_origin(o, txt))
 
 
 def show_bulletin(
