@@ -375,8 +375,8 @@ def deduplicate_picks_one_pass(event: Event) -> bool:
     # Update references in arrivals
     for origin in event.origins:
         for arrival in origin.arrivals:
-            if arrival.pick_id.id in pick_map:
-                arrival.pick_id = pick_map[arrival.pick_id.id]
+            if arrival.pick_id and arrival.pick_id.id in pick_map:
+                arrival.pick_id = ResourceIdentifier(pick_map[arrival.pick_id.id])
 
     # Remove duplicate picks
     event.picks = [p for p in event.picks if p.resource_id.id not in to_remove]
