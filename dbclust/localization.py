@@ -933,8 +933,8 @@ class NllLoc(object):
                 # add this new origin to catalog and set it as preferred
                 e.origins.append(orig2)
                 e.preferred_origin_id = orig2.resource_id
-                # e.picks += event2.picks
-                # e = deduplicate_picks(e)
+                # Add picks from second pass to ensure arrivals have valid references
+                e.picks.extend(event2.picks)
             else:
                 # can't relocate: set it to "not existing"
                 logger.warning("Localization failed: second pass relocation unsuccessful")
