@@ -9,6 +9,8 @@ from datetime import datetime
 from itertools import combinations
 from typing import Dict
 from typing import List
+from typing import Optional
+from typing import Tuple
 
 import alphabetic_timestamp as ats
 from icecream import ic
@@ -245,13 +247,40 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
     for e in cat.events:
         logger.debug(f"Event {e.resource_id.id} has {len(e.origins)} origins.")
 
-        # check every arrival has a pick_id and a pick_id that exists
+        dedup_pick_map = getattr(e, "_dedup_pick_map", {})
+
+        # check every arrival has a pick_id and rewire from dedup map if needed
+        valid_pick_ids = {p.resource_id.id for p in e.picks}
         for o in e.origins:
+            filtered_arrivals = []
             for a in o.arrivals:
                 if not a.pick_id:
                     logger.warning(f"Arrival {a.resource_id} has no pick_id.")
-                elif a.pick_id.id not in [p.resource_id.id for p in e.picks]:
-                    logger.warning(f"Arrival {a.resource_id} references a missing pick {a.pick_id.id}.")
+                    continue
+                if a.pick_id.id in dedup_pick_map:
+                    mapped_id = _resolve_pick_id(a.pick_id.id, dedup_pick_map)
+                    logger.debug(
+                        "Arrival %s remapped pick %s -> %s via dedup map",
+                        a.resource_id.id if a.resource_id else "unknown",
+                        a.pick_id.id,
+                        mapped_id,
+                    )
+                    a.pick_id = ResourceIdentifier(mapped_id)
+                if a.pick_id.id not in valid_pick_ids:
+                    logger.warning(
+                        "Dropping arrival %s referencing missing pick %s",
+                        a.resource_id.id if a.resource_id else "unknown",
+                        a.pick_id.id,
+                    )
+                    continue
+                filtered_arrivals.append(a)
+            if len(filtered_arrivals) != len(o.arrivals):
+                logger.debug(
+                    "Origin %s: pruned %d arrivals referencing missing picks",
+                    o.resource_id.id if o.resource_id else "unknown",
+                    len(o.arrivals) - len(filtered_arrivals),
+                )
+            o.arrivals = filtered_arrivals
 
         logger.debug(f"Event {e.resource_id.id} has {sum(len(o.arrivals) for o in e.origins)} arrivals from all origins.")
 
@@ -305,6 +334,10 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
                         f"Arrival {a.resource_id} references a missing pick {a.pick_id.id if a.pick_id else 'None'}."
                     )
 
+        # Clear dedup map once processed
+        if hasattr(e, "_dedup_pick_map"):
+            delattr(e, "_dedup_pick_map")
+
         # Generate readable IDs for magnitude origins
         for m in e.magnitudes:
             magnitude_id = make_magnitude_id(e)
@@ -327,6 +360,41 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
     return cat
 
 
+def _remap_arrivals_from_map(event: Event, pick_map: Dict[str, str]) -> None:
+    """Update event arrivals according to provided pick mapping."""
+    if not pick_map:
+        return
+    for origin in event.origins:
+        for arrival in origin.arrivals:
+            if arrival.pick_id:
+                resolved_id = _resolve_pick_id(arrival.pick_id.id, pick_map)
+                if resolved_id != arrival.pick_id.id:
+                    arrival.pick_id = ResourceIdentifier(resolved_id)
+
+
+def _record_dedup_pick_map(event: Event, pick_map: Dict[str, str]) -> None:
+    """Persist mapping on the event for later stages (e.g. readable IDs)."""
+    if not pick_map:
+        return
+    existing_map = getattr(event, "_dedup_pick_map", {})
+    combined_map = dict(existing_map)
+    combined_map.update(pick_map)
+    setattr(event, "_dedup_pick_map", combined_map)
+
+
+def _resolve_pick_id(pick_id: str, pick_map: Dict[str, str]) -> str:
+    """Follow pick_map transitively to find the surviving pick id."""
+    visited = set()
+    current = pick_id
+    while current in pick_map and current not in visited:
+        visited.add(current)
+        new_id = pick_map[current]
+        if new_id == current:
+            break
+        current = new_id
+    return current
+
+
 def deduplicate_picks_one_pass(event: Event) -> bool:
     """
     Deduplicate picks from the given event by identifying and removing duplicate picks
@@ -341,8 +409,15 @@ def deduplicate_picks_one_pass(event: Event) -> bool:
         return False  # No picks to process
 
     pick_map = {}  # Map removed pick IDs to their replacements
-    to_remove = set()  # List of picks to remove
     unique_picks = {}
+    new_pick_list: List[Pick] = []
+    removed_picks: List[Pick] = []
+
+    logger.debug(
+        "Starting deduplicate_picks_one_pass for event %s with %d picks",
+        event.resource_id.id if event.resource_id else "unknown",
+        len(event.picks),
+    )
 
     for pick in event.picks:
         key = (
@@ -354,35 +429,40 @@ def deduplicate_picks_one_pass(event: Event) -> bool:
         if key in unique_picks:
             ref_pick = unique_picks[key]
 
-            # Use ref_pick.resource_id.id as the replacement value
-            pick_map[pick.resource_id.id] = ref_pick.resource_id.id
-            to_remove.add(pick.resource_id.id)
+            if pick.resource_id and ref_pick.resource_id:
+                # Always memoize, even if ids are equal, so later passes know the survivor
+                pick_map[pick.resource_id.id] = ref_pick.resource_id.id
+
+            removed_picks.append(pick)
 
             logger.debug(
                 f"Duplicate found: {pick.resource_id.id} -> {ref_pick.resource_id.id}"
             )
         else:
             unique_picks[key] = pick  # Add a new unique pick
+            new_pick_list.append(pick)
     # count the number of unique picks and duplicates
     logger.debug(
         f"Picks deduplication: number of unique picks: {len(unique_picks)}, "
-        f"number of duplicates: {len(to_remove)}"
+        f"number of duplicates: {len(removed_picks)}"
     )
 
-    if not to_remove:
+    if not removed_picks:
         return False  # No duplicates found
 
-    # Update references in arrivals
-    for origin in event.origins:
-        for arrival in origin.arrivals:
-            if arrival.pick_id and arrival.pick_id.id in pick_map:
-                arrival.pick_id = ResourceIdentifier(pick_map[arrival.pick_id.id])
+    # Update references in arrivals and persist mapping for later stages
+    _remap_arrivals_from_map(event, pick_map)
+    _record_dedup_pick_map(event, pick_map)
 
     # Remove duplicate picks
-    event.picks = [p for p in event.picks if p.resource_id.id not in to_remove]
+    event.picks = new_pick_list
 
     logger.debug(
-        f"Removed {len(to_remove)} duplicate picks, {len(event.picks)} remaining."
+        "Removed %d duplicate picks from event %s, %d remaining. Removed ids=%s",
+        len(removed_picks),
+        event.resource_id.id if event.resource_id else "unknown",
+        len(event.picks),
+        sorted([p.resource_id.id for p in removed_picks if p.resource_id]),
     )
     return True
 
@@ -397,8 +477,25 @@ def deduplicate_picks(event: Event) -> Event:
     Returns:
         Event: The event object with deduplicated picks.
     """
+    iteration = 0
+    before = len(event.picks)
     while deduplicate_picks_one_pass(event):
-        pass
+        iteration += 1
+        logger.debug(
+            "deduplicate_picks iteration %d for event %s -> %d picks remaining",
+            iteration,
+            event.resource_id.id if event.resource_id else "unknown",
+            len(event.picks),
+        )
+
+    if iteration:
+        logger.info(
+            "deduplicate_picks removed %d picks from event %s (initial=%d, final=%d)",
+            before - len(event.picks),
+            event.resource_id.id if event.resource_id else "unknown",
+            before,
+            len(event.picks),
+        )
 
     return event
 
@@ -446,52 +543,60 @@ def feed_distance_from_preloc_to_pref_origin(cat: Catalog) -> Catalog:
     return cat
 
 
-def remove_duplicate_picks(picks: List[Pick]) -> List[Pick]:
+def remove_duplicate_picks(event: Event) -> None:
     """
-    Removes duplicate picks based on resource ID, ensuring that time, phase hint, and
-    waveform ID are identical before removal. If conflicting values exist for the same
-    resource ID, logs an error.
-
-    Args:
-        picks (List[Pick]): A list of picks to deduplicate.
-
-    Returns:
-        List[Pick]: A list of unique picks.
+    Removes duplicate picks (same resource ID) from an event while recording mapping
+    so arrivals keep pointing to surviving picks.
     """
-    seen_picks = {}
-    unique_picks = []
+    seen_ids: Dict[str, Tuple[float, Optional[str]]] = {}
+    unique_picks: List[Pick] = []
+    pick_map: Dict[str, str] = {}
+    duplicates: List[str] = []
 
-    for pick in picks:
+    for pick in event.picks:
         if not pick.resource_id:
             logger.error("Pick without resource_id found")
             continue
 
         pick_id = pick.resource_id.id
         pick_values = (
-            round(pick.time.timestamp, 6),  # Rounded to avoid floating-point errors
-            #pick.phase_hint,
+            round(pick.time.timestamp, 6),
             pick.waveform_id.get_seed_string() if pick.waveform_id else None,
         )
 
-        if pick_id in seen_picks:
-            # Check if the values are consistent with those already recorded
-            if seen_picks[pick_id] != pick_values:
+        if pick_id in seen_ids:
+            if seen_ids[pick_id] != pick_values:
                 logger.error(
-                    f"Conflict for pick {pick_id}: inconsistent time, phase, or station"
+                    "Conflict for pick %s: inconsistent time/station for identical id",
+                    pick_id,
                 )
             else:
-                logger.debug(f"Pathological duplicate pick ignored: {pick_id}")
+                logger.debug("Pathological duplicate pick ignored: %s", pick_id)
+            duplicates.append(pick_id)
+            pick_map[pick_id] = pick_id  # arrival should keep pointing to survivor
         else:
-            seen_picks[pick_id] = pick_values
-            unique_picks.append(pick)  # Add to the final list
+            seen_ids[pick_id] = pick_values
+            unique_picks.append(pick)
 
-    # Stats, total number of picks and number of duplicates, remaining picks
     logger.debug(
-        f"Total number of picks: {len(picks)}, "
-        f"number of pathological duplicates: {len(picks) - len(unique_picks)}, "
-        f"number of remaining picks: {len(unique_picks)}"
+        "Total number of picks: %d, number of pathological duplicates: %d, "
+        "number of remaining picks: %d",
+        len(event.picks),
+        len(event.picks) - len(unique_picks),
+        len(unique_picks),
     )
-    return unique_picks
+    if duplicates:
+        logger.debug(
+            "remove_duplicate_picks removed %d duplicate ids: %s",
+            len(duplicates),
+            sorted(duplicates),
+        )
+
+    if pick_map:
+        _remap_arrivals_from_map(event, pick_map)
+        _record_dedup_pick_map(event, pick_map)
+
+    event.picks = unique_picks
 
 
 # function to deduplicate picks and make readable ids for a catalog
@@ -513,9 +618,23 @@ def deduplicate_picks_and_make_readable_ids(
 
     # Deduplicate picks in each event
     for e in cat.events:
+        event_id = e.resource_id.id if e.resource_id else "unknown"
+        before_total = len(e.picks)
         # remove picks with same id. It should not happen but it happens (picks info are the same)
-        e.picks = remove_duplicate_picks(e.picks)
+        remove_duplicate_picks(e)
+        after_remove = len(e.picks)
+        logger.debug(
+            "Event %s: remove_duplicate_picks -> %d picks (from %d)",
+            event_id,
+            after_remove,
+            before_total,
+        )
         e = deduplicate_picks(e)
+        logger.debug(
+            "Event %s: deduplicate_picks final count %d",
+            event_id,
+            len(e.picks),
+        )
 
     # Make the IDs readable
     cat = make_readable_id(cat, prefix, smi_base)
