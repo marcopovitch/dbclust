@@ -3,6 +3,7 @@ import argparse
 import logging
 import os
 import sys
+import warnings
 
 import pandas as pd
 import yaml
@@ -27,6 +28,13 @@ if __name__ == "__main__":
     # Setup default logger
     logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     logger = logging.getLogger("merge_catalog")
+
+    # Silence invalid QuakeML URI warnings emitted by ObsPy writes
+    warnings.filterwarnings(
+        "ignore",
+        message=".*is not a valid QuakeML URI.*",
+        category=UserWarning,
+    )
 
     # Argument parser
     parser = argparse.ArgumentParser(description="Merge seismic catalogs based on merge information.")
