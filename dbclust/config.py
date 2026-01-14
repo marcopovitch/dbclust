@@ -46,10 +46,8 @@ def _ic_output(s):
 
 ic.configureOutput(outputFunction=_ic_output)
 
-# default logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger("dbclust_config")
-logger.setLevel(logging.INFO)
+# default logger (uses hierarchical name for selective level control)
+logger = logging.getLogger("dbclust.config")
 
 
 @dataclass
@@ -716,10 +714,10 @@ class Zones:
         return gpd.GeoDataFrame(), None
 
     def show_zones(self):
-        print("Zone name: velocity profile")
+        logger.info("Zone name: velocity profile")
         for index, row in self.polygons.iterrows():
-            print(f'\t{row["name"]}: {row["velocity_profile"]}')
-        print()
+            logger.info(f'\t{row["name"]}: {row["velocity_profile"]}')
+        logger.info("")
 
 
 @dataclass
@@ -805,7 +803,7 @@ class PyoctoConfig:
         # to define velocity model above surface
         vp0 = profil_model["vp"].iloc[0]
         vs0 = profil_model["vs"].iloc[0]
-        print(f"Using P velocity {vp0} and S velocity {vs0} from model {self.default_model_name}")
+        logger.info(f"Using P velocity {vp0} and S velocity {vs0} from model {self.default_model_name}")
 
         # Create 1D velocity model
         self.velocity_model = self.create_velocity_model(vp0=vp0, vs0=vs0)

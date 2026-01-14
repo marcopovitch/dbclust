@@ -27,10 +27,8 @@ Use PyOcto to speed up and better constrain clustering
 
 reference: https://pyocto.readthedocs.io
 """
-# default logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger("dbclust2pyocto")
-logger.setLevel(logging.INFO)
+# default logger (uses hierarchical name for selective level control)
+logger = logging.getLogger("dbclust.pyocto")
 
 
 

@@ -3,36 +3,29 @@ import argparse
 import base64
 import logging
 import os
-import sys
 import warnings
 from datetime import datetime
-from itertools import combinations
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
 
 import alphabetic_timestamp as ats
-from icecream import ic
 from obspy import Catalog
 from obspy import read_events
 from obspy import UTCDateTime
 from obspy.core.event import Comment
-from obspy.core.event import CreationInfo
 from obspy.core.event import Event
 from obspy.core.event import Magnitude
 from obspy.core.event import Origin
 from obspy.core.event import ResourceIdentifier
-from obspy.core.event.base import WaveformStreamID
 from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
 
 warnings.filterwarnings("ignore", category=UserWarning, module="obspy")
 
-# default logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger("quakeml")
-logger.setLevel(logging.INFO)
+# default logger (uses hierarchical name for selective level control)
+logger = logging.getLogger("dbclust.quakeml")
 
 
 def safe_creation_time(origin):
@@ -85,7 +78,6 @@ def make_event_id(time: UTCDateTime, prefix: str, smi_base: str) -> ResourceIden
     year = time.year
     # alphatime = ats.base36.from_datetime(dt, time_unit=ats.TimeUnit.milliseconds)
     alphatime = datetime_to_base64_timestamp(dt, precision="microsecond")
-    # ic(dt, alphatime)
     event_id = f"{prefix}{year}{alphatime}"
     event_resource_id = ResourceIdentifier("/".join([smi_base, "event", event_id]))
     return event_resource_id

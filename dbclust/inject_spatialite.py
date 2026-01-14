@@ -44,9 +44,8 @@ from dbclust.localization_quality import haversine_distance
 # Suppress UserWarnings in ObsPy
 warnings.filterwarnings("ignore", category=UserWarning, module="obspy")
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("inject_spatialite")
-logger.setLevel(logging.INFO)
+# uses hierarchical name for selective level control
+logger = logging.getLogger("dbclust.inject_spatialite")
 
 # Define ANSI escape code constants for colors
 RED = "\033[91m"
