@@ -60,10 +60,8 @@ from dbclust.relabel import relabel_phase_and_comment_arrival
 # UserWarning: Setting attribute ... which is not a default attribute
 warnings.filterwarnings("ignore", category=UserWarning, module="obspy")
 
-# default logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger("localization")
-logger.setLevel(logging.INFO)
+# default logger (uses hierarchical name for selective level control)
+logger = logging.getLogger("dbclust.localization")
 
 
 # Define the preferred phase order
@@ -195,10 +193,7 @@ class NllLoc(object):
         enable_cleanup_pick_zone: bool = True,  # clean up pick outside of zone
         enable_relabel_pick_zone: bool = False,  # relabel pick within zone
         keep_not_existing_event: bool = False,  # keep "not existing" event, or not
-        log_level=logging.INFO,
     ):
-        logger.setLevel(log_level)
-
         # define locator
         self.nll_bin = nll_bin
         self.scat2latlon_bin = scat2latlon_bin
@@ -749,6 +744,37 @@ class NllLoc(object):
         # fixme: use resource_id to forge *better* eventid and originid
         e = cat.events[0]
         o = e.preferred_origin()
+
+        # Count arrivals returned by NonLinLoc before any cleanup
+        total_arrivals = len(o.arrivals)
+        zero_weight_arrivals = sum(
+            1
+            for a in o.arrivals
+            if hasattr(a, "time_weight")
+            and isclose(a.time_weight, 0, abs_tol=time_weight_tolerance)
+        )
+        if zero_weight_arrivals > 0:
+            logger.info(
+                f"NonLinLoc returned {total_arrivals} arrivals "
+                f"({zero_weight_arrivals} with time_weight=0)"
+            )
+
+        # Check if any picks were lost by NonLinLoc
+        if picks and len(picks) != total_arrivals:
+            logger.warning(
+                f"NonLinLoc returned {total_arrivals} arrivals but {len(picks)} picks were sent. "
+                f"This is usually caused by co-located stations (same NET.STA code but different channels) "
+                f"where NonLinLoc merges picks into a single arrival."
+            )
+            # Find missing picks
+            arrival_pick_ids = {a.pick_id.id for a in o.arrivals if a.pick_id}
+            for pick in picks:
+                if pick.resource_id.id not in arrival_pick_ids:
+                    logger.warning(
+                        f"  Missing arrival for pick: {pick.waveform_id.get_seed_string()} "
+                        f"{pick.phase_hint} {pick.time}"
+                    )
+
         o.quality.used_station_count = self.get_used_station_count(e, o)
         o.quality.used_phase_count = self.get_used_phase_count(e, o)
 
@@ -818,7 +844,7 @@ class NllLoc(object):
 
         # try a relocation
         if self.double_pass and pass_count == 0:
-            logger.debug("Starting double pass relocation.")
+            logger.info("Starting double pass relocation.")
             cat2 = cat.copy()
             event2 = cat2.events[0]
             # event2 = deduplicate_picks(event2)
@@ -862,7 +888,17 @@ class NllLoc(object):
 
             if len(event2.picks):
                 new_nll_obs_file = nll_obs_file + ".2nd_pass"
+                logger.info(
+                    f"Writing {len(event2.picks)} picks to NLLOC_OBS file for second pass"
+                )
                 cat2.write(new_nll_obs_file, format="NLLOC_OBS")
+                # Verify how many lines were actually written
+                with open(new_nll_obs_file, "r") as f:
+                    nll_obs_lines = sum(1 for line in f if line.strip() and not line.startswith("#"))
+                if nll_obs_lines != len(event2.picks):
+                    logger.warning(
+                        f"NLLOC_OBS file has {nll_obs_lines} entries but {len(event2.picks)} picks were expected"
+                    )
                 loc_method_used = (
                     self.loc_method if force_loc_method is None else force_loc_method
                 )
@@ -1309,9 +1345,17 @@ class NllLoc(object):
                 pick_to_delete.append(pick)
                 arrival_to_delete.append(arrival)
 
-        logger.debug(
-            f"cleanup: remove {len(arrival_to_delete)} phases and {len(pick_to_delete)} picks."
-        )
+        if arrival_to_delete:
+            logger.info(
+                f"cleanup_pick_phase: removed {len(arrival_to_delete)} arrivals "
+                f"(time_weight=0, bad residual, or cutoff)"
+            )
+            for a in arrival_to_delete:
+                p = next((pk for pk in pick_to_delete if pk.resource_id == a.pick_id), None)
+                if p:
+                    logger.debug(
+                        f"  - {p.waveform_id.get_seed_string()} {a.phase} {p.time}"
+                    )
 
         for a in arrival_to_delete:
             orig.arrivals.remove(a)
@@ -1319,6 +1363,7 @@ class NllLoc(object):
             event.picks.remove(p)
 
         # check duplicated picks
+        duplicates_removed = 0
         pick_to_delete = []
         arrival_to_delete = []
         comb = combinations(orig.arrivals, 2)
@@ -1341,14 +1386,20 @@ class NllLoc(object):
                     # remove a1 and p1
                     p = p1
                     a = a1
-                logger.info(
+                logger.debug(
                     f"Duplicated pick detected [{p.waveform_id.get_seed_string()}, {a.phase}, {p.time}]... "
                     f"removing the one with highest residual"
                 )
                 if p not in pick_to_delete:
                     pick_to_delete.append(p)
+                    duplicates_removed += 1
                 if a not in arrival_to_delete:
                     arrival_to_delete.append(a)
+
+        if duplicates_removed > 0:
+            logger.info(
+                f"cleanup_pick_phase: removed {duplicates_removed} duplicated arrivals"
+            )
 
         for a in arrival_to_delete:
             orig.arrivals.remove(a)
