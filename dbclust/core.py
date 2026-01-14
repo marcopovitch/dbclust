@@ -37,7 +37,8 @@ from dbclust.quakeml import deduplicate_picks_and_make_readable_ids
 from dbclust.quakeml import feed_distance_from_preloc_to_pref_origin
 from dbclust.rename import rename_waveform_id
 
-logger = logging.getLogger("dbclust")
+# uses hierarchical name for selective level control
+logger = logging.getLogger("dbclust.core")
 
 # CSV fieldnames for progress tracking
 CSV_FIELDNAMES = [
@@ -102,12 +103,11 @@ def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
     return keep
 
 
-def get_locator_from_config(cfg: DBClustConfig, log_level: int = logging.INFO) -> NllLoc:
+def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
     """Create a NllLoc instance from configuration.
 
     Args:
         cfg: DBClust configuration.
-        log_level: Logging level for the locator.
 
     Returns:
         Configured NllLoc instance.
@@ -144,20 +144,16 @@ def get_locator_from_config(cfg: DBClustConfig, log_level: int = logging.INFO) -
         enable_cleanup_pick_zone=cfg.relocation.enable_cleanup_pick_zone,
         #
         keep_not_existing_event=cfg.catalog.keep_not_existing_event,
-        log_level=log_level,
     )
     return locator
 
 
-def get_clusterize_from_config(
-    cfg: DBClustConfig, phases=None, log_level: int = logging.INFO
-) -> Clusterize:
+def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
     """Create a Clusterize instance from configuration.
 
     Args:
         cfg: DBClust configuration.
         phases: Optional list of phases to cluster.
-        log_level: Logging level for the clusterer.
 
     Returns:
         Configured Clusterize instance.
@@ -175,7 +171,6 @@ def get_clusterize_from_config(
         tt_matrix_fname=cfg.cluster.pre_computed_tt_matrix_file,
         tt_matrix_save=cfg.cluster.tt_matrix_save,
         zones=cfg.zones,
-        log_level=log_level,
     )
     return myclust
 

@@ -24,10 +24,8 @@ from shapely.geometry import LineString
 from shapely.geometry import Point
 from shapely.geometry import Polygon
 
-# default logger
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-logger = logging.getLogger("relabel")
-logger.setLevel(logging.INFO)
+# default logger (uses hierarchical name for selective level control)
+logger = logging.getLogger("dbclust.relabel")
 
 
 def get_value_from_key_in_list_of_dict(

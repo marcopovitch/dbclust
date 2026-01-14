@@ -23,10 +23,8 @@ from obspy.core.event import Pick
 from obspy.core.event import ResourceIdentifier
 from obspy.core.event.base import WaveformStreamID
 
-# default logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger("phase")
-logger.setLevel(logging.INFO)
+# default logger (uses hierarchical name for selective level control)
+logger = logging.getLogger("dbclust.phase")
 
 
 @dataclass

@@ -12,9 +12,7 @@ from icecream import ic
 from dbclust.config import RenameConfig
 
 # default logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 def apply_regex_to_row(row, patterns: Optional[List[Dict[str, str]]]) -> tuple:

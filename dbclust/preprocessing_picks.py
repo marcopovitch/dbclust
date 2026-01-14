@@ -6,8 +6,8 @@ import pandas as pd
 from contextlib import contextmanager
 from sklearn.cluster import DBSCAN
 
-logger = logging.getLogger("pick_preproc")
-logger.setLevel(logging.INFO)
+# uses hierarchical name for selective level control
+logger = logging.getLogger("dbclust.preprocessing")
 
 
 @contextmanager

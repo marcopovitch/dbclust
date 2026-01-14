@@ -27,8 +27,6 @@ from dbclust.inject_spatialite import refresh_event_coordinates_view
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# Default logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("dbclust")
 
 
@@ -86,10 +84,7 @@ def finalize_sqlite(cfg: DBClustConfig) -> None:
 
 def main():
     """Main entry point for DBClust runner."""
-    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    logger = logging.getLogger("dbclust")
-    logger.setLevel(logging.INFO)
-
+    app_logger = logging.getLogger("dbclust")
     parser = argparse.ArgumentParser(
         description="DBClust - Seismic event detection and localization"
     )
@@ -124,10 +119,13 @@ def main():
     # Set log level
     numeric_level = getattr(logging, args.loglevel.upper(), None)
     if not isinstance(numeric_level, int):
-        logger.error(f"Invalid loglevel '{args.loglevel.upper()}'!")
-        logger.error("loglevel should be: debug, warning, info, error.")
+        app_logger.error(f"Invalid loglevel '{args.loglevel.upper()}'!")
+        app_logger.error("loglevel should be: debug, warning, info, error.")
         sys.exit(255)
-    logger.setLevel(numeric_level)
+
+    logging.basicConfig(stream=sys.stdout, level=numeric_level, force=True)
+    # Set level on the dbclust parent logger so all child loggers inherit it
+    logging.getLogger("dbclust").setLevel(numeric_level)
 
     # Load configuration
     cfg = DBClustConfig(args.configfile)
@@ -142,7 +140,7 @@ def main():
     # Finalize SQLite database
     finalize_sqlite(cfg)
 
-    logger.info(f"Processing complete. {len(results)} partitions processed.")
+    app_logger.info(f"Processing complete. {len(results)} partitions processed.")
 
     # Flush output
     sys.stdout.flush()

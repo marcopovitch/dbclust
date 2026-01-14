@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
-from icecream import ic
 from obspy.core.event import Arrival
 from obspy.core.event import Catalog
 from obspy.core.event import Event
@@ -24,7 +23,6 @@ from scipy.stats import linregress
 from tqdm import tqdm
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 

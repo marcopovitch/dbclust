@@ -11,9 +11,8 @@ from dataclasses import asdict
 from datetime import datetime
 from datetime import timedelta
 from shutil import copyfile
-
-import pandas as pd
 from icecream import ic
+import pandas as pd
 from obspy import read_events
 
 from dbclust.config import DBClustConfig
@@ -22,13 +21,10 @@ from dbclust.localization import NllLoc
 from dbclust.localization import reloc_fdsn_event
 from dbclust.localization import show_bulletin
 from dbclust.localization import show_event
-from dbclust.quakeml import deduplicate_picks_and_make_readable_ids
 from dbclust.core import MyTemporaryDirectory
 
-# Default logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger("reprocess_event2")
-logger.setLevel(logging.INFO)
+# Default logger (uses hierarchical name for selective level control)
+logger = logging.getLogger("dbclust.reprocess")
 
 
 def round_to_centisecond(dt: datetime) -> datetime:
@@ -70,6 +66,10 @@ def process_file(
         logging.error(err_msg)
         return err_msg
 
+    # Log localization method being used
+    loc_method = cfg.nll.loc_method if hasattr(cfg.nll, "loc_method") else "EDT_OT_WT"
+    logger.info(f"Relocating {f} using {loc_method} localization method")
+
     try:
         cat = read_events(f)
 
@@ -90,7 +90,7 @@ def process_file(
 
         o = event.preferred_origin() or event.origins[0]
         zone, _ = cfg.zones.find_zone(o.latitude, o.longitude)
-        ic(zone["name"])
+        logger.debug("Relocation zone: %s", zone["name"])
 
         with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
             locator = NllLoc(
@@ -98,6 +98,7 @@ def process_file(
                 cfg.nll.scat2latlon_bin,
                 cfg.nll.time_path,
                 tmpdir=tmp_path,
+                loc_method=loc_method,
                 #
                 force_uncertainty=cfg.relocation.force_uncertainty,
                 P_uncertainty=cfg.relocation.P_uncertainty,
@@ -120,7 +121,6 @@ def process_file(
                 min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
                 enable_relabel_pick_zone=args.relabel,
                 enable_cleanup_pick_zone=True,
-                log_level=logging.getLogger().level,
             )
 
             try:
@@ -149,10 +149,6 @@ def process_file(
             e.amplitudes.extend(event.amplitudes)
             e.magnitudes.extend(event.magnitudes)
 
-            # deduplicate picks and make readable ids
-            logger.info("Deduplicate picks and make readable ids")
-            cat = deduplicate_picks_and_make_readable_ids(cat, "eost", "")
-
             # show relocated event
             if verbose:
                 show_event(e, "****", header=True)
@@ -165,7 +161,6 @@ def process_file(
                 2
             )  # Ensure month is 2 digits (e.g., "01" for January)
 
-            
             if args.output_name:
                 # Use the provided output name and directory
                 output_path = args.output_name
@@ -175,7 +170,7 @@ def process_file(
                 # Extract the basename from the input file (without path and extension)
                 input_basename = os.path.basename(f)
                 basename = os.path.splitext(input_basename)[0]
-                
+
                 # Create directory structure
                 output_dir = os.path.join(year, month)
                 os.makedirs(output_dir, exist_ok=True)
@@ -293,7 +288,9 @@ def setup_logging(loglevel: str) -> int:
     if not isinstance(numeric_level, int):
         raise ValueError(f"Invalid log level: {loglevel}")
 
-    logger.setLevel(numeric_level)
+    logging.basicConfig(stream=sys.stdout, level=numeric_level, force=True)
+    # Set level on the dbclust parent logger so all child loggers inherit it
+    logging.getLogger("dbclust").setLevel(numeric_level)
     return numeric_level
 
 
@@ -453,7 +450,7 @@ def main():
             # show traceback
             logger.error(traceback.format_exc())
             sys.exit(1)
-            
+
         if args.output_name and os.path.isfile(args.output_name):
             logger.error(
                 f"Error: file {args.output_name} already exists. Please remove it first."

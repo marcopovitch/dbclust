@@ -6,7 +6,6 @@ from typing import Union
 import numpy as np
 from obspy.core.event import Event
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 

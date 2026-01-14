@@ -11,12 +11,11 @@ from obspy import read_events
 from obspy.geodetics import locations2degrees
 
 # default logger
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger("scatter_plot")
-logger.setLevel(logging.INFO)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-e",
