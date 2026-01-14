@@ -117,6 +117,14 @@ class ParslHTEExecutor(ExecutorBase):
             max_workers = os.cpu_count() or 1
             worker_source = "auto-detected"
 
+        # Limit workers to number of tasks to avoid worker lost issues
+        n_tasks = len(self.cfg.parallel.time_partitions)
+        if max_workers > n_tasks:
+            logger.info(
+                f"Reducing workers from {max_workers} to {n_tasks} (number of tasks)"
+            )
+            max_workers = n_tasks
+
         # Silence all parsl loggers including HTE subloggers
         for logger_name in [
             "parsl",
