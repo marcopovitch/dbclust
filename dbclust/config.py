@@ -40,7 +40,7 @@ from dbclust.read_yml import read_config
 
 # Configure icecream to flush output immediately (needed for Parsl)
 def _ic_output(s):
-    sys.stderr.write(s + '\n')
+    sys.stderr.write(s + "\n")
     sys.stderr.flush()
 
 
@@ -192,23 +192,40 @@ class FdsnConfig:
         URLError: if URL is not valid
     """
 
-    default: str
-    hosts: Dict[str, str]
+    default: Optional[str] = None
+    hosts: Optional[Dict[str, str]] = None
     url: Optional[str] = None
 
     def __post_init__(self) -> None:
+        if not self.hosts:
+            if self.default is not None:
+                raise ValueError("FDSN default requires declared hosts !")
+            # Configuration disabled: leave url unset.
+            self.url = None
+            return
+
         # check url validity for each service
         for key, value in self.hosts.items():
             if not is_valid_url(value, syntax_only=True):
                 raise URLError(f"{key} URL {value} is not valid !")
-        self.url = self.hosts[self.default]
+
+        if self.default is None:
+            self.url = None
+        elif self.default not in self.hosts:
+            raise ValueError(f"Service {self.default} not found in FDSN hosts !")
+        else:
+            self.url = self.hosts[self.default]
 
     def set_url_from_service_name(self, service: str) -> None:
+        if not self.hosts:
+            raise ValueError("Cannot set FDSN URL: no hosts configured !")
         if service not in self.hosts:
             raise ValueError(f"Service {service} not found in FDSN hosts !")
         self.url = self.hosts[service]
 
     def get_url(self) -> str:
+        if self.url is None:
+            raise ValueError("FDSN URL has not been configured !")
         return self.url
 
 
@@ -256,39 +273,43 @@ class RenameConfig:
 
 @dataclass
 class StationConfig:
-    """Manage how to get stations coordinates.
+    """Configure how station coordinates are obtained.
 
-    This class provides a configuration for fetching station coordinates.
-    It allows fetching coordinates either from an inventory file or from a FDSN web service.
+    Coordinates can be sourced from on-disk inventories, an FDSN web service, or
+    CSV fallback files providing minimal metadata. The configuration also handles
+    optional blacklist/rename rules as well as thresholds for filtering stations.
 
     Attributes:
-        fetch_method (str):
-            The method used to fetch station coordinates. Should be either "inventory" or "fdsnws".
-        fdsnws_url (Optional[str]):
-            The URL of the FDSN web service. Required if fetch_method is "fdsnws".
-        inventory_files (Optional[List[str]]):
-            A list of inventory file paths. Required if fetch_method is "inventory".
-        blacklist (Optional[List[str]]):
-            A list of station codes to be excluded from the fetched coordinates.
-        rename (Optional[List[dict]]):
-            A list of dictionaries specifying station code renaming rules.
-        frequency_threshold (Optional[float]):
-            A threshold value for filtering stations based on their frequency.
-        inventory (Optional[Inventory]):
-            An instance of the `Inventory` class containing station information.
-        info_sta (Optional[Union[Inventory, str]]):
-            Information about the stations, either an `Inventory` instance or a URL.
+        fetch_method:
+            Strategy used to retrieve stations ("inventory", "fdsnws" or None).
+        fdsnws_url:
+            Legacy URL field kept for backward compatibility; prefer ``fdsnws``.
+        fdsnws:
+            Configuration describing the remote FDSN endpoint to query.
+        inventory_files:
+            Paths to StationXML files loaded when ``fetch_method`` is "inventory".
+        fallback:
+            CSV files containing network/station/channel coordinates used as a
+            last resort or to enrich partial inventories.
+        blacklist:
+            Optional list of station codes that must be ignored everywhere.
+        rename:
+            ``RenameConfig`` rules applied to station codes after loading.
+        frequency_threshold:
+            Minimum acceptable station frequency used for filtering.
+        inventory:
+            ``Inventory`` instance populated from StationXML files when relevant.
+        info_sta:
+            Reference to the loaded inventory or the FDSN URL to download.
+        fallback_df:
+            Pandas dataframe version of concatenated fallback CSV files.
 
     Raises:
-        ValueError: If fetch_method is not "inventory" or "fdsnws".
-        URLError: If fdsnws_url is not a valid URL or cannot be joined.
-
-    Methods:
-        __post_init__: A method automatically called after the object is initialized.
-
+        ValueError: If ``fetch_method`` does not match supported strategies.
+        FileNotFoundError: If declared fallback CSV files are missing.
     """
 
-    fetch_method: str
+    fetch_method: str | None
     fdsnws_url: Optional[str] = None
     fdsnws: Optional[FdsnConfig] = None
     inventory_files: Optional[List[str]] = None
@@ -301,8 +322,11 @@ class StationConfig:
     fallback_df: Optional[pd.DataFrame] = None
 
     def __post_init__(self) -> None:
-        if self.fetch_method not in ["inventory", "fdsnws"]:
-            raise ValueError("Invalid fetch_method: should be 'inventory' or 'fdsnws'!")
+        if self.fetch_method not in ["inventory", "fdsnws", None]:
+            raise ValueError("Invalid fetch_method: should be 'inventory', 'fdsnws' or None !")
+
+        if self.fetch_method is None and not self.fallback:
+            raise ValueError("fetch_method None requires at least one fallback CSV file !")
 
         if self.fetch_method == "inventory":
             self.inventory = Inventory()
@@ -315,9 +339,29 @@ class StationConfig:
                     )
                 )
                 self.info_sta = self.inventory
+        elif self.fetch_method == "fdsnws":
+            if self.fdsnws is not None:
+                try:
+                    url = self.fdsnws.get_url()
+                except ValueError as exc:
+                    raise ValueError(
+                        "fetch_method 'fdsnws' requires a configured FdsnConfig (hosts + default)."
+                    ) from exc
+                logger.debug(f"Using fdsnws {url} to get station coordinates.")
+                self.info_sta = url
+            elif self.fdsnws_url:
+                logger.debug(
+                    "Using legacy fdsnws_url configuration to get station coordinates."
+                )
+                self.info_sta = self.fdsnws_url
+            else:
+                raise ValueError(
+                    "fetch_method 'fdsnws' requires either an FdsnConfig or legacy fdsnws_url."
+                )
         else:
-            logger.debug(f"Using fdsnws {self.fdsnws.url} to get station coordinates.")
-            self.info_sta = self.fdsnws.get_url()
+            logger.info("Station fetch disabled; relying on fallback CSV only.")
+            self.info_sta = None
+        
 
         if self.fallback:
             dtype_dict = {
@@ -332,14 +376,30 @@ class StationConfig:
                 "endtime": "str",
                 "alias": "str",
             }
+            required_columns = set(dtype_dict.keys())
             for f in self.fallback:
                 logger.info(f"Reading fallback file {f}")
                 if not os.path.exists(f):
                     raise FileNotFoundError(f"File {f} does not exist !")
                 try:
                     df = pd.read_csv(f, dtype=dtype_dict)
+                except (TypeError, ValueError) as err:
+                    raise ValueError(
+                        "Fallback CSV parsing failed: ensure latitude/longitude/elevation "
+                        "columns contain numeric values only."
+                        f" File '{f}' raised: {err}"
+                    ) from err
                 except Exception:
                     raise
+
+                missing_columns = required_columns - set(df.columns)
+                if missing_columns:
+                    raise ValueError(
+                        "Fallback CSV is missing required columns: "
+                        f"{', '.join(sorted(missing_columns))}."
+                        " Expected columns: "
+                        f"{', '.join(sorted(required_columns))}."
+                    )
 
                 # if no elevation defined set to 0.0
                 df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
@@ -428,7 +488,7 @@ class NonLinLocConfig:
     verbose: bool
     enable_scatter: bool
     default_template_file: Optional[str] = None
-    min_phase: Optional[int] = 4 
+    min_phase: Optional[int] = 4
 
     def __post_init__(self) -> None:
         if not os.path.exists(self.nlloc_bin):
@@ -535,7 +595,9 @@ class CatalogConfig:
                 try:
                     os.makedirs(self.sqlite_db_path)
                 except OSError as e:
-                    raise OSError(f"Can't create directory {self.sqlite_db_path}: {e}") from e
+                    raise OSError(
+                        f"Can't create directory {self.sqlite_db_path}: {e}"
+                    ) from e
 
             if not os.access(self.sqlite_db_path, os.W_OK):
                 raise PermissionError(
@@ -767,7 +829,7 @@ class PyoctoConfig:
     default_model_name: str
     path: str
     models: List[Model]
-    enable:  Optional[bool] = True
+    enable: Optional[bool] = True
     # associator and velocity_model are in current_model.keys()
     current_model: Optional[Model] = None
     travel_time_grid_filename: Optional[str] = None
@@ -803,11 +865,13 @@ class PyoctoConfig:
         # to define velocity model above surface
         vp0 = profil_model["vp"].iloc[0]
         vs0 = profil_model["vs"].iloc[0]
-        logger.info(f"Using P velocity {vp0} and S velocity {vs0} from model {self.default_model_name}")
+        logger.info(
+            f"Using P velocity {vp0} and S velocity {vs0} from model {self.default_model_name}"
+        )
 
         # Create 1D velocity model
         self.velocity_model = self.create_velocity_model(vp0=vp0, vs0=vs0)
-        #self.velocity_model = self.create_velocity_model()
+        # self.velocity_model = self.create_velocity_model()
 
     def create_velocity_model(self, vp0=None, vs0=None) -> VelocityModel1D:
         tolerance = self.current_model.velocity_model.tolerance
@@ -832,8 +896,6 @@ class PyoctoConfig:
                 "vs": vmodel.vs,
             }
         )
-
-
 
         # create travel time grid
         VelocityModel1D.create_model(
@@ -967,7 +1029,11 @@ class DBClustConfig:
                 # Optional sections: use defaults if not in YAML
                 if key in self.yaml_data.keys():
                     # Extract inner type from Optional[X] -> X
-                    inner_type = data_class.__args__[0] if hasattr(data_class, "__args__") else data_class
+                    inner_type = (
+                        data_class.__args__[0]
+                        if hasattr(data_class, "__args__")
+                        else data_class
+                    )
                     setattr(
                         self,
                         key,
@@ -975,7 +1041,11 @@ class DBClustConfig:
                     )
                 else:
                     # Use default values from dataclass
-                    inner_type = data_class.__args__[0] if hasattr(data_class, "__args__") else data_class
+                    inner_type = (
+                        data_class.__args__[0]
+                        if hasattr(data_class, "__args__")
+                        else data_class
+                    )
                     setattr(self, key, inner_type())
             else:
                 if key not in self.yaml_data.keys():
