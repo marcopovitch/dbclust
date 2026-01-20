@@ -50,7 +50,7 @@ from dbclust.gap import compute_azimuthal_gap
 from dbclust.gap import compute_gap
 from dbclust.gap import compute_secondary_azimuthal_gap
 from dbclust.gap import get_arrival_with_distance_gap_greater_than
-from dbclust.localization_quality import classify_event
+from dbclust.localization_quality import classify_event, classify_event_michele_mod2    
 from dbclust.plot import plot_arrival_time
 from dbclust.quakeml import deduplicate_picks
 from dbclust.relabel import get_best_polygon_for_point
@@ -2026,15 +2026,26 @@ def show_bulletin(
         # print(f"{station_name} {phase_name} {arrival.time_weight} {arrival.time_residual} {arrival.distance} {pick.time} {pick.evaluation_mode}")
 
     # print(Event.__str__(event))
+    
+    print("\nQuality classification:")
     try:
         Q, QS, QD, classif_txt = classify_event(event, debug=True)
     except Exception as e:
-        logger.error(f"Error in classify_event: {e}")
+        logger.error(f"\tError in classify_event: {e}")
         Q = 0
         QS = 0
         QD = 0
         classif_txt = "unknown"
-    print(f"quality: {Q} ({classif_txt}), QS={QS}, QD={QD}")
+    print(f"\thypo7 quality: {Q} ({classif_txt}), QS={QS}, QD={QD}")
+    
+    try:
+        mlq = classify_event_michele_mod2(event)
+    except Exception as e:
+        logger.error(f"\tError in classify_event_michele_mod2: {e}")
+        mlq = ("N/A", "N/A")
+    print(f"\tMichele mod2 quality: Q={mlq[1]}, QF={mlq[0]:.2f}")
+    
+    print("\n")
     print(table)
 
     # plot with plotext library arrival time with respect to distance
