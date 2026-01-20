@@ -179,7 +179,7 @@ class Phase:
 
         # Raise an error if no matching data is found
         raise ValueError(
-            f"Cannot find coordinates for {network}.{station} at time {time} in fallback dataframe."
+            f"Cannot find coordinates for {network}.{station} at time {time} in fallback dataframe [pick ignored]."
         )
 
     def to_pick(self) -> Pick:
