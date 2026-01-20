@@ -128,19 +128,12 @@ def feed_picks_probabilities(cat: Catalog, clusters: List[List[Phase]]) -> None:
     for event in cat:
         for pick in event.picks:
             for p in set(chain(*clusters)):
-                # pick_seedid = ".".join(
-                #     [pick.waveform_id["network_code"], pick.waveform_id["station_code"]]
-                # )
-                # p_seedid = ".".join([p.network, p.station])
-                # if (
-                #     pick_seedid == p_seedid
-                #     and pick.time == p.time
-                #     and pick.phase_hint == p.phase
-                # ):
+                # We don't check phase_hint because after relabelling
+                # (ex: P -> Pg), pick.phase_hint is modified but not p.phase
                 if (
                     pick.waveform_id["station_code"] == p.station
                     and pick.time == p.time
-                    and pick.phase_hint == p.phase
+                    # and pick.phase_hint == p.phase
                 ):
                     if pick.waveform_id["network_code"] != p.network:
                         logger.warning(
