@@ -42,6 +42,9 @@ dependencies = [
     "geopy",
     "dask[complete]",
     "parsl>=2025.12.22",
+    "pygmt",
+    "contextily",
+    "rioxarray",
 ]
 
 [project.optional-dependencies]
