@@ -7,7 +7,7 @@ from typing import List
 from typing import Optional
 
 import pandas as pd
-from icecream import ic
+from pandas.api.types import is_datetime64_any_dtype
 
 from dbclust.config import RenameConfig
 
@@ -76,6 +76,10 @@ def rename_waveform_id(df: pd.DataFrame, rename_config: RenameConfig) -> pd.Data
 
     """
 
+    if df is None or df.empty:
+        logger.debug("rename_waveform_id called with empty dataframe; skipping renaming.")
+        return df
+
     def apply_regex_and_update(data, patterns, indices=None):
         """Apply regex to rows and update the DataFrame."""
         temp_result = data.apply(lambda row: apply_regex_to_row(row, patterns), axis=1)
@@ -94,6 +98,20 @@ def rename_waveform_id(df: pd.DataFrame, rename_config: RenameConfig) -> pd.Data
 
     # Apply transformations for each time window
     if rename_config and rename_config.time_windows:
+        need_phase_time = any(tw.get("time_window") for tw in rename_config.time_windows)
+        if need_phase_time:
+            if "phase_time" not in df.columns:
+                raise ValueError(
+                    "RenameConfig time windows require 'phase_time' column in dataframe."
+                )
+            if not is_datetime64_any_dtype(df["phase_time"]):
+                try:
+                    df["phase_time"] = pd.to_datetime(df["phase_time"], errors="raise")
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "Unable to convert 'phase_time' column to datetime for rename time windows."
+                    ) from exc
+
         for time_window in rename_config.time_windows:
             time_window_str = time_window.get("time_window")
             regex_patterns = time_window.get("regex", [])
