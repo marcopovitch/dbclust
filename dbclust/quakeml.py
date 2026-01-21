@@ -272,7 +272,32 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
                     o.resource_id.id if o.resource_id else "unknown",
                     len(o.arrivals) - len(filtered_arrivals),
                 )
-            o.arrivals = filtered_arrivals
+
+            # Deduplicate arrivals that point to the same pick_id with the same phase
+            # This can happen when picks on different channels were deduplicated but
+            # their arrivals were kept separately
+            seen_arrival_keys = {}
+            deduplicated_arrivals = []
+            for a in filtered_arrivals:
+                # Key: (pick_id, phase) - two arrivals pointing to same pick with same phase are duplicates
+                arrival_key = (a.pick_id.id if a.pick_id else None, str(a.phase))
+                if arrival_key in seen_arrival_keys:
+                    logger.debug(
+                        "Removing duplicate arrival for pick %s phase %s",
+                        a.pick_id.id if a.pick_id else "unknown",
+                        a.phase,
+                    )
+                    continue
+                seen_arrival_keys[arrival_key] = a
+                deduplicated_arrivals.append(a)
+
+            if len(deduplicated_arrivals) != len(filtered_arrivals):
+                logger.debug(
+                    "Origin %s: deduplicated %d arrivals pointing to same pick/phase",
+                    o.resource_id.id if o.resource_id else "unknown",
+                    len(filtered_arrivals) - len(deduplicated_arrivals),
+                )
+            o.arrivals = deduplicated_arrivals
 
         logger.debug(f"Event {e.resource_id.id} has {sum(len(o.arrivals) for o in e.origins)} arrivals from all origins.")
 
@@ -412,11 +437,21 @@ def deduplicate_picks_one_pass(event: Event) -> bool:
     )
 
     for pick in event.picks:
+        # Deduplicate by network + station + time + phase, ignoring channel
+        # This ensures picks on different channels (HH vs BH) for the same
+        # station/time/phase are deduplicated
         key = (
-            pick.waveform_id.get_seed_string() if pick.waveform_id else None,
+            pick.waveform_id.network_code if pick.waveform_id else None,
+            pick.waveform_id.station_code if pick.waveform_id else None,
             round(pick.time.timestamp, 6),  # Tolerance on time
             pick.phase_hint,
         )
+        # Original key using full waveform_id (including channel):
+        # key = (
+        #     pick.waveform_id.get_seed_string() if pick.waveform_id else None,
+        #     round(pick.time.timestamp, 6),  # Tolerance on time
+        #     pick.phase_hint,
+        # )
 
         if key in unique_picks:
             ref_pick = unique_picks[key]
