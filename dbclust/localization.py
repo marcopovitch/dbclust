@@ -1460,6 +1460,37 @@ class NllLoc(object):
             region_name = df_polygons["region"].unique()[0]
 
         orig = event.preferred_origin()
+
+        # Deduplicate arrivals that point to the same station with the same phase
+        # before relabeling. This prevents conflicts when two arrivals (e.g., from
+        # different channels HHZ/BHZ) both want to be relabeled to the same phase.
+        seen_arrival_keys = {}
+        deduplicated_arrivals = []
+        for a in orig.arrivals:
+            p = get_pick_from_arrival(event, a)
+            if p is None:
+                continue
+            # Key: (network, station, phase) - keep first arrival for each
+            arrival_key = (
+                p.waveform_id.network_code,
+                p.waveform_id.station_code,
+                str(a.phase),
+            )
+            if arrival_key in seen_arrival_keys:
+                logger.debug(
+                    f"Pre-relabel dedup: removing duplicate arrival for {arrival_key}"
+                )
+                continue
+            seen_arrival_keys[arrival_key] = a
+            deduplicated_arrivals.append(a)
+
+        if len(deduplicated_arrivals) != len(orig.arrivals):
+            logger.info(
+                f"cleanup_picks_and_relabel_picks: deduplicated {len(orig.arrivals) - len(deduplicated_arrivals)} "
+                f"arrivals with same station/phase before relabeling"
+            )
+            orig.arrivals = deduplicated_arrivals
+
         pick_to_delete = []
         arrival_to_delete = []
         relabel = {}
@@ -1610,6 +1641,10 @@ class NllLoc(object):
                         pick.waveform_id.network_code,
                         pick.waveform_id.station_code,
                     ):
+                        logger.debug(
+                            f"Conflict check: current={pick.waveform_id.get_seed_string()} {arrival.phase} "
+                            f"wants key={key}, other arrival has phase={a.phase}"
+                        )
                         if key == a.phase:
                             logger.debug(
                                 f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
