@@ -208,7 +208,8 @@ if __name__ == "__main__":
         event_time_local = "N/A"
     event_lat = o.latitude
     event_lon = o.longitude
-    event_depth = o.depth / 1000.0 if o.depth else 0
+    # Normalize depth sign: other sources (LocSAT, scatter) use negative = depth
+    event_depth = -1 * o.depth / 1000.0 if o.depth else 0
 
     # Quality info
     n_arrivals = len(o.arrivals) if o.arrivals else 0
