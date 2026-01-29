@@ -24,6 +24,13 @@ from dbclust.localization_quality import (
 # default logger
 logger = logging.getLogger("scatter_plot")
 
+# Default topography resolution for profiles
+TOPO_RESOLUTION = "03s"  # 3 arc-seconds (~90m)
+
+# Path to logo file
+LOGO_PATH = "/Users/marc/Documents/Geothermie/Vendenheim Fonroche/Reseaux_Sismicite/logo-bcsf-renass.png"
+
+
 
 def _origin_sort_key(origin):
     """Return a comparable timestamp for sorting origins safely."""
@@ -49,6 +56,67 @@ def _draw_text_block(fig, *, x, start_y, lines, line_spacing=0.4, justify="LM"):
             justify=justify,
             no_clip=True,
         )
+
+
+def _get_topography_profile(lon_start, lon_end, lat_start, lat_end, resolution=None, n_points=200):
+    """Extract topography profile between two points using GMT earth_relief data.
+
+    Returns a DataFrame with columns: longitude, latitude, elevation_km.
+    elevation_km uses the same convention as depth: negative = below sea level.
+    """
+    if resolution is None:
+        resolution = TOPO_RESOLUTION
+
+    # Build region with margin (need minimum extent for grid loading)
+    lon_min, lon_max = min(lon_start, lon_end), max(lon_start, lon_end)
+    lat_min, lat_max = min(lat_start, lat_end), max(lat_start, lat_end)
+    # Ensure minimum region extent for grid loading
+    margin = 0.05  # degrees
+    if lon_max - lon_min < 0.01:
+        lon_min -= margin
+        lon_max += margin
+    if lat_max - lat_min < 0.01:
+        lat_min -= margin
+        lat_max += margin
+    region = [lon_min - 0.01, lon_max + 0.01, lat_min - 0.01, lat_max + 0.01]
+
+    try:
+        # Load earth relief data for the region
+        logger.debug(f"Loading earth relief for region {region}")
+        grid = pygmt.datasets.load_earth_relief(resolution=resolution, region=region)  # type: ignore[arg-type]
+
+        # Create explicit sample points along the profile
+        lons = np.linspace(lon_start, lon_end, n_points)
+        lats = np.linspace(lat_start, lat_end, n_points)
+        points_df = pd.DataFrame({"lon": lons, "lat": lats})
+
+        # Extract elevation along profile using explicit points
+        track_result = pygmt.grdtrack(points=points_df, grid=grid, newcolname="elevation")
+
+        if track_result is not None and len(track_result) > 0:
+            # grdtrack returns a DataFrame when given a DataFrame input
+            track_df = track_result if isinstance(track_result, pd.DataFrame) else pd.DataFrame(track_result)
+            # Rename columns for consistency
+            if "lon" in track_df.columns:
+                track_df = track_df.rename(columns={"lon": "longitude", "lat": "latitude"})
+            # Convert elevation from meters to km
+            # Keep the same sign: positive elevation (mountains) = positive km
+            # negative elevation (below sea level) = negative km
+            # This is consistent with the depth convention in plots where
+            # negative = below sea level, positive = above sea level
+            track_df["elevation_km"] = track_df["elevation"] / 1000.0
+            logger.debug(f"Topography profile: {len(track_df)} points, "
+                        f"elevation range: {track_df['elevation'].min():.0f} to "
+                        f"{track_df['elevation'].max():.0f} m, "
+                        f"elevation_km range: {track_df['elevation_km'].min():.2f} to "
+                        f"{track_df['elevation_km'].max():.2f} km")
+            return track_df
+        else:
+            logger.warning("grdtrack returned empty result")
+    except Exception as e:
+        logger.warning(f"Failed to extract topography profile: {e}")
+
+    return None
 
 
 def _resolve_input_file(description, explicit_path, pattern=None):
@@ -375,6 +443,51 @@ if __name__ == "__main__":
         max_latitude + offset,
     ]
 
+    # Extract topography profiles for cross-sections
+    # Latitude profile (N-S at max_longitude)
+    logger.info(f"Extracting latitude topography profile at lon={max_longitude:.3f}")
+    topo_lat_profile = _get_topography_profile(
+        max_longitude, max_longitude,
+        max_latitude - offset, max_latitude + offset
+    )
+    if topo_lat_profile is not None:
+        logger.info(f"Latitude topo profile: {len(topo_lat_profile)} points")
+    else:
+        logger.warning("Failed to extract latitude topography profile")
+
+    # Longitude profile (E-W at max_latitude)
+    logger.info(f"Extracting longitude topography profile at lat={max_latitude:.3f}")
+    topo_lon_profile = _get_topography_profile(
+        max_longitude - offset, max_longitude + offset,
+        max_latitude, max_latitude
+    )
+    if topo_lon_profile is not None:
+        logger.info(f"Longitude topo profile: {len(topo_lon_profile)} points")
+    else:
+        logger.warning("Failed to extract longitude topography profile")
+
+    # Compute depth range considering both scatter data and topography
+    # Convention: negative depth = below sea level, positive = above
+    depth_min = df["depth"].min() - depth_offset
+    depth_max = 0  # Sea level by default
+
+    # Topography elevation_km: positive = above sea level (mountains), negative = below (ocean)
+    # We need the upper bound to include the highest point (max elevation_km)
+    if topo_lat_profile is not None:
+        topo_max_elev = topo_lat_profile["elevation_km"].max()
+        if topo_max_elev > depth_max:
+            depth_max = topo_max_elev + 0.5  # Add margin above highest point
+    if topo_lon_profile is not None:
+        topo_max_elev = topo_lon_profile["elevation_km"].max()
+        if topo_max_elev > depth_max:
+            depth_max = topo_max_elev + 0.5
+
+    # Also consider if scatter points are above sea level
+    if df["depth"].max() > depth_max:
+        depth_max = df["depth"].max() + depth_offset
+
+    logger.info(f"Depth range for plots: {depth_min:.1f} to {depth_max:.1f} km")
+
     # Start plot
     fig = pygmt.Figure()
     pygmt.makecpt(cmap="viridis", series=[df["h2"].min(), df["h2"].max()])
@@ -407,16 +520,48 @@ if __name__ == "__main__":
     ##############
     # lat, depth # (top-left)
     ##############
+    lat_depth_region = [
+        depth_min,
+        depth_max,
+        max_latitude - offset,
+        max_latitude + offset,
+    ]
     fig.basemap(
-        region=[
-            df["depth"].min() - depth_offset,
-            0,
-            max_latitude - offset,
-            max_latitude + offset,
-        ],
+        region=lat_depth_region,
         projection=f"X{panel_size}c/{panel_size}c",
         frame=["afg", "WSne", "x+ldepth (km)", "y+llatitude"],
     )
+
+    # Plot topography profile (latitude vs elevation)
+    if topo_lat_profile is not None and len(topo_lat_profile) > 0:
+        # Subsample if too many points (PyGMT can struggle with very large polygons)
+        topo_df = topo_lat_profile
+        if len(topo_df) > 500:
+            step = len(topo_df) // 500
+            topo_df = topo_df.iloc[::step].copy()
+            logger.debug(f"Subsampled lat topo profile to {len(topo_df)} points")
+
+        topo_x = list(topo_df["elevation_km"])
+        topo_y = list(topo_df["latitude"])
+
+        # Fill area below topography (underground/rock) - create closed polygon
+        # Go along topo profile, then close at the bottom (depth_min side)
+        poly_x = topo_x + [depth_min, depth_min, topo_x[0]]
+        poly_y = topo_y + [topo_y[-1], topo_y[0], topo_y[0]]
+        fig.plot(
+            x=poly_x,
+            y=poly_y,
+            fill="lightgray",
+            transparency=50,
+            close=True,
+        )
+
+        # Draw the topography line on top
+        fig.plot(
+            x=topo_x,
+            y=topo_y,
+            pen="1.5p,saddlebrown",
+        )
 
     fig.plot(
         x=df["depth"],
@@ -558,16 +703,47 @@ if __name__ == "__main__":
     ##############
     fig.shift_origin(xshift=f"{panel_size + gap}c")
 
+    lon_depth_region = [
+        max_longitude - offset,
+        max_longitude + offset,
+        depth_min,
+        depth_max,
+    ]
     fig.basemap(
-        region=[
-            max_longitude - offset,
-            max_longitude + offset,
-            df["depth"].min() - depth_offset,
-            0,
-        ],
+        region=lon_depth_region,
         projection=f"X{panel_size}c/{panel_size}c",
         frame=["afg", "wSnE", "y+ldepth (km)", "x+llongitude"],
     )
+
+    # Plot topography profile (longitude vs elevation)
+    if topo_lon_profile is not None and len(topo_lon_profile) > 0:
+        # Subsample if too many points
+        topo_df = topo_lon_profile
+        if len(topo_df) > 500:
+            step = len(topo_df) // 500
+            topo_df = topo_df.iloc[::step].copy()
+            logger.debug(f"Subsampled lon topo profile to {len(topo_df)} points")
+
+        topo_x = list(topo_df["longitude"])
+        topo_y = list(topo_df["elevation_km"])
+
+        # Fill area below topography (underground/rock) - create closed polygon
+        poly_x = topo_x + [topo_x[-1], topo_x[0], topo_x[0]]
+        poly_y = topo_y + [depth_min, depth_min, topo_y[0]]
+        fig.plot(
+            x=poly_x,
+            y=poly_y,
+            fill="lightgray",
+            transparency=50,
+            close=True,
+        )
+
+        # Draw the topography line on top
+        fig.plot(
+            x=topo_x,
+            y=topo_y,
+            pen="1.5p,saddlebrown",
+        )
 
     fig.plot(
         x=df["longitude"],
@@ -602,7 +778,14 @@ if __name__ == "__main__":
     title_width = 2 * panel_size + gap
     title_height = 7.0
 
-    # Main title (set region/projection here since basemap with frame=False is not valid)
+    # Add logo in top-left corner
+    if os.path.exists(LOGO_PATH):
+        fig.image(
+            imagefile=LOGO_PATH,
+            position="jTL+o0.3c/-0.3c+w5.0c",  # Top-Left, offset, width 5.0cm
+        )
+
+    # Main title
     fig.text(
         x=title_width / 2,
         y=6.8,
@@ -667,11 +850,17 @@ if __name__ == "__main__":
     # Top-left cell: Location
     erh_str = f"{erh:.1f} km" if erh is not None else "N/A"
     erz_str = f"{erz:.1f} km" if erz is not None else "N/A"
+    # Display depth or elevation depending on sign
+    # Convention: negative = below sea level (depth), positive = above sea level (elevation)
+    if event_depth >= 0:
+        depth_str = f"Elev: {event_depth:.1f} km (above sea level)"
+    else:
+        depth_str = f"Depth: {-event_depth:.1f} km (below sea level)"
     location_lines = [
         ("Localization", title_font),
         (f"Lat: {event_lat:.4f}@~\\260@~", value_font),
         (f"Lon: {event_lon:.4f}@~\\260@~", value_font),
-        (f"Depth: {event_depth:.1f} km", value_font),
+        (depth_str, value_font),
         (f"ERH: {erh_str}   ERZ: {erz_str}", value_font),
     ]
     _draw_text_block(
