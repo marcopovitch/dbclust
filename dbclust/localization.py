@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import warnings
+from pprint import pprint
 from collections import defaultdict
 from itertools import combinations
 from math import fabs
@@ -50,6 +51,7 @@ from dbclust.gap import compute_azimuthal_gap
 from dbclust.gap import compute_gap
 from dbclust.gap import compute_secondary_azimuthal_gap
 from dbclust.gap import get_arrival_with_distance_gap_greater_than
+from dbclust.gt5 import compute_gallacher_gt5_score_obspy
 from dbclust.localization_quality import classify_event, classify_event_michele_mod2    
 from dbclust.plot import plot_arrival_time
 from dbclust.quakeml import deduplicate_picks
@@ -1443,7 +1445,8 @@ class NllLoc(object):
         """
 
         # Minimum distance to epicenter to consider an arrival to be relabeled
-        min_distance_to_epicenter = 0.25  # degrees
+        #min_distance_to_epicenter = 0.25  # degrees
+        min_distance_to_epicenter = 0
 
         df_polygons = zone.picks_delimiter
         sigma = zone.sigma
@@ -2063,6 +2066,9 @@ def show_bulletin(
     # print(Event.__str__(event))
     
     print("\nQuality classification:")
+    ########################
+    # hypo7 classification
+    #########################
     try:
         Q, QS, QD, classif_txt = classify_event(event, debug=True)
     except Exception as e:
@@ -2073,13 +2079,32 @@ def show_bulletin(
         classif_txt = "unknown"
     print(f"\thypo7 quality: {Q} ({classif_txt}), QS={QS}, QD={QD}")
     
+    ########################
+    # michele mod2 classification
+    ########################
     try:
         mlq = classify_event_michele_mod2(event)
     except Exception as e:
         logger.error(f"\tError in classify_event_michele_mod2: {e}")
         mlq = ("N/A", "N/A")
-    print(f"\tMichele mod2 quality: Q={mlq[1]}, QF={mlq[0]:.2f}")
+    qf_str = f"{mlq[0]:.2f}" if mlq[0] is not None else "N/A"
+    print(f"\tMichele mod2 quality: Q={mlq[1]}, QF={qf_str}")
     
+    #########################
+    # Gallacher GT5
+    #########################
+    origin = event.preferred_origin() if event.preferred_origin() else event.origins[0]
+    try:
+        gallacher_gt5  = compute_gallacher_gt5_score_obspy(origin)
+    except Exception as e:
+        logger.error(f"\tError in compute_gallacher_gt5_score_obspy: {e}")
+        gallacher_gt5 = ("N/A", "N/A")
+    print(f"\nGallacher GT5 score: {gallacher_gt5[0]}")
+    pprint(gallacher_gt5[1])
+    
+    ########################
+    # Table display
+    ########################
     print("\n")
     print(table)
 
