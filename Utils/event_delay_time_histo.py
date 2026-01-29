@@ -73,7 +73,7 @@ def main():
     )
 
     # Upper plot: daily histogram
-    ax1.bar(daily_counts.index, daily_counts.values, width=1.0, color="blue", align="center")
+    ax1.bar(daily_counts.index, daily_counts.values, width=1.0, color="blue", align="edge")
     ax1.set_ylabel("Events/day")
     ax1.set_title(f"Event activity and inter-event delay — {args.region}")
     ax1.grid(True, linestyle="--", alpha=0.3)
