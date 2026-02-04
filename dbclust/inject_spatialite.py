@@ -91,9 +91,12 @@ NON_STANDARD_EVENT_TYPES = [
 # =============================================================================
 
 # SQL for creating the event coordinates view
+# IMPORTANT: o.rowid is required for QGIS to display the view correctly.
+# QGIS needs an integer rowid to identify features in SpatiaLite views.
 EVENT_COORDINATES_VIEW = """
     CREATE VIEW IF NOT EXISTS event_coordinates AS
     SELECT
+        o.rowid AS rowid,
         e.event_id,
         o.id AS origin_id,
         o.time,
@@ -563,17 +566,25 @@ def get_relabel_info(
 
 def phase_count(event: Event, origin: Origin, phase_type: str) -> int:
     """
-    Count the number of phase of a given type in an origin.
+    Count the number of used phases of a given type in an origin.
+
+    Only counts phases with time_weight > 0 (i.e., phases actually used
+    in the localization, not rejected ones).
 
     Parameters:
+        event (Event): The event containing picks.
         origin (Origin): The origin.
         phase_type (str): The phase type "P" or "S".
 
     Returns:
-        int: The number of phase of the given type.
+        int: The number of used phases of the given type.
     """
     count = 0
     for arrival in origin.arrivals:
+        # Skip phases not used in localization (weight = 0 or missing)
+        if not hasattr(arrival, "time_weight") or arrival.time_weight == 0:
+            continue
+
         pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
         if pick is None:
             logger.error(
@@ -588,6 +599,53 @@ def phase_count(event: Event, origin: Origin, phase_type: str) -> int:
             count += 1
 
     return count
+
+
+def compute_used_phase_count(origin: Origin) -> int:
+    """
+    Count the number of phases actually used in localization.
+
+    Only counts arrivals with time_weight > 0 (i.e., phases actually used
+    in the localization, not rejected ones).
+
+    Parameters:
+        origin (Origin): The origin containing arrivals.
+
+    Returns:
+        int: The number of used phases.
+    """
+    return sum(
+        1
+        for arrival in origin.arrivals
+        if arrival.time_weight is not None and arrival.time_weight != 0
+    )
+
+
+def compute_used_station_count(event: Event, origin: Origin) -> int:
+    """
+    Count the number of unique stations actually used in localization.
+
+    Only counts stations from arrivals with time_weight > 0.
+
+    Parameters:
+        event (Event): The event containing picks.
+        origin (Origin): The origin containing arrivals.
+
+    Returns:
+        int: The number of unique stations used.
+    """
+    weighted_stations = set()
+    for arrival in origin.arrivals:
+        if arrival.time_weight is None or arrival.time_weight == 0:
+            continue
+        if arrival.pick_id:
+            pick = next(
+                (p for p in event.picks if p.resource_id == arrival.pick_id), None
+            )
+            if pick and pick.waveform_id:
+                station_code = f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
+                weighted_stations.add(station_code)
+    return len(weighted_stations)
 
 
 # -----------------------------------------------------------------------------
@@ -815,6 +873,11 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     S_count = phase_count(event, origin, "S")
     erz, erh, err_method = get_erh_erz(origin)
 
+    # Recalculate used_phase_count and used_station_count from arrivals with non-zero weight
+    # This is more reliable than using quality.used_phase_count/used_station_count
+    used_phase_count = compute_used_phase_count(origin)
+    used_station_count = compute_used_station_count(event, origin)
+
     # Some origins may not have arrivals fully populated
     valid_arrivals = [
         arrival
@@ -882,7 +945,7 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
             rms,
             erh,
             erz,
-            quality.used_phase_count,
+            used_phase_count,
             quality.minimum_distance,
             quality.median_distance,
             azimuthal_gap,
@@ -940,8 +1003,8 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
             err_method,
             origin_method_id,
             earth_model_id,
-            quality.used_station_count,
-            quality.used_phase_count,
+            used_station_count,
+            used_phase_count,
             P_count,
             S_count,
             quality.minimum_distance,
@@ -1007,6 +1070,11 @@ def insert_magnitudes(conn: sqlite3.Connection, event: Event) -> None:
 def insert_station_magnitudes(conn: sqlite3.Connection, event: Event) -> None:
     """Inserts all station magnitudes into the database."""
     for station_magnitude in event.station_magnitudes:
+        # Handle empty origin_id: use None instead of empty string to avoid FK constraint failure
+        origin_id = None
+        if station_magnitude.origin_id and station_magnitude.origin_id.id:
+            origin_id = station_magnitude.origin_id.id
+
         conn.execute(
             """
             INSERT OR IGNORE INTO station_magnitudes (id, origin_id, magnitude, uncertainty, magnitude_type, method_id, waveform_id)
@@ -1014,7 +1082,7 @@ def insert_station_magnitudes(conn: sqlite3.Connection, event: Event) -> None:
             """,
             (
                 station_magnitude.resource_id.id,
-                station_magnitude.origin_id.id if station_magnitude.origin_id else None,
+                origin_id,
                 station_magnitude.mag,
                 (
                     station_magnitude.mag_errors.uncertainty
@@ -1659,9 +1727,11 @@ def register_geometry_for_view(
 
     # Register the view in views_geometry_columns
     # Map the view's geometry to the base table 'origins'.
+    # IMPORTANT: view_rowid must be an INTEGER column for QGIS to work correctly.
+    # Using o.rowid from the origins table (exposed as 'rowid' in the view).
     base_table = "origins"
     base_geom_col = "geometry"
-    view_rowid_col = "origin_id"  # provided by EVENT_COORDINATES_VIEW
+    view_rowid_col = "rowid"  # INTEGER rowid from origins table, required for QGIS
 
     logger.info(
         f"Registering view geometry: view='{view_name}', geom='{geometry_column}', base='{base_table}.{base_geom_col}', rowid='{view_rowid_col}'"
@@ -1848,6 +1918,11 @@ def import_catalog_to_sqlite(conn, catalog, enable_quakeml=False, disable_tqdm=F
             except sqlite3.IntegrityError as e:
                 error_count += 1
                 logging.warning(f"Event {event.resource_id.id} skipped: {e}")
+                # Rollback the failed transaction and start a new one
+                conn.rollback()
+                batch_count = 0  # Reset batch counter since we rolled back
+                if i < len(catalog) - 1:  # not the last iteration
+                    conn.execute("BEGIN IMMEDIATE;")
                 continue
 
         # Final commit if there are remaining events in the batch
