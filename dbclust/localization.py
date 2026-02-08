@@ -862,8 +862,10 @@ class NllLoc(object):
             # - No preloc (.vel doesn't exist)
             # - No forced zone (self.force_zone_name is None) - if zone is forced, template was already set
             # - No forced template from caller
+            zone_is_valid = zone is not None and len(zone) > 0
             if (
-                not os.path.exists(vel_file)
+                zone_is_valid
+                and not os.path.exists(vel_file)
                 and not self.force_zone_name
                 and not force_template
                 and zone_template
