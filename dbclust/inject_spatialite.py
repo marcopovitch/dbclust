@@ -760,9 +760,22 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
             ),
         )
 
+        # Deduplicate origins by resource_id (some QuakeML files contain duplicate origins)
+        seen_origin_ids = set()
+        unique_origins = []
+        for origin in event.origins:
+            if origin.resource_id.id not in seen_origin_ids:
+                seen_origin_ids.add(origin.resource_id.id)
+                unique_origins.append(origin)
+            else:
+                logger.warning(
+                    f"Duplicate origin {origin.resource_id.id} "
+                    f"in event {event.resource_id.id}, skipping."
+                )
+
         # Insert origins
         logger.debug(f"Inserting origins for event {event.resource_id.id}.")
-        for origin in event.origins:
+        for origin in unique_origins:
             insert_origin(conn, origin, event)
 
         # Insert picks
@@ -798,7 +811,7 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
 
         # Insert arrivals and collect phase information for station score calculation
         logger.debug(f"Inserting arrivals for event {event.resource_id.id}.")
-        for origin in event.origins:
+        for origin in unique_origins:
             insert_arrivals(conn, origin)
 
             # Calculate station score for this origin
@@ -1931,7 +1944,7 @@ def import_catalog_to_sqlite(conn, catalog, enable_quakeml=False, disable_tqdm=F
             logging.info(f"Final commit of {batch_count} events")
 
         logging.info(
-            f"Import completed. Success: {success_count}, Errors: {error_count}"
+            f"Import completed. Success: {success_count}, Skipped: {error_count}"
         )
 
     except Exception as e:
@@ -1941,6 +1954,8 @@ def import_catalog_to_sqlite(conn, catalog, enable_quakeml=False, disable_tqdm=F
 
         logging.error(traceback.format_exc())
         raise
+
+    return success_count, error_count
 
 
 # =============================================================================
@@ -3011,6 +3026,7 @@ def main():
             parsed_count = 0
             error_count = 0
             total_events = 0
+            skipped_count = 0
 
             with tqdm(
                 total=len(args.input), desc="Processing QuakeML files", unit="file"
@@ -3023,15 +3039,18 @@ def main():
                         parsed_count += 1
                         num_events = len(catalog)
                         total_events += num_events
+
+                        _, skipped = import_catalog_to_sqlite(conn, catalog, args.enable_quakeml)
+                        skipped_count += skipped
+
                         pbar.set_postfix(
                             {
                                 "parsed": parsed_count,
                                 "errors": error_count,
+                                "skipped": skipped_count,
                                 "events": total_events,
                             }
                         )
-
-                        import_catalog_to_sqlite(conn, catalog, args.enable_quakeml)
                         pbar.update(1)
 
                     except Exception as e:
@@ -3044,7 +3063,7 @@ def main():
                         continue
 
             print(
-                f"\nProcessing completed: {parsed_count} files imported ({total_events} events), {error_count} files failed"
+                f"\nProcessing completed: {parsed_count} files imported ({total_events} events), {error_count} files failed, {skipped_count} events skipped (duplicates)"
             )
 
             # Extract agency names after all imports
