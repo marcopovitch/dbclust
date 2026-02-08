@@ -139,15 +139,28 @@ def process_file(
                 logging.error(err_msg)
                 return err_msg
 
-            # merge relocated event with original event
+            # merge relocated event with original event (avoiding duplicates)
             e = cat[0]
-            e.origins.extend(event.origins)
+            existing_origin_ids = {o.resource_id.id for o in e.origins}
+            existing_pick_ids = {p.resource_id.id for p in e.picks}
+            existing_amplitude_ids = {a.resource_id.id for a in e.amplitudes}
+            existing_magnitude_ids = {m.resource_id.id for m in e.magnitudes}
+
+            e.origins.extend(
+                o for o in event.origins if o.resource_id.id not in existing_origin_ids
+            )
             e.origins.sort(
                 key=lambda x: x.creation_info.creation_time or 0, reverse=True
             )
-            e.picks.extend(event.picks)
-            e.amplitudes.extend(event.amplitudes)
-            e.magnitudes.extend(event.magnitudes)
+            e.picks.extend(
+                p for p in event.picks if p.resource_id.id not in existing_pick_ids
+            )
+            e.amplitudes.extend(
+                a for a in event.amplitudes if a.resource_id.id not in existing_amplitude_ids
+            )
+            e.magnitudes.extend(
+                m for m in event.magnitudes if m.resource_id.id not in existing_magnitude_ids
+            )
 
             # show relocated event
             if verbose:
