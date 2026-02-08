@@ -165,7 +165,8 @@ def process_file(
                 # Use the provided output name and directory
                 output_path = args.output_name
                 output_dir = os.path.dirname(output_path)
-                os.makedirs(output_dir, exist_ok=True)
+                if output_dir:
+                    os.makedirs(output_dir, exist_ok=True)
             else:
                 # Extract the basename from the input file (without path and extension)
                 input_basename = os.path.basename(f)
