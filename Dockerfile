@@ -46,15 +46,15 @@ WORKDIR /app
 # Copy dependency files first 
 COPY pyproject.toml uv.lock* ./
 
-# Install dependencies 
+# Install project dependencies (setuptools included via pyproject.toml for obspy)
 RUN /bin/uv pip install --system .
 
 # Copy patch files for obspy
 COPY patch/obspy/obspy.io.nlloc.core.py.patch /tmp/obspy.patch
 
-# Apply obspy patch
+# Apply obspy patch (use find instead of python import to locate the file)
 RUN patch --batch --forward \
-    $(python3 -c "import obspy.io.nlloc.core; print(obspy.io.nlloc.core.__file__)") < /tmp/obspy.patch && \
+    $(find /usr/local/lib -path '*/obspy/io/nlloc/core.py' -print -quit) < /tmp/obspy.patch && \
     rm /tmp/obspy.patch
 
 # Copy application code last 
