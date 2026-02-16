@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+import json
 import logging
-from typing import Tuple
+import re
+from typing import Optional, Tuple
 
 import numpy as np
 from geopy.distance import geodesic
@@ -96,7 +98,7 @@ def classify_event(
     event: Event, origin_id: str = None, debug: bool = False
 ) -> Tuple[str, str, str, str]:
     """
-    Classify the quality of an event's origin.
+    Classify (hypo71) the quality of an event's origin.
 
     Parameters:
         event (Event): The event to classify.
@@ -153,6 +155,225 @@ def classify_event(
         )
 
     return quality, qs, qd, get_classification_text(quality)
+
+
+def _extract_from_comments(
+    comments: list, key: str, pattern: Optional[str] = None
+) -> Optional[float]:
+    """
+    Extract a numeric value from origin comments.
+
+    Searches comments for JSON format (e.g., {"scatter_volume": 123.4}) or
+    key-value patterns (e.g., "scatvol=123.4" or "scatvol: 123.4").
+
+    Args:
+        comments: List of Comment objects from origin.comments.
+        key: The key to search for in JSON comments.
+        pattern: Optional regex pattern to match in non-JSON comments.
+
+    Returns:
+        The extracted float value, or None if not found.
+    """
+    if not comments:
+        return None
+
+    for comment in comments:
+        if not comment.text:
+            continue
+
+        # Try JSON parsing first
+        try:
+            data = json.loads(comment.text)
+            if isinstance(data, dict) and key in data:
+                return float(data[key])
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+
+        # Try regex pattern matching for non-JSON formats
+        text_lower = comment.text.lower()
+        key_lower = key.lower()
+
+        if key_lower in text_lower or (pattern and pattern.lower() in text_lower):
+            # Try to extract numeric value after key
+            match = re.search(
+                rf"{key_lower}\s*[=:]\s*([-+]?\d*\.?\d+)", text_lower
+            )
+            if match:
+                try:
+                    return float(match.group(1))
+                except ValueError:
+                    pass
+
+            # Fallback: extract any number from the comment
+            match = re.search(r"[-+]?\d*\.?\d+", comment.text)
+            if match:
+                try:
+                    return float(match.group())
+                except ValueError:
+                    pass
+
+    return None
+
+
+def _extract_expectation(comments: list) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """
+    Extract expectation hypocenter from origin comments.
+
+    Searches for JSON format: {"expectation": {"latitude": x, "longitude": y, "depth": z}}
+
+    Args:
+        comments: List of Comment objects from origin.comments.
+
+    Returns:
+        Tuple of (latitude, longitude, depth) or (None, None, None) if not found.
+    """
+    if not comments:
+        return None, None, None
+
+    for comment in comments:
+        if not comment.text:
+            continue
+
+        try:
+            data = json.loads(comment.text)
+            if isinstance(data, dict) and "expectation" in data:
+                exp = data["expectation"]
+                return (
+                    float(exp.get("latitude")) if exp.get("latitude") is not None else None,
+                    float(exp.get("longitude")) if exp.get("longitude") is not None else None,
+                    float(exp.get("depth")) if exp.get("depth") is not None else None,
+                )
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError):
+            pass
+
+    return None, None, None
+
+
+def classify_event_michele_mod2(
+    event: Event, origin_id: str = None, debug: bool = False
+) -> Tuple[Optional[float], Optional[str]]:
+    """
+    Classify the quality of an event's origin using the Michele_mod2 method.
+
+    This function extracts all required parameters from the event/origin,
+    including scatter_volume and expectation hypocenter from QuakeML comments,
+    and computes the Michele_mod2 quality classification.
+
+    Parameters:
+        event (Event): The event to classify.
+        origin_id (str, optional): The ID of the origin to classify.
+            If None, the preferred origin of the event is used.
+        debug (bool): If True, log debug information.
+
+    Returns:
+        Tuple[Optional[float], Optional[str]]: A tuple containing:
+            - qf: Quality factor (float), or None if classification not possible.
+            - q: Quality category ("A", "B", "C", "D", "E"), or None if not possible.
+
+    Notes:
+        Parameters extracted from origin.comments:
+        - scatter_volume (scatvol): Scatter volume from NonLinLoc
+        - expectation: Expected hypocenter for computing dloch and dz
+
+        If scatter_volume or expectation is not found in comments, the function
+        returns (None, None).
+    """
+    # Get the origin
+    if origin_id is None:
+        origin = event.preferred_origin()
+        if origin is None:
+            logger.warning(
+                f"No preferred origin found for event {event.resource_id.id}"
+            )
+            return None, None
+    else:
+        origin = None
+        for o in event.origins:
+            if o.resource_id.id == origin_id:
+                origin = o
+                break
+        if origin is None:
+            logger.warning(
+                f"Origin {origin_id} not found in event {event.resource_id.id}"
+            )
+            return None, None
+
+    # Extract basic quality parameters
+    try:
+        rms = origin.quality.standard_error
+        erh, erz, error_method = get_erh_erz(origin)
+        nbpha = origin.quality.used_phase_count
+        gap = origin.quality.azimuthal_gap
+        gap2 = origin.quality.secondary_azimuthal_gap
+        dmin_deg = origin.quality.minimum_distance
+        dmed_deg = origin.quality.median_distance
+        depth_km = origin.depth / 1000.0
+        lat = origin.latitude
+        lon = origin.longitude
+    except (AttributeError, TypeError) as e:
+        logger.warning(f"Missing quality parameters for Michele_mod2: {e}")
+        return None, None
+
+    # Check required parameters
+    if any(v is None for v in [rms, erh, erz, nbpha, gap, dmin_deg]):
+        logger.warning("Missing required parameters for Michele_mod2 classification")
+        return None, None
+
+    # Use gap as gap2 fallback
+    if gap2 is None:
+        gap2 = gap
+
+    # Use dmin as dmed fallback
+    if dmed_deg is None:
+        dmed_deg = dmin_deg
+
+    # Extract scatter_volume from comments
+    scatvol = _extract_from_comments(origin.comments, "scatter_volume", "scatvol")
+    if scatvol is None:
+        logger.debug("scatter_volume not found in origin comments")
+        return None, None
+
+    # Extract expectation hypocenter from comments
+    expect_lat, expect_lon, expect_depth = _extract_expectation(origin.comments)
+    if expect_lat is None or expect_lon is None or expect_depth is None:
+        logger.debug("expectation not found in origin comments")
+        return None, None
+
+    # Compute dloch (horizontal distance between location and expectation)
+    dloch = haversine_distance(lat, lon, expect_lat, expect_lon)
+
+    # Compute dz (depth difference)
+    dz = depth_km - expect_depth
+
+    # Call classify_Michele_mod2
+    try:
+        qf, q = classify_Michele_mod2(
+            rms=rms,
+            erh=erh,
+            erz=erz,
+            nbpha=nbpha,
+            dmin=dmin_deg,
+            dmed=dmed_deg,
+            gap=gap,
+            gap2=gap2,
+            scatvol=scatvol,
+            dloch=dloch,
+            dz=dz,
+        )
+
+        if debug:
+            logger.debug(
+                f"classify_event_michele_mod2: rms={rms}, erh={erh}, erz={erz}, "
+                f"nbpha={nbpha}, dmin={dmin_deg}, dmed={dmed_deg}, gap={gap}, gap2={gap2}, "
+                f"scatvol={scatvol}, dloch={dloch:.2f}, dz={dz:.2f}, "
+                f"qf={qf:.3f}, q={q}, error_method={error_method}"
+            )
+
+        return qf, q
+
+    except Exception as e:
+        logger.warning(f"Michele_mod2 classification failed: {e}")
+        return None, None
 
 
 def classify(
