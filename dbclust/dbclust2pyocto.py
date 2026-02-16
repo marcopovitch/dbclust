@@ -31,7 +31,6 @@ reference: https://pyocto.readthedocs.io
 logger = logging.getLogger("dbclust.pyocto")
 
 
-
 class MultipleEventIDsWithSameAgencyError(Exception):
     """
     Exception raised when multiple event_ids are associated
@@ -174,7 +173,7 @@ def dbclust2pyocto(
         # Extract station and pick data for the cluster
         stations = get_stations_from_cluster(cluster)
         picks = get_picks_from_cluster(cluster)
-        
+
         # define a safe range around the stations coordinates in percentage
         # of the latitude and longitude range
         range_percent = 0.01  # 1%
@@ -215,7 +214,7 @@ def dbclust2pyocto(
             logger.debug(f"lon_range bounded by max_lon_range: {lon_range}")
 
         logger.info(f"range lat: {lat_range}, lon: {lon_range}")
-        
+
         # list all stations lat/lon to check if they are inside the defined range
         mask_outside = (
             stations["latitude"].isna()
@@ -253,7 +252,14 @@ def dbclust2pyocto(
                 location_split_depth=6,  # default 6
                 location_split_return=4,  # default 4
                 refinement_iterations=3,  # default 3
-                # second_pass_overwrites={},  # default None
+                second_pass_overwrites={
+                    "time_before": associator_cfg.time_before,
+                    "n_picks": associator_cfg.n_picks,
+                    "n_p_picks": associator_cfg.n_p_picks,
+                    "n_s_picks": associator_cfg.n_s_picks,
+                    "n_p_and_s_picks": associator_cfg.n_p_and_s_picks,
+                    "iterations": 1,
+                },
             )
         except pyproj.exceptions.CRSError as e:
             # Skip processing if CRS error occurs, likely due to too far away stations
