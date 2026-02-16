@@ -45,6 +45,7 @@ dependencies = [
     "pygmt",
     "contextily",
     "rioxarray",
+    "setuptools<71",  # required by obspy (pkg_resources, bundled until v70)
 ]
 
 [project.optional-dependencies]
@@ -57,6 +58,10 @@ dev = [
 [tool.uv]
 package = true
 
+# pyrocko uses pkg_resources at build time without declaring it
+[tool.uv.extra-build-dependencies]
+pyrocko = ["setuptools<71"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dbclust", "dbclust.*", "fdsnws", "Utils"]
@@ -68,6 +73,7 @@ dbclust-parsl = "dbclust.runner_parsl:main"
 injectdb = "dbclust.inject_spatialite:main"
 relocate = "dbclust.reprocess_event:main"
 csv2parquet = "Utils.csv2parquet:main"
+nll-locate = "dbclust.locate:main"
 
 [project.urls]
 "Homepage" = "https://github.com/marcopovitch/dbclust"
