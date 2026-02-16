@@ -97,8 +97,25 @@ class PickConfig:
     start: Optional[Union[datetime, pd.Timestamp]] = None
     end: Optional[Union[datetime, pd.Timestamp]] = None
     df: Optional[pd.DataFrame] = None
+    # Geographic extent filter (optional)
+    # bbox: {"min_lat": float, "max_lat": float, "min_lon": float, "max_lon": float}
+    bbox: Optional[Dict[str, float]] = None
 
     def __post_init__(self) -> None:
+        # Validate geographic extent parameters
+        if self.bbox:
+            required_keys = {"min_lat", "max_lat", "min_lon", "max_lon"}
+            missing = required_keys - set(self.bbox.keys())
+            if missing:
+                raise ValueError(
+                    f"bbox is missing required keys: {', '.join(sorted(missing))}. "
+                    f"Required: min_lat, max_lat, min_lon, max_lon"
+                )
+            if self.bbox["min_lat"] >= self.bbox["max_lat"]:
+                raise ValueError("bbox: min_lat must be less than max_lat")
+            if self.bbox["min_lon"] >= self.bbox["max_lon"]:
+                raise ValueError("bbox: min_lon must be less than max_lon")
+
         if self.type not in ["csv", "parquet", None]:
             raise ValueError(f"Pick file format {self.type} is not recognized !")
 
@@ -1069,6 +1086,24 @@ class DBClustConfig:
                 self.time, self.pick
             )
             assert len(self.parallel.time_partitions)
+
+            # Apply geographic filtering on stations if bbox is defined
+            if self.pick.bbox:
+                from dbclust.db import filter_inventory_by_bbox
+                from dbclust.db import filter_stations_by_bbox
+
+                if self.station.inventory is not None:
+                    self.station.inventory = filter_inventory_by_bbox(
+                        self.station.inventory,
+                        self.pick.bbox,
+                    )
+                    self.station.info_sta = self.station.inventory
+
+                if self.station.fallback_df is not None:
+                    self.station.fallback_df = filter_stations_by_bbox(
+                        self.station.fallback_df,
+                        self.pick.bbox,
+                    )
 
         # Finalize zones
         self.zones.load_zones(self.nll)
