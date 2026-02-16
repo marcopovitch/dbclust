@@ -1,8 +1,13 @@
 #!/usr/bin/env python
+import logging
 import re
+from typing import Dict
 from typing import List
 
 import duckdb
+import pandas as pd
+
+logger = logging.getLogger("dbclust.db")
 
 
 def validate_sql_identifier(name: str) -> str:
@@ -113,3 +118,89 @@ def duckdb_init_csv(csv_filenames: list[str], threads: int = 1):
         raise RuntimeError(f"Failed to execute the query: {e}") from e
 
     return duckdb_con
+
+
+def filter_stations_by_bbox(
+    station_coords: pd.DataFrame,
+    bbox: Dict[str, float],
+) -> pd.DataFrame:
+    """Filter stations DataFrame by bounding box.
+
+    Args:
+        station_coords: DataFrame with columns [network, station, latitude, longitude].
+        bbox: Bounding box with keys: min_lat, max_lat, min_lon, max_lon.
+
+    Returns:
+        Filtered DataFrame with only stations within the bounding box.
+    """
+    if station_coords.empty:
+        logger.warning("No station coordinates provided, geographic filtering disabled")
+        return station_coords
+
+    mask = (
+        (station_coords["latitude"] >= bbox["min_lat"])
+        & (station_coords["latitude"] <= bbox["max_lat"])
+        & (station_coords["longitude"] >= bbox["min_lon"])
+        & (station_coords["longitude"] <= bbox["max_lon"])
+    )
+
+    filtered = station_coords[mask].copy()
+
+    logger.info(
+        f"Geographic filter (DataFrame): bbox "
+        f"[{bbox['min_lat']:.2f}, {bbox['max_lat']:.2f}] x "
+        f"[{bbox['min_lon']:.2f}, {bbox['max_lon']:.2f}] -> "
+        f"{len(filtered)}/{len(station_coords)} stations"
+    )
+
+    return filtered
+
+
+def filter_inventory_by_bbox(inventory, bbox: Dict[str, float]):
+    """Filter ObsPy Inventory by bounding box.
+
+    Args:
+        inventory: ObsPy Inventory object.
+        bbox: Bounding box with keys: min_lat, max_lat, min_lon, max_lon.
+
+    Returns:
+        Filtered Inventory with only stations within the bounding box.
+    """
+    if inventory is None:
+        return None
+
+    from obspy import Inventory
+
+    filtered_networks = []
+    total_stations = 0
+    kept_stations = 0
+
+    for network in inventory:
+        filtered_stations = []
+        for station in network:
+            total_stations += 1
+            lat = station.latitude
+            lon = station.longitude
+            if (
+                bbox["min_lat"] <= lat <= bbox["max_lat"]
+                and bbox["min_lon"] <= lon <= bbox["max_lon"]
+            ):
+                filtered_stations.append(station)
+                kept_stations += 1
+
+        if filtered_stations:
+            # Create a copy of the network with only filtered stations
+            new_network = network.copy()
+            new_network.stations = filtered_stations
+            filtered_networks.append(new_network)
+
+    filtered_inventory = Inventory(networks=filtered_networks, source=inventory.source)
+
+    logger.info(
+        f"Geographic filter (Inventory): bbox "
+        f"[{bbox['min_lat']:.2f}, {bbox['max_lat']:.2f}] x "
+        f"[{bbox['min_lon']:.2f}, {bbox['max_lon']:.2f}] -> "
+        f"{kept_stations}/{total_stations} stations"
+    )
+
+    return filtered_inventory
