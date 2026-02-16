@@ -52,9 +52,12 @@ from obspy.core.event import Arrival
 from obspy.core.event import Event
 from obspy.core.event import Magnitude
 from obspy.core.event import Origin
+from obspy.core.event import OriginQuality
 from tqdm import tqdm
 
 from dbclust.db import validate_sql_identifier
+from dbclust.gap import compute_azimuthal_gap
+from dbclust.gap import compute_secondary_azimuthal_gap
 from dbclust.gt5 import compute_gt5_score
 from dbclust.localization_quality import classify_Michele_mod2
 from dbclust.localization_quality import haversine_distance
@@ -131,9 +134,10 @@ EVENT_COORDINATES_VIEW = """
         o.quality, o.quality_factor,
         o.gt5_status, o.delta_U, o.num_stations_10km, o.num_stations_30km, o.num_stations_150km,
         COALESCE(o.station_score, 0.0) AS station_score,
-        COALESCE(o.avg_prob_p, 0.0) AS avg_prob_p,
-        COALESCE(o.avg_prob_s, 0.0) AS avg_prob_s,
-        COALESCE(o.avg_prob_total, 0.0) AS avg_prob_total,
+        o.ps_ratio,
+        COALESCE(o.median_prob_p, 0.0) AS median_prob_p,
+        COALESCE(o.median_prob_s, 0.0) AS median_prob_s,
+        COALESCE(o.median_prob_total, 0.0) AS median_prob_total,
         o.geometry
     FROM
         events AS e
@@ -287,6 +291,27 @@ def load_spatialite(conn, logger=None):
             pass
 
 
+class MedianAggregate:
+    """SQLite aggregate function that computes the median of a set of values."""
+
+    def __init__(self):
+        self.values = []
+
+    def step(self, value):
+        if value is not None:
+            self.values.append(value)
+
+    def finalize(self):
+        if not self.values:
+            return None
+        self.values.sort()
+        n = len(self.values)
+        mid = n // 2
+        if n % 2 == 0:
+            return (self.values[mid - 1] + self.values[mid]) / 2.0
+        return self.values[mid]
+
+
 def create_safe_connection(db_path: str, uri=False, logger=None):
     """
     Create a SQLite connection with safe settings to prevent bus errors.
@@ -332,6 +357,9 @@ def create_safe_connection(db_path: str, uri=False, logger=None):
             except Exception as e:
                 if logger:
                     logger.warning(f"Could not set PRAGMA {pragma}: {e}")
+
+        # Register custom aggregate functions
+        conn.create_aggregate("MEDIAN", 1, MedianAggregate)
 
         return conn
 
@@ -648,6 +676,47 @@ def compute_used_station_count(event: Event, origin: Origin) -> int:
     return len(weighted_stations)
 
 
+def compute_ps_ratio(event: Event, origin: Origin) -> float:
+    """
+    Compute the ratio of stations with both P and S used phases
+    over the total number of stations with at least one used phase.
+
+    Only considers arrivals with time_weight not None and != 0.
+
+    Parameters:
+        event (Event): The event containing picks.
+        origin (Origin): The origin containing arrivals.
+
+    Returns:
+        float: The PS ratio (0.0 to 1.0), or None if no used station.
+    """
+    station_phases = defaultdict(set)
+    for arrival in origin.arrivals:
+        if arrival.time_weight is None or arrival.time_weight == 0:
+            continue
+        pick = next(
+            (p for p in event.picks if p.resource_id == arrival.pick_id), None
+        )
+        if pick is None or pick.waveform_id is None:
+            continue
+        station_code = f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
+        phase = arrival.phase.lower() if arrival.phase else ""
+        if phase.startswith("p"):
+            station_phases[station_code].add("P")
+        elif phase.startswith("s"):
+            station_phases[station_code].add("S")
+
+    total_stations = len(station_phases)
+    if total_stations == 0:
+        return None
+
+    stations_with_both = sum(
+        1 for phases in station_phases.values()
+        if "P" in phases and "S" in phases
+    )
+    return stations_with_both / total_stations
+
+
 # -----------------------------------------------------------------------------
 # Data Utilities
 # -----------------------------------------------------------------------------
@@ -712,7 +781,61 @@ def execute_with_retry(conn, operation, retries=10, delay=0.5):
 # =============================================================================
 
 
-def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
+def repair_origin_quality(origin: Origin, event: Event) -> None:
+    """Reconstruct missing OriginQuality from arrival data.
+
+    Args:
+        origin: Origin with missing quality.
+        event: Parent event (used for station count via picks).
+    """
+    arrivals = origin.arrivals
+    if not arrivals:
+        logger.warning(
+            f"Cannot repair quality for origin '{origin.resource_id.id}': no arrivals."
+        )
+        origin.quality = OriginQuality()
+        return
+
+    # Distances
+    distances = [a.distance for a in arrivals if a.distance is not None]
+    azimuths = [a.azimuth for a in arrivals if a.azimuth is not None]
+    residuals = [
+        a.time_residual for a in arrivals
+        if a.time_residual is not None and a.time_weight and a.time_weight > 0
+    ]
+
+    quality = OriginQuality()
+
+    if distances:
+        quality.minimum_distance = min(distances)
+        quality.maximum_distance = max(distances)
+        quality.median_distance = float(np.median(distances))
+
+    if azimuths:
+        quality.azimuthal_gap = compute_azimuthal_gap(azimuths)
+        quality.secondary_azimuthal_gap = compute_secondary_azimuthal_gap(azimuths)
+
+    if residuals:
+        quality.standard_error = float(np.round(np.sqrt(np.mean(np.array(residuals) ** 2)), 3))
+
+    quality.used_phase_count = compute_used_phase_count(origin)
+    quality.used_station_count = compute_used_station_count(event, origin)
+    quality.associated_phase_count = len(arrivals)
+
+    origin.quality = quality
+    logger.warning(
+        f"Repaired missing quality for origin '{origin.resource_id.id}' "
+        f"in event '{event.resource_id.id}' from {len(arrivals)} arrivals."
+    )
+
+
+def inject_event(
+    conn: sqlite3.Connection,
+    event: Event,
+    quakeml: str,
+    fix_quality: bool = False,
+    ignore_missing_picks: bool = False,
+) -> None:
     """
     Injects an earthquake event and its related data into a SpatiaLite-enabled SQLite database.
 
@@ -720,10 +843,45 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
         conn (sqlite3.Connection): The SQLite database connection object.
         event (Event): The earthquake event containing event details.
         quakeml (str): The QuakeML XML string representing the event.
+        fix_quality (bool): If True, repair missing origin quality from arrival data.
+        ignore_missing_picks (bool): If True, remove arrivals with missing picks instead of rejecting.
 
     Raises:
+        ValueError: If the event is malformed and cannot be fixed.
         Exception: If any database operation fails.
     """
+    # Validate and optionally fix event before any insertion
+    pick_ids = {p.resource_id.id for p in event.picks}
+    for origin in event.origins:
+        if origin.quality is None:
+            if fix_quality:
+                repair_origin_quality(origin, event)
+            else:
+                raise ValueError(
+                    f"Malformed QuakeML: origin '{origin.resource_id.id}' "
+                    f"has no quality information (origin.quality is None)"
+                )
+
+        bad_arrivals = [
+            a for a in origin.arrivals
+            if a.pick_id and a.pick_id.id not in pick_ids
+        ]
+        if bad_arrivals:
+            if ignore_missing_picks:
+                for a in bad_arrivals:
+                    logger.warning(
+                        f"Event '{event.resource_id.id}': removing arrival referencing "
+                        f"missing pick '{a.pick_id.id}' in origin '{origin.resource_id.id}'."
+                    )
+                origin.arrivals = [
+                    a for a in origin.arrivals
+                    if not a.pick_id or a.pick_id.id in pick_ids
+                ]
+            else:
+                raise ValueError(
+                    f"Malformed QuakeML: arrival in origin '{origin.resource_id.id}' "
+                    f"references missing pick '{bad_arrivals[0].pick_id.id}'"
+                )
 
     def insert_event_data():
         logger.debug(f"Inserting event {event.resource_id.id}.")
@@ -773,10 +931,12 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
                     f"in event {event.resource_id.id}, skipping."
                 )
 
-        # Insert origins
+        # Insert origins (track which ones were actually inserted)
         logger.debug(f"Inserting origins for event {event.resource_id.id}.")
+        inserted_origins = []
         for origin in unique_origins:
-            insert_origin(conn, origin, event)
+            if insert_origin(conn, origin, event):
+                inserted_origins.append(origin)
 
         # Insert picks
         logger.debug(f"Inserting picks for event {event.resource_id.id}.")
@@ -811,7 +971,7 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
 
         # Insert arrivals and collect phase information for station score calculation
         logger.debug(f"Inserting arrivals for event {event.resource_id.id}.")
-        for origin in unique_origins:
+        for origin in inserted_origins:
             insert_arrivals(conn, origin)
 
             # Calculate station score for this origin
@@ -848,19 +1008,67 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
                 elif "S" in phases:
                     station_score += 0.5
 
-            # Update the origin with the calculated station score
+            # Compute ps_ratio from the same station_phases dict
+            total_stations = len(station_phases)
+            if total_stations > 0:
+                stations_with_both = sum(
+                    1 for phases in station_phases.values()
+                    if "P" in phases and "S" in phases
+                )
+                ps_ratio = stations_with_both / total_stations
+            else:
+                ps_ratio = None
+
+            # Update the origin with the calculated station score and ps_ratio
             cursor.execute(
-                "UPDATE origins SET station_score = ? WHERE id = ?",
-                (station_score, origin.resource_id.id),
+                "UPDATE origins SET station_score = ?, ps_ratio = ? WHERE id = ?",
+                (station_score, ps_ratio, origin.resource_id.id),
             )
             logger.debug(
-                f"Updated station score for origin {origin.resource_id.id}: {station_score}"
+                f"Updated station score for origin {origin.resource_id.id}: {station_score}, "
+                f"ps_ratio: {ps_ratio}"
+            )
+
+            # Compute median pick probabilities for this origin
+            cursor.execute(
+                """
+                WITH pick_probs AS (
+                    SELECT
+                        p.phase_hint,
+                        CASE
+                            WHEN p.evaluation_mode = 'manual' THEN 1.0
+                            ELSE COALESCE(p.probability, 0.0)
+                        END as prob
+                    FROM arrivals a
+                    JOIN picks p ON a.pick_id = p.id
+                    WHERE a.origin_id = ?
+                )
+                UPDATE origins
+                SET
+                    median_prob_p = (
+                        SELECT COALESCE(MEDIAN(prob), 0.0)
+                        FROM pick_probs
+                        WHERE phase_hint LIKE 'P%'
+                    ),
+                    median_prob_s = (
+                        SELECT COALESCE(MEDIAN(prob), 0.0)
+                        FROM pick_probs
+                        WHERE phase_hint LIKE 'S%'
+                    ),
+                    median_prob_total = (
+                        SELECT COALESCE(MEDIAN(prob), 0.0)
+                        FROM pick_probs
+                    )
+                WHERE id = ?
+                """,
+                (origin.resource_id.id, origin.resource_id.id),
             )
 
         # Insert magnitudes
         logger.debug(f"Inserting magnitudes for event {event.resource_id.id}.")
-        insert_magnitudes(conn, event)
-        insert_station_magnitudes(conn, event)
+        inserted_origin_ids = {o.resource_id.id for o in inserted_origins}
+        insert_magnitudes(conn, event, inserted_origin_ids)
+        insert_station_magnitudes(conn, event, inserted_origin_ids)
 
         logger.debug(f"Event {event.resource_id.id} successfully inserted.")
 
@@ -871,16 +1079,20 @@ def inject_event(conn: sqlite3.Connection, event: Event, quakeml: str) -> None:
         raise
 
 
-def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> None:
-    """Inserts an origin into the database."""
+def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> bool:
+    """Inserts an origin into the database.
+
+    Returns:
+        bool: True if the origin was inserted, False if it was skipped.
+    """
     quality = origin.quality
     if quality is None:
-        logger.error(
+        logger.warning(
             f"Origin '{origin.resource_id.id}' in event '{event.resource_id.id}' "
             f"has no quality information (origin.quality is None). "
-            f"This origin will be skipped."
+            f"This origin and its arrivals will be skipped."
         )
-        return
+        return False
     rms = getattr(quality, "standard_error", None)
     P_count = phase_count(event, origin, "P")
     S_count = phase_count(event, origin, "S")
@@ -948,6 +1160,9 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
     gt5_status = None
     delta_U = None
 
+    # Ratio of stations with both P and S used phases over total used stations
+    ps_ratio = compute_ps_ratio(event, origin)
+
     # Use azimuthal gaps from quality object
     azimuthal_gap = quality.azimuthal_gap
     secondary_azimuthal_gap = quality.secondary_azimuthal_gap
@@ -991,13 +1206,13 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
             num_stations_150km,
             delta_U,
             gt5_status,
-            evaluation_mode, preferred, geometry
+            evaluation_mode, preferred, ps_ratio, geometry
         )
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?,
             ST_GeomFromText(?, 4326)
         )
         """,
@@ -1043,15 +1258,26 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> Non
                 and origin.resource_id.id == event.preferred_origin().resource_id.id
                 else 0
             ),
+            ps_ratio,
             f"POINT({origin.longitude} {origin.latitude})",
         ),
     )
     logger.debug(f"Origin {origin.resource_id.id} inserted.")
+    return True
 
 
-def insert_magnitudes(conn: sqlite3.Connection, event: Event) -> None:
+def insert_magnitudes(conn: sqlite3.Connection, event: Event, inserted_origin_ids: Optional[set] = None) -> None:
     """Inserts all magnitudes into the database."""
     for magnitude in event.magnitudes:
+        # Only reference origin_id if it was actually inserted in the database
+        origin_id = magnitude.origin_id.id if magnitude.origin_id else None
+        if origin_id and inserted_origin_ids and origin_id not in inserted_origin_ids:
+            logger.warning(
+                f"Magnitude {magnitude.resource_id.id} references unknown origin {origin_id}, "
+                f"setting origin_id to None."
+            )
+            origin_id = None
+
         conn.execute(
             """
             INSERT INTO magnitudes (id, origin_id, event_id, magnitude, uncertainty, station_count, magnitude_type, evaluation_mode, method_id, preferred)
@@ -1059,7 +1285,7 @@ def insert_magnitudes(conn: sqlite3.Connection, event: Event) -> None:
             """,
             (
                 magnitude.resource_id.id,
-                magnitude.origin_id.id if magnitude.origin_id else None,
+                origin_id,
                 event.resource_id.id,
                 magnitude.mag,
                 magnitude.mag_errors.uncertainty,
@@ -1080,13 +1306,21 @@ def insert_magnitudes(conn: sqlite3.Connection, event: Event) -> None:
         logger.debug(f"Magnitude {magnitude.resource_id.id} inserted.")
 
 
-def insert_station_magnitudes(conn: sqlite3.Connection, event: Event) -> None:
+def insert_station_magnitudes(conn: sqlite3.Connection, event: Event, inserted_origin_ids: Optional[set] = None) -> None:
     """Inserts all station magnitudes into the database."""
     for station_magnitude in event.station_magnitudes:
         # Handle empty origin_id: use None instead of empty string to avoid FK constraint failure
         origin_id = None
         if station_magnitude.origin_id and station_magnitude.origin_id.id:
             origin_id = station_magnitude.origin_id.id
+
+        # Only reference origin_id if it was actually inserted in the database
+        if origin_id and inserted_origin_ids and origin_id not in inserted_origin_ids:
+            logger.warning(
+                f"Station magnitude {station_magnitude.resource_id.id} references unknown origin {origin_id}, "
+                f"setting origin_id to None."
+            )
+            origin_id = None
 
         conn.execute(
             """
@@ -1473,9 +1707,10 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 evaluation_mode TEXT,
                 preferred BOOLEAN,
                 station_score DOUBLE,
-                avg_prob_p DOUBLE,
-                avg_prob_s DOUBLE,
-                avg_prob_total DOUBLE
+                ps_ratio DOUBLE,
+                median_prob_p DOUBLE,
+                median_prob_s DOUBLE,
+                median_prob_total DOUBLE
             );
             """,
             """
@@ -1897,13 +2132,21 @@ def import_catalog_to_sqlite_from_file(
     add_agency_names(conn)
 
 
-def import_catalog_to_sqlite(conn, catalog, enable_quakeml=False, disable_tqdm=False):
+def import_catalog_to_sqlite(
+    conn,
+    catalog,
+    enable_quakeml=False,
+    disable_tqdm=False,
+    fix_quality=False,
+    ignore_missing_picks=False,
+):
 
     # batch transactions for performance
     BATCH_SIZE = 100  # Commit every 100 events
 
     success_count = 0
-    error_count = 0
+    duplicate_count = 0
+    malformed_count = 0
     batch_count = 0
 
     conn.execute("BEGIN IMMEDIATE;")
@@ -1916,7 +2159,11 @@ def import_catalog_to_sqlite(conn, catalog, enable_quakeml=False, disable_tqdm=F
                 else:
                     quakeml_data = None
 
-                inject_event(conn, event, quakeml_data)
+                inject_event(
+                    conn, event, quakeml_data,
+                    fix_quality=fix_quality,
+                    ignore_missing_picks=ignore_missing_picks,
+                )
                 success_count += 1
                 batch_count += 1
 
@@ -1929,12 +2176,20 @@ def import_catalog_to_sqlite(conn, catalog, enable_quakeml=False, disable_tqdm=F
                         conn.execute("BEGIN IMMEDIATE;")
 
             except sqlite3.IntegrityError as e:
-                error_count += 1
-                logging.warning(f"Event {event.resource_id.id} skipped: {e}")
-                # Rollback the failed transaction and start a new one
+                duplicate_count += 1
+                logging.warning(f"Event {event.resource_id.id} skipped (duplicate): {e}")
                 conn.rollback()
-                batch_count = 0  # Reset batch counter since we rolled back
-                if i < len(catalog) - 1:  # not the last iteration
+                batch_count = 0
+                if i < len(catalog) - 1:
+                    conn.execute("BEGIN IMMEDIATE;")
+                continue
+
+            except ValueError as e:
+                malformed_count += 1
+                logging.warning(f"Event {event.resource_id.id} skipped (malformed): {e}")
+                conn.rollback()
+                batch_count = 0
+                if i < len(catalog) - 1:
                     conn.execute("BEGIN IMMEDIATE;")
                 continue
 
@@ -1944,7 +2199,8 @@ def import_catalog_to_sqlite(conn, catalog, enable_quakeml=False, disable_tqdm=F
             logging.info(f"Final commit of {batch_count} events")
 
         logging.info(
-            f"Import completed. Success: {success_count}, Skipped: {error_count}"
+            f"Import completed. Success: {success_count}, "
+            f"Duplicates: {duplicate_count}, Malformed: {malformed_count}"
         )
 
     except Exception as e:
@@ -1955,7 +2211,7 @@ def import_catalog_to_sqlite(conn, catalog, enable_quakeml=False, disable_tqdm=F
         logging.error(traceback.format_exc())
         raise
 
-    return success_count, error_count
+    return success_count, duplicate_count, malformed_count
 
 
 # =============================================================================
@@ -2017,9 +2273,10 @@ def export_view_to_csv_exclude_geometry(
             "erz_km": 2,
             "expectation_depth": 1,
             "expectation_depth_km": 1,
-            "avg_prob_p": 2,
-            "avg_prob_s": 2,
-            "avg_prob_total": 2,
+            "ps_ratio": 2,
+            "median_prob_p": 2,
+            "median_prob_s": 2,
+            "median_prob_total": 2,
             "magnitude": 2,
             "magnitude_uncertainty": 2,
             "uncertainty": 2,
@@ -2477,9 +2734,9 @@ def compute_origin_station_score(conn: sqlite3.Connection) -> None:
     logger.info("Station scores computation completed")
 
 
-def compute_average_probabilities(conn):
-    """Compute and store average probabilities for P, S and all picks."""
-    logger.info("Computing average probabilities for all origins...")
+def compute_median_probabilities(conn):
+    """Compute and store median probabilities for P, S and all picks."""
+    logger.info("Computing median probabilities for all origins...")
 
     cursor = conn.cursor()
 
@@ -2508,18 +2765,18 @@ def compute_average_probabilities(conn):
         )
         UPDATE origins
         SET
-            avg_prob_p = (
-                SELECT COALESCE(AVG(prob), 0.0)
+            median_prob_p = (
+                SELECT COALESCE(MEDIAN(prob), 0.0)
                 FROM pick_probs
                 WHERE phase_hint LIKE 'P%'
             ),
-            avg_prob_s = (
-                SELECT COALESCE(AVG(prob), 0.0)
+            median_prob_s = (
+                SELECT COALESCE(MEDIAN(prob), 0.0)
                 FROM pick_probs
                 WHERE phase_hint LIKE 'S%'
             ),
-            avg_prob_total = (
-                SELECT COALESCE(AVG(prob), 0.0)
+            median_prob_total = (
+                SELECT COALESCE(MEDIAN(prob), 0.0)
                 FROM pick_probs
             )
         WHERE id = ?
@@ -2528,7 +2785,7 @@ def compute_average_probabilities(conn):
         )
 
     conn.commit()
-    logger.info("Average probabilities computation completed")
+    logger.info("Median probabilities computation completed")
 
 
 # =============================================================================
@@ -2556,22 +2813,39 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
                 "ALTER TABLE origins ADD COLUMN station_score DOUBLE DEFAULT 0.0"
             )
 
-        if "avg_prob_p" not in origin_columns:
-            logger.info("Adding avg_prob_p column to origins table...")
+        if "ps_ratio" not in origin_columns:
+            logger.info("Adding ps_ratio column to origins table...")
             cursor.execute(
-                "ALTER TABLE origins ADD COLUMN avg_prob_p DOUBLE DEFAULT 0.0"
+                "ALTER TABLE origins ADD COLUMN ps_ratio DOUBLE"
             )
 
-        if "avg_prob_s" not in origin_columns:
-            logger.info("Adding avg_prob_s column to origins table...")
-            cursor.execute(
-                "ALTER TABLE origins ADD COLUMN avg_prob_s DOUBLE DEFAULT 0.0"
+        # Warn about deprecated avg_prob_* columns from older databases
+        deprecated_cols = {"avg_prob_p", "avg_prob_s", "avg_prob_total"}
+        found_deprecated = deprecated_cols & set(origin_columns)
+        if found_deprecated:
+            logger.warning(
+                "Deprecated columns detected in origins table: %s. "
+                "These columns are no longer used and have been replaced by "
+                "median_prob_p, median_prob_s, median_prob_total.",
+                ", ".join(sorted(found_deprecated)),
             )
 
-        if "avg_prob_total" not in origin_columns:
-            logger.info("Adding avg_prob_total column to origins table...")
+        if "median_prob_p" not in origin_columns:
+            logger.info("Adding median_prob_p column to origins table...")
             cursor.execute(
-                "ALTER TABLE origins ADD COLUMN avg_prob_total DOUBLE DEFAULT 0.0"
+                "ALTER TABLE origins ADD COLUMN median_prob_p DOUBLE DEFAULT 0.0"
+            )
+
+        if "median_prob_s" not in origin_columns:
+            logger.info("Adding median_prob_s column to origins table...")
+            cursor.execute(
+                "ALTER TABLE origins ADD COLUMN median_prob_s DOUBLE DEFAULT 0.0"
+            )
+
+        if "median_prob_total" not in origin_columns:
+            logger.info("Adding median_prob_total column to origins table...")
+            cursor.execute(
+                "ALTER TABLE origins ADD COLUMN median_prob_total DOUBLE DEFAULT 0.0"
             )
 
         conn.commit()
@@ -2594,7 +2868,7 @@ def apply_database_enhancements(args) -> None:
                 args.add_localization_quality,
                 args.add_agency_names,
                 args.gt5,
-                args.compute_prob_avg,
+                args.compute_prob_median,
                 args.refresh_view,
             ]
         ):
@@ -2619,9 +2893,9 @@ def apply_database_enhancements(args) -> None:
                 print("Adding agency names...")
                 add_agency_names(conn)
 
-            if args.compute_prob_avg:
-                print("Computing average probabilities...")
-                compute_average_probabilities(conn)
+            if args.compute_prob_median:
+                print("Computing median probabilities...")
+                compute_median_probabilities(conn)
 
             if args.gt5:
                 print("Computing GT5 metrics...")
@@ -2634,7 +2908,7 @@ def apply_database_enhancements(args) -> None:
                     args.add_localization_quality,
                     args.add_agency_names,
                     args.gt5,
-                    args.compute_prob_avg,
+                    args.compute_prob_median,
                     args.refresh_view,
                 ]
             ):
@@ -2873,6 +3147,23 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Store full QuakeML data in the database (increases size).",
     )
+    import_group.add_argument(
+        "--fix-quality",
+        action="store_true",
+        help="Repair missing origin quality by reconstructing from arrival data.",
+    )
+    import_group.add_argument(
+        "--ignore-missing-picks",
+        action="store_true",
+        help="Ignore arrivals referencing missing picks instead of rejecting the event.",
+    )
+    import_group.add_argument(
+        "--log-file",
+        dest="log_file",
+        type=str,
+        default=None,
+        help="Write import warnings and errors to a log file for debugging.",
+    )
 
     # Export options
     export_group = parser.add_argument_group("Data Export Options")
@@ -2937,9 +3228,9 @@ def parse_arguments() -> argparse.Namespace:
         help="Compute GT5 quality metrics.",
     )
     enhancement_group.add_argument(
-        "--compute-prob-avg",
+        "--compute-prob-median",
         action="store_true",
-        help="Compute average probabilities for P, S and total picks.",
+        help="Compute median probabilities for P, S and total picks.",
     )
     enhancement_group.add_argument(
         "--refresh-view",
@@ -2971,7 +3262,7 @@ def parse_arguments() -> argparse.Namespace:
             args.add_localization_quality,
             args.add_agency_names,
             args.gt5,
-            args.compute_prob_avg,
+            args.compute_prob_median,
             args.compute_station_scores,
             args.refresh_view,
         ]
@@ -3004,7 +3295,7 @@ def main():
             args.add_localization_quality,
             args.add_agency_names,
             args.gt5,
-            args.compute_prob_avg,
+            args.compute_prob_median,
             args.compute_station_scores,
             args.refresh_view,
         ]
@@ -3015,6 +3306,17 @@ def main():
 
         # Handle input files
         if args.input:
+            # Setup log file if requested
+            file_handler = None
+            if args.log_file:
+                file_handler = logging.FileHandler(args.log_file, mode="w")
+                file_handler.setLevel(logging.WARNING)
+                file_handler.setFormatter(
+                    logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+                )
+                logging.getLogger().addHandler(file_handler)
+                print(f"Logging warnings/errors to: {args.log_file}")
+
             # Create the database schema
             try:
                 conn = create_schema(args.database)
@@ -3024,9 +3326,10 @@ def main():
 
             # Process files sequentially to preserve preferred_origin_id and preferred_magnitude_id
             parsed_count = 0
-            error_count = 0
+            parse_error_count = 0
             total_events = 0
-            skipped_count = 0
+            duplicate_count = 0
+            malformed_count = 0
 
             with tqdm(
                 total=len(args.input), desc="Processing QuakeML files", unit="file"
@@ -3040,31 +3343,42 @@ def main():
                         num_events = len(catalog)
                         total_events += num_events
 
-                        _, skipped = import_catalog_to_sqlite(conn, catalog, args.enable_quakeml)
-                        skipped_count += skipped
+                        _, dups, malformed = import_catalog_to_sqlite(
+                            conn, catalog, args.enable_quakeml,
+                            fix_quality=args.fix_quality,
+                            ignore_missing_picks=args.ignore_missing_picks,
+                        )
+                        duplicate_count += dups
+                        malformed_count += malformed
 
                         pbar.set_postfix(
                             {
                                 "parsed": parsed_count,
-                                "errors": error_count,
-                                "skipped": skipped_count,
-                                "events": total_events,
+                                "ok": total_events - duplicate_count - malformed_count,
+                                "dup": duplicate_count,
+                                "bad": malformed_count,
                             }
                         )
                         pbar.update(1)
 
                     except Exception as e:
-                        error_count += 1
+                        parse_error_count += 1
                         pbar.set_postfix(
-                            {"parsed": parsed_count, "errors": error_count}
+                            {"parsed": parsed_count, "parse_errors": parse_error_count}
                         )
                         logger.error(f"Failed to parse {input_file}: {e}")
                         pbar.update(1)
                         continue
 
-            print(
-                f"\nProcessing completed: {parsed_count} files imported ({total_events} events), {error_count} files failed, {skipped_count} events skipped (duplicates)"
-            )
+            imported_count = total_events - duplicate_count - malformed_count
+            print("\nProcessing completed:")
+            print(f"  Files:  {parsed_count} parsed, {parse_error_count} unreadable")
+            print(f"  Events: {total_events} found, {imported_count} imported, {duplicate_count} duplicates, {malformed_count} malformed")
+
+            # Cleanup log file handler
+            if file_handler:
+                logging.getLogger().removeHandler(file_handler)
+                file_handler.close()
 
             # Extract agency names after all imports
             add_agency_names(conn)
@@ -3113,7 +3427,7 @@ def main():
             "add_localization_quality": args.add_localization_quality,
             "add_agency_names": args.add_agency_names,
             "gt5": args.gt5,
-            "compute_prob_avg": args.compute_prob_avg,
+            "compute_prob_median": args.compute_prob_median,
             "compute_station_scores": args.compute_station_scores,
             "refresh_view": args.refresh_view,
         }
