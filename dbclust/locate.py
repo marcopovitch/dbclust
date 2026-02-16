@@ -15,7 +15,7 @@ from typing import Optional
 
 import pandas as pd
 from obspy import UTCDateTime
-from obspy.core.event import Catalog, Event, Pick, ResourceIdentifier
+from obspy.core.event import Catalog, Comment, Event, Pick, ResourceIdentifier
 from obspy.core.event import CreationInfo
 from obspy.core.event.base import WaveformStreamID
 
@@ -135,6 +135,20 @@ def parse_arguments() -> argparse.Namespace:
         default="locate-script",
         help="Author written in metadata when no config is provided",
     )
+    parser.add_argument(
+        "--p-time-residual-threshold",
+        dest="p_time_residual_threshold",
+        type=float,
+        default=None,
+        help="P phase time residual threshold (s) for pick cleanup (default: None)",
+    )
+    parser.add_argument(
+        "--s-time-residual-threshold",
+        dest="s_time_residual_threshold",
+        type=float,
+        default=None,
+        help="S phase time residual threshold (s) for pick cleanup (default: None)",
+    )
     return parser.parse_args()
 
 
@@ -216,6 +230,18 @@ def dataframe_to_event(
             pick.time_errors.uncertainty = s_uncertainty
 
         pick.creation_info = CreationInfo(agency_id=getattr(row, "agency", None) or None)
+
+        # Store phase_score as a probability comment (same format as clusterize.py)
+        phase_score = getattr(row, "phase_score", None)
+        if phase_score is not None:
+            agency = getattr(row, "agency", None) or "undefined"
+            pick.comments.append(
+                Comment(
+                    text='{"probability": {"name": "%s", "value": %.2f}}'
+                    % (agency, float(phase_score))
+                )
+            )
+
         event.picks.append(pick)
 
     if not event.picks:
@@ -312,6 +338,8 @@ def build_locator(
         enable_cleanup_pick_zone=getattr(cfg_reloc, "enable_cleanup_pick_zone", False),
         enable_relabel_pick_zone=getattr(cfg_reloc, "enable_relabel_pick_zone", False),
         keep_not_existing_event=getattr(cfg_catalog, "keep_not_existing_event", False),
+        P_time_residual_threshold=args.p_time_residual_threshold or getattr(cfg_reloc, "P_time_residual_threshold", None),
+        S_time_residual_threshold=args.s_time_residual_threshold or getattr(cfg_reloc, "S_time_residual_threshold", None),
     )
 
     return locator
