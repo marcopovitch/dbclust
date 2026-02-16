@@ -26,6 +26,9 @@ from obspy.core.event.base import WaveformStreamID
 # default logger (uses hierarchical name for selective level control)
 logger = logging.getLogger("dbclust.phase")
 
+# Track stations already warned about missing coordinates (to avoid log spam)
+_warned_missing_coords: set = set()
+
 
 @dataclass
 class Phase:
@@ -115,13 +118,13 @@ class Phase:
 
         # If the primary source failed, use the fallback method
         if lat is None or lon is None:
-            try:
-                lat, lon, elev, loc, chans = self._fallback_coordinates(
-                    self.network, self.station, self.time, self.fallback_df
-                )
-            except ValueError as e:
-                logger.warning(f"{e}")
-                raise
+            result = self._fallback_coordinates(
+                self.network, self.station, self.time, self.fallback_df
+            )
+            if result is None:
+                # No coordinates found, raise to skip this phase
+                raise ValueError(f"No coordinates for {self.network}.{self.station}")
+            lat, lon, elev, loc, chans = result
             self.provenance = "fallback"
         else:
             self.provenance = (
@@ -140,7 +143,7 @@ class Phase:
         station: str,
         time: UTCDateTime,
         fallback_df: Optional[pd.DataFrame] = None,
-    ) -> tuple:
+    ) -> Optional[tuple]:
         """
         Fetch fallback coordinates (latitude, longitude, elevation, location, channels)
         for a given station ID using a fallback DataFrame.
@@ -152,10 +155,7 @@ class Phase:
             fallback_df (Optional[pd.DataFrame]): Fallback DataFrame containing station information.
 
         Returns:
-            tuple: (latitude, longitude, elevation, location, channels) if found.
-
-        Raises:
-            ValueError: If no matching station information is found.
+            tuple: (latitude, longitude, elevation, location, channels) if found, None otherwise.
         """
         if fallback_df is not None:
             # Filter the DataFrame based on the station and time constraints
@@ -177,10 +177,15 @@ class Phase:
 
                 return lat, lon, elev, loc, chans
 
-        # Raise an error if no matching data is found
-        raise ValueError(
-            f"Cannot find coordinates for {network}.{station} at time {time} in fallback dataframe [pick ignored]."
-        )
+        # Log warning only once per station
+        station_key = f"{network}.{station}"
+        if station_key not in _warned_missing_coords:
+            _warned_missing_coords.add(station_key)
+            logger.warning(
+                f"Cannot find coordinates for {station_key} in fallback dataframe [picks ignored]."
+            )
+
+        return None
 
     def to_pick(self) -> Pick:
         """Export the Phase object to an ObsPy Pick object."""
@@ -190,11 +195,22 @@ class Phase:
             location_code=self.location,
             channel_code=self.channel,
         )
+
+        # Build method_id only if method is a valid non-empty string
+        method_id = None
+        if self.method and isinstance(self.method, str) and self.method.strip():
+            try:
+                method_id = ResourceIdentifier(self.method)
+            except (TypeError, ValueError) as e:
+                logger.warning(
+                    f"Invalid method_id '{self.method}' for {self.network}.{self.station}: {e}"
+                )
+
         pick = Pick(
             time=self.time,
             waveform_id=waveform_id,
             phase_hint=self.phase,
-            method_id=ResourceIdentifier(self.method) if self.method else None,
+            method_id=method_id,
         )
         if self.evaluation:
             pick.evaluation_mode = self.evaluation
@@ -303,7 +319,77 @@ def inventory2df(inventory: Inventory) -> pd.DataFrame:
     return df
 
 
-def get_missing_info_from_df(df: pd.DataFrame, loc: Optional[str], chan: Optional[str]) -> tuple:
+def extract_station_coords(
+    inventory: Optional["Inventory"] = None,
+    fallback_df: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """Extract unique station coordinates from inventory and/or fallback CSV.
+
+    This function combines station coordinates from an ObsPy Inventory object
+    and a fallback DataFrame (from CSV files). Priority is given to inventory
+    data when both sources contain the same station.
+
+    Args:
+        inventory: ObsPy Inventory object containing station metadata.
+        fallback_df: DataFrame from fallback CSV with columns:
+            network, station, latitude, longitude.
+
+    Returns:
+        DataFrame with columns: network, station, latitude, longitude.
+        Each row represents a unique network.station combination.
+    """
+    coords_list = []
+
+    # Extract from inventory if provided
+    if inventory is not None:
+        inv_df = inventory2df(inventory)
+        if not inv_df.empty:
+            # Keep only unique network.station with their coordinates
+            inv_coords = (
+                inv_df[["Network", "Station", "Latitude", "Longitude"]]
+                .drop_duplicates(subset=["Network", "Station"])
+                .rename(
+                    columns={
+                        "Network": "network",
+                        "Station": "station",
+                        "Latitude": "latitude",
+                        "Longitude": "longitude",
+                    }
+                )
+            )
+            coords_list.append(inv_coords)
+
+    # Extract from fallback DataFrame if provided
+    if fallback_df is not None and not fallback_df.empty:
+        fallback_coords = fallback_df[
+            ["network", "station", "latitude", "longitude"]
+        ].drop_duplicates(subset=["network", "station"])
+        coords_list.append(fallback_coords)
+
+    if not coords_list:
+        return pd.DataFrame(columns=["network", "station", "latitude", "longitude"])
+
+    # Combine all sources
+    combined = pd.concat(coords_list, ignore_index=True)
+
+    # Remove duplicates, keeping first occurrence (inventory has priority)
+    combined = combined.drop_duplicates(subset=["network", "station"], keep="first")
+
+    # Ensure numeric types for coordinates
+    combined["latitude"] = pd.to_numeric(combined["latitude"], errors="coerce")
+    combined["longitude"] = pd.to_numeric(combined["longitude"], errors="coerce")
+
+    # Remove rows with invalid coordinates
+    combined = combined.dropna(subset=["latitude", "longitude"])
+
+    logger.info(f"Extracted coordinates for {len(combined)} unique stations")
+
+    return combined.reset_index(drop=True)
+
+
+def get_missing_info_from_df(
+    df: pd.DataFrame, loc: Optional[str], chan: Optional[str]
+) -> tuple:
     if loc is not None and chan is not None:
         df = df.loc[df["Location"] == loc, :]
         # channel is specified: use it to filter
@@ -531,7 +617,7 @@ def import_phases(
         method = getattr(row, "phase_method", None)
         event_id = getattr(row, "event_id", None)
         agency = getattr(row, "agency", None)
-        
+
         # Time uncertainty
         phase_type = str(row.phase_type).upper()
         time_uncertainty = (
