@@ -3142,6 +3142,11 @@ def parse_arguments() -> argparse.Namespace:
         help="Input QuakeML file(s) to import.",
     )
     import_group.add_argument(
+        "--input-list",
+        type=validate_file_exists,
+        help="Text file containing QuakeML paths to import (one per line).",
+    )
+    import_group.add_argument(
         "-q",
         "--enable-quakeml",
         action="store_true",
@@ -3254,7 +3259,7 @@ def parse_arguments() -> argparse.Namespace:
         parser.error("Time range requires --export-quakeml")
 
     # Validate at least one action is specified if no input files are provided
-    if not args.input and not any(
+    if not args.input and not args.input_list and not any(
         [
             args.csv_output,
             args.export_quakeml,
@@ -3304,8 +3309,36 @@ def main():
             print(f"Error: Database '{args.database}' does not exist.", file=sys.stderr)
             sys.exit(1)
 
-        # Handle input files
+        # Prepare list of input files from CLI and optional list file
+        input_files: List[str] = []
+
         if args.input:
+            input_files.extend(args.input)
+
+        if args.input_list:
+            try:
+                listed_files: List[str] = []
+                with open(args.input_list, "r", encoding="utf-8") as list_file:
+                    for line in list_file:
+                        path = line.strip()
+                        if not path or path.startswith("#"):
+                            continue
+                        expanded_path = os.path.expanduser(path)
+                        if not os.path.exists(expanded_path):
+                            raise FileNotFoundError(
+                                f"File listed in {args.input_list} does not exist: {path}"
+                            )
+                        listed_files.append(expanded_path)
+                input_files.extend(listed_files)
+                print(
+                    f"Loaded {len(listed_files)} files from list {args.input_list}"
+                )
+            except Exception as exc:
+                logger.error(f"Error reading input list {args.input_list}: {exc}")
+                raise
+
+        # Handle input files
+        if input_files:
             # Setup log file if requested
             file_handler = None
             if args.log_file:
@@ -3332,9 +3365,9 @@ def main():
             malformed_count = 0
 
             with tqdm(
-                total=len(args.input), desc="Processing QuakeML files", unit="file"
+                total=len(input_files), desc="Processing QuakeML files", unit="file"
             ) as pbar:
-                for input_file in args.input:
+                for input_file in input_files:
                     try:
                         logger.info(f"Reading catalog from file '{input_file}'...")
                         catalog = read_events(input_file)
