@@ -26,7 +26,12 @@ from dbclust.clusterize import merge_cluster_with_common_phases
 from dbclust.config import DBClustConfig
 from dbclust.db import duckdb_init
 from dbclust.dbclust2pyocto import adjust_associator_tolerance
-from dbclust.inject_spatialite import import_catalog_object_to_sqlite_from_file
+from dbclust.inject_spatialite import (
+    create_safe_connection,
+    create_tables,
+    import_catalog_to_sqlite,
+    load_spatialite,
+)
 from dbclust.localization import NllLoc
 from dbclust.localization import format_event
 from dbclust.phase import import_phases
@@ -607,20 +612,30 @@ def save_catalog(
         logger.info(f"Writing {len(catalog)} events to {qml_filename}")
         catalog.write(qml_filename, format="QUAKEML")
 
-    # Save to SQLite database if enabled
+    # Save to a per-worker temporary SQLite database (merged later by finalize_sqlite())
     if cfg.catalog.enable_sqlite and len(catalog) > 0:
-        logger.info(
-            f"Writing {len(catalog)} events to {cfg.catalog.sqlite_db_fullpath}"
-        )
+        temp_dir = cfg.catalog.temp_db_dir or cfg.catalog.sqlite_db_path
+        temp_db_path = os.path.join(temp_dir, f"tmp_worker_{job_index}.db")
+        logger.info(f"Writing {len(catalog)} events to temp DB {temp_db_path}")
         try:
-            import_catalog_object_to_sqlite_from_file(
-                cfg.catalog.sqlite_db_fullpath,
-                catalog,
-                enable_quakeml=True,
-                disable_tqdm=True,
-                retries=15,
-                delay=2,
-                backoff="exponential",
+            conn = create_safe_connection(temp_db_path, logger=logger)
+            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.commit()
+            load_spatialite(conn, logger)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spatial_ref_sys';"
             )
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("SELECT InitSpatialMetadata();")
+            create_tables(cursor)
+            cursor.execute(
+                "SELECT AddGeometryColumn('origins', 'geometry', 4326, 'POINT', 'XY');"
+            )
+            conn.commit()
+            import_catalog_to_sqlite(conn, catalog, enable_quakeml=True, disable_tqdm=True)
+            conn.commit()
+            conn.close()
+            logger.info(f"Temp DB written: {temp_db_path}")
         except Exception as e:
-            logger.error(f"Error writing catalog to SQLite: {e}")
+            logger.error(f"Error writing catalog to temp SQLite: {e}")
