@@ -690,6 +690,19 @@ def compute_ps_ratio(event: Event, origin: Origin) -> float:
     Returns:
         float: The PS ratio (0.0 to 1.0), or None if no used station.
     """
+    ps_ratio, _ = compute_ps_ratio_and_station_score(event, origin)
+    return ps_ratio
+
+
+def compute_ps_ratio_and_station_score(
+    event: Event, origin: Origin
+) -> Tuple[Optional[float], float]:
+    """
+    Compute ps_ratio and station_score in a single pass over arrivals.
+
+    Returns:
+        Tuple[Optional[float], float]: (ps_ratio, station_score)
+    """
     station_phases = defaultdict(set)
     for arrival in origin.arrivals:
         if arrival.time_weight is None or arrival.time_weight == 0:
@@ -707,14 +720,24 @@ def compute_ps_ratio(event: Event, origin: Origin) -> float:
             station_phases[station_code].add("S")
 
     total_stations = len(station_phases)
-    if total_stations == 0:
-        return None
 
-    stations_with_both = sum(
-        1 for phases in station_phases.values()
-        if "P" in phases and "S" in phases
-    )
-    return stations_with_both / total_stations
+    # station_score: P+S=2.0, P only=1.0, S only=0.5
+    station_score = 0.0
+    stations_with_both = 0
+    for phases in station_phases.values():
+        has_p = "P" in phases
+        has_s = "S" in phases
+        if has_p and has_s:
+            station_score += 2.0
+            stations_with_both += 1
+        elif has_p:
+            station_score += 1.0
+        elif has_s:
+            station_score += 0.5
+
+    ps_ratio = stations_with_both / total_stations if total_stations > 0 else None
+
+    return ps_ratio, station_score
 
 
 # -----------------------------------------------------------------------------
@@ -952,14 +975,16 @@ def inject_event(
             conn.execute(
                 """
                 INSERT OR IGNORE INTO picks (
-                    id, event_id, station_name, pick_time, uncertainty,
-                    evaluation_mode, phase_hint, agency_id, probability)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, event_id, station_name, location_code, channel_code,
+                    pick_time, uncertainty, evaluation_mode, phase_hint, agency_id, probability)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pick.resource_id.id,
                     event.resource_id.id,
                     f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}",
+                    pick.waveform_id.location_code or "",
+                    pick.waveform_id.channel_code or "",
                     to_datetime(pick.time),
                     pick.time_errors.uncertainty if pick.time_errors else None,
                     pick.evaluation_mode,
@@ -969,99 +994,39 @@ def inject_event(
                 ),
             )
 
-        # Insert arrivals and collect phase information for station score calculation
+        # Insert arrivals for each origin
         logger.debug(f"Inserting arrivals for event {event.resource_id.id}.")
         for origin in inserted_origins:
             insert_arrivals(conn, origin)
 
-            # Calculate station score for this origin
-            station_score = 0.0
-            station_phases = defaultdict(set)
-
-            # Group phases by station
+            # Compute median pick probabilities for this origin (in Python)
+            probs_p = []
+            probs_s = []
+            probs_all = []
             for arrival in origin.arrivals:
-                if arrival.time_weight is None or arrival.time_weight == 0:
+                if not arrival.pick_id:
                     continue
-
-                pick_id = arrival.pick_id
-                pick = next((p for p in event.picks if p.resource_id == pick_id), None)
-                if pick is None or pick.waveform_id is None:
+                pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
+                if pick is None:
                     continue
+                prob = 1.0 if pick.evaluation_mode == "manual" else (pick.time_errors.uncertainty if pick.time_errors and pick.time_errors.uncertainty is not None else 0.0)
+                # Use pick probability if available, otherwise fallback
+                pick_prob = get_pick_probability(pick)
+                prob = 1.0 if pick.evaluation_mode == "manual" else (pick_prob if pick_prob is not None else 0.0)
+                probs_all.append(prob)
+                phase_hint = pick.phase_hint or ""
+                if phase_hint.upper().startswith("P"):
+                    probs_p.append(prob)
+                elif phase_hint.upper().startswith("S"):
+                    probs_s.append(prob)
 
-                net = pick.waveform_id.network_code
-                sta = pick.waveform_id.station_code
-                station_code = f"{net}.{sta}"
+            median_prob_p = float(np.median(probs_p)) if probs_p else 0.0
+            median_prob_s = float(np.median(probs_s)) if probs_s else 0.0
+            median_prob_total = float(np.median(probs_all)) if probs_all else 0.0
 
-                # Add phase type to the station's set of phases
-                phase = arrival.phase.lower() if arrival.phase else ""
-                if phase.startswith("p"):
-                    station_phases[station_code].add("P")
-                elif phase.startswith("s"):
-                    station_phases[station_code].add("S")
-
-            # Calculate score based on phase combinations
-            for phases in station_phases.values():
-                if "P" in phases and "S" in phases:
-                    station_score += 2.0
-                elif "P" in phases:
-                    station_score += 1.0
-                elif "S" in phases:
-                    station_score += 0.5
-
-            # Compute ps_ratio from the same station_phases dict
-            total_stations = len(station_phases)
-            if total_stations > 0:
-                stations_with_both = sum(
-                    1 for phases in station_phases.values()
-                    if "P" in phases and "S" in phases
-                )
-                ps_ratio = stations_with_both / total_stations
-            else:
-                ps_ratio = None
-
-            # Update the origin with the calculated station score and ps_ratio
             cursor.execute(
-                "UPDATE origins SET station_score = ?, ps_ratio = ? WHERE id = ?",
-                (station_score, ps_ratio, origin.resource_id.id),
-            )
-            logger.debug(
-                f"Updated station score for origin {origin.resource_id.id}: {station_score}, "
-                f"ps_ratio: {ps_ratio}"
-            )
-
-            # Compute median pick probabilities for this origin
-            cursor.execute(
-                """
-                WITH pick_probs AS (
-                    SELECT
-                        p.phase_hint,
-                        CASE
-                            WHEN p.evaluation_mode = 'manual' THEN 1.0
-                            ELSE COALESCE(p.probability, 0.0)
-                        END as prob
-                    FROM arrivals a
-                    JOIN picks p ON a.pick_id = p.id
-                    WHERE a.origin_id = ?
-                )
-                UPDATE origins
-                SET
-                    median_prob_p = (
-                        SELECT COALESCE(MEDIAN(prob), 0.0)
-                        FROM pick_probs
-                        WHERE phase_hint LIKE 'P%'
-                    ),
-                    median_prob_s = (
-                        SELECT COALESCE(MEDIAN(prob), 0.0)
-                        FROM pick_probs
-                        WHERE phase_hint LIKE 'S%'
-                    ),
-                    median_prob_total = (
-                        SELECT COALESCE(MEDIAN(prob), 0.0)
-                        FROM pick_probs
-                    )
-                WHERE id = ?
-                """,
-                (origin.resource_id.id, origin.resource_id.id),
+                "UPDATE origins SET median_prob_p = ?, median_prob_s = ?, median_prob_total = ? WHERE id = ?",
+                (median_prob_p, median_prob_s, median_prob_total, origin.resource_id.id),
             )
 
         # Insert magnitudes
@@ -1161,7 +1126,8 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
     delta_U = None
 
     # Ratio of stations with both P and S used phases over total used stations
-    ps_ratio = compute_ps_ratio(event, origin)
+    # Also compute station_score in the same pass to avoid redundant iteration
+    ps_ratio, station_score = compute_ps_ratio_and_station_score(event, origin)
 
     # Use azimuthal gaps from quality object
     azimuthal_gap = quality.azimuthal_gap
@@ -1206,13 +1172,13 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             num_stations_150km,
             delta_U,
             gt5_status,
-            evaluation_mode, preferred, ps_ratio, geometry
+            evaluation_mode, preferred, ps_ratio, station_score, geometry
         )
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?,
             ST_GeomFromText(?, 4326)
         )
         """,
@@ -1259,6 +1225,7 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
                 else 0
             ),
             ps_ratio,
+            station_score,
             f"POINT({origin.longitude} {origin.latitude})",
         ),
     )
@@ -1660,6 +1627,8 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 id TEXT PRIMARY KEY,
                 event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
                 station_name TEXT,
+                location_code TEXT,
+                channel_code TEXT,
                 pick_time TIMESTAMP,
                 evaluation_mode TEXT,
                 uncertainty DOUBLE,
@@ -2139,10 +2108,11 @@ def import_catalog_to_sqlite(
     disable_tqdm=False,
     fix_quality=False,
     ignore_missing_picks=False,
+    sqlite_batch_size: int = 100,
 ):
 
     # batch transactions for performance
-    BATCH_SIZE = 100  # Commit every 100 events
+    batch_size = max(1, sqlite_batch_size)
 
     success_count = 0
     duplicate_count = 0
@@ -2168,7 +2138,7 @@ def import_catalog_to_sqlite(
                 batch_count += 1
 
                 # Periodic commit to avoid excessively long transactions
-                if batch_count >= BATCH_SIZE:
+                if batch_count >= batch_size:
                     conn.commit()
                     logging.info(f"Committed batch of {batch_count} events")
                     batch_count = 0
@@ -2734,6 +2704,75 @@ def compute_origin_station_score(conn: sqlite3.Connection) -> None:
     logger.info("Station scores computation completed")
 
 
+def recompute_ps_ratio(conn: sqlite3.Connection) -> None:
+    """
+    Recompute ps_ratio for all preferred origins in the database.
+    
+    ps_ratio is the ratio of stations with both P and S phases over total stations
+    with at least one used phase (time_weight > 0).
+    """
+    logger.info("Recomputing ps_ratio for all preferred origins...")
+    cursor = conn.cursor()
+    
+    # Ensure ps_ratio column exists
+    cursor.execute("PRAGMA table_info(origins)")
+    columns = [col[1] for col in cursor.fetchall()]
+    
+    if "ps_ratio" not in columns:
+        cursor.execute("ALTER TABLE origins ADD COLUMN ps_ratio DOUBLE")
+        logger.info("Added ps_ratio column to origins table")
+    
+    # Get only preferred origins
+    cursor.execute("SELECT id FROM origins WHERE preferred = 1")
+    origins = cursor.fetchall()
+    
+    for (origin_id,) in origins:
+        # Get all valid arrivals for this origin with their phase information
+        cursor.execute(
+            """
+            SELECT
+                p.station_name,
+                LOWER(a.name) as phase
+            FROM arrivals a
+            JOIN picks p ON a.pick_id = p.id
+            WHERE a.origin_id = ?
+            AND a.time_weight > 0
+            AND p.station_name IS NOT NULL
+        """,
+            (origin_id,),
+        )
+        
+        # Group phases by station
+        station_phases = {}
+        for station_name, phase in cursor.fetchall():
+            if station_name not in station_phases:
+                station_phases[station_name] = set()
+            if phase.startswith("p"):
+                station_phases[station_name].add("P")
+            elif phase.startswith("s"):
+                station_phases[station_name].add("S")
+        
+        # Calculate ps_ratio
+        total_stations = len(station_phases)
+        if total_stations == 0:
+            ps_ratio = None
+        else:
+            stations_with_both = sum(
+                1 for phases in station_phases.values()
+                if "P" in phases and "S" in phases
+            )
+            ps_ratio = stations_with_both / total_stations
+        
+        # Update the origin with the computed ps_ratio
+        cursor.execute(
+            "UPDATE origins SET ps_ratio = ? WHERE id = ?", 
+            (ps_ratio, origin_id)
+        )
+    
+    conn.commit()
+    logger.info("ps_ratio recomputation completed")
+
+
 def compute_median_probabilities(conn):
     """Compute and store median probabilities for P, S and all picks."""
     logger.info("Computing median probabilities for all origins...")
@@ -2864,6 +2903,7 @@ def apply_database_enhancements(args) -> None:
         if any(
             [
                 args.compute_station_scores,
+                args.compute_ps_ratio,
                 args.add_discrimination,
                 args.add_localization_quality,
                 args.add_agency_names,
@@ -2880,6 +2920,10 @@ def apply_database_enhancements(args) -> None:
             if args.compute_station_scores:
                 print("Computing station scores...")
                 compute_origin_station_score(conn)
+
+            if args.compute_ps_ratio:
+                print("Recomputing ps_ratio...")
+                recompute_ps_ratio(conn)
 
             if args.add_discrimination:
                 print("Adding discrimination info...")
@@ -2904,6 +2948,7 @@ def apply_database_enhancements(args) -> None:
             if any(
                 [
                     args.compute_station_scores,
+                    args.compute_ps_ratio,
                     args.add_discrimination,
                     args.add_localization_quality,
                     args.add_agency_names,
@@ -3147,6 +3192,23 @@ def parse_arguments() -> argparse.Namespace:
         help="Text file containing QuakeML paths to import (one per line).",
     )
     import_group.add_argument(
+        "--batch-size",
+        type=int,
+        default=1000,
+        help="Number of events to accumulate before importing into the database.",
+    )
+    import_group.add_argument(
+        "--sqlite-batch-size",
+        type=int,
+        default=100,
+        help="Number of events per SQLite transaction commit during import.",
+    )
+    import_group.add_argument(
+        "--fast-import",
+        action="store_true",
+        help="Enable fast import mode: disables foreign_keys and uses aggressive SQLite pragmas for bulk loading.",
+    )
+    import_group.add_argument(
         "-q",
         "--enable-quakeml",
         action="store_true",
@@ -3213,6 +3275,11 @@ def parse_arguments() -> argparse.Namespace:
         help="Compute and store station scores for all origins.",
     )
     enhancement_group.add_argument(
+        "--compute-ps-ratio",
+        action="store_true",
+        help="Recompute ps_ratio for all preferred origins based on P/S phase distribution.",
+    )
+    enhancement_group.add_argument(
         "--add-discrimination",
         type=validate_file_exists,
         help="Add discrimination info from CSV file to events.",
@@ -3258,6 +3325,20 @@ def parse_arguments() -> argparse.Namespace:
     if (args.start_time or args.end_time) and not args.export_quakeml:
         parser.error("Time range requires --export-quakeml")
 
+    if args.batch_size <= 0:
+        parser.error("--batch-size must be a positive integer")
+
+    if args.sqlite_batch_size <= 0:
+        parser.error("--sqlite-batch-size must be a positive integer")
+
+    # Warn about fast-import risks
+    if args.fast_import:
+        print(
+            "WARNING: --fast-import disables foreign key constraints and reduces durability. "
+            "Use only for initial bulk loading with reliable data.",
+            file=sys.stderr,
+        )
+
     # Validate at least one action is specified if no input files are provided
     if not args.input and not args.input_list and not any(
         [
@@ -3269,6 +3350,7 @@ def parse_arguments() -> argparse.Namespace:
             args.gt5,
             args.compute_prob_median,
             args.compute_station_scores,
+            args.compute_ps_ratio,
             args.refresh_view,
         ]
     ):
@@ -3278,6 +3360,170 @@ def parse_arguments() -> argparse.Namespace:
 
     return args
 
+
+def collect_input_files(args: argparse.Namespace) -> List[str]:
+    """Collect input file paths from CLI arguments and optional list file."""
+    input_files: List[str] = []
+
+    if args.input:
+        input_files.extend(args.input)
+
+    if args.input_list:
+        listed_files: List[str] = []
+        try:
+            with open(args.input_list, "r", encoding="utf-8") as list_file:
+                for line in list_file:
+                    path = line.strip()
+                    if not path or path.startswith("#"):
+                        continue
+                    expanded_path = os.path.expanduser(path)
+                    if not os.path.exists(expanded_path):
+                        raise FileNotFoundError(
+                            f"File listed in {args.input_list} does not exist: {path}"
+                        )
+                    listed_files.append(expanded_path)
+        except Exception as exc:
+            logger.error(f"Error reading input list {args.input_list}: {exc}")
+            raise
+
+        input_files.extend(listed_files)
+        print(f"Loaded {len(listed_files)} files from list {args.input_list}")
+
+    return input_files
+
+
+def process_quakeml_import(args: argparse.Namespace, input_files: List[str]) -> None:
+    """Import QuakeML files with batching support for large datasets."""
+    logger.info(f"Starting import of {len(input_files)} QuakeML files")
+    logger.info(f"Batch size: {args.batch_size} events")
+    logger.info(f"SQLite batch size: {args.sqlite_batch_size} events per commit")
+    if args.fast_import:
+        logger.info("Fast import mode enabled: using aggressive SQLite pragmas")
+
+    conn = create_schema(args.database)
+    file_handler: Optional[logging.Handler] = None
+
+    try:
+        if args.log_file:
+            file_handler = logging.FileHandler(args.log_file, mode="w")
+            file_handler.setLevel(logging.WARNING)
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+            )
+            logging.getLogger().addHandler(file_handler)
+            print(f"Logging warnings/errors to: {args.log_file}")
+
+        # Apply fast-import pragmas if enabled
+        if args.fast_import:
+            logger.info("Applying fast-import SQLite pragmas...")
+            conn.execute("PRAGMA foreign_keys = OFF;")
+            conn.execute("PRAGMA synchronous = OFF;")
+            conn.execute("PRAGMA journal_mode = MEMORY;")
+            conn.execute("PRAGMA cache_size = -64000;")  # 64 MB cache (vs 2 MB default)
+            conn.commit()
+            logger.info("Fast-import pragmas applied")
+
+        parsed_count = 0
+        parse_error_count = 0
+        total_events = 0
+        imported_count = 0
+        duplicate_count = 0
+        malformed_count = 0
+
+        batch_catalog = Catalog()
+
+        def flush_batch() -> None:
+            nonlocal batch_catalog, imported_count, duplicate_count, malformed_count
+            if len(batch_catalog) == 0:
+                return
+            success, dups, malformed = import_catalog_to_sqlite(
+                conn,
+                batch_catalog,
+                args.enable_quakeml,
+                fix_quality=args.fix_quality,
+                ignore_missing_picks=args.ignore_missing_picks,
+                sqlite_batch_size=args.sqlite_batch_size,
+            )
+            imported_count += success
+            duplicate_count += dups
+            malformed_count += malformed
+            batch_catalog = Catalog()
+
+        with tqdm(total=len(input_files), desc="Processing QuakeML files", unit="file") as pbar:
+            for input_file in input_files:
+                try:
+                    logger.info(f"Reading catalog from file '{input_file}'...")
+                    catalog = read_events(input_file)
+
+                    parsed_count += 1
+                    num_events = len(catalog)
+                    total_events += num_events
+
+                    for event in catalog:
+                        batch_catalog.events.append(event)
+                        if len(batch_catalog) >= args.batch_size:
+                            flush_batch()
+
+                    current_ok = imported_count
+                    pbar.set_postfix(
+                        {
+                            "parsed": parsed_count,
+                            "ok": current_ok,
+                            "dup": duplicate_count,
+                            "bad": malformed_count,
+                        }
+                    )
+                    pbar.update(1)
+
+                except Exception as exc:
+                    parse_error_count += 1
+                    logger.error(f"Failed to parse {input_file}: {exc}")
+                    pbar.set_postfix(
+                        {
+                            "parsed": parsed_count,
+                            "parse_errors": parse_error_count,
+                        }
+                    )
+                    pbar.update(1)
+                    continue
+
+        # Flush any remaining events
+        flush_batch()
+
+        imported_count = total_events - duplicate_count - malformed_count
+
+        print("\nProcessing completed:")
+        print(f"  Files:  {parsed_count} parsed, {parse_error_count} unreadable")
+        print(
+            "  Events: "
+            f"{total_events} found, {imported_count} imported, "
+            f"{duplicate_count} duplicates, {malformed_count} malformed"
+        )
+
+        add_agency_names(conn)
+
+        print("Creating database indexes...")
+        cursor = conn.cursor()
+        create_indexes_sql(cursor)
+        print("Indexes created successfully.")
+
+        register_geometry_for_view(conn, "event_coordinates", "geometry")
+
+        # Restore normal SQLite pragmas if fast-import was used
+        if args.fast_import:
+            logger.info("Restoring normal SQLite pragmas...")
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("PRAGMA synchronous = NORMAL;")
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.commit()
+            logger.info("Normal pragmas restored")
+
+    finally:
+        if file_handler:
+            logging.getLogger().removeHandler(file_handler)
+            file_handler.close()
+        if conn:
+            conn.close()
 
 # =============================================================================
 # MAIN ENTRY POINT
@@ -3302,6 +3548,7 @@ def main():
             args.gt5,
             args.compute_prob_median,
             args.compute_station_scores,
+            args.compute_ps_ratio,
             args.refresh_view,
         ]
 
@@ -3309,121 +3556,10 @@ def main():
             print(f"Error: Database '{args.database}' does not exist.", file=sys.stderr)
             sys.exit(1)
 
-        # Prepare list of input files from CLI and optional list file
-        input_files: List[str] = []
-
-        if args.input:
-            input_files.extend(args.input)
-
-        if args.input_list:
-            try:
-                listed_files: List[str] = []
-                with open(args.input_list, "r", encoding="utf-8") as list_file:
-                    for line in list_file:
-                        path = line.strip()
-                        if not path or path.startswith("#"):
-                            continue
-                        expanded_path = os.path.expanduser(path)
-                        if not os.path.exists(expanded_path):
-                            raise FileNotFoundError(
-                                f"File listed in {args.input_list} does not exist: {path}"
-                            )
-                        listed_files.append(expanded_path)
-                input_files.extend(listed_files)
-                print(
-                    f"Loaded {len(listed_files)} files from list {args.input_list}"
-                )
-            except Exception as exc:
-                logger.error(f"Error reading input list {args.input_list}: {exc}")
-                raise
-
-        # Handle input files
+        # Handle input files (optionally via --input-list)
+        input_files = collect_input_files(args)
         if input_files:
-            # Setup log file if requested
-            file_handler = None
-            if args.log_file:
-                file_handler = logging.FileHandler(args.log_file, mode="w")
-                file_handler.setLevel(logging.WARNING)
-                file_handler.setFormatter(
-                    logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-                )
-                logging.getLogger().addHandler(file_handler)
-                print(f"Logging warnings/errors to: {args.log_file}")
-
-            # Create the database schema
-            try:
-                conn = create_schema(args.database)
-            except Exception as e:
-                logger.error(f"Error creating schema: {e}")
-                raise
-
-            # Process files sequentially to preserve preferred_origin_id and preferred_magnitude_id
-            parsed_count = 0
-            parse_error_count = 0
-            total_events = 0
-            duplicate_count = 0
-            malformed_count = 0
-
-            with tqdm(
-                total=len(input_files), desc="Processing QuakeML files", unit="file"
-            ) as pbar:
-                for input_file in input_files:
-                    try:
-                        logger.info(f"Reading catalog from file '{input_file}'...")
-                        catalog = read_events(input_file)
-
-                        parsed_count += 1
-                        num_events = len(catalog)
-                        total_events += num_events
-
-                        _, dups, malformed = import_catalog_to_sqlite(
-                            conn, catalog, args.enable_quakeml,
-                            fix_quality=args.fix_quality,
-                            ignore_missing_picks=args.ignore_missing_picks,
-                        )
-                        duplicate_count += dups
-                        malformed_count += malformed
-
-                        pbar.set_postfix(
-                            {
-                                "parsed": parsed_count,
-                                "ok": total_events - duplicate_count - malformed_count,
-                                "dup": duplicate_count,
-                                "bad": malformed_count,
-                            }
-                        )
-                        pbar.update(1)
-
-                    except Exception as e:
-                        parse_error_count += 1
-                        pbar.set_postfix(
-                            {"parsed": parsed_count, "parse_errors": parse_error_count}
-                        )
-                        logger.error(f"Failed to parse {input_file}: {e}")
-                        pbar.update(1)
-                        continue
-
-            imported_count = total_events - duplicate_count - malformed_count
-            print("\nProcessing completed:")
-            print(f"  Files:  {parsed_count} parsed, {parse_error_count} unreadable")
-            print(f"  Events: {total_events} found, {imported_count} imported, {duplicate_count} duplicates, {malformed_count} malformed")
-
-            # Cleanup log file handler
-            if file_handler:
-                logging.getLogger().removeHandler(file_handler)
-                file_handler.close()
-
-            # Extract agency names after all imports
-            add_agency_names(conn)
-
-            # Create indexes AFTER all data is inserted (much faster)
-            print("Creating database indexes...")
-            cursor = conn.cursor()
-            create_indexes_sql(cursor)
-            print("Indexes created successfully.")
-
-            register_geometry_for_view(conn, "event_coordinates", "geometry")
-            conn.close()
+            process_quakeml_import(args, input_files)
 
         # Handle CSV export
         if args.csv_output:
@@ -3462,6 +3598,7 @@ def main():
             "gt5": args.gt5,
             "compute_prob_median": args.compute_prob_median,
             "compute_station_scores": args.compute_station_scores,
+            "compute_ps_ratio": args.compute_ps_ratio,
             "refresh_view": args.refresh_view,
         }
         print(

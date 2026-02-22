@@ -14,16 +14,19 @@ Usage:
 """
 
 import argparse
+import glob
 import logging
-import sqlite3
+import os
 import sys
 import warnings
 
 from dbclust.config import DBClustConfig
 from dbclust.core import dbclust
 from dbclust.executors import get_executor
+from dbclust.inject_spatialite import create_safe_connection
 from dbclust.inject_spatialite import load_spatialite
 from dbclust.inject_spatialite import refresh_event_coordinates_view
+from dbclust.parallel_import import merge_databases
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -64,7 +67,8 @@ def run_parallel(cfg: DBClustConfig) -> list:
 def finalize_sqlite(cfg: DBClustConfig) -> None:
     """Finalize SQLite database after processing.
 
-    Updates the event coordinates view in the SQLite database.
+    Merges all per-worker temporary databases into the final database,
+    then refreshes the event coordinates view.
 
     Args:
         cfg: DBClust configuration object.
@@ -72,14 +76,40 @@ def finalize_sqlite(cfg: DBClustConfig) -> None:
     if not cfg.catalog.enable_sqlite:
         return
 
+    temp_dir = cfg.catalog.temp_db_dir or cfg.catalog.sqlite_db_path
+    temp_db_paths = sorted(glob.glob(os.path.join(temp_dir, "tmp_worker_*.db")))
+
+    if not temp_db_paths:
+        logger.warning("No temp DBs found to merge, skipping SQLite finalization.")
+        return
+
+    logger.info(
+        f"Merging {len(temp_db_paths)} temp DBs into {cfg.catalog.sqlite_db_fullpath}"
+    )
     try:
-        conn = sqlite3.connect(cfg.catalog.sqlite_db_fullpath)
-        load_spatialite(conn)
-        logger.info("Connected to SQLite database to update view.")
+        merge_databases(temp_db_paths, cfg.catalog.sqlite_db_fullpath, enable_quakeml=True)
+    except Exception as e:
+        logger.error(f"Failed to merge temp databases: {e}")
+        return
+
+    try:
+        conn = create_safe_connection(cfg.catalog.sqlite_db_fullpath, logger=logger)
+        load_spatialite(conn, logger)
+        logger.info("Refreshing event coordinates view.")
         refresh_event_coordinates_view(conn)
         conn.close()
     except Exception as e:
-        logger.error(f"Failed to finalize SQLite database: {e}")
+        logger.error(f"Failed to refresh SQLite view: {e}")
+
+    if not cfg.catalog.keep_temp_db:
+        for p in temp_db_paths:
+            try:
+                os.remove(p)
+                logger.debug(f"Removed temp DB: {p}")
+            except OSError as e:
+                logger.warning(f"Could not remove temp DB {p}: {e}")
+    else:
+        logger.info(f"Keeping temp DBs in {temp_dir} (keep_temp_db=True)")
 
 
 def main():

@@ -34,7 +34,6 @@ from shapely.geometry import Polygon
 
 from dbclust.db import duckdb_init
 from dbclust.db import duckdb_init_parquet
-from dbclust.inject_spatialite import create_schema
 from dbclust.read_yml import read_config
 
 
@@ -593,6 +592,8 @@ class CatalogConfig:
     sqlite_db_path: str
     sqlite_db_filename: str
     sqlite_db_fullpath: Optional[str] = None
+    keep_temp_db: bool = False
+    temp_db_dir: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.enable_quakeml_file:
@@ -623,12 +624,6 @@ class CatalogConfig:
             self.sqlite_db_fullpath = os.path.join(
                 self.sqlite_db_path, self.sqlite_db_filename
             )
-            # init sqlite db with WAL mode and spatialite extension
-            try:
-                conn = create_schema(self.sqlite_db_fullpath)
-                conn.close()
-            except Exception as e:
-                raise e(f"Can't create sqlite db {self.sqlite_db_fullpath}")
 
 
 @dataclass
