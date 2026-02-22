@@ -1101,8 +1101,8 @@ class NllLoc(object):
                     nll_obs_file, picks=picks_set, double_pass=self.double_pass
                 )
             except FileNotFoundError as e:
-                logger.error(f"{e}")
-                sys.exit(1)
+                logger.error(f"{e} - skipping {nll_obs_file}")
+                cat = None
             except LocalizationError as e:
                 logger.warning(
                     f"{e} - trying with {fallback_loc_method} for {nll_obs_file}"
