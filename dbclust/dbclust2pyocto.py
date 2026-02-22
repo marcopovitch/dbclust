@@ -252,14 +252,14 @@ def dbclust2pyocto(
                 location_split_depth=6,  # default 6
                 location_split_return=4,  # default 4
                 refinement_iterations=3,  # default 3
-                second_pass_overwrites={
-                    "time_before": associator_cfg.time_before,
-                    "n_picks": associator_cfg.n_picks,
-                    "n_p_picks": associator_cfg.n_p_picks,
-                    "n_s_picks": associator_cfg.n_s_picks,
-                    "n_p_and_s_picks": associator_cfg.n_p_and_s_picks,
-                    "iterations": 1,
-                },
+                # second_pass_overwrites={
+                #     "time_before": associator_cfg.time_before,
+                #     "n_picks": associator_cfg.n_picks,
+                #     "n_p_picks": associator_cfg.n_p_picks,
+                #     "n_s_picks": associator_cfg.n_s_picks,
+                #     "n_p_and_s_picks": associator_cfg.n_p_and_s_picks,
+                #     "iterations": 1,
+                # },
             )
         except pyproj.exceptions.CRSError as e:
             # Skip processing if CRS error occurs, likely due to too far away stations
