@@ -44,7 +44,6 @@ from typing import Tuple
 
 import numpy as np
 import pandas as pd
-from icecream import ic
 from obspy import Catalog
 from obspy import read_events
 from obspy import UTCDateTime
@@ -212,12 +211,11 @@ def load_spatialite(conn, logger=None):
     """
     Load SpatiaLite with better error handling and bus error prevention.
     """
-    # Check if already loaded using a more robust method
+    # Check if already loaded using a side-effect-free query
     try:
-        # Test if SpatiaLite functions are available
-        conn.execute("SELECT InitSpatialMetaData(1)")
+        conn.execute("SELECT spatialite_version()")
         if logger:
-            logger.debug("SpatiaLite already initialized on this connection")
+            logger.debug("SpatiaLite already loaded on this connection")
         return True
     except sqlite3.OperationalError:
         # SpatiaLite not loaded yet, continue
@@ -372,6 +370,25 @@ def create_safe_connection(db_path: str, uri=False, logger=None):
         if logger:
             logger.error(f"Failed to create safe connection: {e}")
         raise
+
+
+# =============================================================================
+# DATABASE UTILITIES
+# =============================================================================
+
+
+def _get_table_columns(cursor: sqlite3.Cursor, table: str) -> list:
+    """Return the list of column names for a given table."""
+    cursor.execute(f"PRAGMA table_info({table});")
+    return [row[1] for row in cursor.fetchall()]
+
+
+def _ensure_column(
+    cursor: sqlite3.Cursor, table: str, column: str, col_type: str
+) -> None:
+    """Add *column* to *table* if it does not already exist."""
+    if column not in _get_table_columns(cursor, table):
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type};")
 
 
 # =============================================================================
@@ -618,9 +635,9 @@ def phase_count(event: Event, origin: Origin, phase_type: str) -> int:
             logger.error(
                 f"Pick not found for arrival {arrival.resource_id.id} in event {event.resource_id.id}"
             )
-            ic(event)
-            ic(origin)
-            ic(arrival)
+            logger.debug(f"  event: {event.resource_id.id}")
+            logger.debug(f"  origin: {origin.resource_id.id}")
+            logger.debug(f"  arrival: {arrival.resource_id.id}")
             return None
 
         if pick.phase_hint and phase_type in pick.phase_hint.upper():
@@ -671,7 +688,9 @@ def compute_used_station_count(event: Event, origin: Origin) -> int:
                 (p for p in event.picks if p.resource_id == arrival.pick_id), None
             )
             if pick and pick.waveform_id:
-                station_code = f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
+                station_code = (
+                    f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
+                )
                 weighted_stations.add(station_code)
     return len(weighted_stations)
 
@@ -707,12 +726,12 @@ def compute_ps_ratio_and_station_score(
     for arrival in origin.arrivals:
         if arrival.time_weight is None or arrival.time_weight == 0:
             continue
-        pick = next(
-            (p for p in event.picks if p.resource_id == arrival.pick_id), None
-        )
+        pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
         if pick is None or pick.waveform_id is None:
             continue
-        station_code = f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
+        station_code = (
+            f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
+        )
         phase = arrival.phase.lower() if arrival.phase else ""
         if phase.startswith("p"):
             station_phases[station_code].add("P")
@@ -823,7 +842,8 @@ def repair_origin_quality(origin: Origin, event: Event) -> None:
     distances = [a.distance for a in arrivals if a.distance is not None]
     azimuths = [a.azimuth for a in arrivals if a.azimuth is not None]
     residuals = [
-        a.time_residual for a in arrivals
+        a.time_residual
+        for a in arrivals
         if a.time_residual is not None and a.time_weight and a.time_weight > 0
     ]
 
@@ -839,7 +859,9 @@ def repair_origin_quality(origin: Origin, event: Event) -> None:
         quality.secondary_azimuthal_gap = compute_secondary_azimuthal_gap(azimuths)
 
     if residuals:
-        quality.standard_error = float(np.round(np.sqrt(np.mean(np.array(residuals) ** 2)), 3))
+        quality.standard_error = float(
+            np.round(np.sqrt(np.mean(np.array(residuals) ** 2)), 3)
+        )
 
     quality.used_phase_count = compute_used_phase_count(origin)
     quality.used_station_count = compute_used_station_count(event, origin)
@@ -886,8 +908,7 @@ def inject_event(
                 )
 
         bad_arrivals = [
-            a for a in origin.arrivals
-            if a.pick_id and a.pick_id.id not in pick_ids
+            a for a in origin.arrivals if a.pick_id and a.pick_id.id not in pick_ids
         ]
         if bad_arrivals:
             if ignore_missing_picks:
@@ -897,7 +918,8 @@ def inject_event(
                         f"missing pick '{a.pick_id.id}' in origin '{origin.resource_id.id}'."
                     )
                 origin.arrivals = [
-                    a for a in origin.arrivals
+                    a
+                    for a in origin.arrivals
                     if not a.pick_id or a.pick_id.id in pick_ids
                 ]
             else:
@@ -970,14 +992,20 @@ def inject_event(
                 if pick.creation_info and hasattr(pick.creation_info, "agency_id")
                 else None
             )
+            source_event_id = (
+                pick.creation_info.author
+                if pick.creation_info and hasattr(pick.creation_info, "author")
+                else None
+            )
             probability = get_pick_probability(pick)
 
             conn.execute(
                 """
                 INSERT OR IGNORE INTO picks (
                     id, event_id, station_name, location_code, channel_code,
-                    pick_time, uncertainty, evaluation_mode, phase_hint, agency_id, probability)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    pick_time, uncertainty, evaluation_mode, phase_hint, agency_id,
+                    source_event_id, probability)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pick.resource_id.id,
@@ -990,6 +1018,7 @@ def inject_event(
                     pick.evaluation_mode,
                     pick.phase_hint,
                     agency_id,
+                    source_event_id,
                     probability,
                 ),
             )
@@ -1006,13 +1035,27 @@ def inject_event(
             for arrival in origin.arrivals:
                 if not arrival.pick_id:
                     continue
-                pick = next((p for p in event.picks if p.resource_id == arrival.pick_id), None)
+                pick = next(
+                    (p for p in event.picks if p.resource_id == arrival.pick_id), None
+                )
                 if pick is None:
                     continue
-                prob = 1.0 if pick.evaluation_mode == "manual" else (pick.time_errors.uncertainty if pick.time_errors and pick.time_errors.uncertainty is not None else 0.0)
+                prob = (
+                    1.0
+                    if pick.evaluation_mode == "manual"
+                    else (
+                        pick.time_errors.uncertainty
+                        if pick.time_errors and pick.time_errors.uncertainty is not None
+                        else 0.0
+                    )
+                )
                 # Use pick probability if available, otherwise fallback
                 pick_prob = get_pick_probability(pick)
-                prob = 1.0 if pick.evaluation_mode == "manual" else (pick_prob if pick_prob is not None else 0.0)
+                prob = (
+                    1.0
+                    if pick.evaluation_mode == "manual"
+                    else (pick_prob if pick_prob is not None else 0.0)
+                )
                 probs_all.append(prob)
                 phase_hint = pick.phase_hint or ""
                 if phase_hint.upper().startswith("P"):
@@ -1026,7 +1069,12 @@ def inject_event(
 
             cursor.execute(
                 "UPDATE origins SET median_prob_p = ?, median_prob_s = ?, median_prob_total = ? WHERE id = ?",
-                (median_prob_p, median_prob_s, median_prob_total, origin.resource_id.id),
+                (
+                    median_prob_p,
+                    median_prob_s,
+                    median_prob_total,
+                    origin.resource_id.id,
+                ),
             )
 
         # Insert magnitudes
@@ -1233,7 +1281,9 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
     return True
 
 
-def insert_magnitudes(conn: sqlite3.Connection, event: Event, inserted_origin_ids: Optional[set] = None) -> None:
+def insert_magnitudes(
+    conn: sqlite3.Connection, event: Event, inserted_origin_ids: Optional[set] = None
+) -> None:
     """Inserts all magnitudes into the database."""
     for magnitude in event.magnitudes:
         # Only reference origin_id if it was actually inserted in the database
@@ -1273,7 +1323,9 @@ def insert_magnitudes(conn: sqlite3.Connection, event: Event, inserted_origin_id
         logger.debug(f"Magnitude {magnitude.resource_id.id} inserted.")
 
 
-def insert_station_magnitudes(conn: sqlite3.Connection, event: Event, inserted_origin_ids: Optional[set] = None) -> None:
+def insert_station_magnitudes(
+    conn: sqlite3.Connection, event: Event, inserted_origin_ids: Optional[set] = None
+) -> None:
     """Inserts all station magnitudes into the database."""
     for station_magnitude in event.station_magnitudes:
         # Handle empty origin_id: use None instead of empty string to avoid FK constraint failure
@@ -1520,12 +1572,15 @@ def process_quakeml_row(row, output_file, namespaces):
 # =============================================================================
 
 
-def create_schema(db_path: str) -> sqlite3.Connection:
+def create_schema(db_path: str, create_spatial_index: bool = False) -> sqlite3.Connection:
     """
     Create the database schema for a SpatiaLite-enabled SQLite database.
 
     Args:
         db_path (str): The file path to the SQLite database.
+        create_spatial_index (bool): Whether to create a spatial index on the
+            geometry column. Disabled by default to avoid segfaults on macOS ARM
+            during temp DB creation. Enable only on the final merged database.
 
     Returns:
         sqlite3.Connection: The connection object to the SQLite database.
@@ -1551,27 +1606,29 @@ def create_schema(db_path: str) -> sqlite3.Connection:
         create_tables(cursor)
 
         # Ensure 'geometry' column exists in 'origins' table
-        cursor.execute("PRAGMA table_info(origins);")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "geometry" not in columns:
+        if "geometry" not in _get_table_columns(cursor, "origins"):
             logger.info("Adding 'geometry' column to 'origins' table...")
             cursor.execute(
                 "SELECT AddGeometryColumn('origins', 'geometry', 4326, 'POINT', 'XY');"
             )
 
-        # Create spatial index if not exists
-        cursor.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='idx_origins_geometry';"
-        )
-        row = cursor.fetchone()
-        if row is None or row[0] == 0:
-            try:
-                logger.info(
-                    "Creating spatial index for 'geometry' column in 'origins' table..."
-                )
-                cursor.execute("SELECT CreateSpatialIndex('origins', 'geometry');")
-            except sqlite3.OperationalError as e:
-                logger.error(f"Error creating spatial index: {e}")
+        # Optionally create spatial index (skip for temp DBs — CreateSpatialIndex
+        # can cause segfaults on macOS ARM when called in parallel subprocesses)
+        if create_spatial_index:
+            cursor.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='idx_origins_geometry';"
+            )
+            row = cursor.fetchone()
+            if row is None or row[0] == 0:
+                try:
+                    logger.info(
+                        "Creating spatial index for 'geometry' column in 'origins' table..."
+                    )
+                    cursor.execute("SELECT CreateSpatialIndex('origins', 'geometry');")
+                except sqlite3.OperationalError as e:
+                    logger.error(f"Error creating spatial index: {e}")
+        else:
+            logger.debug("Skipping spatial index creation (create_spatial_index=False)")
 
         # Create the event coordinates view
         cursor.execute(EVENT_COORDINATES_VIEW)
@@ -1634,6 +1691,7 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 uncertainty DOUBLE,
                 phase_hint TEXT,
                 agency_id TEXT,
+                source_event_id TEXT,
                 probability DOUBLE
             );
             """,
@@ -1955,8 +2013,7 @@ def register_geometry_for_view(
     )
 
     # Detect schema of views_geometry_columns and insert accordingly
-    cursor.execute("PRAGMA table_info(views_geometry_columns);")
-    vg_cols = [row[1] for row in cursor.fetchall()]
+    vg_cols = _get_table_columns(cursor, "views_geometry_columns")
 
     if {"geometry_type", "coord_dimension", "srid"}.issubset(set(vg_cols)):
         # Newer schema with explicit geometry metadata
@@ -2130,7 +2187,9 @@ def import_catalog_to_sqlite(
                     quakeml_data = None
 
                 inject_event(
-                    conn, event, quakeml_data,
+                    conn,
+                    event,
+                    quakeml_data,
                     fix_quality=fix_quality,
                     ignore_missing_picks=ignore_missing_picks,
                 )
@@ -2147,7 +2206,9 @@ def import_catalog_to_sqlite(
 
             except sqlite3.IntegrityError as e:
                 duplicate_count += 1
-                logging.warning(f"Event {event.resource_id.id} skipped (duplicate): {e}")
+                logging.warning(
+                    f"Event {event.resource_id.id} skipped (duplicate): {e}"
+                )
                 conn.rollback()
                 batch_count = 0
                 if i < len(catalog) - 1:
@@ -2156,7 +2217,9 @@ def import_catalog_to_sqlite(
 
             except ValueError as e:
                 malformed_count += 1
-                logging.warning(f"Event {event.resource_id.id} skipped (malformed): {e}")
+                logging.warning(
+                    f"Event {event.resource_id.id} skipped (malformed): {e}"
+                )
                 conn.rollback()
                 batch_count = 0
                 if i < len(catalog) - 1:
@@ -2336,84 +2399,70 @@ def export_view_to_csv_exclude_geometry(
 
 def add_agency_names(conn: sqlite3.Connection) -> None:
     """
-    Add a column to the 'events' table to store the names of the agencies
-    associated with each event based on the 'agencies_list' column.
+    Populate agency columns in the 'events' table from picks:
+      - agency_names: JSON array of distinct agency_id values that contributed
+        picks to the event.
+      - agencies_list: JSON array of distinct source_event_id values (the original
+        event IDs from each contributing agency) gathered from picks.
+      - nb_agencies: count of distinct agencies.
+      - multiple_same_agencies: True if any agency contributed picks from more
+        than one source_event_id (signals an association or merge bug where two
+        nearby events from the same agency were incorrectly merged).
 
     Args:
         conn (sqlite3.Connection): Active connection to the SQLite database.
     """
-
-    # Define the agency patterns to match
-    agency_patterns = [
-        {"name": "Renass", "pattern": "smi:franceseisme.fr"},
-        {"name": "ISTerre", "pattern": "/ISTerre"},
-        {"name": "CEA", "pattern": "cea.ldg"},
-        {"name": "OCA", "pattern": "geofon/oca"},
-        {"name": "OMP", "pattern": "event/omp"},
-        {"name": "Renass/PhaseNet", "pattern": "PhaseNet"},
-    ]
-
-    # Define the mapping function
-    def map_agencies_to_json(agencies_list_json):
-        try:
-            # Load the list of agency IDs from the JSON string
-            event_ids = json.loads(agencies_list_json)
-            # Find the matching agencies based on the event IDs
-            matched_agencies = [
-                pattern["name"]
-                for pattern in agency_patterns
-                if any(pattern["pattern"] in event_id for event_id in event_ids)
-            ]
-            # Return the matched agencies as a JSON string
-            return json.dumps(matched_agencies)
-        except json.JSONDecodeError:
-            return json.dumps([])
-
-    # Register the mapping function in SQLite
-    conn.create_function("map_agencies_to_json", 1, map_agencies_to_json)
-
-    # Add a column to the 'events' table to store the agency names
     cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(events);")
-    columns = [row[1] for row in cursor.fetchall()]
-    if "agency_names" not in columns:
-        cursor.execute("ALTER TABLE events ADD COLUMN agency_names JSON;")
-        logger.info("Added 'agency_names' column to the 'events' table.")
+    _ensure_column(cursor, "events", "agency_names", "JSON")
+    _ensure_column(cursor, "events", "multiple_same_agencies", "BOOLEAN")
 
-    # Update the 'agency_names' column based on the 'agencies_list' column
+    # agency_names: distinct agency_id values for all picks of the event.
+    # agencies_list: distinct source_event_id values (original agency event IDs).
+    # nb_agencies: count of distinct agencies.
+    # multiple_same_agencies: True if any agency has contributed picks from
+    # more than one distinct source_event_id — indicates a merge/association bug.
     cursor.execute(
         """
         UPDATE events
-        SET agency_names = map_agencies_to_json(agencies_list)
-        WHERE agencies_list IS NOT NULL;
-        """
-    )
-
-    # Detect if any agency appears multiple times in the agency_names list
-    def has_duplicates(json_array):
-        """
-        Detect if there are duplicates in a JSON array.
-        Args:
-            json_array (str): JSON array as a string.
-        Returns:
-            bool: True if duplicates exist, False otherwise.
-        """
-        try:
-            items = json.loads(json_array)
-            return len(items) > len(set(items))
-        except (json.JSONDecodeError, TypeError):
-            logger.error(f"Error parsing JSON array: {json_array}")
-            return False
-
-    conn.create_function("HAS_DUPLICATES", 1, has_duplicates)
-
-    if "multiple_same_agencies" not in columns:
-        cursor.execute("ALTER TABLE events ADD COLUMN multiple_same_agencies BOOLEAN;")
-
-    cursor.execute(
-        """
-        UPDATE events
-        SET multiple_same_agencies = HAS_DUPLICATES(agency_names);
+        SET agency_names = (
+            SELECT json_group_array(DISTINCT agency_id)
+            FROM picks
+            WHERE picks.event_id = events.event_id
+              AND agency_id IS NOT NULL
+              AND agency_id != ''
+        ),
+        agencies_list = (
+            SELECT json_group_array(DISTINCT source_event_id)
+            FROM picks
+            WHERE picks.event_id = events.event_id
+              AND source_event_id IS NOT NULL
+              AND source_event_id != ''
+        ),
+        nb_agencies = (
+            SELECT COUNT(DISTINCT agency_id)
+            FROM picks
+            WHERE picks.event_id = events.event_id
+              AND agency_id IS NOT NULL
+              AND agency_id != ''
+        ),
+        multiple_same_agencies = (
+            SELECT EXISTS (
+                SELECT 1
+                FROM picks
+                WHERE picks.event_id = events.event_id
+                  AND agency_id IS NOT NULL
+                  AND agency_id != ''
+                  AND source_event_id IS NOT NULL
+                GROUP BY agency_id
+                HAVING COUNT(DISTINCT source_event_id) > 1
+            )
+        )
+        WHERE EXISTS (
+            SELECT 1 FROM picks
+            WHERE picks.event_id = events.event_id
+              AND agency_id IS NOT NULL
+              AND agency_id != ''
+        );
         """
     )
 
@@ -2534,14 +2583,8 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
     """
     cursor = conn.cursor()
 
-    # Check if the `quality` and `quality_factor` columns exist in the `origins` table
-    cursor.execute("PRAGMA table_info(origins);")
-    columns = [col[1] for col in cursor.fetchall()]
-
-    if "quality" not in columns:
-        cursor.execute("ALTER TABLE origins ADD COLUMN quality TEXT;")
-    if "quality_factor" not in columns:
-        cursor.execute("ALTER TABLE origins ADD COLUMN quality_factor DOUBLE;")
+    _ensure_column(cursor, "origins", "quality", "TEXT")
+    _ensure_column(cursor, "origins", "quality_factor", "DOUBLE")
     conn.commit()
 
     # Fetch data for quality computation
@@ -2595,10 +2638,10 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
             continue
 
         dloch = haversine_distance(
-            origin_longitude,
             origin_latitude,
-            expectation_longitude,
+            origin_longitude,
             expectation_latitude,
+            expectation_longitude,
         )
 
         dz = abs(origin_depth - expectation_depth) / 1000.0
@@ -2634,6 +2677,36 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
 # =============================================================================
 
 
+def _fetch_station_phases(cursor: sqlite3.Cursor, origin_id: str) -> dict:
+    """Return a dict mapping station_name -> set({'P', 'S'}) for used arrivals.
+
+    Shared helper for compute_origin_station_score() and recompute_ps_ratio().
+    Only arrivals with time_weight > 0 are considered.
+    """
+    cursor.execute(
+        """
+        SELECT
+            p.station_name,
+            LOWER(a.name) as phase
+        FROM arrivals a
+        JOIN picks p ON a.pick_id = p.id
+        WHERE a.origin_id = ?
+          AND a.time_weight > 0
+          AND p.station_name IS NOT NULL
+        """,
+        (origin_id,),
+    )
+    station_phases: dict = {}
+    for station_name, phase in cursor.fetchall():
+        if station_name not in station_phases:
+            station_phases[station_name] = set()
+        if phase.startswith("p"):
+            station_phases[station_name].add("P")
+        elif phase.startswith("s"):
+            station_phases[station_name].add("S")
+    return station_phases
+
+
 def compute_origin_station_score(conn: sqlite3.Connection) -> None:
     """
     Compute and update station scores for all origins in the database.
@@ -2648,44 +2721,14 @@ def compute_origin_station_score(conn: sqlite3.Connection) -> None:
     logger.info("Computing station scores for all origins...")
     cursor = conn.cursor()
 
-    # Add station_score column if it doesn't exist
-    cursor.execute("PRAGMA table_info(origins)")
-    columns = [col[1] for col in cursor.fetchall()]
+    _ensure_column(cursor, "origins", "station_score", "FLOAT DEFAULT 0.0")
 
-    if "station_score" not in columns:
-        cursor.execute("ALTER TABLE origins ADD COLUMN station_score FLOAT DEFAULT 0.0")
-
-    # Get only preferred origins
     cursor.execute("SELECT id FROM origins WHERE preferred = 1")
     origins = cursor.fetchall()
 
     for (origin_id,) in origins:
-        # Get all valid arrivals for this origin with their phase information
-        cursor.execute(
-            """
-            SELECT
-                p.station_name,
-                LOWER(a.name) as phase
-            FROM arrivals a
-            JOIN picks p ON a.pick_id = p.id
-            WHERE a.origin_id = ?
-            AND a.time_weight > 0
-            AND p.station_name IS NOT NULL
-        """,
-            (origin_id,),
-        )
+        station_phases = _fetch_station_phases(cursor, origin_id)
 
-        # Group phases by station
-        station_phases = {}
-        for station_name, phase in cursor.fetchall():
-            if station_name not in station_phases:
-                station_phases[station_name] = set()
-            if phase.startswith("p"):
-                station_phases[station_name].add("P")
-            elif phase.startswith("s"):
-                station_phases[station_name].add("S")
-
-        # Calculate score
         score = 0.0
         for phases in station_phases.values():
             if "P" in phases and "S" in phases:
@@ -2695,7 +2738,6 @@ def compute_origin_station_score(conn: sqlite3.Connection) -> None:
             elif "S" in phases:
                 score += 0.5
 
-        # Update the origin with the computed score
         cursor.execute(
             "UPDATE origins SET station_score = ? WHERE id = ?", (score, origin_id)
         )
@@ -2707,68 +2749,36 @@ def compute_origin_station_score(conn: sqlite3.Connection) -> None:
 def recompute_ps_ratio(conn: sqlite3.Connection) -> None:
     """
     Recompute ps_ratio for all preferred origins in the database.
-    
+
     ps_ratio is the ratio of stations with both P and S phases over total stations
     with at least one used phase (time_weight > 0).
     """
     logger.info("Recomputing ps_ratio for all preferred origins...")
     cursor = conn.cursor()
-    
-    # Ensure ps_ratio column exists
-    cursor.execute("PRAGMA table_info(origins)")
-    columns = [col[1] for col in cursor.fetchall()]
-    
-    if "ps_ratio" not in columns:
-        cursor.execute("ALTER TABLE origins ADD COLUMN ps_ratio DOUBLE")
-        logger.info("Added ps_ratio column to origins table")
-    
-    # Get only preferred origins
+
+    _ensure_column(cursor, "origins", "ps_ratio", "DOUBLE")
+
     cursor.execute("SELECT id FROM origins WHERE preferred = 1")
     origins = cursor.fetchall()
-    
+
     for (origin_id,) in origins:
-        # Get all valid arrivals for this origin with their phase information
-        cursor.execute(
-            """
-            SELECT
-                p.station_name,
-                LOWER(a.name) as phase
-            FROM arrivals a
-            JOIN picks p ON a.pick_id = p.id
-            WHERE a.origin_id = ?
-            AND a.time_weight > 0
-            AND p.station_name IS NOT NULL
-        """,
-            (origin_id,),
-        )
-        
-        # Group phases by station
-        station_phases = {}
-        for station_name, phase in cursor.fetchall():
-            if station_name not in station_phases:
-                station_phases[station_name] = set()
-            if phase.startswith("p"):
-                station_phases[station_name].add("P")
-            elif phase.startswith("s"):
-                station_phases[station_name].add("S")
-        
-        # Calculate ps_ratio
+        station_phases = _fetch_station_phases(cursor, origin_id)
+
         total_stations = len(station_phases)
         if total_stations == 0:
             ps_ratio = None
         else:
             stations_with_both = sum(
-                1 for phases in station_phases.values()
+                1
+                for phases in station_phases.values()
                 if "P" in phases and "S" in phases
             )
             ps_ratio = stations_with_both / total_stations
-        
-        # Update the origin with the computed ps_ratio
+
         cursor.execute(
-            "UPDATE origins SET ps_ratio = ? WHERE id = ?", 
-            (ps_ratio, origin_id)
+            "UPDATE origins SET ps_ratio = ? WHERE id = ?", (ps_ratio, origin_id)
         )
-    
+
     conn.commit()
     logger.info("ps_ratio recomputation completed")
 
@@ -2843,24 +2853,12 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
         cursor = conn.cursor()
 
         # Check and add columns to origins
-        cursor.execute("PRAGMA table_info(origins)")
-        origin_columns = [col[1] for col in cursor.fetchall()]
-
-        if "station_score" not in origin_columns:
-            logger.info("Adding station_score column to origins table...")
-            cursor.execute(
-                "ALTER TABLE origins ADD COLUMN station_score DOUBLE DEFAULT 0.0"
-            )
-
-        if "ps_ratio" not in origin_columns:
-            logger.info("Adding ps_ratio column to origins table...")
-            cursor.execute(
-                "ALTER TABLE origins ADD COLUMN ps_ratio DOUBLE"
-            )
+        _ensure_column(cursor, "origins", "station_score", "DOUBLE DEFAULT 0.0")
+        _ensure_column(cursor, "origins", "ps_ratio", "DOUBLE")
 
         # Warn about deprecated avg_prob_* columns from older databases
         deprecated_cols = {"avg_prob_p", "avg_prob_s", "avg_prob_total"}
-        found_deprecated = deprecated_cols & set(origin_columns)
+        found_deprecated = deprecated_cols & set(_get_table_columns(cursor, "origins"))
         if found_deprecated:
             logger.warning(
                 "Deprecated columns detected in origins table: %s. "
@@ -2869,23 +2867,9 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
                 ", ".join(sorted(found_deprecated)),
             )
 
-        if "median_prob_p" not in origin_columns:
-            logger.info("Adding median_prob_p column to origins table...")
-            cursor.execute(
-                "ALTER TABLE origins ADD COLUMN median_prob_p DOUBLE DEFAULT 0.0"
-            )
-
-        if "median_prob_s" not in origin_columns:
-            logger.info("Adding median_prob_s column to origins table...")
-            cursor.execute(
-                "ALTER TABLE origins ADD COLUMN median_prob_s DOUBLE DEFAULT 0.0"
-            )
-
-        if "median_prob_total" not in origin_columns:
-            logger.info("Adding median_prob_total column to origins table...")
-            cursor.execute(
-                "ALTER TABLE origins ADD COLUMN median_prob_total DOUBLE DEFAULT 0.0"
-            )
+        _ensure_column(cursor, "origins", "median_prob_p", "DOUBLE DEFAULT 0.0")
+        _ensure_column(cursor, "origins", "median_prob_s", "DOUBLE DEFAULT 0.0")
+        _ensure_column(cursor, "origins", "median_prob_total", "DOUBLE DEFAULT 0.0")
 
         conn.commit()
         logger.info("All required columns verified/added successfully.")
@@ -3340,19 +3324,23 @@ def parse_arguments() -> argparse.Namespace:
         )
 
     # Validate at least one action is specified if no input files are provided
-    if not args.input and not args.input_list and not any(
-        [
-            args.csv_output,
-            args.export_quakeml,
-            args.add_discrimination,
-            args.add_localization_quality,
-            args.add_agency_names,
-            args.gt5,
-            args.compute_prob_median,
-            args.compute_station_scores,
-            args.compute_ps_ratio,
-            args.refresh_view,
-        ]
+    if (
+        not args.input
+        and not args.input_list
+        and not any(
+            [
+                args.csv_output,
+                args.export_quakeml,
+                args.add_discrimination,
+                args.add_localization_quality,
+                args.add_agency_names,
+                args.gt5,
+                args.compute_prob_median,
+                args.compute_station_scores,
+                args.compute_ps_ratio,
+                args.refresh_view,
+            ]
+        )
     ):
         parser.error(
             "No action requested. Please specify at least one action (import, export, or enhancement option)"
@@ -3449,7 +3437,9 @@ def process_quakeml_import(args: argparse.Namespace, input_files: List[str]) -> 
             malformed_count += malformed
             batch_catalog = Catalog()
 
-        with tqdm(total=len(input_files), desc="Processing QuakeML files", unit="file") as pbar:
+        with tqdm(
+            total=len(input_files), desc="Processing QuakeML files", unit="file"
+        ) as pbar:
             for input_file in input_files:
                 try:
                     logger.info(f"Reading catalog from file '{input_file}'...")
@@ -3524,6 +3514,7 @@ def process_quakeml_import(args: argparse.Namespace, input_files: List[str]) -> 
             file_handler.close()
         if conn:
             conn.close()
+
 
 # =============================================================================
 # MAIN ENTRY POINT
