@@ -380,6 +380,15 @@ class StationConfig:
         
 
         if self.fallback:
+            required_columns = {"network", "station", "latitude", "longitude"}
+            optional_defaults = {
+                "elevation": "",
+                "location": "",
+                "channel": "",
+                "starttime": "",
+                "endtime": "",
+                "alias": "",
+            }
             dtype_dict = {
                 "network": "str",
                 "station": "str",
@@ -392,13 +401,17 @@ class StationConfig:
                 "endtime": "str",
                 "alias": "str",
             }
-            required_columns = set(dtype_dict.keys())
             for f in self.fallback:
                 logger.info(f"Reading fallback file {f}")
                 if not os.path.exists(f):
                     raise FileNotFoundError(f"File {f} does not exist !")
+
+                # Read only the columns present in the file to avoid dtype errors
+                cols_in_file = pd.read_csv(f, nrows=0).columns.tolist()
+                dtype_for_read = {k: v for k, v in dtype_dict.items() if k in cols_in_file}
+
                 try:
-                    df = pd.read_csv(f, dtype=dtype_dict)
+                    df = pd.read_csv(f, dtype=dtype_for_read)
                 except (TypeError, ValueError) as err:
                     raise ValueError(
                         "Fallback CSV parsing failed: ensure latitude/longitude/elevation "
@@ -408,14 +421,22 @@ class StationConfig:
                 except Exception:
                     raise
 
-                missing_columns = required_columns - set(df.columns)
-                if missing_columns:
+                missing_required = required_columns - set(df.columns)
+                if missing_required:
                     raise ValueError(
                         "Fallback CSV is missing required columns: "
-                        f"{', '.join(sorted(missing_columns))}."
-                        " Expected columns: "
-                        f"{', '.join(sorted(required_columns))}."
+                        f"{', '.join(sorted(missing_required))}. "
+                        f"Required: {', '.join(sorted(required_columns))}."
                     )
+
+                # Add missing optional columns with default values
+                for col, default in optional_defaults.items():
+                    if col not in df.columns:
+                        logger.info(
+                            f"Fallback CSV '{f}': missing optional column '{col}', "
+                            f"using default '{default or 'empty string'}'"
+                        )
+                        df[col] = default
 
                 # if no elevation defined set to 0.0
                 df["elevation"] = pd.to_numeric(df["elevation"], errors="coerce")
