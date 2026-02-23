@@ -20,6 +20,13 @@ import os
 import sys
 import warnings
 
+# Prevent thread explosion with numerical libraries (must be set before other imports)
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 from dbclust.config import DBClustConfig
 from dbclust.core import dbclust
 from dbclust.executors import get_executor
@@ -89,15 +96,19 @@ def finalize_sqlite(cfg: DBClustConfig) -> None:
         logger.error(f"Failed to merge temp databases: {e}")
         return
 
-    if not cfg.catalog.keep_temp_db:
+    if not cfg.catalog.keep_temp_db_after_merge:
         for p in temp_db_paths:
-            try:
-                os.remove(p)
-                logger.debug(f"Removed temp DB: {p}")
-            except OSError as e:
-                logger.warning(f"Could not remove temp DB {p}: {e}")
+            for suffix in ("", "-shm", "-wal"):
+                path = p + suffix
+                if not os.path.exists(path):
+                    continue
+                try:
+                    os.remove(path)
+                    logger.debug(f"Removed temp DB file: {path}")
+                except OSError as e:
+                    logger.warning(f"Could not remove temp DB file {path}: {e}")
     else:
-        logger.info(f"Keeping temp DBs in {temp_dir} (keep_temp_db=True)")
+        logger.info(f"Keeping temp DBs in {temp_dir} (keep_temp_db_after_merge=True)")
 
 
 def main():
