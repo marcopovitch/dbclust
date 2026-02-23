@@ -234,6 +234,16 @@ def dbclust(
 
     start, stop = cfg.parallel.time_partitions[job_index]
 
+    # Remove any leftover temp DB from a previous run at job startup (once per job).
+    if cfg.catalog.enable_sqlite:
+        temp_dir = cfg.catalog.temp_db_dir or cfg.catalog.sqlite_db_path
+        temp_db_path = os.path.join(temp_dir, f"tmp_worker_{job_index}.db")
+        for suffix in ("", "-shm", "-wal"):
+            path = temp_db_path + suffix
+            if os.path.exists(path):
+                os.remove(path)
+                logger.debug(f"Removed leftover temp DB file: {path}")
+
     msg = "started."
     logger.info(f"{msg} Job index: {job_index}, Start: {start}, Stop: {stop}")
 
@@ -620,10 +630,6 @@ def save_catalog(
         temp_db_path = os.path.join(temp_dir, f"tmp_worker_{job_index}.db")
         logger.info(f"Writing {len(catalog)} events to temp DB {temp_db_path}")
         try:
-            # Remove any leftover temp DB from a previous run to avoid schema conflicts
-            if os.path.exists(temp_db_path):
-                os.remove(temp_db_path)
-                logger.debug(f"Removed existing temp DB: {temp_db_path}")
             conn = create_schema(temp_db_path)
             import_catalog_to_sqlite(conn, catalog, enable_quakeml=True, disable_tqdm=True)
             conn.commit()

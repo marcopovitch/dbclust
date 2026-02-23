@@ -613,7 +613,7 @@ class CatalogConfig:
     sqlite_db_path: str
     sqlite_db_filename: str
     sqlite_db_fullpath: Optional[str] = None
-    keep_temp_db: bool = False
+    keep_temp_db_after_merge: bool = False
     temp_db_dir: Optional[str] = None
 
     def __post_init__(self) -> None:
