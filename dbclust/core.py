@@ -17,6 +17,7 @@ from typing import List, Optional
 
 import pandas as pd
 import pyproj
+import pyproj.exceptions
 
 from dbclust.clusterize import Clusterize
 from dbclust.clusterize import feed_picks_event_ids
@@ -27,10 +28,8 @@ from dbclust.config import DBClustConfig
 from dbclust.db import duckdb_init
 from dbclust.dbclust2pyocto import adjust_associator_tolerance
 from dbclust.inject_spatialite import (
-    create_safe_connection,
-    create_tables,
+    create_schema,
     import_catalog_to_sqlite,
-    load_spatialite,
 )
 from dbclust.localization import NllLoc
 from dbclust.localization import format_event
@@ -317,12 +316,15 @@ def dbclust(
                     (year < {end_year} OR (year = {end_year} AND month <= {end_month}))
                     AND
                     phase_time BETWEEN '{begin}' AND '{end}'
+                    AND
+                    phase_type IN ('P', 'Pg', 'Pn', 'S', 'Sg', 'Sn')
                 """
             else:
                 # csv
                 rqt = f"""
                     SELECT * FROM PICKS
                     WHERE phase_time BETWEEN '{begin}' AND '{end}'
+                    AND phase_type IN ('P', 'Pg', 'Pn', 'S', 'Sg', 'Sn')
                 """
 
             # Time measure of the query
@@ -447,8 +449,8 @@ def dbclust(
                     min_tolerance=0.1,
                     log_level=logger.level,
                 )
-            except pyproj.exceptions.CRSError as e:
-                logger.error(f"Aborting process adjust_associator_tolerance().")
+            except pyproj.exceptions.ProjError as e:
+                logger.error(f"Projection error, aborting adjust_associator_tolerance(): {e}")
                 if begin == end:
                     logger.info("Cleaning previous_myclust.")
                     previous_myclust = get_clusterize_from_config(cfg, phases=None)
@@ -618,21 +620,11 @@ def save_catalog(
         temp_db_path = os.path.join(temp_dir, f"tmp_worker_{job_index}.db")
         logger.info(f"Writing {len(catalog)} events to temp DB {temp_db_path}")
         try:
-            conn = create_safe_connection(temp_db_path, logger=logger)
-            conn.execute("PRAGMA journal_mode=DELETE")
-            conn.commit()
-            load_spatialite(conn, logger)
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spatial_ref_sys';"
-            )
-            if cursor.fetchone()[0] == 0:
-                cursor.execute("SELECT InitSpatialMetadata();")
-            create_tables(cursor)
-            cursor.execute(
-                "SELECT AddGeometryColumn('origins', 'geometry', 4326, 'POINT', 'XY');"
-            )
-            conn.commit()
+            # Remove any leftover temp DB from a previous run to avoid schema conflicts
+            if os.path.exists(temp_db_path):
+                os.remove(temp_db_path)
+                logger.debug(f"Removed existing temp DB: {temp_db_path}")
+            conn = create_schema(temp_db_path)
             import_catalog_to_sqlite(conn, catalog, enable_quakeml=True, disable_tqdm=True)
             conn.commit()
             conn.close()
