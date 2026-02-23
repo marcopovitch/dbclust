@@ -24,6 +24,42 @@ DBClust is a powerful tool for seismic phase association and event localization.
 - Time grid files for your region of interest
 - Configuration file (yaml)
 
+### NonLinLoc Installation
+
+DBClust requires NonLinLoc for earthquake localization. You can install it using the provided script:
+
+```bash
+# Clone and build NonLinLoc
+./nll_install.sh
+```
+
+The script will:
+- Clone the NonLinLoc repository
+- Apply necessary patches
+- Build the binaries
+- Create symlinks to `$HOME/github/nll/bin`
+
+**Manual Installation** (if the script doesn't work):
+```bash
+# Clone NonLinLoc
+git clone --depth=1 https://github.com/ut-beg-texnet/NonLinLoc $HOME/github/nll
+cd $HOME/github/nll/src
+
+# Apply patch (if available)
+cp patch/nll/NLLocLib.patch .
+patch -p0 < NLLocLib.patch
+
+# Build
+cmake .
+make
+ln -s $HOME/github/nll/src/bin $HOME/github/nll/bin
+```
+
+After installation, ensure the NonLinLoc binaries are in your PATH:
+```bash
+export PATH=$HOME/github/nll/bin:$PATH
+```
+
 ## Installation
 
 ### Using uv (recommended)
@@ -128,13 +164,269 @@ uv cache clean
 uv sync
 ```
 
-## Usage
+### Command Line Tools
 
-### Command-line Arguments
+DBClust provides several command-line tools for different seismic data processing tasks:
 
-TBD
+### Core Tools
 
-### Processing Pipeline
+| Tool | Description | Command |
+|------|-------------|---------|
+| **dbclust** | Main seismic event detection and localization pipeline | `dbclust -c config.yml` |
+| **nll-locate** | Single event localization using NonLinLoc | `nll-locate -c config.yml picks.csv output.qml` |
+| **injectdb** | Import QuakeML files into SQLite database | `injectdb -d events.db input.xml` |
+| **relocate** | Relocate events from QuakeML files | `relocate -c config.yml input.qml output.qml` |
+
+### Utility Tools
+
+| Tool | Description | Command |
+|------|-------------|---------|
+| **fdsnws-server** | FDSN Web Service server for event access | `fdsnws-server -d events.db -p 8000` |
+| **csv2parquet** | Convert CSV files to Parquet format | `csv2parquet -i input.csv -o output.parquet` |
+
+### dbclust - Main Processing Pipeline
+
+The main tool processes seismic picks to detect and locate events:
+
+```bash
+# Basic usage
+dbclust -c config.yml
+
+# With specific velocity profile and log level
+dbclust -c config.yml -p "local_model" -l DEBUG
+
+# Example configuration file structure
+cat config.yml
+catalog:
+  sqlite_db_fullpath: "seismic_events.db"
+  picks_file: "picks.parquet"
+  keep_temp_db: false
+
+parallel:
+  n_workers: 12
+  partition_duration: "1D"
+  executor: "dask"
+
+localization:
+  nll_template: "nll_template.in"
+  time_grid: "times.grid"
+```
+
+### nll-locate - Single Event Localization
+
+Localize individual events using NonLinLoc:
+
+```bash
+# Basic localization
+nll-locate -c config.yml picks.csv output.qml
+
+# With custom uncertainties
+nll-locate -c config.yml -p 0.1 -s 0.2 picks.csv output.qml
+
+# Using specific NonLinLoc template
+nll-locate -c config.yml -t custom_template.in picks.csv output.qml
+```
+
+### injectdb - QuakeML Database Import
+
+Import QuakeML files into a SpatiaLite-enabled SQLite database:
+
+```bash
+# Import single file
+injectdb -d events.db input.xml
+
+# Import multiple files
+injectdb -d events.db input1.xml input2.xml input3.xml
+
+# Import from file list (for large numbers of files)
+injectdb -d events.db --input-list filelist.txt
+
+# Fast import mode (for initial bulk loading)
+injectdb -d events.db --input-list filelist.txt --fast-import
+
+# With batching for large datasets
+injectdb -d events.db --input-list filelist.txt --batch-size 10000 --sqlite-batch-size 10000
+
+# Store full QuakeML data
+injectdb -d events.db input.xml -q
+
+# Enable database enhancements
+injectdb -d events.db input.xml --compute-ps-ratio --compute-station_scores
+```
+
+#### Database Enhancement Options
+
+The `injectdb` tool supports various database enhancement options:
+
+```bash
+# Compute station scores and ps_ratio
+injectdb -d events.db --compute-station-scores --compute-ps-ratio
+
+# Add discrimination info from CSV
+injectdb -d events.db --add-discrimination discrimination.csv
+
+# Compute localization quality metrics
+injectdb -d events.db --add-localization-quality
+
+# Add agency names
+injectdb -d events.db --add-agency-names
+
+# Compute GT5 metrics
+injectdb -d events.db --gt5
+
+# Compute median probabilities
+injectdb -d events.db --compute-prob-median
+
+# Refresh views
+injectdb -d events.db --refresh-view
+```
+
+#### Export Options
+
+```bash
+# Export to CSV
+injectdb -d events.db -c events.csv
+
+# Export to QuakeML
+injectdb -d events.db --export-quakeml events.qml
+
+# Export specific events
+injectdb -d events.db --export-quakeml events.qml -e event1 event2 event3
+
+# Export with time range
+injectdb -d events.db --export-quakeml events.qml --start-time 2023-01-01 --end-time 2023-12-31
+
+# Export monthly files
+injectdb -d events.db --export-quakeml output_dir/
+```
+
+### relocate - Event Relocation
+
+Relocate events from existing QuakeML files:
+
+```bash
+# Basic relocation
+relocate -c config.yml input.qml output.qml
+
+# With specific velocity profile
+relocate -c config.yml -p "custom_model" input.qml output.qml
+```
+
+### fdsnws-server - FDSN Web Service
+
+Run an FDSN event web service:
+
+```bash
+# Basic server
+fdsnws-server -d events.db
+
+# Custom port
+fdsnws-server -d events.db -p 8080
+
+# With custom host
+fdsnws-server -d events.db -p 8000 --host 0.0.0.0
+```
+
+Access the service at:
+- Events: `http://localhost:8000/fdsnws/event/1/query`
+- Catalog: `http://localhost:8000/fdsnws/event/1/catalog`
+- Built-in browser: `http://localhost:8000`
+
+### csv2parquet - File Format Conversion
+
+Convert CSV pick files to Parquet format for better performance:
+
+```bash
+# Basic conversion
+csv2parquet -i picks.csv -o picks.parquet
+
+# With compression
+csv2parquet -i picks.csv -o picks.parquet --compression snappy
+```
+
+## Performance Optimization
+
+### Large Dataset Import Performance
+
+When importing large numbers of QuakeML files, use these optimization strategies:
+
+#### Fast Import Mode
+
+For initial bulk loading of reliable data:
+```bash
+injectdb -d events.db --input-list filelist.txt --fast-import
+```
+
+Fast import mode:
+- Disables foreign key constraints during import
+- Uses aggressive SQLite pragmas (MEMORY journal, OFF synchronous)
+- Significantly improves import speed for large datasets
+- **Warning**: Reduces durability, use only for initial bulk loading
+
+#### Batching Strategies
+
+For optimal performance with large datasets:
+```bash
+# Large batch sizes for better throughput
+injectdb -d events.db --input-list filelist.txt \
+  --batch-size 10000 \
+  --sqlite-batch-size 10000 \
+  --fast-import
+```
+
+- `--batch-size`: Events accumulated in memory before database insertion
+- `--sqlite-batch-size`: Events per SQLite transaction commit
+- Larger batches reduce transaction overhead but use more memory
+
+#### Database Enhancements
+
+Compute performance metrics after import:
+```bash
+# Compute station scores and ps_ratio for better analysis
+injectdb -d events.db --compute-station-scores --compute-ps-ratio
+
+# Add agency names for better event categorization
+injectdb -d events.db --add-agency-names
+```
+
+### Parallel Processing Configuration
+
+Configure parallel execution based on your system:
+
+```yaml
+# For local machines (best performance)
+parallel:
+  n_workers: 12  # Number of CPU cores
+  partition_duration: "1D"
+  executor: "dask"
+
+# For HPC clusters
+parallel:
+  n_workers: 32
+  partition_duration: "6H"
+  executor: "parsl_slurm"
+
+slurm:
+  enabled: true
+  partition: "compute"
+  cores_per_node: 32
+  walltime: "72:00:00"
+```
+
+### Memory Optimization
+
+For memory-constrained systems:
+```yaml
+# Reduce memory usage
+parallel:
+  n_workers: 4  # Fewer workers
+  partition_duration: "6H"  # Shorter windows
+  
+catalog:
+  keep_temp_db: false  # Clean up temporary databases
+```
+
+## Processing Pipeline
 
 1. **Data Loading**: Load seismic phase picks from parquet, csv or obspy stream files
 2. **Pick Preprocessing**: Remove duplicate picks and filter picks based on proximity threshold
