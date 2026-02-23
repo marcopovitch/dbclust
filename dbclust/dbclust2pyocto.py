@@ -14,6 +14,7 @@ from typing import Union
 import pandas as pd
 import pyocto
 import pyproj
+import pyproj.exceptions
 from dbclust.clusterize import cluster_share_eventid
 from dbclust.clusterize import Clusterize
 from dbclust.config import Associator
@@ -86,9 +87,9 @@ def adjust_associator_tolerance(
             )
             logger.info(f"Success with pick_match_tolerance: {tolerance:.2f}")
             return result_myclust
-        except pyproj.exceptions.CRSError as e:
-            # Skip processing if CRS error occurs, likely due to too far away stations
-            logger.error("Skipping dbclust2pyocto() processing.")
+        except pyproj.exceptions.ProjError as e:
+            # Skip processing if projection error occurs, likely due to too far away stations
+            logger.error(f"Projection error, skipping dbclust2pyocto() processing: {e}")
             raise
         except MultipleEventIDsWithSameAgencyError as e:
             logger.warning(f"Unsuccessful with pick_match_tolerance: {tolerance:.2f}.")
@@ -174,8 +175,39 @@ def dbclust2pyocto(
         stations = get_stations_from_cluster(cluster)
         picks = get_picks_from_cluster(cluster)
 
-        # define a safe range around the stations coordinates in percentage
-        # of the latitude and longitude range
+        # Step 1: pre-filter stations to max_lat_range/max_lon_range BEFORE computing
+        # the range, so that extreme outliers do not corrupt min/max calculations.
+        if associator_cfg.max_lat_range is not None:
+            mask_out_lat = (
+                stations["latitude"] < associator_cfg.max_lat_range[0]
+            ) | (
+                stations["latitude"] > associator_cfg.max_lat_range[1]
+            )
+            for row in stations.loc[mask_out_lat].itertuples():
+                logger.warning(
+                    f"Station {row.id} at lat: {row.latitude}, lon: {row.longitude} "
+                    "is outside max_lat_range and will be excluded."
+                )
+            stations = stations[~mask_out_lat].reset_index(drop=True)
+
+        if associator_cfg.max_lon_range is not None:
+            mask_out_lon = (
+                stations["longitude"] < associator_cfg.max_lon_range[0]
+            ) | (
+                stations["longitude"] > associator_cfg.max_lon_range[1]
+            )
+            for row in stations.loc[mask_out_lon].itertuples():
+                logger.warning(
+                    f"Station {row.id} at lat: {row.latitude}, lon: {row.longitude} "
+                    "is outside max_lon_range and will be excluded."
+                )
+            stations = stations[~mask_out_lon].reset_index(drop=True)
+
+        if stations.empty:
+            logger.warning(f"Cluster#{i}: no stations left after range filtering, skipping.")
+            continue
+
+        # Step 2: define a safe range around the remaining stations coordinates
         range_percent = 0.01  # 1%
         lat_safe_range_deg = range_percent * (
             stations["latitude"].max() - stations["latitude"].min()
@@ -188,7 +220,6 @@ def dbclust2pyocto(
             f"lon: {lon_safe_range_deg} deg"
         )
 
-        # Set spatial parameters for the associator
         lat_range = (
             stations["latitude"].min() - lat_safe_range_deg,
             stations["latitude"].max() + lat_safe_range_deg,
@@ -198,38 +229,7 @@ def dbclust2pyocto(
             stations["longitude"].max() + lon_safe_range_deg,
         )
 
-        # Apply maximum range limits if defined in config
-        if associator_cfg.max_lat_range is not None:
-            lat_range = (
-                max(lat_range[0], associator_cfg.max_lat_range[0]),
-                min(lat_range[1], associator_cfg.max_lat_range[1]),
-            )
-            logger.debug(f"lat_range bounded by max_lat_range: {lat_range}")
-
-        if associator_cfg.max_lon_range is not None:
-            lon_range = (
-                max(lon_range[0], associator_cfg.max_lon_range[0]),
-                min(lon_range[1], associator_cfg.max_lon_range[1]),
-            )
-            logger.debug(f"lon_range bounded by max_lon_range: {lon_range}")
-
         logger.info(f"range lat: {lat_range}, lon: {lon_range}")
-
-        # list all stations lat/lon to check if they are inside the defined range
-        mask_outside = (
-            stations["latitude"].isna()
-            | stations["longitude"].isna()
-            | (stations["latitude"] < lat_range[0])
-            | (stations["latitude"] > lat_range[1])
-            | (stations["longitude"] < lon_range[0])
-            | (stations["longitude"] > lon_range[1])
-        )
-
-        for row in stations.loc[mask_outside].itertuples():
-            logger.warning(
-                f"Station {row.id} at lat: {row.latitude}, lon: {row.longitude} "
-                "is outside the defined range."
-            )
 
         try:
             associator = pyocto.OctoAssociator.from_area(
@@ -261,16 +261,23 @@ def dbclust2pyocto(
                 #     "iterations": 1,
                 # },
             )
-        except pyproj.exceptions.CRSError as e:
-            # Skip processing if CRS error occurs, likely due to too far away stations
-            logger.error(f"CRS error occurred. Skipping processing: {e}")
+        except pyproj.exceptions.ProjError as e:
+            # Skip processing if projection error occurs (e.g. stations too far away)
+            logger.error(f"Projection error in OctoAssociator.from_area(): {e}")
             logger.error(
                 f"Check stations coordinates ! lat_range: {lat_range}, lon_range: {lon_range}"
             )
             logger.info(f"picks: {picks}")
             raise
 
-        associator.transform_stations(stations)
+        try:
+            associator.transform_stations(stations)
+        except pyproj.exceptions.ProjError as e:
+            logger.error(f"Projection error in transform_stations(): {e}")
+            logger.error(
+                f"Check stations coordinates ! lat_range: {lat_range}, lon_range: {lon_range}"
+            )
+            raise
 
         # Associate picks and generate events
         events, assignments = associator.associate(picks, stations)
