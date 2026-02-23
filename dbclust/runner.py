@@ -23,9 +23,6 @@ import warnings
 from dbclust.config import DBClustConfig
 from dbclust.core import dbclust
 from dbclust.executors import get_executor
-from dbclust.inject_spatialite import create_safe_connection
-from dbclust.inject_spatialite import load_spatialite
-from dbclust.inject_spatialite import refresh_event_coordinates_view
 from dbclust.parallel_import import merge_databases
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -91,15 +88,6 @@ def finalize_sqlite(cfg: DBClustConfig) -> None:
     except Exception as e:
         logger.error(f"Failed to merge temp databases: {e}")
         return
-
-    try:
-        conn = create_safe_connection(cfg.catalog.sqlite_db_fullpath, logger=logger)
-        load_spatialite(conn, logger)
-        logger.info("Refreshing event coordinates view.")
-        refresh_event_coordinates_view(conn)
-        conn.close()
-    except Exception as e:
-        logger.error(f"Failed to refresh SQLite view: {e}")
 
     if not cfg.catalog.keep_temp_db:
         for p in temp_db_paths:
