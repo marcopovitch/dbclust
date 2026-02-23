@@ -169,8 +169,10 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
                 for c in clusters:
                     for cluster_pick in c:
                         if (
-                            pick.time == cluster_pick.time
-                            and pick.phase_hint == cluster_pick.phase
+                            pick.waveform_id["station_code"] == cluster_pick.station
+                            and pick.time == cluster_pick.time
+                            # We don't check phase_hint because after relabelling
+                            # (ex: P -> Pg), pick.phase_hint is modified but not cluster_pick.phase
                         ):
                             # cluster found
                             event_ids = list(set([p.event_id for p in c if p.event_id]))
