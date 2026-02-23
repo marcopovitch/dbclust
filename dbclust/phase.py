@@ -216,7 +216,7 @@ class Phase:
             pick.evaluation_mode = self.evaluation
 
         pick.time_errors.uncertainty = self.time_uncertainty
-        pick.creation_info = CreationInfo(agency_id=self.agency)
+        pick.creation_info = CreationInfo(agency_id=self.agency, author=self.event_id)
 
         return pick
 
