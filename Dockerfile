@@ -46,7 +46,9 @@ WORKDIR /app
 # Copy dependency files first 
 COPY pyproject.toml uv.lock* ./
 
-# Install project dependencies (setuptools included via pyproject.toml for obspy)
+# Install project dependencies.
+# pyrocko doesn't declare pkg_resources as a build dependency; this is handled
+# via [tool.uv.extra-build-dependencies] in pyproject.toml.
 RUN /bin/uv pip install --system .
 
 # Copy patch files for obspy
