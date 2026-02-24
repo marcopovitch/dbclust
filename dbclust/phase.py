@@ -119,7 +119,7 @@ class Phase:
         # If the primary source failed, use the fallback method
         if lat is None or lon is None:
             result = self._fallback_coordinates(
-                self.network, self.station, self.time, self.fallback_df
+                self.network, self.station, self.time, self.fallback_df, chan=self.channel
             )
             if result is None:
                 # No coordinates found, raise to skip this phase
@@ -135,7 +135,9 @@ class Phase:
         self.coord = {"latitude": lat, "longitude": lon, "elevation": elev}
         self.location = loc or self.location
         if chans:
-            self.channel = chans[-1] if "P" in self.phase.upper() else chans[0]
+            new_chan = chans[-1] if "P" in self.phase.upper() else chans[0]
+            if new_chan:  # Don't overwrite with empty string (e.g. from minimal CSV without channel column)
+                self.channel = new_chan
 
     @staticmethod
     def _fallback_coordinates(
@@ -143,6 +145,7 @@ class Phase:
         station: str,
         time: UTCDateTime,
         fallback_df: Optional[pd.DataFrame] = None,
+        chan: Optional[str] = None,
     ) -> Optional[tuple]:
         """
         Fetch fallback coordinates (latitude, longitude, elevation, location, channels)
@@ -153,6 +156,8 @@ class Phase:
             station (str): Station code.
             time (UTCDateTime): Time of the query.
             fallback_df (Optional[pd.DataFrame]): Fallback DataFrame containing station information.
+            chan (Optional[str]): Channel code hint; if provided, filters channels by the first
+                two characters (e.g. "HHZ" → keeps only "HH?" channels).
 
         Returns:
             tuple: (latitude, longitude, elevation, location, channels) if found, None otherwise.
@@ -172,8 +177,13 @@ class Phase:
                 lat, lon, elev, loc = df_filtered.iloc[0][
                     ["latitude", "longitude", "elevation", "location"]
                 ]
-                # Extract all matching channels and sort them, ENZ order
-                chans = sorted(df_filtered["channel"].tolist())
+                # Extract channels, optionally filtered by channel type prefix (first 2 chars)
+                all_chans = df_filtered["channel"].tolist()
+                if chan and len(chan) >= 2:
+                    prefix = chan[:2]
+                    filtered = [c for c in all_chans if c.startswith(prefix)]
+                    all_chans = filtered if filtered else all_chans
+                chans = sorted(all_chans)
 
                 return lat, lon, elev, loc, chans
 
