@@ -456,7 +456,7 @@ class StationConfig:
                     self.fallback_df = df
                 else:
                     self.fallback_df = pd.concat(
-                        [df, self.fallback_df], ignore_index=True
+                        [self.fallback_df, df], ignore_index=True
                     )
 
 
