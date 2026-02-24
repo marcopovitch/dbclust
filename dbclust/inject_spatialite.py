@@ -2400,11 +2400,11 @@ def export_view_to_csv_exclude_geometry(
 def add_agency_names(conn: sqlite3.Connection) -> None:
     """
     Populate agency columns in the 'events' table from picks:
-      - agency_names: JSON array of distinct agency_id values that contributed
-        picks to the event.
+      - agency_names: JSON array of distinct agency_id values whose picks are
+        actually used (time_weight > 0) in the preferred origin.
       - agencies_list: JSON array of distinct source_event_id values (the original
-        event IDs from each contributing agency) gathered from picks.
-      - nb_agencies: count of distinct agencies.
+        event IDs from each contributing agency) for picks used in the preferred origin.
+      - nb_agencies: count of distinct agencies contributing to the preferred origin.
       - multiple_same_agencies: True if any agency contributed picks from more
         than one source_event_id (signals an association or merge bug where two
         nearby events from the same agency were incorrectly merged).
@@ -2416,52 +2416,74 @@ def add_agency_names(conn: sqlite3.Connection) -> None:
     _ensure_column(cursor, "events", "agency_names", "JSON")
     _ensure_column(cursor, "events", "multiple_same_agencies", "BOOLEAN")
 
-    # agency_names: distinct agency_id values for all picks of the event.
-    # agencies_list: distinct source_event_id values (original agency event IDs).
-    # nb_agencies: count of distinct agencies.
+    # Only consider picks actually used in the preferred origin (time_weight > 0).
+    # agency_names: distinct agency_id values for used picks.
+    # agencies_list: distinct source_event_id values for used picks.
+    # nb_agencies: count of distinct agencies in the preferred origin.
     # multiple_same_agencies: True if any agency has contributed picks from
     # more than one distinct source_event_id — indicates a merge/association bug.
     cursor.execute(
         """
         UPDATE events
         SET agency_names = (
-            SELECT json_group_array(DISTINCT agency_id)
-            FROM picks
-            WHERE picks.event_id = events.event_id
-              AND agency_id IS NOT NULL
-              AND agency_id != ''
+            SELECT json_group_array(DISTINCT p.agency_id)
+            FROM picks p
+            JOIN arrivals a ON a.pick_id = p.id
+            JOIN origins o ON o.id = a.origin_id
+            WHERE p.event_id = events.event_id
+              AND o.preferred = 1
+              AND a.time_weight > 0
+              AND p.agency_id IS NOT NULL
+              AND p.agency_id != ''
         ),
         agencies_list = (
-            SELECT json_group_array(DISTINCT source_event_id)
-            FROM picks
-            WHERE picks.event_id = events.event_id
-              AND source_event_id IS NOT NULL
-              AND source_event_id != ''
+            SELECT json_group_array(DISTINCT p.source_event_id)
+            FROM picks p
+            JOIN arrivals a ON a.pick_id = p.id
+            JOIN origins o ON o.id = a.origin_id
+            WHERE p.event_id = events.event_id
+              AND o.preferred = 1
+              AND a.time_weight > 0
+              AND p.source_event_id IS NOT NULL
+              AND p.source_event_id != ''
         ),
         nb_agencies = (
-            SELECT COUNT(DISTINCT agency_id)
-            FROM picks
-            WHERE picks.event_id = events.event_id
-              AND agency_id IS NOT NULL
-              AND agency_id != ''
+            SELECT COUNT(DISTINCT p.agency_id)
+            FROM picks p
+            JOIN arrivals a ON a.pick_id = p.id
+            JOIN origins o ON o.id = a.origin_id
+            WHERE p.event_id = events.event_id
+              AND o.preferred = 1
+              AND a.time_weight > 0
+              AND p.agency_id IS NOT NULL
+              AND p.agency_id != ''
         ),
         multiple_same_agencies = (
             SELECT EXISTS (
                 SELECT 1
-                FROM picks
-                WHERE picks.event_id = events.event_id
-                  AND agency_id IS NOT NULL
-                  AND agency_id != ''
-                  AND source_event_id IS NOT NULL
-                GROUP BY agency_id
-                HAVING COUNT(DISTINCT source_event_id) > 1
+                FROM picks p
+                JOIN arrivals a ON a.pick_id = p.id
+                JOIN origins o ON o.id = a.origin_id
+                WHERE p.event_id = events.event_id
+                  AND o.preferred = 1
+                  AND a.time_weight > 0
+                  AND p.agency_id IS NOT NULL
+                  AND p.agency_id != ''
+                  AND p.source_event_id IS NOT NULL
+                GROUP BY p.agency_id
+                HAVING COUNT(DISTINCT p.source_event_id) > 1
             )
         )
         WHERE EXISTS (
-            SELECT 1 FROM picks
-            WHERE picks.event_id = events.event_id
-              AND agency_id IS NOT NULL
-              AND agency_id != ''
+            SELECT 1
+            FROM picks p
+            JOIN arrivals a ON a.pick_id = p.id
+            JOIN origins o ON o.id = a.origin_id
+            WHERE p.event_id = events.event_id
+              AND o.preferred = 1
+              AND a.time_weight > 0
+              AND p.agency_id IS NOT NULL
+              AND p.agency_id != ''
         );
         """
     )
