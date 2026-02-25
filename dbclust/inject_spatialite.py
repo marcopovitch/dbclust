@@ -2422,69 +2422,51 @@ def add_agency_names(conn: sqlite3.Connection) -> None:
     # nb_agencies: count of distinct agencies in the preferred origin.
     # multiple_same_agencies: True if any agency has contributed picks from
     # more than one distinct source_event_id — indicates a merge/association bug.
+    # Single-pass approach: materialize used_picks once, compute all aggregates
+    # without correlated subqueries, then UPDATE by JOIN.
+    #
+    # multiple_same_agencies is computed in a separate CTE (multi_agency) by
+    # pre-aggregating per (event_id, agency_id) and flagging events where any
+    # agency has > 1 distinct source_event_id — no correlated subquery needed.
     cursor.execute(
         """
-        UPDATE events
-        SET agency_names = (
-            SELECT json_group_array(DISTINCT p.agency_id)
+        WITH used_picks AS (
+            SELECT p.event_id,
+                   p.agency_id,
+                   p.source_event_id
             FROM picks p
             JOIN arrivals a ON a.pick_id = p.id
-            JOIN origins o ON o.id = a.origin_id
-            WHERE p.event_id = events.event_id
-              AND o.preferred = 1
+            JOIN origins o  ON o.id = a.origin_id
+            WHERE o.preferred = 1
               AND a.time_weight > 0
               AND p.agency_id IS NOT NULL
               AND p.agency_id != ''
         ),
-        agencies_list = (
-            SELECT json_group_array(DISTINCT p.source_event_id)
-            FROM picks p
-            JOIN arrivals a ON a.pick_id = p.id
-            JOIN origins o ON o.id = a.origin_id
-            WHERE p.event_id = events.event_id
-              AND o.preferred = 1
-              AND a.time_weight > 0
-              AND p.source_event_id IS NOT NULL
-              AND p.source_event_id != ''
+        multi_agency AS (
+            SELECT event_id, 1 AS flag
+            FROM used_picks
+            WHERE source_event_id IS NOT NULL
+            GROUP BY event_id, agency_id
+            HAVING COUNT(DISTINCT source_event_id) > 1
         ),
-        nb_agencies = (
-            SELECT COUNT(DISTINCT p.agency_id)
-            FROM picks p
-            JOIN arrivals a ON a.pick_id = p.id
-            JOIN origins o ON o.id = a.origin_id
-            WHERE p.event_id = events.event_id
-              AND o.preferred = 1
-              AND a.time_weight > 0
-              AND p.agency_id IS NOT NULL
-              AND p.agency_id != ''
-        ),
-        multiple_same_agencies = (
-            SELECT EXISTS (
-                SELECT 1
-                FROM picks p
-                JOIN arrivals a ON a.pick_id = p.id
-                JOIN origins o ON o.id = a.origin_id
-                WHERE p.event_id = events.event_id
-                  AND o.preferred = 1
-                  AND a.time_weight > 0
-                  AND p.agency_id IS NOT NULL
-                  AND p.agency_id != ''
-                  AND p.source_event_id IS NOT NULL
-                GROUP BY p.agency_id
-                HAVING COUNT(DISTINCT p.source_event_id) > 1
-            )
+        agg AS (
+            SELECT
+                up.event_id,
+                json_group_array(DISTINCT up.agency_id)       AS agency_names,
+                json_group_array(DISTINCT up.source_event_id) AS agencies_list,
+                COUNT(DISTINCT up.agency_id)                  AS nb_agencies,
+                CASE WHEN ma.event_id IS NOT NULL THEN 1 ELSE 0 END AS multiple_same_agencies
+            FROM used_picks up
+            LEFT JOIN multi_agency ma ON ma.event_id = up.event_id
+            GROUP BY up.event_id
         )
-        WHERE EXISTS (
-            SELECT 1
-            FROM picks p
-            JOIN arrivals a ON a.pick_id = p.id
-            JOIN origins o ON o.id = a.origin_id
-            WHERE p.event_id = events.event_id
-              AND o.preferred = 1
-              AND a.time_weight > 0
-              AND p.agency_id IS NOT NULL
-              AND p.agency_id != ''
-        );
+        UPDATE events
+        SET agency_names           = agg.agency_names,
+            agencies_list          = agg.agencies_list,
+            nb_agencies            = agg.nb_agencies,
+            multiple_same_agencies = agg.multiple_same_agencies
+        FROM agg
+        WHERE events.event_id = agg.event_id;
         """
     )
 
