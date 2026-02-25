@@ -38,8 +38,9 @@ class MultipleEventIDsWithSameAgencyError(Exception):
     with the same agency in the same cluster
     """
 
-    def __init__(self, duplicate_agency_event_ids, message=None):
+    def __init__(self, duplicate_agency_event_ids, partial_result=None, message=None):
         self.duplicate_agency_event_ids = duplicate_agency_event_ids
+        self.partial_result = partial_result
         self.message = message or (
             f"Multiple event_ids share the same agency: {duplicate_agency_event_ids}"
         )
@@ -71,6 +72,9 @@ def adjust_associator_tolerance(
     associator = cfg.pyocto.current_model.associator
     tolerance = associator.pick_match_tolerance
 
+    best_result = None
+    best_n_clusters = 0
+
     logger.info(f"Starting linear decay for pick_match_tolerance: {tolerance}")
     while tolerance >= min_tolerance:
         logger.info(f"Trying pick_match_tolerance: {tolerance:.2f}")
@@ -94,11 +98,27 @@ def adjust_associator_tolerance(
         except MultipleEventIDsWithSameAgencyError as e:
             logger.warning(f"Unsuccessful with pick_match_tolerance: {tolerance:.2f}.")
             logger.warning(f"{e}")
+            # Keep track of the best partial result (most clusters produced)
+            if e.partial_result is not None:
+                n = e.partial_result.n_clusters
+                if n > best_n_clusters:
+                    best_n_clusters = n
+                    best_result = e.partial_result
+                    logger.info(
+                        f"New best partial result: {n} clusters at tolerance {tolerance:.2f}"
+                    )
             # Determine step size based on tolerance range
             step = next((s for t, s in tolerance_steps.items() if tolerance > t), 0.5)
             tolerance -= step
 
-    logger.error("Exhausted all tolerances. Skipping pyocto processing.")
+    logger.error("Exhausted all tolerances.")
+    if best_result is not None:
+        logger.warning(
+            f"Returning best partial result with {best_n_clusters} clusters "
+            f"despite unresolved agency conflict."
+        )
+        return best_result
+    logger.error("No partial result available. Skipping pyocto processing.")
     return None
 
 
@@ -302,14 +322,6 @@ def dbclust2pyocto(
         pyocto_clusters, pyocto_preloc, min_com_phases
     )
 
-    # Aggregate picks into clusters with shared event IDs
-    try:
-        pyocto_clusters = aggregate_pick_to_cluster_with_common_event_id(
-            pyocto_clusters, all_picks_list, min_com_phases
-        )
-    except MultipleEventIDsWithSameAgencyError as e:
-        raise
-
     logger.info(
         f"PyOcto found {len(pyocto_clusters)} clusters, dbclust found {myclust.n_clusters} clusters."
     )
@@ -324,13 +336,28 @@ def dbclust2pyocto(
         return None
 
     # Clone the original Clusterize object and update it with the new clusters
+    # Built before aggregate so it can be attached to the exception as a partial result
     newclust = copy.deepcopy(myclust)
     newclust.clusters = pyocto_clusters
     newclust.n_clusters = len(newclust.clusters)
     newclust.clusters_stability = [1] * newclust.n_clusters  # unused but needed
     newclust.preloc = pyocto_preloc  # used to choose NLL velocity model
 
-    # Clean up the original cluster object
+    # Aggregate picks into clusters with shared event IDs
+    # If multiple event_ids share the same agency, attach the partial result to the
+    # exception so that the caller can use it as a fallback.
+    try:
+        pyocto_clusters = aggregate_pick_to_cluster_with_common_event_id(
+            pyocto_clusters, all_picks_list, min_com_phases
+        )
+    except MultipleEventIDsWithSameAgencyError as e:
+        e.partial_result = newclust
+        raise
+
+    newclust.clusters = pyocto_clusters
+    newclust.n_clusters = len(newclust.clusters)
+
+    # Clean up the original cluster object only after successful processing
     for attr in ["clusters", "clusters_stability", "noise", "zones", "preloc"]:
         if hasattr(myclust, attr):
             delattr(myclust, attr)
