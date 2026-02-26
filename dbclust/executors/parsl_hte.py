@@ -99,7 +99,7 @@ class ParslHTEExecutor(ExecutorBase):
         """Get the provider for HTE. Override in subclasses for different providers."""
         return LocalProvider(
             init_blocks=1,
-            min_blocks=0,
+            min_blocks=1,
             max_blocks=1,
         )
 
@@ -153,8 +153,9 @@ class ParslHTEExecutor(ExecutorBase):
             max_workers_per_node=max_workers,
             cores_per_worker=1,
             provider=self._get_provider(),
-            worker_debug=True,
+            worker_debug=False,
             worker_logdir_root=run_dir,
+            poll_period=100,  # ms, reduce polling overhead
         )
 
         config = Config(
