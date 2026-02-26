@@ -1469,13 +1469,15 @@ class NllLoc(object):
         # Deduplicate arrivals that point to the same station with the same phase
         # before relabeling. This prevents conflicts when two arrivals (e.g., from
         # different channels HHZ/BHZ) both want to be relabeled to the same phase.
+        # Sort by time_weight descending so the highest-weight arrival is kept.
         seen_arrival_keys = {}
         deduplicated_arrivals = []
-        for a in orig.arrivals:
+        picks_to_remove_from_dedup = []
+        for a in sorted(orig.arrivals, key=lambda x: x.time_weight or 0, reverse=True):
             p = get_pick_from_arrival(event, a)
             if p is None:
                 continue
-            # Key: (network, station, phase) - keep first arrival for each
+            # Key: (network, station, phase) - keep highest-weight arrival for each
             arrival_key = (
                 p.waveform_id.network_code,
                 p.waveform_id.station_code,
@@ -1485,6 +1487,7 @@ class NllLoc(object):
                 logger.debug(
                     f"Pre-relabel dedup: removing duplicate arrival for {arrival_key}"
                 )
+                picks_to_remove_from_dedup.append(p)
                 continue
             seen_arrival_keys[arrival_key] = a
             deduplicated_arrivals.append(a)
@@ -1495,7 +1498,120 @@ class NllLoc(object):
                 f"arrivals with same station/phase before relabeling"
             )
             orig.arrivals = deduplicated_arrivals
+            for p in picks_to_remove_from_dedup:
+                if p in event.picks:
+                    event.picks.remove(p)
 
+        # Remove generic phase (S or P) when more specific phases of the same family
+        # are present on the same station.
+        #
+        # Physics: S = first S arrival = min(t(Sg), t(Sn))
+        #          P = first P arrival = min(t(Pg), t(Pn), t(Pb))
+        #
+        # Rules:
+        #   - If S + Sg (no Sn): S is duplicate of Sg → keep best weight, remove other
+        #   - If S + Sn (no Sg): S is duplicate of Sn → keep best weight, remove other
+        #   - If S + Sg + Sn: S is duplicate of earliest specific phase (Sg or Sn)
+        #     → compare weight(S) vs weight(earliest), keep best, remove other
+        #   Same logic applies to P / Pg / Pn / Pb family.
+        #
+        # Note: if S (or P) has no specific counterpart, leave it alone — the zone
+        # relabeling will rename it to Sg/Sn (or Pg/Pn) as appropriate.
+
+        PHASE_FAMILIES = {
+            "S": {"generic": "S", "specific": ["Sg", "Sn"]},
+            "P": {"generic": "P", "specific": ["Pg", "Pn", "Pb"]},
+        }
+
+        # Build lookup: (net, sta, phase) -> (arrival, pick)
+        arrival_pick_by_phase = {}
+        for a in orig.arrivals:
+            p = get_pick_from_arrival(event, a)
+            if p is None:
+                continue
+            key = (
+                p.waveform_id.network_code,
+                p.waveform_id.station_code,
+                str(a.phase),
+            )
+            arrival_pick_by_phase[key] = (a, p)
+
+        generic_arrivals_to_remove = []
+        specific_arrivals_to_remove = []
+
+        for family in PHASE_FAMILIES.values():
+            generic_phase = family["generic"]
+            specific_phases = family["specific"]
+
+            # Collect all stations that have the generic phase
+            generic_keys = [
+                k for k in arrival_pick_by_phase if k[2] == generic_phase
+            ]
+
+            for gkey in generic_keys:
+                net, sta, _ = gkey
+                generic_arrival, generic_pick = arrival_pick_by_phase[gkey]
+
+                # Find specific phases present on this station
+                specific_present = [
+                    (arrival_pick_by_phase[(net, sta, sp)], sp)
+                    for sp in specific_phases
+                    if (net, sta, sp) in arrival_pick_by_phase
+                ]
+
+                if not specific_present:
+                    # No specific phase → leave generic alone for zone relabeling
+                    continue
+
+                # Identify the earliest specific phase (S = min(t(Sg), t(Sn)))
+                earliest_pair, earliest_phase = min(
+                    specific_present,
+                    key=lambda x: x[0][1].time,  # x[0] = (arrival, pick), [1] = pick
+                )
+                earliest_arrival, earliest_pick = earliest_pair
+
+                gw = generic_arrival.time_weight or 0
+                ew = earliest_arrival.time_weight or 0
+
+                if gw > ew:
+                    # Generic has better weight → remove the earliest specific phase
+                    # (generic will be relabeled to that specific phase by zone relabeling)
+                    logger.info(
+                        f"Pre-relabel phase-family dedup: {net}.{sta} has {generic_phase} "
+                        f"(w={gw}) + {earliest_phase} (w={ew}): removing {earliest_phase} "
+                        f"(generic has better weight, will be relabeled)"
+                    )
+                    specific_arrivals_to_remove.append((earliest_arrival, earliest_pick))
+                else:
+                    # Specific has better or equal weight → remove generic
+                    logger.info(
+                        f"Pre-relabel phase-family dedup: {net}.{sta} has {generic_phase} "
+                        f"(w={gw}) + {earliest_phase} (w={ew}): removing {generic_phase} "
+                        f"(specific phase has better or equal weight)"
+                    )
+                    generic_arrivals_to_remove.append((generic_arrival, generic_pick))
+
+        arrivals_to_remove_from_family_dedup = (
+            generic_arrivals_to_remove + specific_arrivals_to_remove
+        )
+        if arrivals_to_remove_from_family_dedup:
+            logger.info(
+                f"Pre-relabel phase-family dedup: removing {len(arrivals_to_remove_from_family_dedup)} "
+                f"redundant phase(s) from phase families"
+            )
+            for a, p in arrivals_to_remove_from_family_dedup:
+                if a in orig.arrivals:
+                    orig.arrivals.remove(a)
+                if p in event.picks:
+                    event.picks.remove(p)
+        # Phase-family deduplication done            
+        
+        # After deduplication, relabel picks based on zone polygons
+        # and remove picks/arrivals with:
+        #   - time_weight set to 0
+        #   - bad residual
+        #   - duplicated phases (remove the one with highest residual)
+        #   - distance > dist_km_cutoff (if defined)
         pick_to_delete = []
         arrival_to_delete = []
         relabel = {}
