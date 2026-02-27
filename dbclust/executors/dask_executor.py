@@ -204,7 +204,10 @@ class DaskExecutor(ExecutorBase):
     def wait_for_results(self, futures: List[Any]) -> Generator:
         from dask.distributed import as_completed
 
-        for future in as_completed(futures):
+        ac = as_completed(futures)
+        # Expose the as_completed iterator so _stream_results can add() new futures
+        self._as_completed = ac
+        for future in ac:
             try:
                 r = future.result()
                 yield (
@@ -216,6 +219,7 @@ class DaskExecutor(ExecutorBase):
             except Exception as e:
                 logger.error("Task failed", exc_info=e)
                 yield (-1, False, 0.0, 0.0)
+        self._as_completed = None
 
     def cleanup(self) -> None:
         try:
