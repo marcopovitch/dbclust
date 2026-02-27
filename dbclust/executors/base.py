@@ -253,11 +253,13 @@ class ExecutorBase(ABC):
             remaining = total_tasks - completed_count
             eta_sec = remaining / rate if rate > 0 else 0
             eta_str = f"{eta_sec/3600:.1f}h" if eta_sec > 3600 else f"{eta_sec/60:.0f}min"
-            logger.info(
+            msg = (
                 f"[{completed_count}/{total_tasks}] ({progress_pct:.1f}%) "
                 f"task {job_index} done in {duration:.0f}s "
                 f"— elapsed {elapsed_str} — ETA {eta_str}"
             )
+            logger.info(msg)
+            print(msg, flush=True)
             if job_index >= 0:
                 self._mark_completed(job_index)
             results.append(result)
