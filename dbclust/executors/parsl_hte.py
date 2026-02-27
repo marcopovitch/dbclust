@@ -97,10 +97,11 @@ class ParslHTEExecutor(ExecutorBase):
 
     def _get_provider(self):
         """Get the provider for HTE. Override in subclasses for different providers."""
+        n_blocks = getattr(self, "_n_blocks", 1)
         return LocalProvider(
-            init_blocks=1,
-            min_blocks=1,
-            max_blocks=1,
+            init_blocks=n_blocks,
+            min_blocks=n_blocks,
+            max_blocks=n_blocks,
         )
 
     def initialize(self) -> None:
@@ -124,6 +125,18 @@ class ParslHTEExecutor(ExecutorBase):
                 f"Reducing workers from {max_workers} to {n_tasks} (number of tasks)"
             )
             max_workers = n_tasks
+
+        # Use multiple blocks (process_worker_pool processes) for better parallelism.
+        # Each block manages workers_per_block workers independently via its own ZMQ manager.
+        # A single block with many workers is a bottleneck; splitting into N blocks
+        # allows N concurrent dispatchers.
+        workers_per_block = 16  # tunable: 8-32 is a good range
+        n_blocks = max(1, max_workers // workers_per_block)
+        workers_per_block = max_workers // n_blocks  # rebalance evenly
+        self._n_blocks = n_blocks
+        logger.info(
+            f"Using {n_blocks} blocks × {workers_per_block} workers/block"
+        )
 
         # Silence all parsl loggers including HTE subloggers
         for logger_name in [
@@ -150,7 +163,7 @@ class ParslHTEExecutor(ExecutorBase):
         run_dir = self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo"
         executor = HighThroughputExecutor(
             label="dbclust_hte",
-            max_workers_per_node=max_workers,
+            max_workers_per_node=workers_per_block,
             cores_per_worker=1,
             provider=self._get_provider(),
             worker_debug=False,

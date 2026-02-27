@@ -142,9 +142,11 @@ class RayExecutor(ExecutorBase):
             total_cpus = os.cpu_count() or 1
             cpu_source = "auto-detected"
 
+        # Ray uses _temp_dir for AF_UNIX sockets which have a 107-byte path limit.
+        # Use /tmp/ray to keep socket paths short regardless of the configured temp dir.
         self.context = ray.init(
             num_cpus=total_cpus,
-            _temp_dir=self.cfg.parallel._temp_dir,
+            _temp_dir="/tmp/ray",
             dashboard_host="0.0.0.0",
             dashboard_port=8265,
             include_dashboard=True,
