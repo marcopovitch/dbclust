@@ -21,7 +21,7 @@ logger = logging.getLogger("dbclust")
 # Ray task must be defined at module level
 # max_calls used to be pinned to 1 to guard against potential memory leaks,
 # but keeping workers alive is required for full CPU utilization.
-@ray.remote(max_retries=5, num_cpus=0.2, memory=1 * 1024**3)  # 1 GB (observed ~720 MB)
+@ray.remote(max_retries=5, memory=1 * 1024**3)  # 1 GB (observed ~720 MB); num_cpus set via .options() at submit time
 def _run_dbclust_task(cfg, job_index):
     """Ray remote function for dbclust task execution.
 
@@ -164,8 +164,9 @@ class RayExecutor(ExecutorBase):
             Ray ObjectRef representing the pending task.
         """
         start, end = self.cfg.parallel.time_partitions[job_index]
-        logger.info(f"Submitting task {job_index} [{start} -- {end}]")
-        return _run_dbclust_task.remote(self.cfg, job_index)
+        logger.debug(f"Submitting task {job_index} [{start} -- {end}]")
+        num_cpus = 1.0 / self.cfg.parallel.oversubscription_factor
+        return _run_dbclust_task.options(num_cpus=num_cpus).remote(self.cfg, job_index)  # type: ignore[union-attr]
 
     def wait_for_results(self, futures: List[Any]) -> Generator:
         """Wait for Ray futures and yield results as they complete.

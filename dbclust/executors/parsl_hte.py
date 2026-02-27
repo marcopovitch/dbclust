@@ -118,7 +118,7 @@ class ParslHTEExecutor(ExecutorBase):
             max_workers = os.cpu_count() or 1
             worker_source = "auto-detected"
 
-        # Limit workers to number of tasks to avoid worker lost issues
+        # Limit workers to number of tasks to avoid idle workers
         n_tasks = len(self.cfg.parallel.time_partitions)
         if max_workers > n_tasks:
             logger.info(
@@ -126,10 +126,20 @@ class ParslHTEExecutor(ExecutorBase):
             )
             max_workers = n_tasks
 
+        # Each dbclust worker spends ~80% of its time waiting for NLLoc subprocess.
+        # Oversubscribe so that idle-waiting workers don't leave CPUs unused.
+        # This is equivalent to Ray's num_cpus=1/oversubscription_factor per task.
+        cpu_count = os.cpu_count() or 1
+        oversubscription_factor = self.cfg.parallel.oversubscription_factor
+        oversubscribed_workers = min(max_workers * oversubscription_factor, n_tasks)
+        logger.info(
+            f"Oversubscribing: {max_workers} logical → {oversubscribed_workers} workers "
+            f"(factor {oversubscription_factor}x, {cpu_count} physical CPUs)"
+        )
+        max_workers = oversubscribed_workers
+
         # Use multiple blocks (process_worker_pool processes) for better parallelism.
         # Each block manages workers_per_block workers independently via its own ZMQ manager.
-        # A single block with many workers is a bottleneck; splitting into N blocks
-        # allows N concurrent dispatchers.
         workers_per_block = 16  # tunable: 8-32 is a good range
         n_blocks = max(1, max_workers // workers_per_block)
         workers_per_block = max_workers // n_blocks  # rebalance evenly
@@ -193,7 +203,7 @@ class ParslHTEExecutor(ExecutorBase):
             Parsl AppFuture representing the pending task.
         """
         start, end = self.cfg.parallel.time_partitions[job_index]
-        logger.info(f"Submitting task {job_index} [{start} -- {end}]")
+        logger.debug(f"Submitting task {job_index} [{start} -- {end}]")
         return _run_dbclust_task(self.cfg, job_index)
 
     def wait_for_results(self, futures: List[Any]) -> Generator:
