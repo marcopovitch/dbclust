@@ -133,33 +133,36 @@ class DaskExecutor(ExecutorBase):
         Worker.memory_spill_fraction = 0.80
         Worker.memory_pause_fraction = 0.95
 
-        # --- Cluster with ZERO workers initially
+        # Start with a small pool then scale up in batches to avoid spawning all
+        # nannies simultaneously (which exhausts OS file descriptors with EMFILE).
+        batch_size = min(16, max_workers)
         self.cluster = LocalCluster(
-            n_workers=0,                 # 🔥 adaptive scaling
+            n_workers=batch_size,
             threads_per_worker=1,
             processes=True,
-            memory_limit="2GB",          # 🔧 adjust to your machine
+            memory_limit="2GB",
             dashboard_address=":8265",
-            nanny=False,                 # 🔥 Docker-safe
-            resources={"heavy": 1},      # one heavy task per worker
+            resources={"heavy": 1},
         )
 
         self.client = Client(
             self.cluster,
-            timeout=60,
+            timeout=120,
             direct_to_workers=True,
         )
 
-        # --- Adaptive scaling
-        self.cluster.adapt(
-            minimum=1,
-            maximum=max_workers,
-            interval="2s",
-            wait_count=3,
-        )
+        self.client.wait_for_workers(batch_size)
 
-        # --- Wait for at least one worker before scattering
-        self.client.wait_for_workers(1)
+        # Scale up to full worker count in batches
+        import time
+        current = batch_size
+        while current < max_workers:
+            next_batch = min(current + batch_size, max_workers)
+            self.cluster.scale(next_batch)
+            time.sleep(2)
+            current = next_batch
+
+        self.client.wait_for_workers(max_workers)
 
         logger.info(
             "Dask adaptive cluster ready: "
