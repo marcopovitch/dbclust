@@ -290,10 +290,13 @@ class ExecutorBase(ABC):
                             f"({submitted_box[0] / total_tasks * 100:.0f}%)"
                         )
                     ac = getattr(self, "_as_completed", None)
+                    pf = getattr(self, "_pending_futures", None)
                     if ac is not None:
-                        ac.add(new_future)   # Dask: inject into live iterator
+                        ac.add(new_future)       # Dask: inject into live as_completed
+                    elif pf is not None:
+                        pf.append(new_future)    # Ray: inject into live ray.wait list
                     else:
-                        pending.append(new_future)  # fallback for other executors
+                        pending.append(new_future)  # fallback
                 except StopIteration:
                     pass
 
