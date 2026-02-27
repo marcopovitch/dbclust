@@ -5,13 +5,14 @@ backends must inherit from.
 """
 
 import csv
+import json
 import logging
 import os
 import random
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from dbclust.config import DBClustConfig
 from dbclust.core import CSV_FIELDNAMES
@@ -119,11 +120,18 @@ class ExecutorBase(ABC):
             idx: (start, end) for idx, (start, end) in indexed_partitions
         }
 
+        # Resume: skip already completed tasks
+        done = self._load_completed()
+        if done:
+            indexed_partitions = [(idx, p) for idx, p in indexed_partitions if idx not in done]
+            logger.info(f"Resuming: {len(done)} tasks already done, {len(indexed_partitions)} remaining")
+
         # Shuffle for load balancing
         random.shuffle(indexed_partitions)
 
-        # Initialize CSV file for progress tracking
-        self._init_csv()
+        # Initialize CSV file for progress tracking (append mode when resuming)
+        if not done:
+            self._init_csv()
 
         # Submit all tasks
         n_submit = len(indexed_partitions)
@@ -146,6 +154,28 @@ class ExecutorBase(ABC):
         logger.info(f"Parallel execution completed with {self.name}")
 
         return results
+
+    @property
+    def _completed_path(self) -> str:
+        """Path to the completed-tasks checkpoint file."""
+        return self.profile_csv_path.replace(".csv", ".completed.json")
+
+    def _load_completed(self) -> Set[int]:
+        """Load set of already-completed task indices from checkpoint file."""
+        if not os.path.exists(self._completed_path):
+            return set()
+        try:
+            with open(self._completed_path) as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
+
+    def _mark_completed(self, job_index: int) -> None:
+        """Append a task index to the checkpoint file."""
+        done = self._load_completed()
+        done.add(job_index)
+        with open(self._completed_path, "w") as f:
+            json.dump(list(done), f)
 
     def _init_csv(self) -> None:
         """Initialize the CSV file for progress tracking."""
@@ -215,6 +245,8 @@ class ExecutorBase(ABC):
                 f"task {job_index} done in {duration:.0f}s "
                 f"— elapsed {elapsed_str} — ETA {eta_str}"
             )
+            if job_index >= 0:
+                self._mark_completed(job_index)
             results.append(result)
 
         return results
