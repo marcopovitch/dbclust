@@ -121,21 +121,23 @@ class DaskExecutor(ExecutorBase):
         except Exception as e:
             logger.warning(f"Could not raise fd limit: {e}")
 
-        configured_workers = self.cfg.parallel.n_workers
-        if isinstance(configured_workers, int) and configured_workers > 0:
-            max_workers = configured_workers
-            worker_source = "config"
-        else:
-            max_workers = os.cpu_count() or 1
-            worker_source = "auto-detected"
+        configured_workers = self.cfg.parallel.n_workers or os.cpu_count() or 1
+        oversubscription = getattr(self.cfg.parallel, "oversubscription_factor", 1) or 1
+        # Tasks spend ~80% waiting on NLLoc subprocess (I/O bound).
+        # Use threads_per_worker=oversubscription_factor so each worker can run
+        # multiple tasks concurrently, matching Ray's num_cpus=1/oversubscription_factor.
+        max_workers = configured_workers
+        worker_source = f"config ({configured_workers} workers × {oversubscription} threads)"
 
-        # Silence noisy Dask logs
+        # Silence noisy Dask/Bokeh logs
         for name in [
             "distributed",
             "distributed.worker",
             "distributed.scheduler",
             "distributed.client",
             "distributed.nanny",
+            "tornado.application",
+            "bokeh",
         ]:
             _logging.getLogger(name).setLevel(_logging.ERROR)
 
@@ -149,11 +151,10 @@ class DaskExecutor(ExecutorBase):
         batch_size = min(16, max_workers)
         self.cluster = LocalCluster(
             n_workers=batch_size,
-            threads_per_worker=1,
+            threads_per_worker=oversubscription,
             processes=True,
             memory_limit="2GB",
             dashboard_address=":8265",
-            resources={"heavy": 1},
         )
 
         self.client = Client(
@@ -198,7 +199,6 @@ class DaskExecutor(ExecutorBase):
             job_index,
             pure=False,
             retries=1,
-            resources={"heavy": 1},   # 🔥 enforces memory discipline
         )
 
     def wait_for_results(self, futures: List[Any]) -> Generator:
