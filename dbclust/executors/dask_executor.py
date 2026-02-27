@@ -163,8 +163,11 @@ class DaskExecutor(ExecutorBase):
 
         self.client.wait_for_workers(max_workers)
 
+        # Diagnostic: log actual scheduler state
+        info = self.client.scheduler_info()
+        actual_workers = len(info.get("workers", {}))
         logger.info(
-            f"Dask cluster ready: {max_workers} workers "
+            f"Dask cluster ready: {actual_workers}/{max_workers} workers up "
             f"({configured_workers} CPUs × {oversubscription}x oversubscription), "
             "memory_limit=2GB/worker"
         )
@@ -184,6 +187,7 @@ class DaskExecutor(ExecutorBase):
     def wait_for_results(self, futures: List[Any]) -> Generator:
         from dask.distributed import as_completed
 
+        logger.info(f"as_completed starting on {len(futures)} futures")
         ac = as_completed(futures)
         self._as_completed = ac
         for future in ac:
