@@ -21,7 +21,7 @@ logger = logging.getLogger("dbclust")
 # Ray task must be defined at module level
 # max_calls used to be pinned to 1 to guard against potential memory leaks,
 # but keeping workers alive is required for full CPU utilization.
-@ray.remote(max_retries=5, num_cpus=0.2, memory=2 * 1024**3)  # 2 GB (observed ~720 MB + margin)
+@ray.remote(max_retries=5, num_cpus=0.2, memory=1 * 1024**3)  # 1 GB (observed ~720 MB)
 def _run_dbclust_task(cfg, job_index):
     """Ray remote function for dbclust task execution.
 
