@@ -220,10 +220,11 @@ class ExecutorBase(ABC):
 
         _fill()
 
-        # Delegate to the executor's streaming wait, passing the live deque so
-        # new futures can be added while iteration is in progress.
+        # submitted_box wraps the counter in a list so _stream_results can
+        # mutate it (integers are immutable in Python).
+        submitted_box = [submitted]
         for job_index, result, duration, peak_memory_mb in self._stream_results(
-            pending, submit_iter, submitted, total_tasks, log_every
+            pending, submit_iter, submitted_box, total_tasks, log_every
         ):
             completed_count += 1
             progress_pct = (completed_count / total_tasks) * 100
@@ -263,26 +264,28 @@ class ExecutorBase(ABC):
 
         return results
 
-    def _stream_results(self, pending, submit_iter, submitted, total_tasks, log_every):
+    def _stream_results(self, pending, submit_iter, submitted_box, total_tasks, log_every):
         """Yield results as futures complete, refilling the window one-for-one.
 
         Uses as_completed.add() if the executor exposes self._as_completed,
         so all in-flight futures are processed in a single streaming pass with
         no artificial serialisation.
+
+        submitted_box is a one-element list so the counter is passed by reference.
         """
         for job_index, result, duration, peak_memory_mb in self.wait_for_results(list(pending)):
             pending.clear()
             yield job_index, result, duration, peak_memory_mb
             # Submit one replacement and inject it into the live as_completed iterator
-            if submitted < total_tasks:
+            if submitted_box[0] < total_tasks:
                 try:
                     idx, _ = next(submit_iter)
                     new_future = self.submit_task(idx)
-                    submitted += 1
-                    if submitted % log_every == 0 or submitted == total_tasks:
+                    submitted_box[0] += 1
+                    if submitted_box[0] % log_every == 0 or submitted_box[0] == total_tasks:
                         logger.info(
-                            f"Submitted {submitted}/{total_tasks} tasks "
-                            f"({submitted / total_tasks * 100:.0f}%)"
+                            f"Submitted {submitted_box[0]}/{total_tasks} tasks "
+                            f"({submitted_box[0] / total_tasks * 100:.0f}%)"
                         )
                     ac = getattr(self, "_as_completed", None)
                     if ac is not None:

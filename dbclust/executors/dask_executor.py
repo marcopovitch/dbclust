@@ -1,12 +1,11 @@
 """
-Adaptive and memory-safe Dask executor for DBClust.
+Memory-safe Dask executor for DBClust.
 
-Features:
-- Adaptive scaling (workers created/destroyed dynamically)
-- Strict per-worker memory limits
-- Spill enabled (no OOM killer)
-- Nanny disabled (Docker-safe)
-- Heavy-task resource control
+Strategy for I/O-bound tasks (NLLoc subprocess, ~80% wait time):
+- n_workers = configured_workers * oversubscription_factor separate processes
+- threads_per_worker = 1  (no GIL contention, clean process isolation)
+- Workers started in batches to avoid EMFILE (too many open files)
+- Futures submitted via sliding window so we never hold 10k+ open connections
 """
 
 import logging
@@ -20,7 +19,7 @@ logger = logging.getLogger("dbclust")
 
 
 def _run_dbclust_task(cfg: DBClustConfig, job_index: int):
-    """Executed inside a Dask worker."""
+    """Executed inside a Dask worker process."""
     import gc
     import logging
     import os
@@ -29,19 +28,16 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int):
 
     from dbclust.core import dbclust
 
-    # Configure file logging for this worker task
     log_dir = cfg.parallel._temp_dir or "runinfo"
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"dbclust_task_{job_index}.log")
 
-    # Silence root logger to prevent console output
     root_logger = logging.getLogger()
     original_root_handlers = root_logger.handlers[:]
     original_root_level = root_logger.level
     for handler in original_root_handlers:
         root_logger.removeHandler(handler)
 
-    # Prepare file handler shared by root logger so every module propagates to it
     file_handler = logging.FileHandler(log_file, mode="w")
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -50,7 +46,6 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int):
     root_logger.addHandler(file_handler)
     root_logger.setLevel(logging.INFO)
 
-    # Ensure dbclust logger relies on root propagation instead of its own handlers
     dbclust_logger = logging.getLogger("dbclust")
     original_handlers = dbclust_logger.handlers[:]
     original_propagate = dbclust_logger.propagate
@@ -59,7 +54,6 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int):
     dbclust_logger.setLevel(logging.INFO)
     dbclust_logger.propagate = True
 
-    # Redirect stdout/stderr so plain prints also land in the worker log file
     io_redirect_stack = ExitStack()
     stdout_stream = open(log_file, "a", buffering=1)
     io_redirect_stack.enter_context(stdout_stream)
@@ -70,19 +64,16 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int):
     try:
         result = dbclust(cfg=cfg, job_index=job_index)
     finally:
-        # Clean up: restore original handlers
         io_redirect_stack.close()
         file_handler.close()
         root_logger.removeHandler(file_handler)
-        # Restore dbclust logger handlers and propagation flag
         for handler in original_handlers:
             dbclust_logger.addHandler(handler)
         dbclust_logger.propagate = original_propagate
-        # Restore root logger handlers and level
         for handler in original_root_handlers:
             root_logger.addHandler(handler)
         root_logger.setLevel(original_root_level)
-        gc.collect()  # helps with Python-side cleanup
+        gc.collect()
 
     return {
         "task_index": job_index,
@@ -93,7 +84,7 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int):
 
 
 class DaskExecutor(ExecutorBase):
-    """Adaptive, memory-safe Dask executor."""
+    """Memory-safe Dask executor optimised for I/O-bound tasks."""
 
     def __init__(self, cfg: DBClustConfig):
         super().__init__(cfg)
@@ -103,16 +94,16 @@ class DaskExecutor(ExecutorBase):
 
     @property
     def name(self) -> str:
-        return "Dask LocalCluster (adaptive, memory-safe)"
+        return "Dask LocalCluster (memory-safe)"
 
     def initialize(self) -> None:
         import logging as _logging
         import resource
+        import time
         from dask.distributed import Client, LocalCluster
         from dask.distributed.worker import Worker
 
-        # Raise the open-file-descriptor limit to handle many workers + sockets.
-        # Each Dask worker + nanny uses ~15 fds; 120 workers needs ~1800 minimum.
+        # Raise the fd limit — each worker+nanny uses ~15 fds.
         try:
             soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
             target = max(65536, soft)
@@ -123,76 +114,65 @@ class DaskExecutor(ExecutorBase):
 
         configured_workers = self.cfg.parallel.n_workers or os.cpu_count() or 1
         oversubscription = getattr(self.cfg.parallel, "oversubscription_factor", 1) or 1
-        # Tasks spend ~80% waiting on NLLoc subprocess (I/O bound).
-        # Use threads_per_worker=oversubscription_factor so each worker can run
-        # multiple tasks concurrently, matching Ray's num_cpus=1/oversubscription_factor.
-        max_workers = configured_workers
-        worker_source = f"config ({configured_workers} workers × {oversubscription} threads)"
 
-        # Silence noisy Dask/Bokeh logs
+        # Tasks are I/O-bound (NLLoc subprocess).  Use one process per logical
+        # "slot" so they truly run in parallel without GIL interference.
+        # This mirrors Ray's  num_cpus = 1 / oversubscription_factor.
+        max_workers = configured_workers * oversubscription
+
+        # Silence noisy Dask/Bokeh/Tornado logs
         for name in [
             "distributed",
             "distributed.worker",
             "distributed.scheduler",
             "distributed.client",
             "distributed.nanny",
+            "tornado",
+            "tornado.access",
             "tornado.application",
+            "tornado.general",
             "bokeh",
+            "asyncio",
         ]:
-            _logging.getLogger(name).setLevel(_logging.ERROR)
+            _logging.getLogger(name).setLevel(_logging.CRITICAL)
 
-        # --- Memory protection (DO NOT disable spill)
+        # Memory protection
         Worker.memory_target_fraction = 0.70
         Worker.memory_spill_fraction = 0.80
         Worker.memory_pause_fraction = 0.95
 
-        # Start with a small pool then scale up in batches to avoid spawning all
-        # nannies simultaneously (which exhausts OS file descriptors with EMFILE).
+        # Start in batches to avoid spawning all nannies simultaneously (EMFILE).
         batch_size = min(16, max_workers)
         self.cluster = LocalCluster(
             n_workers=batch_size,
-            threads_per_worker=oversubscription,
+            threads_per_worker=1,   # one task per process — no GIL issues
             processes=True,
             memory_limit="2GB",
             dashboard_address=":8265",
         )
 
-        self.client = Client(
-            self.cluster,
-            timeout=120,
-            direct_to_workers=True,
-        )
-
+        self.client = Client(self.cluster, timeout=120, direct_to_workers=True)
         self.client.wait_for_workers(batch_size)
 
-        # Scale up to full worker count in batches
-        import time
         current = batch_size
         while current < max_workers:
-            next_batch = min(current + batch_size, max_workers)
-            self.cluster.scale(next_batch)
+            next_count = min(current + batch_size, max_workers)
+            self.cluster.scale(next_count)
             time.sleep(2)
-            current = next_batch
+            current = next_count
 
         self.client.wait_for_workers(max_workers)
 
         logger.info(
-            "Dask adaptive cluster ready: "
-            f"max_workers={max_workers} ({worker_source}), "
+            f"Dask cluster ready: {max_workers} workers "
+            f"({configured_workers} CPUs × {oversubscription}x oversubscription), "
             "memory_limit=2GB/worker"
         )
         logger.info(f"Dask dashboard: {self.client.dashboard_link}")
 
-        # --- Scatter config to all workers
-        self._cfg_future = self.client.scatter(
-            self.cfg,
-            broadcast=True,
-        )
+        self._cfg_future = self.client.scatter(self.cfg, broadcast=True)
 
     def submit_task(self, job_index: int) -> Any:
-        start, end = self.cfg.parallel.time_partitions[job_index]
-        logger.info(f"Submitting task {job_index} [{start} -- {end}]")
-
         return self.client.submit(
             _run_dbclust_task,
             self._cfg_future,
@@ -205,7 +185,6 @@ class DaskExecutor(ExecutorBase):
         from dask.distributed import as_completed
 
         ac = as_completed(futures)
-        # Expose the as_completed iterator so _stream_results can add() new futures
         self._as_completed = ac
         for future in ac:
             try:
