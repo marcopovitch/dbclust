@@ -335,9 +335,9 @@ def dbclust2pyocto(
             return myclust
         return None
 
-    # Clone the original Clusterize object and update it with the new clusters
-    # Built before aggregate so it can be attached to the exception as a partial result
-    newclust = copy.deepcopy(myclust)
+    # Shallow-copy the Clusterize object: all mutable attributes are immediately
+    # overwritten below, so a deepcopy of the original clusters is not needed.
+    newclust = copy.copy(myclust)
     newclust.clusters = pyocto_clusters
     newclust.n_clusters = len(newclust.clusters)
     newclust.clusters_stability = [1] * newclust.n_clusters  # unused but needed
@@ -514,22 +514,16 @@ def aggregate_pick_to_cluster_with_common_event_id(
         if not any(count > pick_count_threshold for count in event_id_counts.values()):
             continue
 
-        # Deep copy the picks to modify without side effects
-        picks_copy = copy.deepcopy(picks)
-
-        # Add picks with a corresponding event_id
-        for p in picks:
-            if not p.event_id:
-                continue
-            if (
-                p.event_id in event_id_counts
-                and event_id_counts[p.event_id] > pick_count_threshold
-            ):
-                cluster.append(p)
-                picks_copy.remove(p)
-
-        # Update the remaining picks
-        picks = picks_copy
+        # Partition picks into those added to cluster and those remaining
+        picks_to_add = [
+            p for p in picks
+            if p.event_id
+            and p.event_id in event_id_counts
+            and event_id_counts[p.event_id] > pick_count_threshold
+        ]
+        cluster.extend(picks_to_add)
+        added = set(id(p) for p in picks_to_add)
+        picks = [p for p in picks if id(p) not in added]
 
         # Remove duplicates in the cluster
         cluster = list(set(cluster))
