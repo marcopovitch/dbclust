@@ -126,13 +126,17 @@ class ExecutorBase(ABC):
         self._init_csv()
 
         # Submit all tasks
-        logger.info(f"Submitting {len(indexed_partitions)} tasks...")
+        n_submit = len(indexed_partitions)
+        logger.info(f"Submitting {n_submit} tasks...")
         futures = []
         future_to_index = {}
-        for idx, (start, end) in indexed_partitions:
+        log_every = max(1, n_submit // 10)
+        for i, (idx, (start, end)) in enumerate(indexed_partitions):
             future = self.submit_task(idx)
             futures.append(future)
             future_to_index[id(future)] = idx
+            if (i + 1) % log_every == 0 or (i + 1) == n_submit:
+                logger.info(f"Submitted {i + 1}/{n_submit} tasks ({(i+1)/n_submit*100:.0f}%)")
 
         # Process results with progress tracking
         results = self._process_results(futures, future_to_index, partition_map)
@@ -169,6 +173,7 @@ class ExecutorBase(ABC):
         total_tasks = len(futures)
         completed_count = 0
         results = []
+        processing_start = datetime.now()
 
         for job_index, result, duration, peak_memory_mb in self.wait_for_results(futures):
             completed_count += 1
@@ -199,9 +204,16 @@ class ExecutorBase(ABC):
                     "time_partition_end": str(partition_end) if partition_end else "N/A",
                 })
 
+            elapsed = (datetime.now() - processing_start).total_seconds()
+            elapsed_str = f"{elapsed/3600:.1f}h" if elapsed > 3600 else f"{elapsed/60:.0f}min"
+            rate = completed_count / elapsed if elapsed > 0 else 0
+            remaining = total_tasks - completed_count
+            eta_sec = remaining / rate if rate > 0 else 0
+            eta_str = f"{eta_sec/3600:.1f}h" if eta_sec > 3600 else f"{eta_sec/60:.0f}min"
             logger.info(
-                f"[{completed_count}/{total_tasks}] Task {job_index} completed "
-                f"({progress_pct:.1f}%) in {duration:.2f}s"
+                f"[{completed_count}/{total_tasks}] ({progress_pct:.1f}%) "
+                f"task {job_index} done in {duration:.0f}s "
+                f"— elapsed {elapsed_str} — ETA {eta_str}"
             )
             results.append(result)
 
