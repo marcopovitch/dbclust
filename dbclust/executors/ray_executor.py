@@ -172,7 +172,8 @@ class RayExecutor(ExecutorBase):
         """Wait for Ray futures and yield results as they complete.
 
         Uses ray.wait() to process tasks as they complete for progressive
-        memory release.
+        memory release.  New futures can be injected mid-iteration via
+        self._pending_futures (set by _stream_results).
 
         Args:
             futures: List of Ray ObjectRef objects.
@@ -181,8 +182,10 @@ class RayExecutor(ExecutorBase):
             Tuples of (job_index, result, duration, peak_memory_mb).
         """
         remaining_futures = list(futures)
+        self._pending_futures = remaining_futures  # allow _stream_results to append
         while remaining_futures:
             done, remaining_futures = ray.wait(remaining_futures, num_returns=1)
+            self._pending_futures = remaining_futures  # keep reference current
             for future in done:
                 try:
                     r = ray.get(future)
@@ -195,6 +198,7 @@ class RayExecutor(ExecutorBase):
                 except Exception as e:
                     logger.error(f"Task failed with error: {e}")
                     yield (-1, False, 0, 0)
+        self._pending_futures = None
 
     def cleanup(self) -> None:
         """Shutdown Ray cluster."""
