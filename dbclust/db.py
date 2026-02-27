@@ -46,7 +46,7 @@ def duckdb_init(filenames: List[str], file_type: str):
         raise ValueError(f"Unsupported file type: {file_type}")
 
 
-def duckdb_init_parquet(parquet_filenames: List[str], threads: int = 4):
+def duckdb_init_parquet(parquet_filenames: List[str], threads: int = 1):
     """
     Initialize a DuckDB connection and create a view from parquet files.
 
