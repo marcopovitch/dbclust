@@ -133,21 +133,21 @@ class ExecutorBase(ABC):
         if not done:
             self._init_csv()
 
-        # Submit all tasks
+        # Submit tasks with a sliding window to avoid exhausting file descriptors
+        # when n_tasks is large (e.g. 10k+).  We keep at most max_inflight futures
+        # alive at any time; new ones are submitted as old ones complete.
         n_submit = len(indexed_partitions)
-        logger.info(f"Submitting {n_submit} tasks...")
-        futures = []
-        future_to_index = {}
-        log_every = max(1, n_submit // 10)
-        for i, (idx, (start, end)) in enumerate(indexed_partitions):
-            future = self.submit_task(idx)
-            futures.append(future)
-            future_to_index[id(future)] = idx
-            if (i + 1) % log_every == 0 or (i + 1) == n_submit:
-                logger.info(f"Submitted {i + 1}/{n_submit} tasks ({(i+1)/n_submit*100:.0f}%)")
+        n_workers = self.cfg.parallel.n_workers or 1
+        oversubscription = getattr(self.cfg.parallel, "oversubscription_factor", 1) or 1
+        max_inflight = n_workers * oversubscription
+        logger.info(
+            f"Submitting {n_submit} tasks (sliding window, max_inflight={max_inflight})..."
+        )
 
-        # Process results with progress tracking
-        results = self._process_results(futures, future_to_index, partition_map)
+        # Process results with progress tracking (windowed submission)
+        results = self._process_results_windowed(
+            indexed_partitions, partition_map, max_inflight
+        )
 
         self.cleanup()
         self._write_execution_summary(results)
@@ -183,6 +183,85 @@ class ExecutorBase(ABC):
         with open(self.profile_csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
             writer.writeheader()
+
+    def _process_results_windowed(
+        self,
+        indexed_partitions: List[Tuple],
+        partition_map: Dict[int, Tuple],
+        max_inflight: int,
+    ) -> List[Any]:
+        """Submit and collect tasks with a sliding window.
+
+        Keeps at most *max_inflight* futures alive at any time so that the OS
+        file-descriptor limit is never exhausted even with 10k+ total tasks.
+        """
+        from collections import deque
+
+        total_tasks = len(indexed_partitions)
+        submit_iter = iter(indexed_partitions)
+        submitted = 0
+        pending: deque = deque()
+        completed_count = 0
+        results = []
+        log_every = max(1, total_tasks // 10)
+        processing_start = datetime.now()
+
+        def _fill():
+            nonlocal submitted
+            while len(pending) < max_inflight and submitted < total_tasks:
+                idx, _ = next(submit_iter)
+                pending.append(self.submit_task(idx))
+                submitted += 1
+                if submitted % log_every == 0 or submitted == total_tasks:
+                    logger.info(
+                        f"Submitted {submitted}/{total_tasks} tasks "
+                        f"({submitted / total_tasks * 100:.0f}%)"
+                    )
+
+        _fill()
+
+        while pending:
+            future = pending.popleft()
+            for job_index, result, duration, peak_memory_mb in self.wait_for_results([future]):
+                completed_count += 1
+                progress_pct = (completed_count / total_tasks) * 100
+                partition_start, partition_end = partition_map.get(job_index, (None, None))
+                completion_time = datetime.now()
+                task_start_time = datetime.fromtimestamp(completion_time.timestamp() - duration)
+
+                with open(self.profile_csv_path, "a", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
+                    writer.writerow({
+                        "task_index": job_index,
+                        "start_time": task_start_time.isoformat(),
+                        "completion_time": completion_time.isoformat(),
+                        "duration_sec": f"{duration:.2f}",
+                        "peak_memory_mb": f"{peak_memory_mb:.1f}" if peak_memory_mb else "N/A",
+                        "completed_count": completed_count,
+                        "total_tasks": total_tasks,
+                        "progress_pct": f"{progress_pct:.1f}",
+                        "time_partition_start": str(partition_start) if partition_start else "N/A",
+                        "time_partition_end": str(partition_end) if partition_end else "N/A",
+                    })
+
+                elapsed = (datetime.now() - processing_start).total_seconds()
+                elapsed_str = f"{elapsed/3600:.1f}h" if elapsed > 3600 else f"{elapsed/60:.0f}min"
+                rate = completed_count / elapsed if elapsed > 0 else 0
+                remaining = total_tasks - completed_count
+                eta_sec = remaining / rate if rate > 0 else 0
+                eta_str = f"{eta_sec/3600:.1f}h" if eta_sec > 3600 else f"{eta_sec/60:.0f}min"
+                logger.info(
+                    f"[{completed_count}/{total_tasks}] ({progress_pct:.1f}%) "
+                    f"task {job_index} done in {duration:.0f}s "
+                    f"— elapsed {elapsed_str} — ETA {eta_str}"
+                )
+                if job_index >= 0:
+                    self._mark_completed(job_index)
+                results.append(result)
+
+            _fill()
+
+        return results
 
     def _process_results(
         self,
