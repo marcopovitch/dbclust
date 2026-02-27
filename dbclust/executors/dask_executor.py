@@ -107,8 +107,19 @@ class DaskExecutor(ExecutorBase):
 
     def initialize(self) -> None:
         import logging as _logging
+        import resource
         from dask.distributed import Client, LocalCluster
         from dask.distributed.worker import Worker
+
+        # Raise the open-file-descriptor limit to handle many workers + sockets.
+        # Each Dask worker + nanny uses ~15 fds; 120 workers needs ~1800 minimum.
+        try:
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            target = max(65536, soft)
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(target, hard), hard))
+            logger.info(f"fd limit: {soft} → {min(target, hard)} (hard={hard})")
+        except Exception as e:
+            logger.warning(f"Could not raise fd limit: {e}")
 
         configured_workers = self.cfg.parallel.n_workers
         if isinstance(configured_workers, int) and configured_workers > 0:
