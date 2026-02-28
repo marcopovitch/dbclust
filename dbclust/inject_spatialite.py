@@ -57,6 +57,8 @@ from tqdm import tqdm
 from dbclust.db import validate_sql_identifier
 from dbclust.gap import compute_azimuthal_gap
 from dbclust.gap import compute_secondary_azimuthal_gap
+from dbclust.gt5 import compute_cpq
+from dbclust.gt5 import compute_gallacher_gt5_score_obspy
 from dbclust.gt5 import compute_gt5_score
 from dbclust.localization_quality import classify_Michele_mod2
 from dbclust.localization_quality import haversine_distance
@@ -132,6 +134,7 @@ EVENT_COORDINATES_VIEW = """
         e.discrimination_certainty,
         o.quality, o.quality_factor,
         o.gt5_status, o.delta_U, o.num_stations_10km, o.num_stations_30km, o.num_stations_150km,
+        o.cpq, o.gallacher_gt5_status,
         COALESCE(o.station_score, 0.0) AS station_score,
         o.ps_ratio,
         COALESCE(o.median_prob_p, 0.0) AS median_prob_p,
@@ -1173,6 +1176,18 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
     gt5_status = None
     delta_U = None
 
+    # Gallacher GT5 score (cpq + gallacher_gt5_status) computed at injection time
+    cpq = None
+    gallacher_gt5_status = None
+    try:
+        result = compute_gallacher_gt5_score_obspy(origin)
+        if result and result is not False:
+            gallacher_gt5_bool, gallacher_details = result
+            cpq = gallacher_details.get("cpq")
+            gallacher_gt5_status = gallacher_gt5_bool
+    except Exception as e:
+        logger.debug(f"Could not compute Gallacher GT5 score for origin {origin.resource_id.id}: {e}")
+
     # Ratio of stations with both P and S used phases over total used stations
     # Also compute station_score in the same pass to avoid redundant iteration
     ps_ratio, station_score = compute_ps_ratio_and_station_score(event, origin)
@@ -1220,13 +1235,15 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             num_stations_150km,
             delta_U,
             gt5_status,
+            cpq,
+            gallacher_gt5_status,
             evaluation_mode, preferred, ps_ratio, station_score, geometry
         )
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ST_GeomFromText(?, 4326)
         )
         """,
@@ -1265,6 +1282,8 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             num_stations_150km,
             delta_U,
             1 if gt5_status else 0,
+            cpq,
+            1 if gallacher_gt5_status else 0,
             origin.evaluation_mode,
             (
                 1
@@ -1731,6 +1750,8 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 num_stations_150km INTEGER,
                 delta_U DOUBLE,
                 gt5_status BOOLEAN,
+                cpq DOUBLE,
+                gallacher_gt5_status BOOLEAN,
                 evaluation_mode TEXT,
                 preferred BOOLEAN,
                 station_score DOUBLE,
@@ -2318,6 +2339,7 @@ def export_view_to_csv_exclude_geometry(
             "discrimination_probability": 2,
             "discrimination_certainty": 2,
             "delta_U": 2,
+            "cpq": 3,
         }
 
         # Write to CSV in chunks
@@ -2874,6 +2896,8 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
         _ensure_column(cursor, "origins", "median_prob_p", "DOUBLE DEFAULT 0.0")
         _ensure_column(cursor, "origins", "median_prob_s", "DOUBLE DEFAULT 0.0")
         _ensure_column(cursor, "origins", "median_prob_total", "DOUBLE DEFAULT 0.0")
+        _ensure_column(cursor, "origins", "cpq", "DOUBLE")
+        _ensure_column(cursor, "origins", "gallacher_gt5_status", "BOOLEAN")
 
         conn.commit()
         logger.info("All required columns verified/added successfully.")
@@ -2881,6 +2905,118 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
     except Exception as e:
         logger.error(f"Error ensuring required columns exist: {e}")
         raise
+
+
+def compute_gallacher_gt5_score(conn: sqlite3.Connection) -> None:
+    """
+    Compute and update Gallacher et al. (2025) GT5 metrics (cpq, gallacher_gt5_status)
+    for all preferred origins in the database.
+
+    Criteria applied:
+        1. Five or more stations within 150 km
+        2. CPQ >= 0.4
+        3. Secondary Azimuthal Gap <= 210°
+        4. One or more stations within 10 km OR five or more stations with both P & S
+        5. Max distance >= 2° (teleseismic constraint)
+        6. erh <= 5 km (error ellipse proxy)
+        7. Depth is resolved (not fixed)
+        8. Depth <= 35 km
+
+    Args:
+        conn: SQLite database connection
+    """
+    logger.info("Computing Gallacher GT5 metrics for all events...")
+    cursor = conn.cursor()
+
+    # Get all preferred origins with relevant fields
+    cursor.execute(
+        """
+        SELECT id, num_stations_10km, num_stations_150km,
+               secondary_azimuthal_gap, maximum_distance, depth,
+               depth_type, erh
+        FROM origins WHERE preferred = 1
+        """
+    )
+    origins = cursor.fetchall()
+
+    for row in origins:
+        (
+            origin_id,
+            num_stations_10km,
+            num_stations_150km,
+            secondary_gap,
+            max_distance_deg,
+            depth_m,
+            depth_type,
+            erh,
+        ) = row
+
+        # Get arrivals with azimuth, distance and phase info
+        # station_name contains "NET.STA" as stored at injection time
+        cursor.execute(
+            """
+            SELECT a.azimuth, a.distance, a.name, p.station_name
+            FROM arrivals a
+            JOIN picks p ON a.pick_id = p.id
+            WHERE a.origin_id = ? AND a.time_weight > 0
+              AND a.azimuth IS NOT NULL AND a.distance IS NOT NULL
+            """,
+            (origin_id,),
+        )
+        arrivals = cursor.fetchall()
+
+        if len(arrivals) < 3:
+            cursor.execute(
+                "UPDATE origins SET cpq = NULL, gallacher_gt5_status = 0 WHERE id = ?",
+                (origin_id,),
+            )
+            continue
+
+        azimuths = [a[0] for a in arrivals]
+        distances_km = [a[1] * 111.11 for a in arrivals]
+
+        # Stations with both P and S (station_name is "NET.STA")
+        stations_with_p = set()
+        stations_with_s = set()
+        for _, _, phase, station_name in arrivals:
+            if phase and station_name:
+                ph = phase.upper()
+                if ph.startswith("P"):
+                    stations_with_p.add(station_name)
+                elif ph.startswith("S"):
+                    stations_with_s.add(station_name)
+        num_stations_both_ps = len(stations_with_p & stations_with_s)
+
+        cpq = compute_cpq(azimuths)
+
+        # Recompute station counts from arrivals if DB values are missing
+        n10 = num_stations_10km if num_stations_10km is not None else sum(1 for d in distances_km if d <= 10)
+        n150 = num_stations_150km if num_stations_150km is not None else sum(1 for d in distances_km if d <= 150)
+
+        depth_km = depth_m / 1000.0 if depth_m is not None else None
+        depth_is_fixed = False
+        if depth_type:
+            dt = str(depth_type).lower()
+            depth_is_fixed = "operator" in dt or "fixed" in dt
+
+        gallacher_gt5 = all([
+            n150 >= 5,
+            cpq is not None and cpq >= 0.4,
+            secondary_gap is not None and secondary_gap <= 210,
+            (n10 >= 1) or (num_stations_both_ps >= 5),
+            max_distance_deg is not None and max_distance_deg >= 2.0,
+            erh is not None and erh <= 5.0,
+            depth_km is not None and not depth_is_fixed,
+            depth_km is not None and depth_km <= 35.0,
+        ])
+
+        cursor.execute(
+            "UPDATE origins SET cpq = ?, gallacher_gt5_status = ? WHERE id = ?",
+            (cpq, 1 if gallacher_gt5 else 0, origin_id),
+        )
+
+    conn.commit()
+    logger.info("Gallacher GT5 metrics computation completed")
 
 
 def apply_database_enhancements(args) -> None:
@@ -2896,6 +3032,7 @@ def apply_database_enhancements(args) -> None:
                 args.add_localization_quality,
                 args.add_agency_names,
                 args.gt5,
+                args.gallacher_gt5,
                 args.compute_prob_median,
                 args.refresh_view,
             ]
@@ -2933,6 +3070,10 @@ def apply_database_enhancements(args) -> None:
                 print("Computing GT5 metrics...")
                 compute_gt5_score(conn)
 
+            if args.gallacher_gt5:
+                print("Computing Gallacher GT5 metrics (cpq + gallacher_gt5_status)...")
+                compute_gallacher_gt5_score(conn)
+
             if any(
                 [
                     args.compute_station_scores,
@@ -2941,6 +3082,7 @@ def apply_database_enhancements(args) -> None:
                     args.add_localization_quality,
                     args.add_agency_names,
                     args.gt5,
+                    args.gallacher_gt5,
                     args.compute_prob_median,
                     args.refresh_view,
                 ]
@@ -3288,6 +3430,11 @@ def parse_arguments() -> argparse.Namespace:
         help="Compute GT5 quality metrics.",
     )
     enhancement_group.add_argument(
+        "--gallacher-gt5",
+        action="store_true",
+        help="Compute Gallacher et al. (2025) revised GT5 metrics (cpq, gallacher_gt5_status).",
+    )
+    enhancement_group.add_argument(
         "--compute-prob-median",
         action="store_true",
         help="Compute median probabilities for P, S and total picks.",
@@ -3339,6 +3486,7 @@ def parse_arguments() -> argparse.Namespace:
                 args.add_localization_quality,
                 args.add_agency_names,
                 args.gt5,
+                args.gallacher_gt5,
                 args.compute_prob_median,
                 args.compute_station_scores,
                 args.compute_ps_ratio,
@@ -3594,6 +3742,7 @@ def main():
             "compute_prob_median": args.compute_prob_median,
             "compute_station_scores": args.compute_station_scores,
             "compute_ps_ratio": args.compute_ps_ratio,
+            "gallacher_gt5": args.gallacher_gt5,
             "refresh_view": args.refresh_view,
         }
         print(
