@@ -51,6 +51,7 @@ from dbclust.gap import compute_azimuthal_gap
 from dbclust.gap import compute_gap
 from dbclust.gap import compute_secondary_azimuthal_gap
 from dbclust.gap import get_arrival_with_distance_gap_greater_than
+from dbclust.gap import get_closest_station_dist_km
 from dbclust.gt5 import compute_gallacher_gt5_score_obspy
 from dbclust.localization_quality import classify_event, classify_event_michele_mod2    
 from dbclust.plot import plot_arrival_time
@@ -180,6 +181,7 @@ class NllLoc(object):
         P_uncertainty=0.1,
         S_uncertainty=0.2,
         gap_dist_max_km=100,
+        closest_station_dist_km=None,
         dist_km_cutoff=None,
         use_deactivated_arrivals=False,
         keep_manual_picks=False,
@@ -214,6 +216,7 @@ class NllLoc(object):
         self.P_uncertainty = P_uncertainty
         self.S_uncertainty = S_uncertainty
         self.gap_dist_max_km = gap_dist_max_km
+        self.closest_station_dist_km = closest_station_dist_km
         self.dist_km_cutoff = dist_km_cutoff
         self.use_deactivated_arrivals = use_deactivated_arrivals
         self.keep_manual_picks = keep_manual_picks
@@ -1018,6 +1021,21 @@ class NllLoc(object):
             # Compute quality attributes
             o.quality.used_station_count = self.get_used_station_count(e, o)
             o.quality.used_phase_count = self.get_used_phase_count(e, o)
+
+            # reject event if closest station after final relocation is too far
+            if self.closest_station_dist_km is not None:
+                closest_km = get_closest_station_dist_km(e)
+                if closest_km is not None:
+                    logger.info(
+                        f"Closest station distance: {closest_km:.1f} km "
+                        f"(threshold: {self.closest_station_dist_km} km)"
+                    )
+                    if closest_km > self.closest_station_dist_km:
+                        logger.warning(
+                            f"Rejected: closest station {closest_km:.1f} km "
+                            f"> closest_station_dist_km {self.closest_station_dist_km} km."
+                        )
+                        continue
 
             station_score = self.get_origin_station_score(e, o)
             logger.info(

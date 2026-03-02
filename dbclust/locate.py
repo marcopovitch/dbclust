@@ -325,6 +325,7 @@ def build_locator(
         tmpdir=tmp_dir,
         double_pass=double_pass,
         gap_dist_max_km=getattr(cfg_reloc, "gap_dist_max_km", None),
+        closest_station_dist_km=getattr(cfg_reloc, "closest_station_dist_km", None),
         dist_km_cutoff=getattr(cfg_reloc, "dist_km_cutoff", None),
         use_deactivated_arrivals=getattr(cfg_reloc, "use_deactivated_arrivals", False),
         keep_manual_picks=getattr(cfg_reloc, "keep_manual_picks", False),
