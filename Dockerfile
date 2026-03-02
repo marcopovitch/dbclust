@@ -20,8 +20,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Add uv 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# NonLinLoc build 
-RUN git clone --depth=1 https://github.com/ut-beg-texnet/NonLinLoc /opt/nll && \
+# NonLinLoc build
+#ARG NLL_BRANCH=dev
+ARG NLL_BRANCH=main
+RUN git clone --depth=1 --branch ${NLL_BRANCH} https://github.com/ut-beg-texnet/NonLinLoc /opt/nll && \
     cd /opt/nll/src && \
     rm -rf bin && \
     mkdir bin && \
