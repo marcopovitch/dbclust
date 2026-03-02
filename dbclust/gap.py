@@ -49,16 +49,43 @@ def get_arrival_with_distance_gap_greater_than(
         return []  # no arrival with distance greater than dist_max_km
 
     arrivals_to_unset = []
-    for i in range(i_max, len(origin.arrivals)):
+    for i in range(i_max, len(sorted_arrivals)):
         # find corresponding pick to arrival
         pick = next(
             (p for p in event.picks if p.resource_id == sorted_arrivals[i].pick_id),
             None,
         )
+        if pick is None:
+            logger.warning(f"Can't find pick for arrival {sorted_arrivals[i].pick_id}, skipping.")
+            continue
         if pick.evaluation_mode in apply_to_evaluation_mode:
             arrivals_to_unset.append(sorted_arrivals[i])
 
     return arrivals_to_unset
+
+
+def get_closest_station_dist_km(event: Event) -> Union[float, None]:
+    """Return the distance in km to the closest station used in the event.
+
+    Args:
+        event (Event): ObsPy event with a preferred origin and arrivals.
+
+    Returns:
+        float or None: distance in km to the nearest station, or None if no
+        arrivals with a valid distance are found.
+    """
+    origin = event.preferred_origin()
+    if not origin:
+        return None
+
+    distances = [
+        a.distance for a in origin.arrivals
+        if a.distance is not None
+    ]
+    if not distances:
+        return None
+
+    return min(distances) * 111.1  # degrees → km
 
 
 def compute_gap(azimuth_list: List[float]) -> Union[float, None]:
