@@ -626,7 +626,11 @@ def import_phases(
         evaluation = getattr(row, "phase_evaluation", None)
         method = getattr(row, "phase_method", None)
         event_id = getattr(row, "event_id", None)
+        if pd.isna(event_id):
+            event_id = None
         agency = getattr(row, "agency", None)
+        if pd.isna(agency):
+            agency = None
 
         # Time uncertainty
         phase_type = str(row.phase_type).upper()
