@@ -131,6 +131,7 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
         S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
         gap_dist_max_km=cfg.relocation.gap_dist_max_km,
+        closest_station_dist_km=cfg.relocation.closest_station_dist_km,
         dist_km_cutoff=cfg.relocation.dist_km_cutoff,
         use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,
         keep_manual_picks=cfg.relocation.keep_manual_picks,

@@ -106,6 +106,7 @@ def process_file(
                 #
                 double_pass=cfg.relocation.double_pass,
                 gap_dist_max_km=cfg.relocation.gap_dist_max_km,
+                closest_station_dist_km=cfg.relocation.closest_station_dist_km,
                 P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
                 S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
                 dist_km_cutoff=cfg.relocation.dist_km_cutoff,
