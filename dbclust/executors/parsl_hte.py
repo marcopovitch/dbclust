@@ -7,7 +7,9 @@ better CPU utilization for CPU-bound tasks.
 
 import logging
 import os
+import random
 from concurrent.futures import as_completed
+from datetime import datetime
 from typing import Any, Generator, List, Dict
 
 import parsl
@@ -48,15 +50,18 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int) -> Dict:
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"dbclust_task_{job_index}.log")
 
+    # Use log level from config if available, else INFO
+    log_level = getattr(cfg, "log_level", logging.INFO)
+
     # Add file handler to root logger to capture all logs
     file_handler = logging.FileHandler(log_file, mode="w")
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(log_level)
 
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
+    root_logger.setLevel(log_level)
     root_logger.addHandler(file_handler)
 
     start_time = time.time()
@@ -185,6 +190,7 @@ class ParslHTEExecutor(ExecutorBase):
             executors=[executor],
             run_dir=self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo",
             retries=3,
+            strategy="none",  # disable auto scale-in which causes ZMQError mid-run
         )
 
         parsl.load(config)
@@ -227,6 +233,104 @@ class ParslHTEExecutor(ExecutorBase):
             except Exception as e:
                 logger.error(f"Task failed with error: {e}")
                 yield (-1, False, 0, 0)
+
+    def run(self) -> List[Any]:
+        """Override run() to submit ALL tasks upfront before collecting results.
+
+        The base class uses a sliding window which causes Parsl to think execution
+        is finished after the first batch completes (it shuts down its internal
+        thread pool), leading to RuntimeError on subsequent callbacks.
+
+        Parsl has its own internal queue/scheduler, so submitting all futures at
+        once is the correct pattern: workers are throttled by max_workers_per_node,
+        not by the number of submitted futures.
+        """
+        import csv
+
+        from dbclust.core import CSV_FIELDNAMES
+
+        self.run_start_time = datetime.now()
+        logger.info(f"Starting parallel execution with {self.name}")
+        logger.info(f"Number of workers: {self.cfg.parallel.n_workers}")
+        logger.info(f"Number of time partitions: {len(self.cfg.parallel.time_partitions)}")
+
+        self.initialize()
+        if self.on_initialized:
+            self.on_initialized()
+
+        indexed_partitions = list(enumerate(self.cfg.parallel.time_partitions))
+        partition_map = {idx: (s, e) for idx, (s, e) in indexed_partitions}
+
+        done = self._load_completed()
+        if done:
+            indexed_partitions = [(idx, p) for idx, p in indexed_partitions if idx not in done]
+            logger.info(
+                f"Resuming: {len(done)} tasks already done, {len(indexed_partitions)} remaining"
+            )
+
+        random.shuffle(indexed_partitions)
+
+        if not done:
+            self._init_csv()
+
+        total_tasks = len(indexed_partitions)
+
+        # Submit ALL tasks upfront — Parsl throttles execution via max_workers_per_node.
+        logger.info(f"Submitting all {total_tasks} tasks to Parsl...")
+        futures = []
+        for idx, _ in indexed_partitions:
+            futures.append(self.submit_task(idx))
+        logger.info(f"All {total_tasks} tasks submitted.")
+
+        # Collect results as they complete.
+        completed_count = 0
+        results = []
+        processing_start = datetime.now()
+        log_every = max(1, total_tasks // 10)
+
+        for job_index, result, duration, peak_memory_mb in self.wait_for_results(futures):
+            completed_count += 1
+            progress_pct = (completed_count / total_tasks) * 100
+            partition_start, partition_end = partition_map.get(job_index, (None, None))
+            completion_time = datetime.now()
+            task_start_time = datetime.fromtimestamp(completion_time.timestamp() - duration)
+
+            with open(self.profile_csv_path, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
+                writer.writerow({
+                    "task_index": job_index,
+                    "start_time": task_start_time.isoformat(),
+                    "completion_time": completion_time.isoformat(),
+                    "duration_sec": f"{duration:.2f}",
+                    "peak_memory_mb": f"{peak_memory_mb:.1f}" if peak_memory_mb else "N/A",
+                    "completed_count": completed_count,
+                    "total_tasks": total_tasks,
+                    "progress_pct": f"{progress_pct:.1f}",
+                    "time_partition_start": str(partition_start) if partition_start else "N/A",
+                    "time_partition_end": str(partition_end) if partition_end else "N/A",
+                })
+
+            elapsed = (datetime.now() - processing_start).total_seconds()
+            elapsed_str = f"{elapsed/3600:.1f}h" if elapsed > 3600 else f"{elapsed/60:.0f}min"
+            rate = completed_count / elapsed if elapsed > 0 else 0
+            remaining = total_tasks - completed_count
+            eta_sec = remaining / rate if rate > 0 else 0
+            eta_str = f"{eta_sec/3600:.1f}h" if eta_sec > 3600 else f"{eta_sec/60:.0f}min"
+            msg = (
+                f"[{completed_count}/{total_tasks}] ({progress_pct:.1f}%) "
+                f"task {job_index} done in {duration:.0f}s "
+                f"— elapsed {elapsed_str} — ETA {eta_str}"
+            )
+            logger.info(msg)
+            print(msg, flush=True)
+            if job_index >= 0:
+                self._mark_completed(job_index)
+            results.append(result)
+
+        self.cleanup()
+        self._write_execution_summary(results)
+        logger.info(f"Parallel execution completed with {self.name}")
+        return results
 
     def cleanup(self) -> None:
         """Cleanup Parsl resources."""
