@@ -17,6 +17,7 @@ import argparse
 import glob
 import logging
 import os
+import signal
 import sys
 import warnings
 
@@ -57,6 +58,10 @@ def run_sequential(cfg: DBClustConfig) -> list:
 def run_parallel(cfg: DBClustConfig) -> list:
     """Run DBClust in parallel using the configured executor.
 
+    Installs SIGINT/SIGTERM handlers so that Ctrl+C cleanly shuts down the
+    executor (Ray / Dask / Parsl) and then kills the entire process group to
+    ensure no orphan worker processes survive.
+
     Args:
         cfg: DBClust configuration object.
 
@@ -65,7 +70,38 @@ def run_parallel(cfg: DBClustConfig) -> list:
     """
     executor = get_executor(cfg)
     logger.info(f"Using executor: {executor.name}")
-    return executor.run()
+
+    _shutdown_called = [False]
+    _old_sigint = [signal.getsignal(signal.SIGINT)]
+    _old_sigterm = [signal.getsignal(signal.SIGTERM)]
+
+    def _install_handlers():
+        def _shutdown(signum, _frame):
+            if _shutdown_called[0]:
+                return
+            _shutdown_called[0] = True
+            sig_name = signal.Signals(signum).name
+            logger.warning(f"Received {sig_name} — shutting down executor...")
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            try:
+                executor.cleanup()
+            except Exception:
+                pass
+            os.kill(os.getpid(), signum)
+
+        _old_sigint[0] = signal.signal(signal.SIGINT, _shutdown)
+        _old_sigterm[0] = signal.signal(signal.SIGTERM, _shutdown)
+
+    # Install signal handlers only after executor.initialize() completes,
+    # so that Parsl/Ray process launches don't accidentally trigger shutdown.
+    executor.on_initialized = _install_handlers
+    try:
+        return executor.run()
+    finally:
+        if not _shutdown_called[0]:
+            signal.signal(signal.SIGINT, _old_sigint[0])
+            signal.signal(signal.SIGTERM, _old_sigterm[0])
 
 
 def finalize_sqlite(cfg: DBClustConfig) -> None:
@@ -158,6 +194,7 @@ def main():
 
     # Load configuration
     cfg = DBClustConfig(args.configfile)
+    cfg.log_level = numeric_level
     cfg.show()
 
     # Run processing
