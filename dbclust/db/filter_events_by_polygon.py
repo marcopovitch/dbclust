@@ -41,7 +41,7 @@ def create_filtered_view(conn: sqlite3.Connection, shape_table: str) -> None:
         o.expectation_depth / 1000.0 AS expectation_depth_km,
         o.scatter_volume,
         e.dist_km_from_preloc AS dist_from_preloc_km,
-        e.nb_agencies, e.agencies_list, e.agency_names, e.multiple_same_agencies,
+        e.nb_agencies, e.agencies_list, e.agency_names, e.agency_ai_contributors, e.multiple_same_agencies,
         o.evaluation_mode,
         e.event_type,
         e.discrimination_probability,

@@ -126,7 +126,7 @@ EVENT_COORDINATES_VIEW = """
         o.expectation_depth / 1000.0 AS expectation_depth_km,
         o.scatter_volume,
         e.dist_km_from_preloc AS dist_from_preloc_km,
-        e.nb_agencies, e.agencies_list, e.agency_names, e.multiple_same_agencies,
+        e.nb_agencies, e.agencies_list, e.agency_names, e.agency_ai_contributors, e.multiple_same_agencies,
         o.evaluation_mode,
         e.event_type,
         e.discrimination_probability,
@@ -1000,6 +1000,14 @@ def inject_event(
                 if pick.creation_info and hasattr(pick.creation_info, "author")
                 else None
             )
+            method_id = (
+                pick.method_id.id
+                if pick.method_id and hasattr(pick.method_id, "id")
+                else None
+            )
+            # Keep only the last component of a URI method_id (e.g. "PHASENET")
+            if method_id and "/" in method_id:
+                method_id = method_id.rsplit("/", 1)[-1]
             probability = get_pick_probability(pick)
 
             conn.execute(
@@ -1007,8 +1015,8 @@ def inject_event(
                 INSERT OR IGNORE INTO picks (
                     id, event_id, station_name, location_code, channel_code,
                     pick_time, uncertainty, evaluation_mode, phase_hint, agency_id,
-                    source_event_id, probability)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_event_id, probability, method_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pick.resource_id.id,
@@ -1023,6 +1031,7 @@ def inject_event(
                     agency_id,
                     source_event_id,
                     probability,
+                    method_id,
                 ),
             )
 
@@ -1693,6 +1702,7 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 nb_agencies INTEGER,
                 agencies_list JSON,
                 agency_names TEXT,
+                agency_ai_contributors JSON,
                 multiple_same_agencies BOOLEAN,
                 nb_origins INTEGER,
                 nb_magnitudes INTEGER
@@ -1711,7 +1721,8 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 phase_hint TEXT,
                 agency_id TEXT,
                 source_event_id TEXT,
-                probability DOUBLE
+                probability DOUBLE,
+                method_id TEXT
             );
             """,
             """
@@ -2422,40 +2433,54 @@ def export_view_to_csv_exclude_geometry(
 def add_agency_names(conn: sqlite3.Connection) -> None:
     """
     Populate agency columns in the 'events' table from picks:
-      - agency_names: JSON array of distinct agency_id values whose picks are
-        actually used (time_weight > 0) in the preferred origin.
-      - agencies_list: JSON array of distinct source_event_id values (the original
-        event IDs from each contributing agency) for picks used in the preferred origin.
-      - nb_agencies: count of distinct agencies contributing to the preferred origin.
-      - multiple_same_agencies: True if any agency contributed picks from more
-        than one source_event_id (signals an association or merge bug where two
-        nearby events from the same agency were incorrectly merged).
+      - agency_names: JSON array of distinct agency_id values that contributed a
+        real localization (picks with a non-null source_event_id, i.e. picks that
+        originate from an operator's catalogue event).
+      - agency_ai_contributors: JSON array of distinct agency_id values that only
+        contributed AI/automatic picks (source_event_id IS NULL) without being
+        counted as a localizing agency.
+      - agencies_list: JSON array of distinct source_event_id display labels for
+        picks used in the preferred origin (real ids for operator picks, synthetic
+        "AGENCY/METHOD" labels for AI picks).
+      - nb_agencies: count of distinct agencies that provided a real localization.
+      - multiple_same_agencies: True if any localizing agency contributed picks
+        from more than one distinct real source_event_id (signals a merge bug).
 
     Args:
         conn (sqlite3.Connection): Active connection to the SQLite database.
     """
     cursor = conn.cursor()
     _ensure_column(cursor, "events", "agency_names", "JSON")
+    _ensure_column(cursor, "events", "agency_ai_contributors", "JSON")
     _ensure_column(cursor, "events", "multiple_same_agencies", "BOOLEAN")
 
     # Only consider picks actually used in the preferred origin (time_weight > 0).
-    # agency_names: distinct agency_id values for used picks.
-    # agencies_list: distinct source_event_id values for used picks.
-    # nb_agencies: count of distinct agencies in the preferred origin.
-    # multiple_same_agencies: True if any agency has contributed picks from
-    # more than one distinct source_event_id — indicates a merge/association bug.
-    # Single-pass approach: materialize used_picks once, compute all aggregates
-    # without correlated subqueries, then UPDATE by JOIN.
     #
-    # multiple_same_agencies is computed in a separate CTE (multi_agency) by
-    # pre-aggregating per (event_id, agency_id) and flagging events where any
-    # agency has > 1 distinct source_event_id — no correlated subquery needed.
+    # real_source_event_id IS NOT NULL  →  pick comes from a real operator catalogue
+    #                                       event: the agency is a localizing agency.
+    # real_source_event_id IS NULL      →  pick is AI/automatic without a catalogue
+    #                                       origin: the agency is an AI contributor only.
+    #
+    # agency_names        : agencies with at least one real (operator) pick.
+    # agency_ai_contributors: agencies whose picks are exclusively AI/automatic.
+    # nb_agencies         : count of localizing agencies only.
+    # multiple_same_agencies: localizing agency with > 1 distinct real source_event_id
+    #                         (merge/association bug — AI picks excluded intentionally).
+    _ensure_column(cursor, "picks", "method_id", "TEXT")
     cursor.execute(
         """
         WITH used_picks AS (
             SELECT p.event_id,
                    p.agency_id,
-                   p.source_event_id
+                   -- Real source_event_id from an operator (NULL for AI/automatic picks)
+                   p.source_event_id AS real_source_event_id,
+                   -- Display label: real source id, or synthetic label for AI picks
+                   CASE
+                       WHEN p.source_event_id IS NOT NULL THEN p.source_event_id
+                       WHEN p.method_id IS NOT NULL       THEN p.agency_id || '/' || p.method_id
+                       WHEN p.evaluation_mode = 'automatic' THEN p.agency_id || '/AI'
+                       ELSE NULL
+                   END AS source_event_id
             FROM picks p
             JOIN arrivals a ON a.pick_id = p.id
             JOIN origins o  ON o.id = a.origin_id
@@ -2464,29 +2489,45 @@ def add_agency_names(conn: sqlite3.Connection) -> None:
               AND p.agency_id IS NOT NULL
               AND p.agency_id != ''
         ),
+        -- Agencies that have at least one real (operator) pick for this event
+        localizing_agencies AS (
+            SELECT DISTINCT event_id, agency_id
+            FROM used_picks
+            WHERE real_source_event_id IS NOT NULL
+        ),
         multi_agency AS (
+            -- Detect merge bugs: a localizing agency with > 1 distinct real source event
+            -- AI/automatic picks (real_source_event_id IS NULL) are excluded intentionally.
             SELECT event_id, 1 AS flag
             FROM used_picks
-            WHERE source_event_id IS NOT NULL
+            WHERE real_source_event_id IS NOT NULL
             GROUP BY event_id, agency_id
-            HAVING COUNT(DISTINCT source_event_id) > 1
+            HAVING COUNT(DISTINCT real_source_event_id) > 1
         ),
         agg AS (
             SELECT
                 up.event_id,
-                json_group_array(DISTINCT up.agency_id)       AS agency_names,
+                -- Localizing agencies only (had at least one real operator pick)
+                json_group_array(DISTINCT la.agency_id)
+                    FILTER (WHERE la.agency_id IS NOT NULL) AS agency_names,
+                -- AI-only contributors: present in used_picks but not in localizing_agencies
+                json_group_array(DISTINCT up.agency_id)
+                    FILTER (WHERE la.agency_id IS NULL)     AS agency_ai_contributors,
                 json_group_array(DISTINCT up.source_event_id) AS agencies_list,
-                COUNT(DISTINCT up.agency_id)                  AS nb_agencies,
+                COUNT(DISTINCT la.agency_id)                  AS nb_agencies,
                 CASE WHEN ma.event_id IS NOT NULL THEN 1 ELSE 0 END AS multiple_same_agencies
             FROM used_picks up
+            LEFT JOIN localizing_agencies la
+                   ON la.event_id = up.event_id AND la.agency_id = up.agency_id
             LEFT JOIN multi_agency ma ON ma.event_id = up.event_id
             GROUP BY up.event_id
         )
         UPDATE events
-        SET agency_names           = agg.agency_names,
-            agencies_list          = agg.agencies_list,
-            nb_agencies            = agg.nb_agencies,
-            multiple_same_agencies = agg.multiple_same_agencies
+        SET agency_names            = agg.agency_names,
+            agency_ai_contributors  = agg.agency_ai_contributors,
+            agencies_list           = agg.agencies_list,
+            nb_agencies             = agg.nb_agencies,
+            multiple_same_agencies  = agg.multiple_same_agencies
         FROM agg
         WHERE events.event_id = agg.event_id;
         """
