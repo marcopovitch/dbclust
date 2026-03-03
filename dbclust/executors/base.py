@@ -45,6 +45,7 @@ class ExecutorBase(ABC):
             cfg.catalog.qml_path, "execution_summary.csv"
         )
         self.run_start_time = None
+        self.on_initialized: Optional[Callable] = None
 
     @property
     @abstractmethod
@@ -113,6 +114,8 @@ class ExecutorBase(ABC):
         logger.info(f"Number of time partitions: {len(self.cfg.parallel.time_partitions)}")
 
         self.initialize()
+        if self.on_initialized:
+            self.on_initialized()
 
         # Build partition map: job_index -> (start, end)
         indexed_partitions = list(enumerate(self.cfg.parallel.time_partitions))
@@ -160,13 +163,50 @@ class ExecutorBase(ABC):
         """Path to the completed-tasks checkpoint file."""
         return self.profile_csv_path.replace(".csv", ".completed.json")
 
+    def _config_fingerprint(self) -> str:
+        """Compute a short hash of the temporal config parameters that define partitions.
+
+        If any of these parameters change (start, end, partition_duration,
+        time_window, overlap_window), the checkpoint is automatically invalidated.
+        """
+        import hashlib
+
+        key = "|".join([
+            str(self.cfg.pick.start),
+            str(self.cfg.pick.end),
+            str(self.cfg.parallel.partition_duration),
+            str(self.cfg.time.time_window),
+            str(self.cfg.time.overlap_window),
+        ])
+        return hashlib.sha256(key.encode()).hexdigest()[:16]
+
     def _load_completed(self) -> Set[int]:
-        """Load set of already-completed task indices from checkpoint file."""
+        """Load set of already-completed task indices from checkpoint file.
+
+        The checkpoint file stores a fingerprint of the temporal config alongside
+        the completed indices. If the fingerprint doesn't match the current config
+        (i.e. start/end/partition_duration changed), the checkpoint is invalidated
+        and an empty set is returned so all tasks are re-processed.
+        """
         if not os.path.exists(self._completed_path):
             return set()
         try:
             with open(self._completed_path) as f:
-                return set(json.load(f))
+                data = json.load(f)
+            # Old format was a plain list — treat as invalid to force re-run.
+            if isinstance(data, list):
+                logger.info(
+                    "Checkpoint format obsolète (liste), ignoré — toutes les tâches seront retraitées."
+                )
+                return set()
+            # New format: {"fingerprint": "...", "done": [...]}
+            if data.get("fingerprint") != self._config_fingerprint():
+                logger.info(
+                    "Paramètres temporels modifiés depuis le dernier run, "
+                    "checkpoint invalidé — toutes les tâches seront retraitées."
+                )
+                return set()
+            return set(data.get("done", []))
         except Exception:
             return set()
 
@@ -175,7 +215,7 @@ class ExecutorBase(ABC):
         done = self._load_completed()
         done.add(job_index)
         with open(self._completed_path, "w") as f:
-            json.dump(list(done), f)
+            json.dump({"fingerprint": self._config_fingerprint(), "done": list(done)}, f)
 
     def _init_csv(self) -> None:
         """Initialize the CSV file for progress tracking."""
