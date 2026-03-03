@@ -3,7 +3,7 @@ import copy
 import datetime
 import logging
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from itertools import chain
 from itertools import combinations
 from typing import List
@@ -52,6 +52,7 @@ def adjust_associator_tolerance(
     cfg,
     tolerance_steps={1: 0.5, 0: 0.1},
     min_tolerance=0.5,
+    include_noise_in_aggregation=False,
     log_level=logging.INFO,
 ):
     """
@@ -63,6 +64,8 @@ def adjust_associator_tolerance(
         tolerance_steps (dict): Dictionary with ranges and step sizes, e.g.,
                                 {1: 0.5, 0: 0.1}.
         min_tolerance (float): Minimum allowed pick match tolerance.
+        include_noise_in_aggregation (bool): If True, HDBSCAN noise picks are included
+            in the pool of picks available for re-injection. Defaults to False.
         log_level (int): Logging level for debug information.
 
     Returns:
@@ -87,6 +90,7 @@ def adjust_associator_tolerance(
                 cfg.pyocto.velocity_model,
                 cfg.cluster.min_picks_common,
                 delegate_dbclust=cfg.pyocto.delegate_dbclust,
+                include_noise_in_aggregation=include_noise_in_aggregation,
                 log_level=log_level,
             )
             logger.info(f"Success with pick_match_tolerance: {tolerance:.2f}")
@@ -167,6 +171,7 @@ def dbclust2pyocto(
     velocity_model: pyocto.VelocityModel1D,
     min_com_phases: int,
     delegate_dbclust: bool = False,
+    include_noise_in_aggregation: bool = False,
     log_level=logging.INFO,
 ) -> Optional[Clusterize]:
     """
@@ -178,6 +183,12 @@ def dbclust2pyocto(
         associator_cfg (Associator): Configuration for the pyocto associator.
         velocity_model (pyocto.VelocityModel1D): The velocity model to be used for event association.
         min_com_phases (int): Minimum number of common phases required for merging clusters.
+        delegate_dbclust (bool, optional): Return original dbclust clusters if PyOcto finds none. Defaults to False.
+        include_noise_in_aggregation (bool, optional): If True, HDBSCAN noise picks are included
+            in the pool of picks available for re-injection into clusters via
+            aggregate_pick_to_cluster_with_common_event_id(). Useful to recover small events
+            whose picks were classified as noise because they overlapped with a larger event.
+            Defaults to False.
         log_level (int, optional): Logging level. Defaults to logging.INFO.
 
     Returns:
@@ -187,13 +198,41 @@ def dbclust2pyocto(
         f"Using pyocto to process clusters ({sum(len(c) for c in myclust.clusters)} picks)"
     )
 
-    all_picks_list = list(chain(*myclust.clusters))
+    noise_picks = list(myclust.noise) if include_noise_in_aggregation else []
+    if noise_picks:
+        logger.info(f"Including {len(noise_picks)} HDBSCAN noise picks in aggregation pool")
+    all_picks_list = list(chain(*myclust.clusters)) + noise_picks
     pyocto_clusters, pyocto_preloc = [], []
 
-    for i, cluster in enumerate(myclust.clusters):
+    clusters_to_process = list(myclust.clusters)
+    if include_noise_in_aggregation and myclust.noise:
+        noise_event_ids = set(p.event_id for p in myclust.noise if p.event_id)
+        if noise_event_ids:
+            logger.info(
+                f"Adding HDBSCAN noise ({len(myclust.noise)} picks, "
+                f"event_ids: {[e.split('/')[-1] for e in noise_event_ids]}) as additional cluster for PyOcto"
+            )
+            clusters_to_process.append(myclust.noise)
+
+    for i, cluster in enumerate(clusters_to_process):
         # Extract station and pick data for the cluster
         stations = get_stations_from_cluster(cluster)
         picks = get_picks_from_cluster(cluster)
+
+        # Detect multi-event clusters: if multiple distinct event_ids are present,
+        # reduce min_pick_fraction to allow PyOcto to find smaller events
+        cluster_event_ids = set(p.event_id for p in cluster if p.event_id)
+        if associator_cfg.adaptive_min_pick_fraction and len(cluster_event_ids) > 1:
+            effective_min_pick_fraction = min(
+                associator_cfg.min_pick_fraction,
+                associator_cfg.n_picks / len(picks),
+            )
+            logger.info(
+                f"Cluster#{i}: {len(cluster_event_ids)} distinct event_ids detected, "
+                f"reducing min_pick_fraction: {associator_cfg.min_pick_fraction} -> {effective_min_pick_fraction:.3f}"
+            )
+        else:
+            effective_min_pick_fraction = associator_cfg.min_pick_fraction
 
         # Step 1: pre-filter stations to max_lat_range/max_lon_range BEFORE computing
         # the range, so that extreme outliers do not corrupt min/max calculations.
@@ -258,12 +297,12 @@ def dbclust2pyocto(
                 zlim=associator_cfg.zlim,
                 time_before=associator_cfg.time_before,  # should be greater than dbclust time_window parameter
                 max_pick_overlap=associator_cfg.max_pick_overlap,
-                min_pick_fraction=associator_cfg.min_pick_fraction,
+                min_pick_fraction=effective_min_pick_fraction,
                 min_node_size=associator_cfg.min_node_size,  # default 10
                 min_node_size_location=associator_cfg.min_node_size_location,  # default 1.5
                 velocity_model=velocity_model,
                 pick_match_tolerance=associator_cfg.pick_match_tolerance,
-                min_interevent_time=0.5,  # default 3
+                min_interevent_time=0.4,  # default 3
                 n_picks=associator_cfg.n_picks,
                 n_p_picks=associator_cfg.n_p_picks,
                 n_s_picks=associator_cfg.n_s_picks,
@@ -272,14 +311,14 @@ def dbclust2pyocto(
                 location_split_depth=6,  # default 6
                 location_split_return=4,  # default 4
                 refinement_iterations=3,  # default 3
-                # second_pass_overwrites={
-                #     "time_before": associator_cfg.time_before,
-                #     "n_picks": associator_cfg.n_picks,
-                #     "n_p_picks": associator_cfg.n_p_picks,
-                #     "n_s_picks": associator_cfg.n_s_picks,
-                #     "n_p_and_s_picks": associator_cfg.n_p_and_s_picks,
-                #     "iterations": 1,
-                # },
+                second_pass_overwrites={
+                    "time_before": associator_cfg.time_before,
+                    "n_picks": associator_cfg.n_picks,
+                    "n_p_picks": associator_cfg.n_p_picks,
+                    "n_s_picks": associator_cfg.n_s_picks,
+                    "n_p_and_s_picks": associator_cfg.n_p_and_s_picks,
+                    "iterations": 1,
+                },
             )
         except pyproj.exceptions.ProjError as e:
             # Skip processing if projection error occurs (e.g. stations too far away)
@@ -309,9 +348,39 @@ def dbclust2pyocto(
 
         # Store events and update clusters
         pyocto_preloc.extend(get_events_list(events, assignments, stations, model_name))
-        pyocto_clusters.extend(
-            get_clusters_from_assignment(cluster, events, assignments)
-        )
+        if associator_cfg.min_ps_ratio is not None:
+            filtered_clusters = []
+            for c in get_clusters_from_assignment(cluster, events, assignments):
+                station_phases = defaultdict(set)
+                for p in c:
+                    if not p.phase:
+                        continue
+                    station_code = f"{p.network}.{p.station}"
+                    if p.phase.upper().startswith("P"):
+                        station_phases[station_code].add("P")
+                    elif p.phase.upper().startswith("S"):
+                        station_phases[station_code].add("S")
+                total_stations = len(station_phases)
+                stations_with_both = sum(
+                    1 for phases in station_phases.values()
+                    if "P" in phases and "S" in phases
+                )
+                ps_ratio = (
+                    stations_with_both / total_stations if total_stations > 0 else 0.0
+                )
+                if ps_ratio >= associator_cfg.min_ps_ratio:
+                    filtered_clusters.append(c)
+                else:
+                    logger.info(
+                        f"PyOcto cluster#{i} filtered: ps_ratio"
+                        f" {stations_with_both}/{total_stations} stations with P+S"
+                        f" = {ps_ratio:.2f} < {associator_cfg.min_ps_ratio}"
+                    )
+            pyocto_clusters.extend(filtered_clusters)
+        else:
+            pyocto_clusters.extend(
+                get_clusters_from_assignment(cluster, events, assignments)
+            )
 
         logger.info(
             f"\t{len(events)} events found in cluster#{i} with {len(cluster)} picks"
@@ -478,7 +547,11 @@ def aggregate_pick_to_cluster_with_common_event_id(
         # Count the occurrences of event_id in the cluster
         event_id_counts = Counter([p.event_id for p in cluster if p.event_id])
         if event_id_counts:
-            logger.info(f"event_id_counts: {event_id_counts}")
+            counts_str = ", ".join(
+                f"{eid.split('/')[-1]}({count} picks {'> threshold, will aggregate' if count > pick_count_threshold else f'<= threshold({pick_count_threshold}), skipped'})"
+                for eid, count in event_id_counts.most_common()
+            )
+            logger.info(f"Cluster has picks from known event(s): {counts_str}")
 
         # count the number of agency in each event_id in event_id_counts
         event_id_agency = {}

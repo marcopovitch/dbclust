@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from itertools import chain
 from itertools import product
 from math import isnan
@@ -262,6 +262,7 @@ class Clusterize(object):
         min_station_count=0,
         min_station_with_P_and_S=2,
         min_station_score=None,
+        min_ps_ratio=None,
         max_search_dist=0,  # same as hdbscan cluster_selection_epsilon: default is 0.
         P_uncertainty=0.1,
         S_uncertainty=0.2,
@@ -290,6 +291,7 @@ class Clusterize(object):
         self.min_station_count = min_station_count
         self.min_station_with_P_and_S = min_station_with_P_and_S
         self.min_station_score = min_station_score
+        self.min_ps_ratio = min_ps_ratio
 
         # pick filtering parameters
         self.P_uncertainty = P_uncertainty
@@ -313,7 +315,7 @@ class Clusterize(object):
             # add noise points
             self.clusters = []
             self.n_clusters = 0
-            self.noise = [phases, -1]
+            self.noise = phases
             self.n_noise = len(phases)
             return
 
@@ -463,9 +465,16 @@ class Clusterize(object):
 
             if c_id == -1:
                 noise = cluster.copy()
+                noise_event_ids = Counter(
+                    p.event_id.split("/")[-1] for p in noise if p.event_id
+                )
+                logger.debug(f"noise: {len(noise)} phases, event_ids: {dict(noise_event_ids)}")
             else:
                 clusters.append(cluster)
-                logger.debug(f"cluster[{c_id}]: {len(cluster)} phases")
+                event_id_counts = Counter(
+                    p.event_id.split("/")[-1] for p in cluster if p.event_id
+                )
+                logger.debug(f"cluster[{c_id}]: {len(cluster)} phases, event_ids: {dict(event_id_counts)}")
 
         return clusters, clusters_stability, noise
 
@@ -540,32 +549,61 @@ class Clusterize(object):
             # Count the number of picks associated to a given event ID
             event_id_counts = Counter([p.event_id for p in cluster if p.event_id])
 
-            # count the number of station that have both P and S
-            if self.min_station_score is None and self.min_station_with_P_and_S:
-                stations_with_P_and_S_count = 0
-                for s in stations_list:
-                    phase_list = set([p.phase for p in cluster if p.station == s])
-                    # Pn, Pg count as P,
-                    # Sn, Sg count as S
-                    phase_list = set(
-                        ["P" for i in phase_list if "P" in i]
-                        + ["S" for i in phase_list if "S" in i]
+            # Compute per-station phase sets (P:1.0, S:0.5, P+S:2.0) in a single pass
+            station_phase_sets = defaultdict(set)
+            for p in cluster:
+                if not p.phase:
+                    continue
+                station_code = f"{p.network}.{p.station}"
+                if "P" in p.phase.upper():
+                    station_phase_sets[station_code].add("P")
+                elif "S" in p.phase.upper():
+                    station_phase_sets[station_code].add("S")
+
+            stations_with_both = sum(
+                1 for phases in station_phase_sets.values()
+                if "P" in phases and "S" in phases
+            )
+            total_stations_ps = len(station_phase_sets)
+
+            # Pre-NLL filter: station_score (P:1.0, S:0.5, P+S:2.0)
+            if self.min_station_score is not None:
+                station_score = sum(
+                    2.0 if ("P" in phases and "S" in phases)
+                    else (1.0 if "P" in phases else 0.5)
+                    for phases in station_phase_sets.values()
+                )
+                if station_score < self.min_station_score:
+                    logger.info(
+                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
+                        f"station_score {station_score:.1f} < {self.min_station_score}"
                     )
-                    if len(phase_list) == 2:
-                        stations_with_P_and_S_count += 1
-                if stations_with_P_and_S_count < self.min_station_with_P_and_S:
+                    continue
+
+            # Pre-NLL filter: min_station_with_P_and_S (only when station_score not used)
+            elif self.min_station_with_P_and_S:
+                if stations_with_both < self.min_station_with_P_and_S:
                     if event_id_counts:
-                        # This is a problem, a localization should be done
                         logger.warning(
                             f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
-                            f"not enough stations with both P and S ({stations_with_P_and_S_count}/{self.min_station_with_P_and_S})"
+                            f"not enough stations with both P and S ({stations_with_both}/{self.min_station_with_P_and_S})"
                             f" but event_id(s) found: {event_id_counts}"
                         )
                     else:
                         logger.info(
                             f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
-                            f"not enough stations with both P and S ({stations_with_P_and_S_count}/{self.min_station_with_P_and_S})"
+                            f"not enough stations with both P and S ({stations_with_both}/{self.min_station_with_P_and_S})"
                         )
+                    continue
+
+            # Pre-NLL filter: min_ps_ratio (stations with both P and S / total stations)
+            if self.min_ps_ratio is not None:
+                ps_ratio = stations_with_both / total_stations_ps if total_stations_ps > 0 else 0.0
+                if ps_ratio < self.min_ps_ratio:
+                    logger.info(
+                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
+                        f"ps_ratio {stations_with_both}/{total_stations_ps} = {ps_ratio:.2f} < {self.min_ps_ratio}"
+                    )
                     continue
 
 

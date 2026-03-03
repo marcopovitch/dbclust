@@ -486,6 +486,10 @@ class ClusterConfig:
     min_picks_common: int
     max_search_dist: Optional[float] = 0.0
     pre_computed_tt_matrix_file: Optional[str] = None
+    # Include HDBSCAN noise picks in PyOcto aggregation (as an additional cluster)
+    include_noise_in_aggregation: bool = False
+    # Minimum S/P pick ratio to accept a localized event (None = disabled)
+    min_ps_ratio: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.pre_computed_tt_matrix_file:
@@ -832,6 +836,10 @@ class Associator:
     # Optional parameters to limit lat/lon ranges calculated from station coordinates
     max_lat_range: Optional[List[float]] = None  # [lat_min, lat_max]
     max_lon_range: Optional[List[float]] = None  # [lon_min, lon_max]
+    # Adaptive min_pick_fraction: reduce it for clusters with multiple known event_ids
+    adaptive_min_pick_fraction: bool = False
+    # Minimum S/P pick ratio to accept a PyOcto cluster (None = disabled)
+    min_ps_ratio: Optional[float] = None
 
 
 @dataclass
@@ -1046,6 +1054,8 @@ class DBClustConfig:
         ]
         # Optional config sections (not required in YAML)
         self.optional_keys = ["slurm"]
+        # Runtime attribute set by runner, not from YAML
+        self.log_level = logging.INFO
 
         self.filename = filename
         logger.info(filename)

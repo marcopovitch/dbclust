@@ -20,6 +20,7 @@ from itertools import combinations
 from math import fabs
 from math import isclose
 from typing import List
+from typing import Optional
 from typing import Tuple
 from typing import Union
 
@@ -197,6 +198,7 @@ class NllLoc(object):
         enable_cleanup_pick_zone: bool = True,  # clean up pick outside of zone
         enable_relabel_pick_zone: bool = False,  # relabel pick within zone
         keep_not_existing_event: bool = False,  # keep "not existing" event, or not
+        min_ps_ratio: Optional[float] = None,  # Minimum S/P pick ratio (None = disabled)
     ):
         # define locator
         self.nll_bin = nll_bin
@@ -217,6 +219,7 @@ class NllLoc(object):
         self.S_uncertainty = S_uncertainty
         self.gap_dist_max_km = gap_dist_max_km
         self.closest_station_dist_km = closest_station_dist_km
+        self.min_ps_ratio = min_ps_ratio
         self.dist_km_cutoff = dist_km_cutoff
         self.use_deactivated_arrivals = use_deactivated_arrivals
         self.keep_manual_picks = keep_manual_picks
@@ -1006,6 +1009,43 @@ class NllLoc(object):
         e = deduplicate_picks(e)
         return cat
 
+    def _check_ps_ratio(self, event, origin) -> bool:
+        """Check PS ratio (stations with both P and S / total stations).
+        Returns False (reject) if below min_ps_ratio."""
+        if self.min_ps_ratio is None:
+            return True
+        station_phases = defaultdict(set)
+        for arrival in origin.arrivals:
+            if arrival.time_weight is None or arrival.time_weight == 0:
+                continue
+            pick = next(
+                (p for p in event.picks if p.resource_id == arrival.pick_id), None
+            )
+            if pick is None or pick.waveform_id is None:
+                continue
+            station_code = (
+                f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
+            )
+            phase = arrival.phase.lower() if arrival.phase else ""
+            if phase.startswith("p"):
+                station_phases[station_code].add("P")
+            elif phase.startswith("s"):
+                station_phases[station_code].add("S")
+
+        total_stations = len(station_phases)
+        stations_with_both = sum(
+            1 for phases in station_phases.values() if "P" in phases and "S" in phases
+        )
+        ps_ratio = stations_with_both / total_stations if total_stations > 0 else 0.0
+        logger.info(
+            f"ps_ratio: {stations_with_both}/{total_stations} stations with P+S"
+            f" = {ps_ratio:.2f} (min: {self.min_ps_ratio})"
+        )
+        if ps_ratio < self.min_ps_ratio:
+            logger.info(f"Rejected: ps_ratio {ps_ratio:.2f} < {self.min_ps_ratio}")
+            return False
+        return True
+
     def get_catalog_from_results(self, cat_results: List[Catalog]) -> Catalog:
         """Compute attributes and filter events from catalogs"""
         final_catalog = Catalog()
@@ -1054,6 +1094,8 @@ class NllLoc(object):
                     logger.info(
                         f"Accepted: station score {station_score} ≥ {self.min_station_score}"
                     )
+                    if not self._check_ps_ratio(e, o):
+                        continue
                     final_catalog += cat
                     continue
 
@@ -1079,6 +1121,8 @@ class NllLoc(object):
                 f"{o.quality.used_station_count} stations, "
                 f"{ps_station_count} with both P and S (min: {self.min_station_with_P_and_S})"
             )
+            if not self._check_ps_ratio(e, o):
+                continue
             final_catalog += cat
 
         # sort events by time

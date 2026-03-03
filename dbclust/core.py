@@ -138,6 +138,7 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         nll_min_phase=cfg.nll.min_phase,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         min_station_score=cfg.cluster.min_station_score,
+        min_ps_ratio=cfg.cluster.min_ps_ratio,
         quakeml_settings=asdict(cfg.quakeml),
         keep_scat=cfg.nll.enable_scatter,
         #
@@ -170,6 +171,7 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         min_station_count=cfg.cluster.min_station_count,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         min_station_score=cfg.cluster.min_station_score,
+        min_ps_ratio=cfg.cluster.min_ps_ratio,
         max_search_dist=cfg.cluster.max_search_dist,
         P_uncertainty=cfg.pick.P_uncertainty,
         S_uncertainty=cfg.pick.S_uncertainty,
@@ -458,6 +460,7 @@ def dbclust(
                     cfg,
                     tolerance_steps={1: 1, 0.5: 0.1, 0: 0.05},
                     min_tolerance=0.1,
+                    include_noise_in_aggregation=cfg.cluster.include_noise_in_aggregation,
                     log_level=logger.level,
                 )
             except pyproj.exceptions.ProjError as e:
