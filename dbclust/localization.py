@@ -843,11 +843,17 @@ class NllLoc(object):
                     pick.time_errors.uncertainty = self.S_uncertainty
 
         # Log successful first pass localization
+        event_ids_in_picks = sorted(set(
+            p.creation_info.author.split("/")[-1]
+            for p in e.picks
+            if p.creation_info and p.creation_info.author
+        ))
         logger.info(
             f"Pass {pass_count + 1} localization: "
             f"lat={o.latitude:.4f}, lon={o.longitude:.4f}, depth={o.depth/1000:.1f}km, "
             f"RMS={o.quality.standard_error:.3f}, phases={o.quality.used_phase_count}, "
             f"model={model_id}"
+            + (f" [event_ids: {event_ids_in_picks}]" if event_ids_in_picks else "")
         )
 
         # try a relocation
@@ -1009,11 +1015,9 @@ class NllLoc(object):
         e = deduplicate_picks(e)
         return cat
 
-    def _check_ps_ratio(self, event, origin) -> bool:
-        """Check PS ratio (stations with both P and S / total stations).
-        Returns False (reject) if below min_ps_ratio."""
-        if self.min_ps_ratio is None:
-            return True
+    def _compute_ps_ratio(self, event, origin) -> tuple:
+        """Compute PS ratio (stations with both P and S / total stations).
+        Returns (stations_with_both, total_stations, ps_ratio)."""
         station_phases = defaultdict(set)
         for arrival in origin.arrivals:
             if arrival.time_weight is None or arrival.time_weight == 0:
@@ -1037,18 +1041,23 @@ class NllLoc(object):
             1 for phases in station_phases.values() if "P" in phases and "S" in phases
         )
         ps_ratio = stations_with_both / total_stations if total_stations > 0 else 0.0
-        logger.info(
-            f"ps_ratio: {stations_with_both}/{total_stations} stations with P+S"
-            f" = {ps_ratio:.2f} (min: {self.min_ps_ratio})"
-        )
+        return stations_with_both, total_stations, ps_ratio
+
+    def _check_ps_ratio(self, event, origin) -> bool:
+        """Check PS ratio (stations with both P and S / total stations).
+        Returns False (reject) if below min_ps_ratio."""
+        if self.min_ps_ratio is None:
+            return True
+        _, _, ps_ratio = self._compute_ps_ratio(event, origin)
         if ps_ratio < self.min_ps_ratio:
-            logger.info(f"Rejected: ps_ratio {ps_ratio:.2f} < {self.min_ps_ratio}")
             return False
         return True
 
     def get_catalog_from_results(self, cat_results: List[Catalog]) -> Catalog:
         """Compute attributes and filter events from catalogs"""
         final_catalog = Catalog()
+        all_event_ids_seen: set = set()
+        accepted_event_ids: set = set()
         for cat in cat_results:
             if not cat or not cat.events:
                 logger.debug("Empty catalog or missing events, skipping.")
@@ -1058,71 +1067,73 @@ class NllLoc(object):
             e = cat.events[0]
             o = e.preferred_origin()
 
+            # Extract event_ids from picks (stored in creation_info.author)
+            event_ids_in_picks = sorted(set(
+                p.creation_info.author.split("/")[-1]
+                for p in e.picks
+                if p.creation_info and p.creation_info.author
+            ))
+            all_event_ids_seen.update(event_ids_in_picks)
+            event_ids_str = f" [{', '.join(event_ids_in_picks)}]" if event_ids_in_picks else ""
+
             # Compute quality attributes
             o.quality.used_station_count = self.get_used_station_count(e, o)
             o.quality.used_phase_count = self.get_used_phase_count(e, o)
 
-            # reject event if closest station after final relocation is too far
-            if self.closest_station_dist_km is not None:
-                closest_km = get_closest_station_dist_km(e)
-                if closest_km is not None:
-                    logger.info(
-                        f"Closest station distance: {closest_km:.1f} km "
-                        f"(threshold: {self.closest_station_dist_km} km)"
-                    )
-                    if closest_km > self.closest_station_dist_km:
-                        logger.warning(
-                            f"Rejected: closest station {closest_km:.1f} km "
-                            f"> closest_station_dist_km {self.closest_station_dist_km} km."
-                        )
-                        continue
-
+            # Gather all criteria values upfront for consolidated logging
+            closest_km = get_closest_station_dist_km(e) if self.closest_station_dist_km is not None else None
             station_score = self.get_origin_station_score(e, o)
-            logger.info(
-                f"Evaluating event: station score = {station_score}, "
-                f"({o.quality.used_station_count} stations, {o.quality.used_phase_count} phases)"
+            ps_with_both, ps_total, ps_ratio = self._compute_ps_ratio(e, o)
+            ps_str = f"ps={ps_with_both}/{ps_total}({ps_ratio:.2f})"
+            closest_str = f"closest={closest_km:.1f}km" if closest_km is not None else "closest=N/A"
+            summary = (
+                f"score={station_score}/{self.min_station_score} | "
+                f"phases={o.quality.used_phase_count} | "
+                f"stations={o.quality.used_station_count} | "
+                f"{ps_str} | "
+                f"{closest_str}"
+                f"{event_ids_str}"
             )
+
+            # reject event if closest station after final relocation is too far
+            if self.closest_station_dist_km is not None and closest_km is not None and closest_km > self.closest_station_dist_km:
+                log_fn = logger.warning if event_ids_in_picks else logger.info
+                log_fn(f"Rejected | {summary} | reason: closest={closest_km:.1f}km > {self.closest_station_dist_km}km")
+                continue
 
             if self.min_station_score is not None:
                 if station_score < self.min_station_score:
-                    # station score not enough
-                    logger.info(
-                        f"Rejected: station score {station_score} < {self.min_station_score}"
-                    )
+                    log_fn = logger.warning if event_ids_in_picks else logger.info
+                    log_fn(f"Rejected | {summary} | reason: score < {self.min_station_score}")
                     continue
-                else:
-                    logger.info(
-                        f"Accepted: station score {station_score} ≥ {self.min_station_score}"
-                    )
-                    if not self._check_ps_ratio(e, o):
-                        continue
-                    final_catalog += cat
+                if self.min_ps_ratio is not None and ps_ratio < self.min_ps_ratio:
+                    log_fn = logger.warning if event_ids_in_picks else logger.info
+                    log_fn(f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}")
                     continue
+                logger.info(f"Accepted | {summary}")
+                accepted_event_ids.update(event_ids_in_picks)
+                final_catalog += cat
+                continue
 
             # Fallback: use minimum phase and P+S station criteria
             if o.quality.used_phase_count < self.nll_min_phase:
-                logger.debug(
-                    f"Rejected: insufficient phases ({o.quality.used_phase_count} < {self.nll_min_phase})"
-                )
+                log_fn = logger.warning if event_ids_in_picks else logger.debug
+                log_fn(f"Rejected | {summary} | reason: phases={o.quality.used_phase_count} < {self.nll_min_phase}")
                 continue
 
-            ps_station_count = self.check_stations_with_P_and_S(
-                e, o, self.min_station_with_P_and_S
-            )
+            ps_station_count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
             if ps_station_count < self.min_station_with_P_and_S:
-                logger.info(
-                    f"Rejected: only {ps_station_count}/{self.min_station_with_P_and_S} stations with both P and S, "
-                    f"{o.quality.used_phase_count} phases, {o.quality.used_station_count} stations "
-                )
+                log_fn = logger.warning if event_ids_in_picks else logger.info
+                log_fn(f"Rejected | {summary} | reason: P+S stations={ps_station_count} < {self.min_station_with_P_and_S}")
                 continue
 
-            logger.info(
-                f"Accepted: {o.quality.used_phase_count} phases, "
-                f"{o.quality.used_station_count} stations, "
-                f"{ps_station_count} with both P and S (min: {self.min_station_with_P_and_S})"
-            )
-            if not self._check_ps_ratio(e, o):
+            if self.min_ps_ratio is not None and ps_ratio < self.min_ps_ratio:
+                log_fn = logger.warning if event_ids_in_picks else logger.info
+                log_fn(f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}")
                 continue
+
+            logger.info(f"Accepted | {summary}")
+            accepted_event_ids.update(event_ids_in_picks)
             final_catalog += cat
 
         # sort events by time
@@ -1130,6 +1141,12 @@ class NllLoc(object):
             final_catalog.events, key=lambda e: e.preferred_origin().time
         )
         logger.info(f"Total accepted events: {len(final_catalog)}")
+
+        # Report known event_ids that did not make it into the final catalog
+        lost_event_ids = all_event_ids_seen - accepted_event_ids
+        if lost_event_ids:
+            logger.warning(f"Known event_id(s) not found in accepted events: {sorted(lost_event_ids)}")
+
         return final_catalog
 
     def get_localisations_from_nllobs_dir(
