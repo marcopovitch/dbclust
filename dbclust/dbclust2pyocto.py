@@ -2,6 +2,7 @@
 import copy
 import datetime
 import logging
+import statistics
 import sys
 from collections import Counter, defaultdict
 from itertools import chain
@@ -223,13 +224,21 @@ def dbclust2pyocto(
         # reduce min_pick_fraction to allow PyOcto to find smaller events
         cluster_event_ids = set(p.event_id for p in cluster if p.event_id)
         if associator_cfg.adaptive_min_pick_fraction and len(cluster_event_ids) > 1:
-            effective_min_pick_fraction = min(
-                associator_cfg.min_pick_fraction,
-                associator_cfg.n_picks / len(picks),
+            dl_method_ids = {m.upper() for m in associator_cfg.dl_method_ids}
+            dl_probas = [
+                p.proba for p in cluster
+                if p.method is not None and isinstance(p.method, str) and p.method.upper() in dl_method_ids
+            ]
+            median_proba = statistics.median(dl_probas) if dl_probas else 1.0
+            effective_min_pick_fraction = max(
+                associator_cfg.min_pick_fraction_floor,
+                associator_cfg.min_pick_fraction * median_proba,
             )
             logger.info(
                 f"Cluster#{i}: {len(cluster_event_ids)} distinct event_ids detected, "
-                f"reducing min_pick_fraction: {associator_cfg.min_pick_fraction} -> {effective_min_pick_fraction:.3f}"
+                f"median DL proba={median_proba:.3f} ({len(dl_probas)} DL picks), "
+                f"reducing min_pick_fraction: {associator_cfg.min_pick_fraction} -> {effective_min_pick_fraction:.3f} "
+                f"(floor={associator_cfg.min_pick_fraction_floor})"
             )
         else:
             effective_min_pick_fraction = associator_cfg.min_pick_fraction
