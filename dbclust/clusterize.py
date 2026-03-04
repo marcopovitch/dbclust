@@ -530,24 +530,30 @@ class Clusterize(object):
         """
         logger.info(f"Starting generate_nllobs()")
         picks_bundles = []
+        rejected_event_ids: set = set()
+        accepted_event_ids: set = set()
         for i, cluster in enumerate(self.clusters):
             cat = Catalog()
             event = Event()
             # count the number of stations
             stations_list = set([p.station for p in cluster])
+
+            # Count the number of picks associated to a given event ID (needed for all filters)
+            event_id_counts = Counter([p.event_id.split("/")[-1] for p in cluster if p.event_id])
+
             logger.info(
                 f"Generating nllobs for cluster {i} ({len(stations_list)} stations / {len(cluster)} picks)"
+                + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
             )
             if self.min_station_count:
                 if len(stations_list) < self.min_station_count:
                     logger.info(
                         f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
                         f"not enough stations ({len(stations_list)}/{self.min_station_count})"
+                        + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
                     )
+                    rejected_event_ids.update(event_id_counts.keys())
                     continue
-
-            # Count the number of picks associated to a given event ID
-            event_id_counts = Counter([p.event_id for p in cluster if p.event_id])
 
             # Compute per-station phase sets (P:1.0, S:0.5, P+S:2.0) in a single pass
             station_phase_sets = defaultdict(set)
@@ -574,36 +580,38 @@ class Clusterize(object):
                     for phases in station_phase_sets.values()
                 )
                 if station_score < self.min_station_score:
-                    logger.info(
+                    log_fn = logger.warning if event_id_counts else logger.info
+                    log_fn(
                         f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
                         f"station_score {station_score:.1f} < {self.min_station_score}"
+                        + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
                     )
+                    rejected_event_ids.update(event_id_counts.keys())
                     continue
 
             # Pre-NLL filter: min_station_with_P_and_S (only when station_score not used)
             elif self.min_station_with_P_and_S:
                 if stations_with_both < self.min_station_with_P_and_S:
-                    if event_id_counts:
-                        logger.warning(
-                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
-                            f"not enough stations with both P and S ({stations_with_both}/{self.min_station_with_P_and_S})"
-                            f" but event_id(s) found: {event_id_counts}"
-                        )
-                    else:
-                        logger.info(
-                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
-                            f"not enough stations with both P and S ({stations_with_both}/{self.min_station_with_P_and_S})"
-                        )
+                    log_fn = logger.warning if event_id_counts else logger.info
+                    log_fn(
+                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
+                        f"not enough stations with both P and S ({stations_with_both}/{self.min_station_with_P_and_S})"
+                        + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
+                    )
+                    rejected_event_ids.update(event_id_counts.keys())
                     continue
 
             # Pre-NLL filter: min_ps_ratio (stations with both P and S / total stations)
             if self.min_ps_ratio is not None:
                 ps_ratio = stations_with_both / total_stations_ps if total_stations_ps > 0 else 0.0
                 if ps_ratio < self.min_ps_ratio:
-                    logger.info(
+                    log_fn = logger.warning if event_id_counts else logger.info
+                    log_fn(
                         f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
                         f"ps_ratio {stations_with_both}/{total_stations_ps} = {ps_ratio:.2f} < {self.min_ps_ratio}"
+                        + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
                     )
+                    rejected_event_ids.update(event_id_counts.keys())
                     continue
 
 
@@ -611,6 +619,7 @@ class Clusterize(object):
                 pick = p.to_pick()
                 event.picks.append(pick)
             event = deduplicate_picks(event)
+            accepted_event_ids.update(event_id_counts.keys())
 
             # to be returned !
             picks_bundles.append(event.picks)
@@ -689,6 +698,12 @@ class Clusterize(object):
                         logger.warning(
                             f"Can't find a matched zone for (lat={hypo['latitude']},lon={hypo['longitude']})!"
                         )
+
+        # Summary: known event_ids rejected before NLL (not in any accepted cluster)
+        lost = rejected_event_ids - accepted_event_ids
+        if lost:
+            logger.warning(f"Known event_id(s) rejected before NLL (all clusters failed pre-filters): {sorted(lost)}")
+
         return picks_bundles
 
     def merge(self, clusters2):
