@@ -198,7 +198,8 @@ def main():
     cfg.show()
 
     # Run processing
-    if cfg.parallel.n_workers == 1:
+    slurm_enabled = hasattr(cfg, "slurm") and cfg.slurm and cfg.slurm.enabled
+    if not slurm_enabled and cfg.parallel.n_workers == 1:
         results = run_sequential(cfg)
     else:
         results = run_parallel(cfg)
