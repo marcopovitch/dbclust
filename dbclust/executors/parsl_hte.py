@@ -18,22 +18,22 @@ from parsl.config import Config
 from parsl.executors import HighThroughputExecutor
 from parsl.providers import LocalProvider
 
-from dbclust.config import DBClustConfig
 from dbclust.executors.base import ExecutorBase
 
 logger = logging.getLogger("dbclust")
 
 
 @python_app
-def _run_dbclust_task(cfg: DBClustConfig, job_index: int) -> Dict:
+def _run_dbclust_task(cfg_file: str, log_level: int, job_index: int) -> Dict:
     """Parsl python_app wrapper for dbclust task execution.
 
-    This function is decorated with @python_app to enable parallel execution
-    through Parsl HighThroughputExecutor. Each task runs in a separate process,
-    avoiding GIL limitations.
+    Accepts the YAML config path instead of a DBClustConfig object to avoid
+    serializing large objects (StationXML inventories, DataFrames) over ZMQ
+    for every task. DBClustConfig is reconstructed once per worker process.
 
     Args:
-        cfg: DBClustConfig object with all parameters.
+        cfg_file: Path to the YAML config file.
+        log_level: Logging level integer.
         job_index: Index of the time partition to process.
 
     Returns:
@@ -43,17 +43,16 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int) -> Dict:
     import os
     import time
 
+    from dbclust.config import DBClustConfig
     from dbclust.core import dbclust
 
-    # Configure root logger to capture all dbclust-related logs
+    cfg = DBClustConfig(cfg_file)
+    cfg.log_level = log_level
+
     log_dir = cfg.parallel._temp_dir if cfg.parallel._temp_dir else "runinfo"
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"dbclust_task_{job_index}.log")
 
-    # Use log level from config if available, else INFO
-    log_level = getattr(cfg, "log_level", logging.INFO)
-
-    # Add file handler to root logger to capture all logs
     file_handler = logging.FileHandler(log_file, mode="w")
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -68,19 +67,13 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int) -> Dict:
     try:
         result = dbclust(cfg=cfg, job_index=job_index)
     finally:
-        # Clean up handler
         file_handler.close()
         root_logger.removeHandler(file_handler)
 
-    end_time = time.time()
-
-    duration_sec = end_time - start_time
-    peak_memory_mb = 0  # Memory profiling disabled by default
-
     return {
         "task_index": job_index,
-        "duration_sec": duration_sec,
-        "peak_memory_mb": peak_memory_mb,
+        "duration_sec": time.time() - start_time,
+        "peak_memory_mb": 0,
         "result": result,
     }
 
@@ -236,7 +229,7 @@ class ParslHTEExecutor(ExecutorBase):
         """
         start, end = self.cfg.parallel.time_partitions[job_index]
         logger.debug(f"Submitting task {job_index} [{start} -- {end}]")
-        return _run_dbclust_task(self.cfg, job_index)
+        return _run_dbclust_task(self.cfg.filename, self.cfg.log_level, job_index)
 
     def wait_for_results(self, futures: List[Any]) -> Generator:
         """Wait for Parsl futures and yield results as they complete.
