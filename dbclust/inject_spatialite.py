@@ -28,10 +28,7 @@ import math
 import os
 import random
 import re
-try:
-    import pysqlite3 as sqlite3  # pysqlite3-binary: compiled with enable_load_extension
-except ImportError:
-    import sqlite3
+import sqlite3
 import sys
 import time
 import warnings
