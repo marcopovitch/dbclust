@@ -111,6 +111,30 @@ class ParslHTEExecutor(ExecutorBase):
 
     def initialize(self) -> None:
         """Initialize Parsl with HighThroughputExecutor."""
+        import signal
+        import psutil
+
+        # Kill any orphaned process_worker_pool processes from a previous crashed run.
+        # These hold ZMQ ports open and cause SIGSEGV (exit code -11) on the next launch.
+        for proc in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                cmdline = " ".join(proc.info["cmdline"] or [])
+                if "process_worker_pool" in cmdline:
+                    logger.warning(f"Killing orphaned Parsl worker (pid {proc.pid})")
+                    proc.send_signal(signal.SIGTERM)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        # Clean up any leftover Parsl state from a previous crashed run.
+        # Without this, stale ZMQ sockets/ports can cause SIGSEGV (exit code -11)
+        # when launching a new block.
+        try:
+            parsl.dfk().cleanup()
+            parsl.clear()
+            logger.debug("Cleaned up existing Parsl DFK before re-initializing")
+        except Exception:
+            pass  # No active DFK, nothing to clean
+
         # Reduce Parsl logging noise - must be done BEFORE creating executor
         if hasattr(parsl, "set_stream_logger"):
             parsl.set_stream_logger(level=logging.WARNING)
