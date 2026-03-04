@@ -208,6 +208,8 @@ class ParslHTEExecutor(ExecutorBase):
             worker_debug=False,
             worker_logdir_root=run_dir,
             poll_period=100,  # ms, reduce polling overhead
+            heartbeat_threshold=600,  # s, allow 10 min without heartbeat (default 120s)
+            heartbeat_period=30,      # s, heartbeat frequency
         )
 
         config = Config(
@@ -245,6 +247,8 @@ class ParslHTEExecutor(ExecutorBase):
         Yields:
             Tuples of (job_index, result, duration, peak_memory_mb).
         """
+        from parsl.executors.high_throughput.errors import ManagerLost
+
         for completed_future in as_completed(futures):
             try:
                 r = completed_future.result()
@@ -254,8 +258,12 @@ class ParslHTEExecutor(ExecutorBase):
                     r["duration_sec"],
                     r["peak_memory_mb"],
                 )
+            except ManagerLost as e:
+                logger.error(f"Parsl manager lost (worker crashed), task will be skipped: {e}")
+                yield (-1, False, 0, 0)
             except Exception as e:
-                logger.error(f"Task failed with error: {e}")
+                import traceback
+                logger.error(f"Task failed with error: {e}\n{traceback.format_exc()}")
                 yield (-1, False, 0, 0)
 
     def run(self) -> List[Any]:
@@ -270,6 +278,7 @@ class ParslHTEExecutor(ExecutorBase):
         not by the number of submitted futures.
         """
         import csv
+        import signal
 
         from dbclust.core import CSV_FIELDNAMES
 
@@ -282,78 +291,109 @@ class ParslHTEExecutor(ExecutorBase):
         if self.on_initialized:
             self.on_initialized()
 
-        indexed_partitions = list(enumerate(self.cfg.parallel.time_partitions))
-        partition_map = {idx: (s, e) for idx, (s, e) in indexed_partitions}
+        # Install signal handlers so Ctrl-C / SIGTERM triggers a clean Parsl shutdown.
+        # IMPORTANT: the handler must NOT call cleanup() directly — it is invoked from a
+        # thread (inside threading.Condition.wait) and Parsl's ZMQ calls are not
+        # re-entrant / thread-safe.  We only set a flag here and raise KeyboardInterrupt
+        # to unblock as_completed(); the actual cleanup happens in the finally block
+        # below, which runs in the main thread.
+        _interrupted = [False]
+        _orig_sigint = signal.getsignal(signal.SIGINT)
+        _orig_sigterm = signal.getsignal(signal.SIGTERM)
 
-        done = self._load_completed()
-        if done:
-            indexed_partitions = [(idx, p) for idx, p in indexed_partitions if idx not in done]
-            logger.info(
-                f"Resuming: {len(done)} tasks already done, {len(indexed_partitions)} remaining"
-            )
+        def _handle_signal(signum, frame):
+            if not _interrupted[0]:
+                _interrupted[0] = True
+                print(
+                    f"\n[dbclust] Signal {signum} received — shutting down workers...",
+                    flush=True,
+                )
+            # Raise KeyboardInterrupt to unblock as_completed() in the main thread.
+            raise KeyboardInterrupt()
 
-        random.shuffle(indexed_partitions)
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
 
-        if not done:
-            self._init_csv()
+        results: List[Any] = []
+        try:
+            indexed_partitions = list(enumerate(self.cfg.parallel.time_partitions or []))
+            partition_map = {idx: (s, e) for idx, (s, e) in indexed_partitions}
 
-        total_tasks = len(indexed_partitions)
+            done = self._load_completed()
+            if done:
+                indexed_partitions = [(idx, p) for idx, p in indexed_partitions if idx not in done]
+                logger.info(
+                    f"Resuming: {len(done)} tasks already done, {len(indexed_partitions)} remaining"
+                )
 
-        # Submit ALL tasks upfront — Parsl throttles execution via max_workers_per_node.
-        logger.info(f"Submitting all {total_tasks} tasks to Parsl...")
-        futures = []
-        for idx, _ in indexed_partitions:
-            futures.append(self.submit_task(idx))
-        logger.info(f"All {total_tasks} tasks submitted.")
+            random.shuffle(indexed_partitions)
 
-        # Collect results as they complete.
-        completed_count = 0
-        results = []
-        processing_start = datetime.now()
-        log_every = max(1, total_tasks // 10)
+            if not done:
+                self._init_csv()
 
-        for job_index, result, duration, peak_memory_mb in self.wait_for_results(futures):
-            completed_count += 1
-            progress_pct = (completed_count / total_tasks) * 100
-            partition_start, partition_end = partition_map.get(job_index, (None, None))
-            completion_time = datetime.now()
-            task_start_time = datetime.fromtimestamp(completion_time.timestamp() - duration)
+            total_tasks = len(indexed_partitions)
 
-            with open(self.profile_csv_path, "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
-                writer.writerow({
-                    "task_index": job_index,
-                    "start_time": task_start_time.isoformat(),
-                    "completion_time": completion_time.isoformat(),
-                    "duration_sec": f"{duration:.2f}",
-                    "peak_memory_mb": f"{peak_memory_mb:.1f}" if peak_memory_mb else "N/A",
-                    "completed_count": completed_count,
-                    "total_tasks": total_tasks,
-                    "progress_pct": f"{progress_pct:.1f}",
-                    "time_partition_start": str(partition_start) if partition_start else "N/A",
-                    "time_partition_end": str(partition_end) if partition_end else "N/A",
-                })
+            # Submit ALL tasks upfront — Parsl throttles execution via max_workers_per_node.
+            logger.info(f"Submitting all {total_tasks} tasks to Parsl...")
+            futures = []
+            for idx, _ in indexed_partitions:
+                futures.append(self.submit_task(idx))
+            logger.info(f"All {total_tasks} tasks submitted.")
 
-            elapsed = (datetime.now() - processing_start).total_seconds()
-            elapsed_str = f"{elapsed/3600:.1f}h" if elapsed > 3600 else f"{elapsed/60:.0f}min"
-            rate = completed_count / elapsed if elapsed > 0 else 0
-            remaining = total_tasks - completed_count
-            eta_sec = remaining / rate if rate > 0 else 0
-            eta_str = f"{eta_sec/3600:.1f}h" if eta_sec > 3600 else f"{eta_sec/60:.0f}min"
-            msg = (
-                f"[{completed_count}/{total_tasks}] ({progress_pct:.1f}%) "
-                f"task {job_index} done in {duration:.0f}s "
-                f"— elapsed {elapsed_str} — ETA {eta_str}"
-            )
-            logger.info(msg)
-            print(msg, flush=True)
-            if job_index >= 0:
-                self._mark_completed(job_index)
-            results.append(result)
+            # Collect results as they complete.
+            completed_count = 0
+            processing_start = datetime.now()
 
-        self.cleanup()
-        self._write_execution_summary(results)
-        logger.info(f"Parallel execution completed with {self.name}")
+            for job_index, result, duration, peak_memory_mb in self.wait_for_results(futures):
+                completed_count += 1
+                progress_pct = (completed_count / total_tasks) * 100
+                partition_start, partition_end = partition_map.get(job_index, (None, None))
+                completion_time = datetime.now()
+                task_start_time = datetime.fromtimestamp(completion_time.timestamp() - duration)
+
+                with open(self.profile_csv_path, "a", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
+                    writer.writerow({
+                        "task_index": job_index,
+                        "start_time": task_start_time.isoformat(),
+                        "completion_time": completion_time.isoformat(),
+                        "duration_sec": f"{duration:.2f}",
+                        "peak_memory_mb": f"{peak_memory_mb:.1f}" if peak_memory_mb else "N/A",
+                        "completed_count": completed_count,
+                        "total_tasks": total_tasks,
+                        "progress_pct": f"{progress_pct:.1f}",
+                        "time_partition_start": str(partition_start) if partition_start else "N/A",
+                        "time_partition_end": str(partition_end) if partition_end else "N/A",
+                    })
+
+                elapsed = (datetime.now() - processing_start).total_seconds()
+                elapsed_str = f"{elapsed/3600:.1f}h" if elapsed > 3600 else f"{elapsed/60:.0f}min"
+                rate = completed_count / elapsed if elapsed > 0 else 0
+                remaining = total_tasks - completed_count
+                eta_sec = remaining / rate if rate > 0 else 0
+                eta_str = f"{eta_sec/3600:.1f}h" if eta_sec > 3600 else f"{eta_sec/60:.0f}min"
+                msg = (
+                    f"[{completed_count}/{total_tasks}] ({progress_pct:.1f}%) "
+                    f"task {job_index} done in {duration:.0f}s "
+                    f"— elapsed {elapsed_str} — ETA {eta_str}"
+                )
+                logger.info(msg)
+                print(msg, flush=True)
+                if job_index >= 0:
+                    self._mark_completed(job_index)
+                results.append(result)
+
+        finally:
+            # Restore original signal handlers unconditionally.
+            signal.signal(signal.SIGINT, _orig_sigint)
+            signal.signal(signal.SIGTERM, _orig_sigterm)
+            if _interrupted[0]:
+                logger.warning("Interrupted — shutting down Parsl workers, please wait...")
+            self.cleanup()
+            if not _interrupted[0]:
+                self._write_execution_summary(results)
+                logger.info(f"Parallel execution completed with {self.name}")
+
         return results
 
     def cleanup(self) -> None:
