@@ -44,6 +44,7 @@ class ParslSlurmExecutor(ParslHTEExecutor):
             account=slurm.account,
             nodes_per_block=slurm.nodes_per_block,
             cores_per_node=slurm.cores_per_node,
+            init_blocks=slurm.max_blocks,   # submit all blocks upfront immediately
             min_blocks=slurm.min_blocks,
             max_blocks=slurm.max_blocks,
             walltime=slurm.walltime,
@@ -82,6 +83,9 @@ class ParslSlurmExecutor(ParslHTEExecutor):
             max_workers_per_node=slurm.max_workers_per_node,
             cores_per_worker=1,
             provider=self._get_provider(),
+            heartbeat_threshold=600,  # 10 min — HPC nodes can be slow to start
+            heartbeat_period=30,
+            poll_period=100,
         )
 
         config = Config(
