@@ -2466,6 +2466,7 @@ def add_agency_names(conn: sqlite3.Connection) -> None:
     # nb_agencies         : count of localizing agencies only.
     # multiple_same_agencies: localizing agency with > 1 distinct real source_event_id
     #                         (merge/association bug — AI picks excluded intentionally).
+    _ensure_column(cursor, "picks", "source_event_id", "TEXT")
     _ensure_column(cursor, "picks", "method_id", "TEXT")
     cursor.execute(
         """
