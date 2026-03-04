@@ -236,6 +236,7 @@ def load_spatialite(conn, logger=None):
             "mod_spatialite",  # Try system path first (safest)
             "/opt/homebrew/lib/mod_spatialite.dylib",  # Apple Silicon Mac
             "/usr/local/lib/mod_spatialite.dylib",  # Intel Mac
+            "/usr/lib64/mod_spatialite.so",  # Linux RHEL/CentOS/HPC
             "/usr/lib/libspatialite.so.7",  # Linux newer
             "/usr/lib/libspatialite.so",  # Linux
         ]
