@@ -88,6 +88,7 @@ class ParslSlurmExecutor(ParslHTEExecutor):
             executors=[executor],
             run_dir=self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo",
             retries=3,
+            strategy="none",  # disable auto scale-in which causes ZMQError mid-run
         )
 
         parsl.load(config)
