@@ -838,6 +838,10 @@ class Associator:
     max_lon_range: Optional[List[float]] = None  # [lon_min, lon_max]
     # Adaptive min_pick_fraction: reduce it for clusters with multiple known event_ids
     adaptive_min_pick_fraction: bool = False
+    # Floor to avoid explosively low min_pick_fraction values when adaptive mode is on
+    min_pick_fraction_floor: float = 0.10
+    # DL picker method_ids used to compute median proba for adaptive scaling (case-insensitive)
+    dl_method_ids: List[str] = field(default_factory=lambda: ["PHASENET"])
     # Minimum S/P pick ratio to accept a PyOcto cluster (None = disabled)
     min_ps_ratio: Optional[float] = None
 
