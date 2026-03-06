@@ -313,10 +313,12 @@ class ParslHTEExecutor(ExecutorBase):
             partition_map = {idx: (s, e) for idx, (s, e) in indexed_partitions}
 
             done = self._load_completed()
+            already_done = len(done)
+            total_overall = len(indexed_partitions)
             if done:
                 indexed_partitions = [(idx, p) for idx, p in indexed_partitions if idx not in done]
                 logger.info(
-                    f"Resuming: {len(done)} tasks already done, {len(indexed_partitions)} remaining"
+                    f"Resuming: {already_done} tasks already done, {len(indexed_partitions)} remaining"
                 )
 
             random.shuffle(indexed_partitions)
@@ -339,7 +341,7 @@ class ParslHTEExecutor(ExecutorBase):
 
             for job_index, result, duration, peak_memory_mb in self.wait_for_results(futures):
                 completed_count += 1
-                progress_pct = (completed_count / total_tasks) * 100
+                progress_pct = ((already_done + completed_count) / total_overall) * 100
                 partition_start, partition_end = partition_map.get(job_index, (None, None))
                 completion_time = datetime.now()
                 task_start_time = datetime.fromtimestamp(completion_time.timestamp() - duration)
@@ -352,8 +354,8 @@ class ParslHTEExecutor(ExecutorBase):
                         "completion_time": completion_time.isoformat(),
                         "duration_sec": f"{duration:.2f}",
                         "peak_memory_mb": f"{peak_memory_mb:.1f}" if peak_memory_mb else "N/A",
-                        "completed_count": completed_count,
-                        "total_tasks": total_tasks,
+                        "completed_count": already_done + completed_count,
+                        "total_tasks": total_overall,
                         "progress_pct": f"{progress_pct:.1f}",
                         "time_partition_start": str(partition_start) if partition_start else "N/A",
                         "time_partition_end": str(partition_end) if partition_end else "N/A",
@@ -366,7 +368,7 @@ class ParslHTEExecutor(ExecutorBase):
                 eta_sec = remaining / rate if rate > 0 else 0
                 eta_str = f"{eta_sec/3600:.1f}h" if eta_sec > 3600 else f"{eta_sec/60:.0f}min"
                 msg = (
-                    f"[{completed_count}/{total_tasks}] ({progress_pct:.1f}%) "
+                    f"[{already_done + completed_count}/{total_overall}] ({progress_pct:.1f}%) "
                     f"task {job_index} done in {duration:.0f}s "
                     f"— elapsed {elapsed_str} — ETA {eta_str}"
                 )
