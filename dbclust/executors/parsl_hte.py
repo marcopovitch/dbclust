@@ -240,7 +240,7 @@ class ParslHTEExecutor(ExecutorBase):
         Yields:
             Tuples of (job_index, result, duration, peak_memory_mb).
         """
-        from parsl.executors.high_throughput.errors import ManagerLost
+        from parsl.executors.high_throughput.errors import ManagerLost, WorkerLost
 
         for completed_future in as_completed(futures):
             try:
@@ -251,8 +251,8 @@ class ParslHTEExecutor(ExecutorBase):
                     r["duration_sec"],
                     r["peak_memory_mb"],
                 )
-            except ManagerLost as e:
-                logger.error(f"Parsl manager lost (worker crashed), task will be skipped: {e}")
+            except (ManagerLost, WorkerLost) as e:
+                logger.error(f"Parsl worker/manager lost, task will be skipped: {e}")
                 yield (-1, False, 0, 0)
             except Exception as e:
                 import traceback
