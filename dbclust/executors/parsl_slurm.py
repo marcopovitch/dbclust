@@ -44,7 +44,7 @@ class ParslSlurmExecutor(ParslHTEExecutor):
             account=slurm.account,
             nodes_per_block=slurm.nodes_per_block,
             cores_per_node=slurm.cores_per_node,
-            init_blocks=slurm.max_blocks,   # submit all blocks upfront immediately
+            init_blocks=1,              # start with 1 to avoid SLURM array jobs (KeyError on _X suffix)
             min_blocks=slurm.min_blocks,
             max_blocks=slurm.max_blocks,
             walltime=slurm.walltime,
@@ -83,7 +83,7 @@ class ParslSlurmExecutor(ParslHTEExecutor):
             max_workers_per_node=slurm.max_workers_per_node,
             cores_per_worker=1,
             provider=self._get_provider(),
-            heartbeat_threshold=600,  # 10 min — HPC nodes can be slow to start
+            heartbeat_threshold=3600*6,  # 6 hours to accommodate long-running SLURM jobs
             heartbeat_period=30,
             poll_period=100,
         )
@@ -96,6 +96,13 @@ class ParslSlurmExecutor(ParslHTEExecutor):
         )
 
         parsl.load(config)
+
+        # Scale out remaining blocks one at a time so each gets its own SLURM job ID
+        # (init_blocks=1 avoids array jobs whose _X suffixes cause KeyError in Parsl _status)
+        if slurm.max_blocks > 1:
+            executor.scale_out(slurm.max_blocks - 1)
+            logger.info(f"Scaled out {slurm.max_blocks - 1} additional SLURM blocks")
+
         logger.info(
             f"Parsl SLURM initialized: partition={slurm.partition}, "
             f"nodes_per_block={slurm.nodes_per_block}, "
