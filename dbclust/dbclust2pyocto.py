@@ -14,6 +14,7 @@ from typing import Union
 
 import pandas as pd
 import pyocto
+import pyocto._core as _pyocto_backend
 import pyproj
 import pyproj.exceptions
 from dbclust.clusterize import cluster_share_eventid
@@ -23,6 +24,21 @@ from dbclust.phase import Phase
 
 # import faulthandler
 # faulthandler.enable()
+
+# Workaround for pyocto bug: the C++ backend segfaults when associate() is called
+# with an empty picks list (e.g. during the second pass when all picks were used in
+# the first pass). Patch at the C++ backend level since the empty-list check must
+# happen before the C++ code is reached.
+_pyocto_backend_associate_orig = _pyocto_backend.OctoAssociator.associate
+
+
+def _pyocto_backend_associate_safe(self, picks):
+    if not picks:
+        return []
+    return _pyocto_backend_associate_orig(self, picks)
+
+
+_pyocto_backend.OctoAssociator.associate = _pyocto_backend_associate_safe
 
 """
 Use PyOcto to speed up and better constrain clustering
