@@ -104,23 +104,74 @@ def run_parallel(cfg: DBClustConfig) -> list:
             signal.signal(signal.SIGTERM, _old_sigterm[0])
 
 
-def finalize_sqlite(cfg: DBClustConfig) -> None:
+def _load_completed_indices(cfg: DBClustConfig):
+    """Load the set of successfully completed job indices from the checkpoint file."""
+    import json
+    profiles_path = cfg.parallel.task_profiles_path or os.path.join(
+        cfg.catalog.qml_path, "task_profiles.csv"
+    )
+    checkpoint_path = profiles_path.replace(".csv", ".completed.json")
+    if not os.path.exists(checkpoint_path):
+        return None
+    try:
+        with open(checkpoint_path) as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return set(data)
+        return set(data.get("done", []))
+    except Exception:
+        return None
+
+
+def finalize_sqlite(cfg: DBClustConfig, completed_job_indices=None) -> None:
     """Finalize SQLite database after processing.
 
     Merges all per-worker temporary databases into the final database,
     then refreshes the event coordinates view.
 
+    Only temp DBs whose job_index appears in completed_job_indices are merged.
+    This prevents partial results from failed/killed workers from polluting
+    the final database.
+
     Args:
         cfg: DBClust configuration object.
+        completed_job_indices: Set of job indices that completed successfully.
+            If None, all temp DBs are merged (legacy behaviour).
     """
     if not cfg.catalog.enable_sqlite:
         return
 
     temp_dir = cfg.catalog.temp_db_dir or cfg.catalog.sqlite_db_path
-    temp_db_paths = sorted(glob.glob(os.path.join(temp_dir, "tmp_worker_*.db")))
+    all_temp_db_paths = sorted(glob.glob(os.path.join(temp_dir, "tmp_worker_*.db")))
+
+    if not all_temp_db_paths:
+        logger.warning("No temp DBs found to merge, skipping SQLite finalization.")
+        return
+
+    if completed_job_indices is not None:
+        temp_db_paths = []
+        skipped = []
+        for p in all_temp_db_paths:
+            basename = os.path.basename(p)  # tmp_worker_42.db
+            try:
+                idx = int(basename.replace("tmp_worker_", "").replace(".db", ""))
+            except ValueError:
+                skipped.append(p)
+                continue
+            if idx in completed_job_indices:
+                temp_db_paths.append(p)
+            else:
+                skipped.append(p)
+        if skipped:
+            logger.warning(
+                f"Skipping {len(skipped)} temp DB(s) from failed/incomplete jobs: "
+                + ", ".join(os.path.basename(p) for p in skipped)
+            )
+    else:
+        temp_db_paths = all_temp_db_paths
 
     if not temp_db_paths:
-        logger.warning("No temp DBs found to merge, skipping SQLite finalization.")
+        logger.warning("No completed temp DBs to merge, skipping SQLite finalization.")
         return
 
     logger.info(
@@ -204,8 +255,9 @@ def main():
     else:
         results = run_parallel(cfg)
 
-    # Finalize SQLite database
-    finalize_sqlite(cfg)
+    # Finalize SQLite database — only merge DBs from completed jobs
+    completed_indices = _load_completed_indices(cfg)
+    finalize_sqlite(cfg, completed_job_indices=completed_indices)
 
     app_logger.info(f"Processing complete. {len(results)} partitions processed.")
 
