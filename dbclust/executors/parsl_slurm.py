@@ -100,7 +100,7 @@ class ParslSlurmExecutor(ParslHTEExecutor):
         # Scale out remaining blocks one at a time so each gets its own SLURM job ID
         # (init_blocks=1 avoids array jobs whose _X suffixes cause KeyError in Parsl _status)
         if slurm.max_blocks > 1:
-            executor.scale_out(slurm.max_blocks - 1)
+            executor.scale_out_facade(slurm.max_blocks - 1)
             logger.info(f"Scaled out {slurm.max_blocks - 1} additional SLURM blocks")
 
         logger.info(
