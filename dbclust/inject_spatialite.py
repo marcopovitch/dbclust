@@ -231,24 +231,27 @@ def load_spatialite(conn, logger=None):
         # Enable loading extensions with better error handling
         conn.enable_load_extension(True)
 
-        # Try loading SpatiaLite with specific error handling for macOS
+        # SQLite's load_extension() automatically appends the platform suffix
+        # (.so on Linux, .dylib on macOS) — do NOT include the extension in the path.
         spatialite_paths = [
-            "mod_spatialite",  # Try system path first (safest)
-            "/opt/homebrew/lib/mod_spatialite.dylib",  # Apple Silicon Mac
-            "/usr/local/lib/mod_spatialite.dylib",  # Intel Mac
-            "/usr/lib64/mod_spatialite.so",  # Linux RHEL/CentOS/HPC
-            "/usr/lib/libspatialite.so.7",  # Linux newer
-            "/usr/lib/libspatialite.so",  # Linux
+            "mod_spatialite",  # system PATH
+            "/opt/homebrew/lib/mod_spatialite",  # Apple Silicon Mac
+            "/usr/local/lib/mod_spatialite",  # Intel Mac / custom build
+            "/usr/lib64/mod_spatialite",  # Linux RHEL/CentOS/HPC
+            "/usr/lib/mod_spatialite",  # Linux Debian/Ubuntu
         ]
+
+        import platform as _platform
+        _so_suffix = ".dylib" if _platform.system() == "Darwin" else ".so"
 
         for i, path in enumerate(spatialite_paths):
             try:
                 if logger:
                     logger.debug(f"Attempting to load SpatiaLite from: {path}")
 
-                # Create a test connection to avoid corrupting the main one
-                if i > 0:  # For file paths, check if they exist
-                    if not os.path.exists(path):
+                # For absolute paths, verify the file exists before trying
+                if i > 0:
+                    if not os.path.exists(path + _so_suffix) and not os.path.exists(path):
                         continue
 
                 conn.load_extension(path)
