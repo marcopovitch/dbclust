@@ -568,13 +568,12 @@ def dbclust(
         clustcat = feed_distance_from_preloc_to_pref_origin(clustcat)
 
         # Write partial qml file and clean catalog from memory
+        last_saved_event_count += len(clustcat)
         if last_saved_event_count > cfg.catalog.event_flush_count:
             save_catalog(locator.catalog, cfg, job_index, part=i)
             locator.catalog.clear()
             gc.collect()
             last_saved_event_count = 0
-        else:
-            last_saved_event_count += len(locator.catalog)
 
         # prepare next round
         previous_myclust = myclust
