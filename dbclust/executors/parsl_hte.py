@@ -242,7 +242,10 @@ class ParslHTEExecutor(ExecutorBase):
         """
         from parsl.executors.high_throughput.errors import ManagerLost, WorkerLost
 
+        future_to_index = getattr(self, "_future_to_index", {})
+
         for completed_future in as_completed(futures):
+            job_index = future_to_index.get(completed_future, -1)
             try:
                 r = completed_future.result()
                 yield (
@@ -252,12 +255,12 @@ class ParslHTEExecutor(ExecutorBase):
                     r["peak_memory_mb"],
                 )
             except (ManagerLost, WorkerLost) as e:
-                logger.error(f"Parsl worker/manager lost, task will be skipped: {e}")
-                yield (-1, False, 0, 0)
+                logger.error(f"Parsl worker/manager lost, task {job_index} will be skipped: {e}")
+                yield (job_index, False, 0, 0)
             except Exception as e:
                 import traceback
-                logger.error(f"Task failed with error: {e}\n{traceback.format_exc()}")
-                yield (-1, False, 0, 0)
+                logger.error(f"Task {job_index} failed with error: {e}\n{traceback.format_exc()}")
+                yield (job_index, False, 0, 0)
 
     def run(self) -> List[Any]:
         """Override run() to submit ALL tasks upfront before collecting results.
@@ -331,8 +334,11 @@ class ParslHTEExecutor(ExecutorBase):
             # Submit ALL tasks upfront — Parsl throttles execution via max_workers_per_node.
             logger.info(f"Submitting all {total_tasks} tasks to Parsl...")
             futures = []
+            self._future_to_index = {}
             for idx, _ in indexed_partitions:
-                futures.append(self.submit_task(idx))
+                f = self.submit_task(idx)
+                futures.append(f)
+                self._future_to_index[f] = idx
             logger.info(f"All {total_tasks} tasks submitted.")
 
             # Collect results as they complete.
