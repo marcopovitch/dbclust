@@ -291,6 +291,13 @@ def dbclust2pyocto(
             logger.warning(f"Cluster#{i}: no stations left after range filtering, skipping.")
             continue
 
+        # Filter picks to only keep those whose station is still in the stations df
+        valid_station_ids = set(stations["id"])
+        picks = picks[picks["station"].isin(valid_station_ids)].reset_index(drop=True)
+        if picks.empty:
+            logger.warning(f"Cluster#{i}: no picks left after station range filtering, skipping.")
+            continue
+
         # Step 2: define a safe range around the remaining stations coordinates
         range_percent = 0.01  # 1%
         lat_safe_range_deg = range_percent * (
