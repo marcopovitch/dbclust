@@ -2472,14 +2472,19 @@ def add_agency_names(conn: sqlite3.Connection) -> None:
     #                         (merge/association bug — AI picks excluded intentionally).
     _ensure_column(cursor, "picks", "source_event_id", "TEXT")
     _ensure_column(cursor, "picks", "method_id", "TEXT")
-    cursor.execute(
+
+    # Boost cache for this heavy operation: 128 MB instead of the default 2 MB.
+    cursor.execute("PRAGMA cache_size = -128000;")
+
+    # Step 1 – materialise used_picks into a temp table so it is scanned only once
+    # instead of being re-evaluated for every downstream CTE reference.
+    cursor.executescript(
         """
-        WITH used_picks AS (
+        DROP TABLE IF EXISTS temp.t_used_picks;
+        CREATE TEMP TABLE t_used_picks AS
             SELECT p.event_id,
                    p.agency_id,
-                   -- Real source_event_id from an operator (NULL for AI/automatic picks)
                    p.source_event_id AS real_source_event_id,
-                   -- Display label: real source id, or synthetic label for AI picks
                    CASE
                        WHEN p.source_event_id IS NOT NULL THEN p.source_event_id
                        WHEN p.method_id IS NOT NULL       THEN p.agency_id || '/' || p.method_id
@@ -2492,53 +2497,74 @@ def add_agency_names(conn: sqlite3.Connection) -> None:
             WHERE o.preferred = 1
               AND a.time_weight > 0
               AND p.agency_id IS NOT NULL
-              AND p.agency_id != ''
-        ),
-        -- Agencies that have at least one real (operator) pick for this event
-        localizing_agencies AS (
+              AND p.agency_id != '';
+
+        CREATE INDEX temp.idx_tup_event_agency
+            ON t_used_picks (event_id, agency_id);
+
+        -- Step 2 – localizing agencies: those with at least one real operator pick.
+        DROP TABLE IF EXISTS temp.t_localizing;
+        CREATE TEMP TABLE t_localizing AS
             SELECT DISTINCT event_id, agency_id
-            FROM used_picks
-            WHERE real_source_event_id IS NOT NULL
-        ),
-        multi_agency AS (
-            -- Detect merge bugs: a localizing agency with > 1 distinct real source event
-            -- AI/automatic picks (real_source_event_id IS NULL) are excluded intentionally.
-            SELECT event_id, 1 AS flag
-            FROM used_picks
+            FROM t_used_picks
+            WHERE real_source_event_id IS NOT NULL;
+
+        CREATE INDEX temp.idx_tloc_event_agency
+            ON t_localizing (event_id, agency_id);
+
+        -- Step 3 – events where a localizing agency spans > 1 source_event_id (merge bug).
+        DROP TABLE IF EXISTS temp.t_multi;
+        CREATE TEMP TABLE t_multi AS
+            SELECT DISTINCT event_id
+            FROM t_used_picks
             WHERE real_source_event_id IS NOT NULL
             GROUP BY event_id, agency_id
-            HAVING COUNT(DISTINCT real_source_event_id) > 1
-        ),
-        agg AS (
+            HAVING COUNT(DISTINCT real_source_event_id) > 1;
+
+        CREATE INDEX temp.idx_tmulti_event ON t_multi (event_id);
+        """
+    )
+
+    # Step 4 – aggregate and update in a single pass over the materialised tables.
+    cursor.execute(
+        """
+        UPDATE events
+        SET agency_names           = agg.agency_names,
+            agency_ai_contributors = agg.agency_ai_contributors,
+            agencies_list          = agg.agencies_list,
+            nb_agencies            = agg.nb_agencies,
+            multiple_same_agencies = agg.multiple_same_agencies
+        FROM (
             SELECT
                 up.event_id,
-                -- Localizing agencies only (had at least one real operator pick)
                 json_group_array(DISTINCT la.agency_id)
                     FILTER (WHERE la.agency_id IS NOT NULL) AS agency_names,
-                -- AI-only contributors: present in used_picks but not in localizing_agencies
                 json_group_array(DISTINCT up.agency_id)
                     FILTER (WHERE la.agency_id IS NULL)     AS agency_ai_contributors,
                 json_group_array(DISTINCT up.source_event_id) AS agencies_list,
                 COUNT(DISTINCT la.agency_id)                  AS nb_agencies,
-                CASE WHEN ma.event_id IS NOT NULL THEN 1 ELSE 0 END AS multiple_same_agencies
-            FROM used_picks up
-            LEFT JOIN localizing_agencies la
+                MAX(CASE WHEN m.event_id IS NOT NULL THEN 1 ELSE 0 END)
+                                                              AS multiple_same_agencies
+            FROM t_used_picks up
+            LEFT JOIN t_localizing la
                    ON la.event_id = up.event_id AND la.agency_id = up.agency_id
-            LEFT JOIN multi_agency ma ON ma.event_id = up.event_id
+            LEFT JOIN t_multi m ON m.event_id = up.event_id
             GROUP BY up.event_id
-        )
-        UPDATE events
-        SET agency_names            = agg.agency_names,
-            agency_ai_contributors  = agg.agency_ai_contributors,
-            agencies_list           = agg.agencies_list,
-            nb_agencies             = agg.nb_agencies,
-            multiple_same_agencies  = agg.multiple_same_agencies
-        FROM agg
+        ) AS agg
         WHERE events.event_id = agg.event_id;
         """
     )
 
     conn.commit()
+
+    # Cleanup temp tables
+    cursor.executescript(
+        """
+        DROP TABLE IF EXISTS temp.t_used_picks;
+        DROP TABLE IF EXISTS temp.t_localizing;
+        DROP TABLE IF EXISTS temp.t_multi;
+        """
+    )
 
 
 def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
