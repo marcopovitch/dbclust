@@ -148,6 +148,8 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         use_pick_zone=cfg.relocation.use_pick_zone,
         enable_relabel_pick_zone=cfg.relocation.enable_relabel_pick_zone,
         enable_cleanup_pick_zone=cfg.relocation.enable_cleanup_pick_zone,
+        min_dist_relabel_deg=getattr(cfg.relocation, "min_dist_relabel_deg", 0.0),
+        min_time_weight=getattr(cfg.relocation, "min_time_weight", None),
         #
         keep_not_existing_event=cfg.catalog.keep_not_existing_event,
     )

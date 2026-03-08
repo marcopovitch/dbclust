@@ -586,6 +586,13 @@ class RelocationConfig:
     enable_relabel_pick_zone: Optional[bool] = False
     # remove outliers from pick zone
     enable_cleanup_pick_zone: Optional[bool] = False
+    # minimum distance (degrees) to epicenter to allow pick relabeling
+    # picks closer than this threshold are not relabeled (avoids polygon overlap near origin)
+    min_dist_relabel_deg: Optional[float] = 0.0
+    # remove all picks (including manual) with NLLoc time_weight below this threshold
+    # catches clock-drift issues where NLLoc down-weights all phases from an affected station
+    # set to null to disable
+    min_time_weight: Optional[float] = None
 
 
 @dataclass

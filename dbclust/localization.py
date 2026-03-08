@@ -199,6 +199,8 @@ class NllLoc(object):
         enable_relabel_pick_zone: bool = False,  # relabel pick within zone
         keep_not_existing_event: bool = False,  # keep "not existing" event, or not
         min_ps_ratio: Optional[float] = None,  # Minimum S/P pick ratio (None = disabled)
+        min_dist_relabel_deg: float = 0.0,  # minimum distance (degrees) to epicenter to allow relabeling
+        min_time_weight: Optional[float] = None,  # remove all picks (incl. manual) with NLLoc time_weight below this threshold
     ):
         # define locator
         self.nll_bin = nll_bin
@@ -235,6 +237,8 @@ class NllLoc(object):
         self.enable_cleanup_pick_zone = enable_cleanup_pick_zone
         self.enable_relabel_pick_zone = enable_relabel_pick_zone
         self.keep_not_existing_event = keep_not_existing_event
+        self.min_dist_relabel_deg = min_dist_relabel_deg
+        self.min_time_weight = min_time_weight
 
         # keep track of cluster affiliation
         self.event_cluster_mapping = {}
@@ -1526,8 +1530,7 @@ class NllLoc(object):
         """
 
         # Minimum distance to epicenter to consider an arrival to be relabeled
-        #min_distance_to_epicenter = 0.25  # degrees
-        min_distance_to_epicenter = 0
+        min_distance_to_epicenter = self.min_dist_relabel_deg
 
         df_polygons = zone.picks_delimiter
         sigma = zone.sigma
@@ -1707,6 +1710,22 @@ class NllLoc(object):
                 logger.debug(
                     f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
                     f"with time_weight set to 0"
+                )
+                pick_to_delete.append(pick)
+                arrival_to_delete.append(arrival)
+                cleaned_by_nll += 1
+                continue
+
+            # remove pick (including manual) with NLLoc time_weight below min_time_weight
+            # catches clock-drift issues: NLLoc down-weights all phases from the affected station
+            if (
+                self.min_time_weight is not None
+                and arrival.time_weight < self.min_time_weight
+            ):
+                logger.info(
+                    f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
+                    f"with time_weight={arrival.time_weight:.3f} < min_time_weight={self.min_time_weight} "
+                    f"(possible clock issue)"
                 )
                 pick_to_delete.append(pick)
                 arrival_to_delete.append(arrival)
