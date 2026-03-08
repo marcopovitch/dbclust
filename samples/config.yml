@@ -166,6 +166,10 @@ pyocto:
         # to accept/reject origin.
         # n_p_and_s_picks: *MIN_P_AND_S
         n_p_and_s_picks: 0
+        # Adaptive min_pick_fraction based on median DL pick probability
+        # adaptive_min_pick_fraction: true
+        # min_pick_fraction_floor: 0.10
+        # dl_method_ids: ["PHASENET"]
 
       velocity_model:
         depth: [0.0, 2.4, 20.1, 30.2]
