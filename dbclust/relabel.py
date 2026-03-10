@@ -200,22 +200,42 @@ def get_best_polygon_for_point(
         logger.debug(f"Point {point} is not in any zone.")
         return None, None, polygon_score, 0
 
-    # Normalization with softmax
-    polygon_score = softmax(
-        polygon_score, temperature=0.05
-    )  # Adjust temperature as needed
+    # --- Previous approach (kept for reference) ---
+    # Softmax with temperature + difference of top-two scores.
+    # Requires empirical temperature calibration; T=1.5 was chosen so that a
+    # 2.5:1 score ratio stays below the 0.10 confidence threshold.
+    # Needs tuning.
+    #
+    # polygon_score = softmax(polygon_score, temperature=1.5)
+    # sorted_probs = sorted(polygon_score.values(), reverse=True)
+    # if len(sorted_probs) < 2:
+    #     confidence_ratio = 1.0
+    # else:
+    #     confidence_ratio = sorted_probs[0] - sorted_probs[1]
 
-    # Sort the scores to get the top two
-    sorted_probs = sorted(polygon_score.values(), reverse=True)
+    # --- Current approach ---
+    # Confidence = normalised score advantage of the best polygon over the second best.
+    #
+    #   confidence = (best - second) / (best + second)
+    #
+    # Properties:
+    #   - 0   when scores are equal (full ambiguity, e.g. polygon overlap zone)
+    #   - 1   when only one polygon contains the point
+    #   - 0.5 when best score is 3× the second (natural "clear decision" boundary)
+    #   - scale-invariant: depends only on the ratio, not on absolute score values
+    #   - no temperature parameter to calibrate
+    #
+    # Typical threshold, minimum score ratio to accept a relabelling:
+    #   0.30 => ratio ≥ 1.86:1
+    #   0.45 => ratio ≥ 2.64:1  used as default (eval_threshold)
+    #   0.50 => ratio ≥ 3.00:1
+    sorted_scores = sorted(polygon_score.values(), reverse=True)
 
-    if len(sorted_probs) < 2:
-        confidence_ratio = 1.0  # If only one polygon is possible, maximum confidence
+    if len(sorted_scores) < 2:
+        confidence_ratio = 1.0  # single polygon: unambiguous
     else:
-        # confidence_ratio = (
-        #     sorted_probs[0] - sorted_probs[1]
-        # )  # Difference between the top two
-        confidence_ratio = sorted_probs[0]
-
+        best, second = sorted_scores[0], sorted_scores[1]
+        confidence_ratio = (best - second) / (best + second)
 
     # Check if the confidence is sufficient
     if confidence_ratio < eval_threshold:
