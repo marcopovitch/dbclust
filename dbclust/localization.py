@@ -201,6 +201,7 @@ class NllLoc(object):
         min_ps_ratio: Optional[float] = None,  # Minimum S/P pick ratio (None = disabled)
         min_dist_relabel_deg: float = 0.0,  # minimum distance (degrees) to epicenter to allow relabeling
         min_time_weight: Optional[float] = None,  # remove all picks (incl. manual) with NLLoc time_weight below this threshold
+        enable_residual_threshold_with_pick_zone: bool = False,  # apply P/S residual thresholds even when using pick zones
     ):
         # define locator
         self.nll_bin = nll_bin
@@ -239,6 +240,7 @@ class NllLoc(object):
         self.keep_not_existing_event = keep_not_existing_event
         self.min_dist_relabel_deg = min_dist_relabel_deg
         self.min_time_weight = min_time_weight
+        self.enable_residual_threshold_with_pick_zone = enable_residual_threshold_with_pick_zone
 
         # keep track of cluster affiliation
         self.event_cluster_mapping = {}
@@ -1537,6 +1539,7 @@ class NllLoc(object):
 
         cleaned_by_polygon = 0
         cleaned_by_nll = 0
+        cleaned_by_residual = 0
         cleaned_by_gap_dist = 0
         cleaned_by_cutoff = 0
 
@@ -1746,6 +1749,24 @@ class NllLoc(object):
                 cleaned_by_cutoff += 1
                 continue
 
+            # Optionally filter by time residual even when using pick zones
+            if self.enable_residual_threshold_with_pick_zone:
+                if "P" in arrival.phase.upper():
+                    time_residual_threshold = self.P_time_residual_threshold
+                elif "S" in arrival.phase.upper():
+                    time_residual_threshold = self.S_time_residual_threshold
+                else:
+                    time_residual_threshold = None
+                if time_residual_threshold and fabs(arrival.time_residual) > time_residual_threshold:
+                    logger.info(
+                        f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} "
+                        f"time_residual={arrival.time_residual:.2f}s > threshold={time_residual_threshold}s"
+                    )
+                    pick_to_delete.append(pick)
+                    arrival_to_delete.append(arrival)
+                    cleaned_by_residual += 1
+                    continue
+
             if df_polygons.empty:
                 continue
 
@@ -1920,9 +1941,9 @@ class NllLoc(object):
             event.picks.remove(p)
 
         logger.info(
-            f"Removed arrivals with time_weight set to 0 "
-            f"(by nll ({cleaned_by_nll}), cutoff ({cleaned_by_cutoff}) or polygons ({cleaned_by_polygon})): "
-            f"{len(arrival_to_delete)} arrivals"
+            f"Removed arrivals: nll/weight ({cleaned_by_nll}), residual ({cleaned_by_residual}), "
+            f"cutoff ({cleaned_by_cutoff}), polygons ({cleaned_by_polygon}): "
+            f"{len(arrival_to_delete)} total"
         )
 
         # update "stations used" with weight > 0

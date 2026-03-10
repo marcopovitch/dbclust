@@ -340,6 +340,7 @@ def build_locator(
         enable_relabel_pick_zone=getattr(cfg_reloc, "enable_relabel_pick_zone", False),
         min_dist_relabel_deg=getattr(cfg_reloc, "min_dist_relabel_deg", 0.0),
         min_time_weight=getattr(cfg_reloc, "min_time_weight", None),
+        enable_residual_threshold_with_pick_zone=getattr(cfg_reloc, "enable_residual_threshold_with_pick_zone", False),
         keep_not_existing_event=getattr(cfg_catalog, "keep_not_existing_event", False),
         P_time_residual_threshold=args.p_time_residual_threshold or getattr(cfg_reloc, "P_time_residual_threshold", None),
         S_time_residual_threshold=args.s_time_residual_threshold or getattr(cfg_reloc, "S_time_residual_threshold", None),
