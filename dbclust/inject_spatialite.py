@@ -508,7 +508,9 @@ def get_pick_probability(pick):
             info = json.loads(comment.text)
         except (json.JSONDecodeError, TypeError):
             continue
-        if "probability" in info.keys():
+        if not isinstance(info, dict):
+            continue
+        if "probability" in info:
             probability = info["probability"]["value"]
             break
     return probability
