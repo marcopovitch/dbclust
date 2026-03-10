@@ -593,6 +593,9 @@ class RelocationConfig:
     # catches clock-drift issues where NLLoc down-weights all phases from an affected station
     # set to null to disable
     min_time_weight: Optional[float] = None
+    # apply P/S time residual thresholds even when use_pick_zone is True
+    # picks inside a polygon but with large residuals will still be removed
+    enable_residual_threshold_with_pick_zone: Optional[bool] = False
 
 
 @dataclass
