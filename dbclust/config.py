@@ -596,6 +596,11 @@ class RelocationConfig:
     # apply P/S time residual thresholds even when use_pick_zone is True
     # picks inside a polygon but with large residuals will still be removed
     enable_residual_threshold_with_pick_zone: Optional[bool] = False
+    # detect pass 2 degradation: warn if RMS_pass2 > RMS_pass1 * factor
+    # set to null to disable detection entirely
+    pass2_degradation_factor: Optional[float] = None
+    # if True AND degradation is detected, revert to pass 1 as preferred origin
+    pass2_fallback: Optional[bool] = False
 
 
 @dataclass
