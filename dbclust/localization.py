@@ -202,6 +202,8 @@ class NllLoc(object):
         min_dist_relabel_deg: float = 0.0,  # minimum distance (degrees) to epicenter to allow relabeling
         min_time_weight: Optional[float] = None,  # remove all picks (incl. manual) with NLLoc time_weight below this threshold
         enable_residual_threshold_with_pick_zone: bool = False,  # apply P/S residual thresholds even when using pick zones
+        pass2_degradation_factor: Optional[float] = None,  # warn if RMS_pass2 > RMS_pass1 * factor (None = disabled)
+        pass2_fallback: bool = False,  # if True AND degradation detected, revert to pass 1 as preferred origin
     ):
         # define locator
         self.nll_bin = nll_bin
@@ -241,6 +243,8 @@ class NllLoc(object):
         self.min_dist_relabel_deg = min_dist_relabel_deg
         self.min_time_weight = min_time_weight
         self.enable_residual_threshold_with_pick_zone = enable_residual_threshold_with_pick_zone
+        self.pass2_degradation_factor = pass2_degradation_factor
+        self.pass2_fallback = pass2_fallback
 
         # keep track of cluster affiliation
         self.event_cluster_mapping = {}
@@ -709,7 +713,7 @@ class NllLoc(object):
                 loc_method_used = (
                     self.loc_method if force_loc_method is None else force_loc_method
                 )
-                raise LocalizationError(f"using {loc_method_used} method.")
+                raise LocalizationError(f"calc_maximum_likelihood_ot failed using {loc_method_used} method.")
             elif "ERROR" in line:
                 logger.error(line)
                 if self.nll_verbose:
@@ -996,6 +1000,34 @@ class NllLoc(object):
                 self._remap_arrivals_to_existing_picks(orig2, event2, e)
                 e.origins.append(orig2)
                 e.preferred_origin_id = orig2.resource_id
+
+                # Detect pass 2 degradation: warn always, optionally revert to pass 1
+                if self.pass2_degradation_factor is not None:
+                    rms1 = o.quality.standard_error if (o and o.quality) else None
+                    rms2 = orig2.quality.standard_error if (orig2 and orig2.quality) else None
+                    if rms1 is not None and rms2 is not None and rms1 > 0:
+                        if rms2 > rms1 * self.pass2_degradation_factor:
+                            if self.pass2_fallback:
+                                logger.warning(
+                                    f"Pass 2 degradation detected: RMS pass1={rms1:.3f}s, "
+                                    f"RMS pass2={rms2:.3f}s (factor={rms2/rms1:.1f} > "
+                                    f"{self.pass2_degradation_factor}). "
+                                    f"Reverting to pass 1 as preferred origin and removing pass 2 origin."
+                                )
+                                e.preferred_origin_id = o.resource_id
+                                e.origins.remove(orig2)
+                            else:
+                                logger.warning(
+                                    f"Pass 2 degradation detected: RMS pass1={rms1:.3f}s, "
+                                    f"RMS pass2={rms2:.3f}s (factor={rms2/rms1:.1f} > "
+                                    f"{self.pass2_degradation_factor}). "
+                                    f"Keeping pass 2 as preferred origin (pass2_fallback=False)."
+                                )
+                        else:
+                            logger.debug(
+                                f"Pass 2 OK: RMS pass1={rms1:.3f}s, RMS pass2={rms2:.3f}s "
+                                f"(factor={rms2/rms1:.1f})"
+                            )
             else:
                 # can't relocate: set it to "not existing"
                 logger.warning("Localization failed: second pass relocation unsuccessful")
