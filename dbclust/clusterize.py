@@ -336,7 +336,10 @@ class Clusterize(object):
 
             # use the fact that the matrix is diagonal and symmetrical
             # running time is quite similar to sequential computation + lru_cache
-            pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
+            # pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
+
+            # vectorized haversine: ~20-100x faster than per-pair gps2dist_azimuth
+            pseudo_tt = self.numpy_compute_tt_matrix_vectorized(phases, average_velocity)
 
             # // computation using dask bag: slower for small cluster
             # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
@@ -409,6 +412,30 @@ class Clusterize(object):
         np.fill_diagonal(matrix_upper2, 0)
         tt_matrix = matrix_upper1 + matrix_upper2.T
         return tt_matrix
+
+    @staticmethod
+    def numpy_compute_tt_matrix_vectorized(phases, vmean):
+        """Vectorized TT matrix using haversine formula.
+
+        Replaces per-pair gps2dist_azimuth calls with a single NumPy broadcast.
+        Haversine error < 0.5% for distances < 2000 km — sufficient for clustering.
+        """
+        R = 6371.0  # Earth radius in km
+        lats = np.radians([p.coord["latitude"] for p in phases])   # (n,)
+        lons = np.radians([p.coord["longitude"] for p in phases])  # (n,)
+        times = np.array([float(p.time) for p in phases])          # (n,)
+
+        dlat = lats[:, None] - lats[None, :]  # (n, n)
+        dlon = lons[:, None] - lons[None, :]  # (n, n)
+        a = (
+            np.sin(dlat / 2) ** 2
+            + np.cos(lats[:, None]) * np.cos(lats[None, :]) * np.sin(dlon / 2) ** 2
+        )
+        dist_km = 2 * R * np.arcsin(np.sqrt(a))  # (n, n)
+
+        dd = dist_km / vmean                      # (n, n)
+        dt = times[:, None] - times[None, :]      # (n, n)
+        return np.sqrt(dt ** 2 + dd ** 2)
 
     # @staticmethod
     # def dask_compute_tt_matrix(phases, vmean):
