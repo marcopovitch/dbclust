@@ -912,19 +912,27 @@ class NllLoc(object):
                 event2 = self.cleanup_pick_phase(event2)
                 relabel_dict = {}
 
+            # Sync event2 back into cat2 (cleanup may have replaced the object)
+            cat2.events[0] = event2
+
             if len(event2.picks):
                 new_nll_obs_file = nll_obs_file + ".2nd_pass"
+                n_arrivals = len(event2.preferred_origin().arrivals)
+                n_picks = len(event2.picks)
                 logger.info(
-                    f"Writing {len(event2.picks)} picks to NLLOC_OBS file for second pass"
+                    f"Writing {n_picks} picks ({n_arrivals} arrivals) to NLLOC_OBS file for second pass"
                 )
-                cat2.write(new_nll_obs_file, format="NLLOC_OBS")
-                # Verify how many lines were actually written
-                with open(new_nll_obs_file, "r") as f:
-                    nll_obs_lines = sum(1 for line in f if line.strip() and not line.startswith("#"))
-                if nll_obs_lines != len(event2.picks):
-                    logger.warning(
-                        f"NLLOC_OBS file has {nll_obs_lines} entries but {len(event2.picks)} picks were expected"
+                if n_picks != n_arrivals:
+                    orphan_picks = [
+                        p for p in event2.picks
+                        if not any(a.pick_id == p.resource_id for a in event2.preferred_origin().arrivals)
+                    ]
+                    logger.info(
+                        f"Second pass: {n_picks - n_arrivals} orphan pick(s) without arrival "
+                        f"(will be ignored by NLL): "
+                        + ", ".join(f"{p.waveform_id.get_seed_string()} {p.phase_hint}" for p in orphan_picks)
                     )
+                cat2.write(new_nll_obs_file, format="NLLOC_OBS")
                 loc_method_used = (
                     self.loc_method if force_loc_method is None else force_loc_method
                 )
