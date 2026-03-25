@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json as _json
 import sqlite3
 import pandas as pd
 import os
@@ -81,8 +82,58 @@ if __name__ == "__main__":
             AND p.probability IS NOT NULL
         GROUP BY 
             e.event_id
-        HAVING 
+        HAVING
             COUNT(p.id) > 0;
+    """
+
+    # SQL query: unique stations per year, split by evaluation_mode
+    query_stations_per_year = """
+        SELECT
+            strftime('%Y', p.pick_time) AS year,
+            p.evaluation_mode,
+            COUNT(DISTINCT p.station_name) AS unique_stations
+        FROM
+            events e
+        JOIN
+            origins o ON e.event_id = o.event_id
+        JOIN
+            arrivals a ON o.id = a.origin_id
+        JOIN
+            picks p ON a.pick_id = p.id
+        WHERE
+            o.preferred = 1
+            AND a.time_weight > 0
+            AND p.station_name IS NOT NULL
+            AND year IS NOT NULL
+        GROUP BY
+            year, p.evaluation_mode
+        ORDER BY
+            year;
+    """
+
+    # SQL query: network code distribution, split by evaluation_mode
+    query_network_codes = """
+        SELECT
+            p.evaluation_mode,
+            SUBSTR(p.station_name, 1, INSTR(p.station_name, '.') - 1) AS network_code,
+            COUNT(DISTINCT p.station_name) AS unique_stations
+        FROM
+            events e
+        JOIN
+            origins o ON e.event_id = o.event_id
+        JOIN
+            arrivals a ON o.id = a.origin_id
+        JOIN
+            picks p ON a.pick_id = p.id
+        WHERE
+            o.preferred = 1
+            AND a.time_weight > 0
+            AND p.station_name IS NOT NULL
+            AND INSTR(p.station_name, '.') > 0
+        GROUP BY
+            p.evaluation_mode, network_code
+        ORDER BY
+            p.evaluation_mode, unique_stations DESC;
     """
 
     # SQL query for event statistics
@@ -120,6 +171,8 @@ if __name__ == "__main__":
     # Get probabilities data
     df_probs = pd.read_sql_query(query_probabilities, conn)
     df_avg_probs = pd.read_sql_query(query_avg_prob_per_event, conn)
+    df_stations_year = pd.read_sql_query(query_stations_per_year, conn)
+    df_network_codes = pd.read_sql_query(query_network_codes, conn)
 
     # Calculate statistics for P phases
     p_probs = df_probs[df_probs["phase_hint"].str.startswith("P")]["probability"]
@@ -157,9 +210,12 @@ if __name__ == "__main__":
         average_manual_picks + average_automatic_picks_P + average_automatic_picks_S
     )
     # Calculate percentages
-    percentage_manual_picks = average_manual_picks / total_picks * 100
-    percentage_automatic_picks_P = average_automatic_picks_P / total_picks * 100
-    percentage_automatic_picks_S = average_automatic_picks_S / total_picks * 100
+    if total_picks == 0:
+        percentage_manual_picks = percentage_automatic_picks_P = percentage_automatic_picks_S = 0.0
+    else:
+        percentage_manual_picks = average_manual_picks / total_picks * 100
+        percentage_automatic_picks_P = average_automatic_picks_P / total_picks * 100
+        percentage_automatic_picks_S = average_automatic_picks_S / total_picks * 100
 
     print(f"The average percentage of manual picks is: {percentage_manual_picks:.2f}%")
     print(
@@ -260,6 +316,59 @@ if __name__ == "__main__":
         plt.show()
     plt.close()
 
+    # Plot unique stations per year
+    color_manual = "#2ecc71"
+    color_auto = "#3498db"
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for mode, color, label in [
+        ("manual", color_manual, "Manual"),
+        ("automatic", color_auto, "PhaseNet (automatic)"),
+    ]:
+        sub = df_stations_year[df_stations_year["evaluation_mode"] == mode]
+        if not sub.empty:
+            ax.plot(sub["year"], sub["unique_stations"], marker="o", color=color, label=label)
+    ax.set_title("Unique stations per year")
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Number of unique stations")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(output_base + "_stations_per_year.png", dpi=150, bbox_inches="tight")
+    if not args.no_show:
+        plt.show()
+    plt.close()
+
+    # Plot network code distribution
+    networks_manual = (
+        df_network_codes[df_network_codes["evaluation_mode"] == "manual"]
+        .set_index("network_code")["unique_stations"]
+        .sort_values(ascending=False)
+    )
+    networks_auto = (
+        df_network_codes[df_network_codes["evaluation_mode"] == "automatic"]
+        .set_index("network_code")["unique_stations"]
+        .sort_values(ascending=False)
+    )
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    for ax, data, color, title in [
+        (axes[0], networks_manual, color_manual, "Network codes — Manual"),
+        (axes[1], networks_auto, color_auto, "Network codes — PhaseNet (automatic)"),
+    ]:
+        if not data.empty:
+            data.plot(kind="bar", ax=ax, color=color, edgecolor="black")
+        ax.set_title(title)
+        ax.set_xlabel("Network code")
+        ax.set_ylabel("Unique stations")
+        ax.tick_params(axis="x", rotation=45)
+        ax.grid(True, alpha=0.3, axis="y")
+    plt.tight_layout()
+    plt.savefig(output_base + "_network_codes.png", dpi=150, bbox_inches="tight")
+    if not args.no_show:
+        plt.show()
+    plt.close()
+
     # Plot average probability per event
     plt.figure(figsize=(12, 5))
 
@@ -294,10 +403,11 @@ if __name__ == "__main__":
     # Scatter plot with heatmap of P vs S average probabilities
     plt.subplot(1, 2, 2)
 
-    # Create hexbin for heatmap with better colormap
+    # Create hexbin for heatmap with better colormap (drop NaN from events with only P or only S picks)
+    df_ps = df_avg_probs.dropna(subset=["avg_p_prob", "avg_s_prob"])
     hb = plt.hexbin(
-        df_avg_probs["avg_p_prob"],
-        df_avg_probs["avg_s_prob"],
+        df_ps["avg_p_prob"],
+        df_ps["avg_s_prob"],
         gridsize=30,
         cmap="YlOrRd",  # Yellow-Orange-Red colormap for better visibility
         mincnt=1,
@@ -307,11 +417,8 @@ if __name__ == "__main__":
         yscale='linear'
     )
     
-    # Add colorbar with better formatting
-    cb = plt.colorbar(hb, label="Number of events (log scale)")
-    # Update colorbar ticks to show actual counts
-    cb.set_ticks([1, 10, 100, 1000] if len(df_avg_probs) > 1000 else [1, 10, 100])
-    cb.set_ticklabels(['1', '10', '100', '1000+'] if len(df_avg_probs) > 1000 else ['1', '10', '100+'])
+    # Add colorbar — let matplotlib auto-scale ticks (bins='log' handles the scale internally)
+    plt.colorbar(hb, label="Number of events (log scale)")
 
     # Add diagonal line
     plt.axline(
@@ -320,8 +427,8 @@ if __name__ == "__main__":
 
     # Add mean point
     plt.scatter(
-        [df_avg_probs["avg_p_prob"].mean()],
-        [df_avg_probs["avg_s_prob"].mean()],
+        [df_ps["avg_p_prob"].mean()],
+        [df_ps["avg_s_prob"].mean()],
         color="red",
         s=100,
         marker="x",
@@ -338,16 +445,6 @@ if __name__ == "__main__":
     # Ensure equal aspect ratio
     plt.gca().set_aspect("equal", adjustable="box")
 
-    # Add correlation coefficient
-    corr = df_avg_probs[["avg_p_prob", "avg_s_prob"]].corr().iloc[0, 1]
-    plt.text(
-        0.05,
-        0.95,
-        f"Correlation: {corr:.3f}",
-        transform=plt.gca().transAxes,
-        bbox=dict(facecolor="white", alpha=0.8, edgecolor="none"),
-    )
-
     plt.tight_layout()
     plt.savefig(output_base + "_avg_prob_per_event.png", dpi=150, bbox_inches="tight")
     if not args.no_show:
@@ -362,7 +459,6 @@ if __name__ == "__main__":
     print(f"Number of events: {len(df_avg_probs)}")
 
     # Generate text report
-    import json as _json
     nb_events = len(df)
     total_auto_P = df["automatic_picks_P"].sum()
     total_auto_S = df["automatic_picks_S"].sum()
@@ -383,11 +479,11 @@ if __name__ == "__main__":
 
     agency_lines = []
     if agency_event_counts:
-        agency_lines.append("  Operator agencies (events with real picks):")
+        agency_lines.append("  Operator agencies (events with manual picks):")
         for ag, cnt in sorted(agency_event_counts.items(), key=lambda x: -x[1]):
             agency_lines.append(f"    {ag:<20} {cnt} events")
     if agency_ai_event_counts:
-        agency_lines.append("  AI-only agencies (no real catalogue pick):")
+        agency_lines.append("  AI-only agencies (only AI pick):")
         for ag, cnt in sorted(agency_ai_event_counts.items(), key=lambda x: -x[1]):
             agency_lines.append(f"    {ag:<20} {cnt} events")
 
@@ -420,12 +516,13 @@ if __name__ == "__main__":
         f"P phases  - mean: {p_mean:.4f}, std: {p_std:.4f}",
         f"S phases  - mean: {s_mean:.4f}, std: {s_std:.4f}",
         f"Per event - mean: {avg_prob_mean:.4f}, std: {avg_prob_std:.4f}, median: {df_avg_probs['avg_probability'].median():.4f}",
-        f"P vs S correlation: {corr:.3f}",
         "",
         "--- Output files ---",
         f"CSV:                  {output_file}",
         f"Pick types plot:      {output_base}_pick_types.png",
         f"Prob distributions:   {output_base}_prob_distributions.png",
+        f"Stations per year:    {output_base}_stations_per_year.png",
+        f"Network codes:        {output_base}_network_codes.png",
         f"Avg prob per event:   {output_base}_avg_prob_per_event.png",
         f"Report:               {report_file}",
         "=" * 50,
