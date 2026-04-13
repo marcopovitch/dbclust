@@ -41,6 +41,8 @@ def _run_dbclust_task(cfg_file: str, log_level: int, job_index: int) -> Dict:
     """
     import logging
     import os
+    import platform
+    import socket
     import time
 
     from dbclust.config import DBClustConfig
@@ -62,6 +64,12 @@ def _run_dbclust_task(cfg_file: str, log_level: int, job_index: int) -> Dict:
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
     root_logger.addHandler(file_handler)
+
+    logging.getLogger("dbclust").info(
+        f"Running on host={socket.gethostname()} "
+        f"arch={platform.machine()} "
+        f"processor={platform.processor()}"
+    )
 
     start_time = time.time()
     try:
@@ -282,6 +290,13 @@ class ParslHTEExecutor(ExecutorBase):
         logger.info(f"Starting parallel execution with {self.name}")
         logger.info(f"Number of workers: {self.cfg.parallel.n_workers}")
         logger.info(f"Number of time partitions: {len(self.cfg.parallel.time_partitions)}")
+
+        # Compute remaining tasks before initialize() so subclasses (e.g. ParslSlurmExecutor)
+        # can cap the number of Slurm blocks to the actual workload.
+        _all_partitions = list(enumerate(self.cfg.parallel.time_partitions or []))
+        _done_preview = self._load_completed()
+        self._n_remaining_tasks = len(_all_partitions) - len(_done_preview)
+        logger.info(f"Remaining tasks before initialize(): {self._n_remaining_tasks}")
 
         self.initialize()
         if self.on_initialized:
