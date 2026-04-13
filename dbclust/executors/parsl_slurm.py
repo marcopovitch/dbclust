@@ -97,17 +97,31 @@ class ParslSlurmExecutor(ParslHTEExecutor):
 
         parsl.load(config)
 
+        # Cap blocks to the actual number of remaining tasks
+        n_remaining = getattr(self, "_n_remaining_tasks", None)
+        workers_per_block = slurm.max_workers_per_node or 1
+        if n_remaining is not None:
+            needed_blocks = max(1, (n_remaining + workers_per_block - 1) // workers_per_block)
+            actual_blocks = min(slurm.max_blocks, needed_blocks)
+        else:
+            actual_blocks = slurm.max_blocks
+        if actual_blocks < slurm.max_blocks:
+            logger.info(
+                f"Capping Slurm blocks to {actual_blocks} (only {n_remaining} tasks remaining, "
+                f"{workers_per_block} workers/block, max_blocks={slurm.max_blocks})"
+            )
+
         # Scale out remaining blocks one at a time so each gets its own SLURM job ID
         # (init_blocks=1 avoids array jobs whose _X suffixes cause KeyError in Parsl _status)
-        if slurm.max_blocks > 1:
-            executor.scale_out_facade(slurm.max_blocks - 1)
-            logger.info(f"Scaled out {slurm.max_blocks - 1} additional SLURM blocks")
+        if actual_blocks > 1:
+            executor.scale_out_facade(actual_blocks - 1)
+            logger.info(f"Scaled out {actual_blocks - 1} additional SLURM blocks")
 
         logger.info(
             f"Parsl SLURM initialized: partition={slurm.partition}, "
             f"nodes_per_block={slurm.nodes_per_block}, "
             f"max_workers_per_node={slurm.max_workers_per_node}, "
-            f"max_blocks={slurm.max_blocks}"
+            f"actual_blocks={actual_blocks}/{slurm.max_blocks}"
         )
 
     def cleanup(self) -> None:
