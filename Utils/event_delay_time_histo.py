@@ -23,6 +23,11 @@ def parse_arguments():
         type=float,
         help="Marker size for Δt points (default: 1.0)",
     )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="Print statistics on inter-event delays",
+    )
     return parser.parse_args()
 
 
@@ -59,6 +64,27 @@ def main():
         min_positive_delta = 1.0
     else:
         min_positive_delta = float(positive_deltas.min())
+
+    # Optional statistics on inter-event delays
+    if args.stats:
+        import numpy as np
+
+        s = positive_deltas
+        percentiles = np.percentile(s, [25, 50, 75, 90, 95, 99])
+        print(f"Inter-event delay statistics ({len(s)} intervals):")
+        print(f"  min    : {s.min():.1f} s  ({s.min()/60:.2f} min)")
+        print(f"  p25    : {percentiles[0]:.1f} s  ({percentiles[0]/60:.2f} min)")
+        print(f"  median : {percentiles[1]:.1f} s  ({percentiles[1]/60:.2f} min)")
+        print(f"  mean   : {s.mean():.1f} s  ({s.mean()/60:.2f} min)")
+        print(f"  p75    : {percentiles[2]:.1f} s  ({percentiles[2]/60:.2f} min)")
+        print(f"  p90    : {percentiles[3]:.1f} s  ({percentiles[3]/3600:.3f} h)")
+        print(f"  p95    : {percentiles[4]:.1f} s  ({percentiles[4]/3600:.3f} h)")
+        print(f"  p99    : {percentiles[5]:.1f} s  ({percentiles[5]/3600:.3f} h)")
+        print(f"  max    : {s.max():.1f} s  ({s.max()/3600:.2f} h)")
+        print(f"  < 1 min : {(s < 60).sum()} events ({100*(s < 60).mean():.1f}%)")
+        print(f"  < 1 h   : {(s < 3600).sum()} events ({100*(s < 3600).mean():.1f}%)")
+        print(f"  < 1 day : {(s < 86400).sum()} events ({100*(s < 86400).mean():.1f}%)")
+        print(f"  < 1 week: {(s < 7*86400).sum()} events ({100*(s < 7*86400).mean():.1f}%)")
 
     # Compute daily histogram
     df["date"] = df["time"].dt.date
