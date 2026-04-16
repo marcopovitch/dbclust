@@ -177,6 +177,7 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         min_station_score=cfg.cluster.min_station_score,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
+        force_keep_catalog_events=cfg.cluster.force_keep_catalog_events,
         max_search_dist=cfg.cluster.max_search_dist,
         P_uncertainty=cfg.pick.P_uncertainty,
         S_uncertainty=cfg.pick.S_uncertainty,
