@@ -263,6 +263,7 @@ class Clusterize(object):
         min_station_with_P_and_S=2,
         min_station_score=None,
         min_ps_ratio=None,
+        force_keep_catalog_events=False,
         max_search_dist=0,  # same as hdbscan cluster_selection_epsilon: default is 0.
         P_uncertainty=0.1,
         S_uncertainty=0.2,
@@ -292,6 +293,7 @@ class Clusterize(object):
         self.min_station_with_P_and_S = min_station_with_P_and_S
         self.min_station_score = min_station_score
         self.min_ps_ratio = min_ps_ratio
+        self.force_keep_catalog_events = force_keep_catalog_events
 
         # pick filtering parameters
         self.P_uncertainty = P_uncertainty
@@ -572,15 +574,23 @@ class Clusterize(object):
                 f"Generating nllobs for cluster {i} ({len(stations_list)} stations / {len(cluster)} picks)"
                 + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
             )
+            forced_catalog_event = False
             if self.min_station_count:
                 if len(stations_list) < self.min_station_count:
-                    logger.info(
-                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
-                        f"not enough stations ({len(stations_list)}/{self.min_station_count})"
-                        + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
-                    )
-                    rejected_event_ids.update(event_id_counts.keys())
-                    continue
+                    if self.force_keep_catalog_events and event_id_counts:
+                        logger.warning(
+                            f"Cluster {i} failed min_station_count ({len(stations_list)}/{self.min_station_count}) "
+                            f"but force_keep_catalog_events=True [event_ids: {dict(event_id_counts)}] — keeping anyway"
+                        )
+                        forced_catalog_event = True
+                    else:
+                        logger.info(
+                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
+                            f"not enough stations ({len(stations_list)}/{self.min_station_count})"
+                            + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
+                        )
+                        rejected_event_ids.update(event_id_counts.keys())
+                        continue
 
             # Compute per-station phase sets (P:1.0, S:0.5, P+S:2.0) in a single pass
             station_phase_sets = defaultdict(set)
@@ -607,45 +617,67 @@ class Clusterize(object):
                     for phases in station_phase_sets.values()
                 )
                 if station_score < self.min_station_score:
-                    log_fn = logger.warning if event_id_counts else logger.info
-                    log_fn(
-                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
-                        f"station_score {station_score:.1f} < {self.min_station_score}"
-                        + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
-                    )
-                    rejected_event_ids.update(event_id_counts.keys())
-                    continue
+                    if self.force_keep_catalog_events and event_id_counts:
+                        logger.warning(
+                            f"Cluster {i} failed min_station_score ({station_score:.1f}/{self.min_station_score}) "
+                            f"but force_keep_catalog_events=True [event_ids: {dict(event_id_counts)}] — keeping anyway"
+                        )
+                        forced_catalog_event = True
+                    else:
+                        log_fn = logger.warning if event_id_counts else logger.info
+                        log_fn(
+                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
+                            f"station_score {station_score:.1f} < {self.min_station_score}"
+                            + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
+                        )
+                        rejected_event_ids.update(event_id_counts.keys())
+                        continue
 
             # Pre-NLL filter: min_station_with_P_and_S (only when station_score not used)
             elif self.min_station_with_P_and_S:
                 if stations_with_both < self.min_station_with_P_and_S:
-                    log_fn = logger.warning if event_id_counts else logger.info
-                    log_fn(
-                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
-                        f"not enough stations with both P and S ({stations_with_both}/{self.min_station_with_P_and_S})"
-                        + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
-                    )
-                    rejected_event_ids.update(event_id_counts.keys())
-                    continue
+                    if self.force_keep_catalog_events and event_id_counts:
+                        logger.warning(
+                            f"Cluster {i} failed min_station_with_P_and_S ({stations_with_both}/{self.min_station_with_P_and_S}) "
+                            f"but force_keep_catalog_events=True [event_ids: {dict(event_id_counts)}] — keeping anyway"
+                        )
+                        forced_catalog_event = True
+                    else:
+                        log_fn = logger.warning if event_id_counts else logger.info
+                        log_fn(
+                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
+                            f"not enough stations with both P and S ({stations_with_both}/{self.min_station_with_P_and_S})"
+                            + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
+                        )
+                        rejected_event_ids.update(event_id_counts.keys())
+                        continue
 
             # Pre-NLL filter: min_ps_ratio (stations with both P and S / total stations)
             if self.min_ps_ratio is not None:
                 ps_ratio = stations_with_both / total_stations_ps if total_stations_ps > 0 else 0.0
                 if ps_ratio < self.min_ps_ratio:
-                    log_fn = logger.warning if event_id_counts else logger.info
-                    log_fn(
-                        f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
-                        f"ps_ratio {stations_with_both}/{total_stations_ps} = {ps_ratio:.2f} < {self.min_ps_ratio}"
-                        + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
-                    )
-                    rejected_event_ids.update(event_id_counts.keys())
-                    continue
-
+                    if self.force_keep_catalog_events and event_id_counts:
+                        logger.warning(
+                            f"Cluster {i} failed min_ps_ratio ({stations_with_both}/{total_stations_ps}={ps_ratio:.2f}/{self.min_ps_ratio}) "
+                            f"but force_keep_catalog_events=True [event_ids: {dict(event_id_counts)}] — keeping anyway"
+                        )
+                        forced_catalog_event = True
+                    else:
+                        log_fn = logger.warning if event_id_counts else logger.info
+                        log_fn(
+                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
+                            f"ps_ratio {stations_with_both}/{total_stations_ps} = {ps_ratio:.2f} < {self.min_ps_ratio}"
+                            + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
+                        )
+                        rejected_event_ids.update(event_id_counts.keys())
+                        continue
 
             for p in cluster:
                 pick = p.to_pick()
                 event.picks.append(pick)
             event = deduplicate_picks(event)
+            if forced_catalog_event:
+                event.comments.append(Comment(text='{"force_kept": true}'))
             accepted_event_ids.update(event_id_counts.keys())
 
             # to be returned !
