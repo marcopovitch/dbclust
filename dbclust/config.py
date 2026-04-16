@@ -490,6 +490,8 @@ class ClusterConfig:
     include_noise_in_aggregation: bool = False
     # Minimum S/P pick ratio to accept a localized event (None = disabled)
     min_ps_ratio: Optional[float] = None
+    # Force clusters with known event_id through pre-NLL filters even if they fail thresholds
+    force_keep_catalog_events: bool = False
 
     def __post_init__(self) -> None:
         if self.pre_computed_tt_matrix_file:
