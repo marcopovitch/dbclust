@@ -3329,10 +3329,27 @@ def handle_quakeml_export(args) -> None:
 
 
 def validate_date(date_str: str) -> str:
-    """Validate date string format (YYYY-MM-DD)."""
+    """Validate date string format (YYYY-MM-DD) and normalize to start of day."""
     try:
         datetime.strptime(date_str, "%Y-%m-%d")
-        return date_str
+        return date_str + " 00:00:00"
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"Invalid date format: {date_str}. Use YYYY-MM-DD"
+        )
+
+
+def validate_end_date(date_str: str) -> str:
+    """Validate date string format (YYYY-MM-DD) and normalize to start of the *next* day.
+
+    This ensures --end-time covers the full last day (exclusive upper bound).
+    Example: --end-time 2024-01-15  →  '2024-01-16 00:00:00'
+    SQL condition  e.time < '2024-01-16 00:00:00'  includes all events on 2024-01-15.
+    """
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        next_day = dt + pd.Timedelta(days=1)
+        return next_day.strftime("%Y-%m-%d 00:00:00")
     except ValueError:
         raise argparse.ArgumentTypeError(
             f"Invalid date format: {date_str}. Use YYYY-MM-DD"
@@ -3467,8 +3484,8 @@ def parse_arguments() -> argparse.Namespace:
     )
     export_group.add_argument(
         "--end-time",
-        type=validate_date,
-        help="End time for export (YYYY-MM-DD).",
+        type=validate_end_date,
+        help="End time for export (YYYY-MM-DD, inclusive — covers the full day).",
     )
 
     # Database enhancements
