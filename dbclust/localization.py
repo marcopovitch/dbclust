@@ -1808,6 +1808,22 @@ class NllLoc(object):
                     continue
 
             if df_polygons.empty:
+                # No polygon defined for this zone: fallback to residual filtering
+                if "P" in arrival.phase.upper():
+                    time_residual_threshold = self.P_time_residual_threshold
+                elif "S" in arrival.phase.upper():
+                    time_residual_threshold = self.S_time_residual_threshold
+                else:
+                    time_residual_threshold = None
+                if time_residual_threshold and fabs(arrival.time_residual) > time_residual_threshold:
+                    logger.info(
+                        f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} "
+                        f"time_residual={arrival.time_residual:.2f}s > threshold={time_residual_threshold}s "
+                        f"(no polygon defined, fallback to residual filter)"
+                    )
+                    pick_to_delete.append(pick)
+                    arrival_to_delete.append(arrival)
+                    cleaned_by_residual += 1
                 continue
 
             # check if pick is within zone
