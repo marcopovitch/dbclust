@@ -53,6 +53,7 @@ from dbclust.gap import compute_gap
 from dbclust.gap import compute_secondary_azimuthal_gap
 from dbclust.gap import get_arrival_with_distance_gap_greater_than
 from dbclust.gap import get_closest_station_dist_km
+from dbclust.gap import get_station_count_before_distance_gap
 from dbclust.gt5 import compute_gallacher_gt5_score_obspy
 from dbclust.localization_quality import classify_event, classify_event_michele_mod2    
 from dbclust.plot import plot_arrival_time
@@ -1001,6 +1002,43 @@ class NllLoc(object):
                             if "removed" in info["relabel"]["action"]:
                                 # deactivate arrival
                                 arrival.time_weight = 0
+
+                # Re-apply gap_dist_max_km check on pass 2 result.
+                # Pass 1 location may be too noisy to reveal the real station gap;
+                # pass 2 with the correct velocity model gives a reliable geometry.
+                # Only evaluated for fully automatic events (any manual pick bypasses this).
+                # Returns None if no gap or if manual picks are present.
+                station_count_before_gap = get_station_count_before_distance_gap(
+                    event2, self.gap_dist_max_km
+                )
+                if station_count_before_gap is not None:
+                    arrivals_with_gap = get_arrival_with_distance_gap_greater_than(
+                        event2, self.gap_dist_max_km
+                    )
+                    gap_stations = []
+                    for a in arrivals_with_gap:
+                        p = next((pk for pk in event2.picks if pk.resource_id == a.pick_id), None)
+                        if p:
+                            gap_stations.append(f"{p.waveform_id.get_seed_string()} {a.phase} dist={a.distance*111.1:.0f}km")
+                    # FIXME: hardcoded threshold, should be passed as a NllLoc parameter
+                    if station_count_before_gap < 5:
+                        # Too few local stations support the solution: likely a fake event
+                        # driven by distant stations with no nearby corroboration.
+                        logger.warning(
+                            f"Rejected (automatic picks only): only {station_count_before_gap} station(s) "
+                            f"before gap_dist_max_km={self.gap_dist_max_km}km "
+                            f"< 5 (hardcoded). Likely fake event. "
+                            f"Arrivals beyond gap: {', '.join(gap_stations)}"
+                        )
+                        e.event_type = "not existing"
+                        if not self.keep_not_existing_event:
+                            return Catalog()
+                    else:
+                        logger.warning(
+                            f"Pass 2 (automatic picks only): {len(arrivals_with_gap)} arrival(s) beyond "
+                            f"gap_dist_max_km={self.gap_dist_max_km}km "
+                            f"({station_count_before_gap} station(s) before gap): {', '.join(gap_stations)}"
+                        )
 
                 # add this new origin to catalog and set it as preferred
                 # Remap arrivals in orig2 to reference picks in e.picks (not event2.picks)
