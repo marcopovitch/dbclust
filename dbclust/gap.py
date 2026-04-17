@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import logging
 from typing import List
+from typing import Optional
 from typing import Union
 
 import numpy as np
@@ -10,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_arrival_with_distance_gap_greater_than(
-    event: Event, dist_max_km: float, apply_to_evaluation_mode: list = ["automatic"]
-) -> Union[float, None]:
+    event: Event, dist_max_km: float, apply_to_evaluation_mode: list = ["automatic", None]
+) -> List:
     """Get arrival with distance greater than dist_max
 
     Args:
@@ -62,6 +63,67 @@ def get_arrival_with_distance_gap_greater_than(
             arrivals_to_unset.append(sorted_arrivals[i])
 
     return arrivals_to_unset
+
+
+def get_station_count_before_distance_gap(
+    event: Event,
+    dist_max_km: float,
+    apply_to_evaluation_mode: list = ["automatic", None],
+) -> Optional[int]:
+    """Return number of unique stations before the first distance gap > dist_max_km.
+
+    Only applies when all picks have an evaluation_mode listed in
+    apply_to_evaluation_mode. If any pick has an evaluation_mode outside
+    that list (e.g. "manual"), the function returns None to avoid filtering
+    manually reviewed events.
+
+    Args:
+        event (Event): event to work on
+        dist_max_km (float): gap threshold in km
+        apply_to_evaluation_mode (list): evaluation modes to consider for filtering.
+            Picks with a mode outside this list bypass the filter entirely.
+            Default: ["automatic", None] (purely automatic events).
+
+    Returns:
+        None if no gap is found, or if the event contains any pick whose
+        evaluation_mode is not in apply_to_evaluation_mode.
+        int: number of unique stations before the gap if a gap is found.
+    """
+    origin = event.preferred_origin()
+    if not origin:
+        return None
+
+    sorted_arrivals = sorted(
+        [a for a in origin.arrivals if a.distance is not None],
+        key=lambda x: x.distance,
+    )
+    if len(sorted_arrivals) < 2:
+        return None
+
+    dist_list = [
+        sorted_arrivals[i].distance - sorted_arrivals[i - 1].distance
+        for i in range(1, len(sorted_arrivals))
+    ]
+
+    # If any pick has an evaluation_mode outside the allowed list, skip filtering
+    if any(p.evaluation_mode not in apply_to_evaluation_mode for p in event.picks):
+        return None
+
+    for i, gap in enumerate(dist_list):
+        if gap >= dist_max_km / 111.1:
+            arrivals_before = sorted_arrivals[: i + 1]
+            stations_before = set()
+            for a in arrivals_before:
+                pick = next(
+                    (p for p in event.picks if p.resource_id == a.pick_id), None
+                )
+                if pick is not None:
+                    stations_before.add(
+                        (pick.waveform_id.network_code, pick.waveform_id.station_code)
+                    )
+            return len(stations_before)
+
+    return None  # no gap found
 
 
 def get_closest_station_dist_km(event: Event) -> Union[float, None]:
