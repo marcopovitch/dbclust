@@ -881,23 +881,22 @@ class NllLoc(object):
             zone, zone_template, zone_model_id = self._get_zone_and_template(
                 o.latitude, o.longitude
             )
-            # Update template/model_id only if:
-            # - No preloc (.vel doesn't exist)
-            # - No forced zone (self.force_zone_name is None) - if zone is forced, template was already set
-            # - No forced template from caller
+            # Update template/model_id for second pass based on NLL first-pass position.
+            # The preloc (.vel) guided the first pass, but the NLL result may fall in a different zone.
+            # We always trust the NLL-derived zone for the second pass (unless zone or template is forced).
             zone_is_valid = zone is not None and len(zone) > 0
             if (
                 zone_is_valid
-                and not os.path.exists(vel_file)
                 and not self.force_zone_name
                 and not force_template
                 and zone_template
             ):
-                # No preloc and no forced zone: use detected zone's template for the second pass
+                # Use detected zone's template for the second pass (even if preloc existed)
                 nll_template = zone_template
                 model_id = zone_model_id
                 logger.info(
                     f"Second pass: using zone '{zone['name']}' template: {nll_template}, model: {model_id}"
+                    + (" [overrides preloc zone]" if os.path.exists(vel_file) else "")
                 )
 
             # Clean up picks based on zone polygons
