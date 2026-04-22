@@ -10,6 +10,7 @@ import logging
 import os
 import random
 import time
+from pathlib import Path
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -129,8 +130,9 @@ class ExecutorBase(ABC):
             indexed_partitions = [(idx, p) for idx, p in indexed_partitions if idx not in done]
             logger.info(f"Resuming: {len(done)} tasks already done, {len(indexed_partitions)} remaining")
 
-        # Shuffle for load balancing
-        random.shuffle(indexed_partitions)
+        # Sort longest-first for load balancing (avoids slow stragglers at the end).
+        # Falls back to random shuffle if no prior profile exists.
+        indexed_partitions = self._sort_longest_first(indexed_partitions)
 
         # Initialize CSV file for progress tracking (append mode when resuming)
         if not done:
@@ -157,6 +159,54 @@ class ExecutorBase(ABC):
         logger.info(f"Parallel execution completed with {self.name}")
 
         return results
+
+    def _sort_longest_first(self, indexed_partitions: List[Tuple]) -> List[Tuple]:
+        """Sort partitions longest-first using durations from a previous task_profiles.csv.
+
+        Unknown partitions (no prior record) are shuffled and appended after known ones.
+        Falls back to random shuffle if no profile file exists.
+        """
+        ref = self.cfg.parallel.task_profiles_reference_path
+        profile_path = Path(ref) if ref else Path(self.profile_csv_path)
+        if not profile_path.exists():
+            random.shuffle(indexed_partitions)
+            return indexed_partitions
+
+        durations: Dict[Tuple, float] = {}
+        try:
+            with open(profile_path, newline="") as f:
+                for row in csv.DictReader(f):
+                    key = (row["time_partition_start"], row["time_partition_end"])
+                    try:
+                        d = float(row["duration_sec"])
+                        if key not in durations or d > durations[key]:
+                            durations[key] = d
+                    except (ValueError, KeyError):
+                        pass
+        except Exception:
+            random.shuffle(indexed_partitions)
+            return indexed_partitions
+
+        known, unknown = [], []
+        for idx, (start, end) in indexed_partitions:
+            key = (str(start), str(end))
+            if key in durations:
+                known.append((idx, (start, end), durations[key]))
+            else:
+                unknown.append((idx, (start, end)))
+
+        known.sort(key=lambda x: x[2], reverse=True)
+        random.shuffle(unknown)
+
+        if known:
+            logger.info(
+                f"Task order: {len(known)} sorted by prior duration (longest first), "
+                f"{len(unknown)} unknown (shuffled)"
+            )
+        else:
+            logger.info("No prior duration data found, using random shuffle")
+
+        return [(idx, p) for idx, p, _ in known] + [(idx, p) for idx, p in unknown]
 
     @property
     def _completed_path(self) -> str:
