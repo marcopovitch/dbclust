@@ -999,6 +999,7 @@ class ParallelConfig:
     executor: Optional[str] = "parsl_thread"  # parsl_thread, parsl_hte, ray, dask
     oversubscription_factor: int = 5  # workers spend ~80% waiting for NLLoc subprocess
     task_profiles_path: Optional[str] = None  # Chemin vers task_profiles.csv
+    task_profiles_reference_path: Optional[str] = None  # Référence stable pour tri longest-first
     execution_summary_path: Optional[str] = None  # Chemin vers execution_summary.csv
 
     def __post_init__(self):

@@ -24,7 +24,7 @@ import warnings
 # Prevent thread explosion with numerical libraries (must be set before other imports)
 # Restricted to macOS: on Linux/HPC these are intentionally left unset so that
 # numerical libraries can use all available cores.
-if sys.platform == "darwin":
+if sys.platform == "darwin_disable":
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
