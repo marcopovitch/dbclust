@@ -89,6 +89,9 @@ def get_station_count_before_distance_gap(
         evaluation_mode is not in apply_to_evaluation_mode.
         int: number of unique stations before the gap if a gap is found.
     """
+    if dist_max_km is None:
+        return None
+
     origin = event.preferred_origin()
     if not origin:
         return None
