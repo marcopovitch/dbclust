@@ -136,6 +136,11 @@ class ParslHTEExecutor(ExecutorBase):
         except Exception:
             pass  # No active DFK, nothing to clean
 
+        # Suppress Parsl KeyError spam on stale job IDs from previous runs.
+        # parsl.utils logs these at ERROR level but explicitly says "proceeding anyway" — harmless.
+        logging.getLogger("parsl.utils").setLevel(logging.CRITICAL)
+        logging.getLogger("parsl.providers.slurm.slurm").setLevel(logging.CRITICAL)
+
         # Reduce Parsl logging noise - must be done BEFORE creating executor
         if hasattr(parsl, "set_stream_logger"):
             parsl.set_stream_logger(level=logging.WARNING)
