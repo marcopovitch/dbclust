@@ -26,7 +26,7 @@ from dbclust.clusterize import get_picks_from_event
 from dbclust.clusterize import merge_cluster_with_common_phases
 from dbclust.config import DBClustConfig
 from dbclust.db import duckdb_init
-from dbclust.dbclust2pyocto import adjust_associator_tolerance
+from dbclust.dbclust2pyocto import adjust_associator_tolerance_two_phase as adjust_associator_tolerance
 from dbclust.inject_spatialite import (
     create_schema,
     import_catalog_to_sqlite,
@@ -105,6 +105,38 @@ def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
     keep = results[results["unload"] != True]
     keep = keep.drop(columns=["unload"])
     return keep
+
+
+def get_cross_partition_picks(
+    con, start, overlap_timedelta, global_start, known_event_ids: list
+) -> tuple:
+    """Fetch picks from the backward overlap zone for cross-partition events.
+
+    Returns two DataFrames:
+    - catalogued: picks whose event_id is already seen in the normal window.
+      Injected into df_subset before HDBSCAN to complete cross-partition events.
+    - automatic: DL picks (no event_id) from the backward overlap zone.
+      Also injected into df_subset before HDBSCAN so they can be clustered
+      with cross-partition events and improve their localization quality.
+    """
+    empty = pd.DataFrame()
+    backward_start = max(start - overlap_timedelta, global_start)
+    if backward_start >= start:
+        return empty, empty
+
+    rqt = f"""
+        SELECT * FROM PICKS
+        WHERE phase_time BETWEEN '{backward_start}' AND '{start}'
+        AND phase_type IN ('P', 'Pg', 'Pn', 'S', 'Sg', 'Sn')
+    """
+    df_all = con.sql(rqt).fetchdf()
+    if df_all.empty:
+        return empty, empty
+
+    df_auto = df_all[df_all["event_id"].isna()].copy()
+    df_cat = df_all[df_all["event_id"].isin(known_event_ids)].copy() if known_event_ids else empty
+
+    return df_cat, df_auto
 
 
 def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
@@ -357,6 +389,32 @@ def dbclust(
             else:
                 df_subset["phase_time"] = df_subset["phase_time"].dt.tz_convert("UTC")
 
+            # First window of non-first parallel jobs: inject both catalogued and
+            # automatic (DL) picks from the backward overlap zone so that cross-partition
+            # events are reconstructed with the full pick set before HDBSCAN.
+            if parallel_mode and job_index > 0 and i == 1:
+                known_event_ids = df_subset["event_id"].dropna().unique().tolist()
+                global_start = pd.Timestamp(cfg.pick.start).tz_localize(None)
+                df_cat, df_auto = get_cross_partition_picks(
+                    con, start, overlap_timedelta, global_start, known_event_ids
+                )
+                for df_inject, label in [(df_cat, "catalogued"), (df_auto, "automatic")]:
+                    if len(df_inject) == 0:
+                        continue
+                    logger.info(
+                        f"[{job_index}] Injecting {len(df_inject)} {label} cross-partition picks "
+                        f"from [{start - overlap_timedelta}, {start}]"
+                    )
+                    # Normalize dtypes before concat
+                    for col in df_inject.columns:
+                        if col == "phase_time":
+                            if df_inject[col].dt.tz is None:
+                                df_inject[col] = df_inject[col].dt.tz_localize("UTC")
+                            else:
+                                df_inject[col] = df_inject[col].dt.tz_convert("UTC")
+                        elif col in df_subset.columns:
+                            df_inject[col] = df_inject[col].astype(df_subset[col].dtype)
+                    df_subset = pd.concat([df_inject, df_subset]).drop_duplicates()
         else:
             df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
 
@@ -439,6 +497,7 @@ def dbclust(
         # Instantiate a new tool to get clusters
         myclust = get_clusterize_from_config(cfg, phases=phases)
         del phases
+
 
         if logger.level == logging.DEBUG:
             logger.info("myclust:")
@@ -535,7 +594,17 @@ def dbclust(
                     f"pick_in_overlapped_zone={event_in_overlapped_zone}"
                 )
 
-                if not last_job and event_in_overlapped_zone:
+                if parallel_mode and job_index > 0 and i == 1 and last_pick_time < start:
+                    # Event fully in the backward overlap zone — belongs to previous job.
+                    for line in format_event(event, "***D"):
+                        logger.info(line)
+                    logger.info(
+                        f"Event in backward overlap zone (last_pick={last_pick_time} < partition_start={start}), suppressed ({event.resource_id.id})"
+                    )
+                    locator.catalog.events.remove(event)
+                    locator.nb_events = len(locator.catalog)
+                    clustcat = locator.catalog
+                elif not (last_partition_job and last_job) and event_in_overlapped_zone:
                     for line in format_event(event, "***D"):
                         logger.info(line)
                     logger.info(
@@ -546,20 +615,32 @@ def dbclust(
                     clustcat = locator.catalog
                 elif (
                     event.event_type != "not existing"
-                    and not last_job
+                    and not (last_partition_job and last_job)
                     and first_pick_time < next_begin
                     and last_pick_time >= next_begin
                 ):
-                    for line in format_event(event, "***P"):
-                        logger.info(line)
-                    logger.info(
-                        f"Found event between normal and overlapped zone where picks must be (P)runed ({event.resource_id.id})"
-                    )
-                    picks_to_remove = []
-                    for origin in event.origins:
-                        picks_to_remove += get_picks_from_event(
-                            event, origin, next_begin
+                    if last_partition_job:
+                        # Event straddles the partition boundary: suppress here so
+                        # the next job localizes it with the full pick set.
+                        for line in format_event(event, "***D"):
+                            logger.info(line)
+                        logger.info(
+                            f"Cross-partition event suppressed, next job will handle it ({event.resource_id.id})"
                         )
+                        locator.catalog.events.remove(event)
+                        locator.nb_events = len(locator.catalog)
+                        clustcat = locator.catalog
+                    else:
+                        for line in format_event(event, "***P"):
+                            logger.info(line)
+                        logger.info(
+                            f"Found event between normal and overlapped zone where picks must be (P)runed ({event.resource_id.id})"
+                        )
+                        picks_to_remove = []
+                        for origin in event.origins:
+                            picks_to_remove += get_picks_from_event(
+                                event, origin, next_begin
+                            )
                 else:
                     for line in format_event(event, "****"):
                         logger.info(line)
