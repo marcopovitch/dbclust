@@ -236,7 +236,7 @@ class Phase:
     def __hash__(self) -> int:
         return int(
             hash(
-                (self.network, self.station, self.phase, self.time.datetime, self.proba)
+                (self.network, self.station, self.phase, self.time.datetime, self.proba, self.event_id)
             )
         )
 

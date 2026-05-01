@@ -143,6 +143,134 @@ def adjust_associator_tolerance(
     return None
 
 
+def adjust_associator_tolerance_two_phase(
+    myclust,
+    cfg,
+    tolerance_steps={1: 0.5, 0: 0.1},
+    min_tolerance=0.5,
+    include_noise_in_aggregation=False,
+    log_level=logging.INFO,
+):
+    """Two-phase PyOcto tolerance calibration.
+
+    Phase 1: linear decay on catalogued picks only (picks with event_id) —
+    fast convergence on small volume.
+    Phase 2: single final pass on all picks with the calibrated tolerance.
+
+    Falls back to single-phase behaviour if no catalogued picks are available.
+    """
+    import copy
+
+    associator = cfg.pyocto.current_model.associator
+
+    # Build catalogued-only clusters for phase 1 calibration
+    catalogued_clusters = [[p for p in c if p.event_id] for c in myclust.clusters]
+    catalogued_clusters = [c for c in catalogued_clusters if c]
+
+    if not catalogued_clusters:
+        logger.info("No catalogued picks found, falling back to single-phase decay.")
+        return adjust_associator_tolerance(
+            myclust, cfg, tolerance_steps, min_tolerance,
+            include_noise_in_aggregation, log_level,
+        )
+
+    n_cat = sum(len(c) for c in catalogued_clusters)
+    n_total = sum(len(c) for c in myclust.clusters)
+    logger.info(
+        f"Two-phase calibration: {n_cat} catalogued picks / {n_total} total picks"
+    )
+
+    # Phase 1: decay on catalogued picks to find best tolerance
+    myclust_cat = copy.copy(myclust)
+    myclust_cat.clusters = catalogued_clusters
+
+    initial_tolerance = associator.pick_match_tolerance  # Save initial tolerance
+    best_tolerance = initial_tolerance
+    tolerance = best_tolerance
+    best_result_cat = None
+    best_n_clusters = 0
+    phase1_converged = False  # Track if phase 1 converged successfully
+
+    logger.info(
+        f"Phase 1: calibrating tolerance on catalogued picks "
+        f"[{min_tolerance:.2f}, {tolerance:.2f}]"
+    )
+    while tolerance >= min_tolerance:
+        logger.info(f"Trying pick_match_tolerance: {tolerance:.2f} (catalogued only)")
+        associator.pick_match_tolerance = tolerance
+        try:
+            dbclust2pyocto(
+                myclust_cat,
+                cfg.pyocto.default_model_name,
+                associator,
+                cfg.pyocto.velocity_model,
+                cfg.cluster.min_picks_common,
+                delegate_dbclust=False,
+                include_noise_in_aggregation=False,
+                log_level=log_level,
+            )
+            best_tolerance = tolerance
+            phase1_converged = True  # Phase 1 converged successfully
+            logger.info(f"Phase 1: calibrated tolerance = {best_tolerance:.2f}")
+            break
+        except pyproj.exceptions.ProjError:
+            raise
+        except MultipleEventIDsWithSameAgencyError as e:
+            logger.warning(
+                f"Unsuccessful with pick_match_tolerance: {tolerance:.2f} (catalogued)."
+            )
+            if e.partial_result is not None:
+                n = e.partial_result.n_clusters
+                if n > best_n_clusters:
+                    best_n_clusters = n
+                    best_result_cat = e.partial_result
+                    best_tolerance = tolerance
+            step = next((s for t, s in tolerance_steps.items() if tolerance > t), 0.5)
+            tolerance -= step
+    else:
+        logger.warning(
+            f"Phase 1: exhausted tolerances, using best partial tolerance "
+            f"{best_tolerance:.2f}"
+        )
+
+    # Phase 2: single final pass on all picks using the calibrated tolerance from Phase 1.
+    # Using the initial (higher) tolerance would re-create the agency conflicts that Phase 1 resolved.
+    phase2_tolerance = best_tolerance
+    logger.info(f"Phase 2: tolerance={phase2_tolerance:.2f} (calibrated), phase1_converged={phase1_converged}")
+    associator.pick_match_tolerance = phase2_tolerance
+    try:
+        result = dbclust2pyocto(
+            myclust,
+            cfg.pyocto.default_model_name,
+            associator,
+            cfg.pyocto.velocity_model,
+            cfg.cluster.min_picks_common,
+            delegate_dbclust=cfg.pyocto.delegate_dbclust,
+            include_noise_in_aggregation=include_noise_in_aggregation,
+            log_level=log_level,
+        )
+        logger.info(f"Phase 2: success with tolerance={phase2_tolerance:.2f}")
+        return result
+    except pyproj.exceptions.ProjError:
+        raise
+    except MultipleEventIDsWithSameAgencyError as e:
+        logger.warning(
+            f"Phase 2: agency conflict persists at tolerance={phase2_tolerance:.2f}"
+        )
+        if e.partial_result is not None and e.partial_result.n_clusters > 0:
+            logger.warning(
+                f"Returning partial result with {e.partial_result.n_clusters} clusters"
+            )
+            return e.partial_result
+        if best_result_cat is not None:
+            logger.warning(
+                f"Returning phase 1 best partial result with {best_n_clusters} clusters"
+            )
+            return best_result_cat
+        logger.error("No usable result available.")
+        return None
+
+
 # def create_velocity_model(velocity_cfg: dict, model_path: str) -> None:
 #     """
 #     Create a 1D velocity model and save it to the specified path.
@@ -518,9 +646,24 @@ def cluster_merge_one_pass(
         # Check if clusters share event IDs
         eventid_shared = cluster_share_eventid(c1, c2, shared_threshold=min_com_phases)
 
-        if common_count >= min_com_phases or eventid_shared:
+        # Check if clusters share at least 1 event_id that appears >= 2 times in BOTH clusters.
+        # PyOcto may split a HDBSCAN cluster into sub-clusters that each inherit picks from the
+        # same catalogued events. Requiring >= 2 picks in each cluster for a shared event_id
+        # prevents spurious merges from a single contaminated pick, while still catching genuine
+        # splits even when only 1 agency sees the event (1 shared event_id with enough picks).
+        c1_counts = Counter(p.event_id for p in c1 if p.event_id)
+        c2_counts = Counter(p.event_id for p in c2 if p.event_id)
+        c1_event_ids = set(c1_counts.keys())
+        c2_event_ids = set(c2_counts.keys())
+        significant_shared = {
+            eid for eid in (c1_event_ids & c2_event_ids)
+            if c1_counts[eid] >= 2 and c2_counts[eid] >= 2
+        }
+        identical_event_ids = len(significant_shared) >= 1
+
+        if common_count >= min_com_phases or eventid_shared or identical_event_ids:
             logger.info(
-                f"Merging clusters: picks shared: {common_count}, event ID shared: {eventid_shared}"
+                f"Merging clusters: picks shared: {common_count}, event ID shared: {eventid_shared}, identical event_ids: {identical_event_ids}"
             )
             to_be_merged.append((c1_idx, c2_idx))
 
@@ -530,9 +673,15 @@ def cluster_merge_one_pass(
         if c1_idx in merged_indices or c2_idx in merged_indices:
             continue
 
-        # Merge the clusters
+        # Merge the clusters, deduplicating by physical pick identity (network/station/phase/time),
+        # preferring picks with event_id over those without
         c1, c2 = clusters[c1_idx], clusters[c2_idx]
-        merged_cluster = list(set(c1 + c2))
+        seen = {}
+        for p in c1 + c2:
+            key = (p.network, p.station, p.phase[0].upper(), p.time.datetime)
+            if key not in seen or (seen[key].event_id is None and p.event_id is not None):
+                seen[key] = p
+        merged_cluster = list(seen.values())
         clusters[c1_idx] = merged_cluster
 
         # Update prelocation data
@@ -575,9 +724,24 @@ def aggregate_pick_to_cluster_with_common_event_id(
     logger.info(
         f"aggregate_pick_to_cluster_with_common_event_id(): {len(clusters)} clusters"
     )
-    for cluster in clusters:
-        # Count the occurrences of event_id in the cluster
-        event_id_counts = Counter([p.event_id for p in cluster if p.event_id])
+    # Pre-compute event_id counts per cluster to assign each event_id
+    # to the cluster that already has the most picks for it.
+    cluster_event_counts = [
+        Counter(p.event_id for p in cluster if p.event_id)
+        for cluster in clusters
+    ]
+
+    # For each event_id, find the cluster index with the highest count
+    event_id_best_cluster = {}
+    for cluster_idx, counts in enumerate(cluster_event_counts):
+        for eid, count in counts.items():
+            if count > pick_count_threshold:
+                if eid not in event_id_best_cluster or count > event_id_best_cluster[eid][1]:
+                    event_id_best_cluster[eid] = (cluster_idx, count)
+
+    already_aggregated_event_ids = set()
+    for cluster_idx, cluster in enumerate(clusters):
+        event_id_counts = cluster_event_counts[cluster_idx]
         if event_id_counts:
             counts_str = ", ".join(
                 f"{eid.split('/')[-1]}({count} picks {'> threshold, will aggregate' if count > pick_count_threshold else f'<= threshold({pick_count_threshold}), skipped'})"
@@ -585,15 +749,15 @@ def aggregate_pick_to_cluster_with_common_event_id(
             )
             logger.info(f"Cluster has picks from known event(s): {counts_str}")
 
-        # count the number of agency in each event_id in event_id_counts
+        # Count agencies per event_id, but only for event_ids eligible for aggregation
+        # (strictly above pick_count_threshold). Below-threshold event_ids are minor
+        # contamination that will be skipped anyway, so they must not trigger a conflict.
         event_id_agency = {}
-        for p in picks:
-            if p.event_id in event_id_counts:
+        for p in cluster:
+            if p.event_id and event_id_counts.get(p.event_id, 0) > pick_count_threshold:
                 if p.event_id not in event_id_agency:
                     event_id_agency[p.event_id] = set()
                 event_id_agency[p.event_id].add(p.agency)
-        # if event_id_agency:
-        #     ic(event_id_agency)
 
         # Invert the mapping to find agencies associated with multiple event_ids
         agency_event_map = {}
@@ -615,23 +779,35 @@ def aggregate_pick_to_cluster_with_common_event_id(
         if duplicate_agency_event_ids:
             raise MultipleEventIDsWithSameAgencyError(duplicate_agency_event_ids)
 
-        # Check if any event_id has a count > pick_count_threshold
-        if not any(count > pick_count_threshold for count in event_id_counts.values()):
+        # Only aggregate event_ids for which this cluster is the best match
+        # and that have not already been aggregated into another cluster.
+        eligible_event_ids = {
+            eid for eid, count in event_id_counts.items()
+            if count > pick_count_threshold
+            and eid not in already_aggregated_event_ids
+            and event_id_best_cluster.get(eid, (None,))[0] == cluster_idx
+        }
+        if not eligible_event_ids:
             continue
 
         # Partition picks into those added to cluster and those remaining
         picks_to_add = [
             p for p in picks
-            if p.event_id
-            and p.event_id in event_id_counts
-            and event_id_counts[p.event_id] > pick_count_threshold
+            if p.event_id and p.event_id in eligible_event_ids
         ]
         cluster.extend(picks_to_add)
         added = set(id(p) for p in picks_to_add)
         picks = [p for p in picks if id(p) not in added]
+        already_aggregated_event_ids.update(eligible_event_ids)
 
-        # Remove duplicates in the cluster
-        cluster = list(set(cluster))
+        # Remove duplicates by physical pick identity (network, station, phase, time),
+        # preferring picks with an event_id over those without (catalog over DL picks).
+        seen: dict = {}
+        for p in cluster:
+            key = (p.network, p.station, p.phase[0].upper(), p.time.datetime)
+            if key not in seen or (seen[key].event_id is None and p.event_id is not None):
+                seen[key] = p
+        cluster = list(seen.values())
 
     return clusters
 

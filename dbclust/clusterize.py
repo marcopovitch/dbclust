@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import datetime
 import functools
 import json
 import logging
@@ -11,6 +12,7 @@ from math import isnan
 from math import pow
 from math import sqrt
 from typing import List
+from typing import Optional
 from typing import Tuple
 
 import hdbscan
@@ -98,7 +100,7 @@ def cluster_share_eventid(
     return any(count >= shared_threshold for count in shared_counts.values())
 
 
-def get_picks_from_event(event: Event, origin: Origin, time) -> List:
+def get_picks_from_event(event: Event, origin: Origin, time: Optional[datetime.datetime] = None) -> List:
     # station_id,phase_type,phase_time
     # 1K.OFAS0.00.EH.D,P,2023-02-13T18:30:58.558999Z
     lines = []
@@ -145,36 +147,63 @@ def feed_picks_probabilities(cat: Catalog, clusters: List[List[Phase]]) -> None:
                     )
 
 
+# def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
+#     for event in cat:
+#         o = event.preferred_origin()
+#         cluster_found = False
+#         event_ids = []
+#         for a in o.arrivals:
+#             if cluster_found:
+#                 break
+#             if a.time_weight and a.time_residual:
+#                 pick = next(
+#                     (p for p in event.picks if p.resource_id == a.pick_id), None
+#                 )
+#                 if pick is None:
+#                     continue
+#                 for c in clusters:
+#                     for cluster_pick in c:
+#                         if (
+#                             pick.waveform_id["station_code"] == cluster_pick.station
+#                             and pick.time == cluster_pick.time
+#                             # We don't check phase_hint because after relabelling
+#                             # (ex: P -> Pg), pick.phase_hint is modified but not cluster_pick.phase
+#                         ):
+#                             # cluster found
+#                             event_ids = list(set([p.event_id for p in c if p.event_id]))
+#                             cluster_found = True
+#                             break
+#                     if cluster_found:
+#                         break
+
+#         # event_ids = list(set([p.event_id for p in chain(*clusters) if p.event_id]))
+#         event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
+
 def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
+    # Build lookup dictionary: (station, time) -> cluster_event_ids
+    pick_to_cluster = {}
+    for c in clusters:
+        cluster_event_ids = list(set([p.event_id for p in c if p.event_id]))
+        for p in c:
+            # Convert UTCDateTime to float timestamp for hashability
+            key = (p.station, float(p.time))
+            pick_to_cluster[key] = cluster_event_ids
+    
     for event in cat:
         o = event.preferred_origin()
-        cluster_found = False
         event_ids = []
         for a in o.arrivals:
-            if cluster_found:
-                break
             if a.time_weight and a.time_residual:
                 pick = next(
                     (p for p in event.picks if p.resource_id == a.pick_id), None
                 )
-                if pick is None:
-                    continue
-                for c in clusters:
-                    for cluster_pick in c:
-                        if (
-                            pick.waveform_id["station_code"] == cluster_pick.station
-                            and pick.time == cluster_pick.time
-                            # We don't check phase_hint because after relabelling
-                            # (ex: P -> Pg), pick.phase_hint is modified but not cluster_pick.phase
-                        ):
-                            # cluster found
-                            event_ids = list(set([p.event_id for p in c if p.event_id]))
-                            cluster_found = True
-                            break
-                    if cluster_found:
-                        break
-
-        # event_ids = list(set([p.event_id for p in chain(*clusters) if p.event_id]))
+                if pick:
+                    # Convert UTCDateTime to float timestamp for hashability (consistent with key creation)
+                    key = (pick.waveform_id["station_code"], float(pick.time))
+                    if key in pick_to_cluster:
+                        event_ids = pick_to_cluster[key]
+                        break  # Found the cluster, no need to continue
+        
         event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
 
 
@@ -207,7 +236,7 @@ def merge_cluster_with_common_phases(
 
     for c2 in clusters2.clusters:
         merged = False
-        for c1 in clusters1.clusters:
+        for i, c1 in enumerate(clusters1.clusters):
             # Count common phases
             common_count = sum((Counter(c1) & Counter(c2)).values())
 
@@ -222,7 +251,13 @@ def merge_cluster_with_common_phases(
                     f"Merging cluster from clusters2 into clusters1: "
                     f"picks shared: {common_count}, event ID shared: {eventid_shared}"
                 )
-                c1[:] = list(set(c1 + c2))  # Update in place
+                # Deduplicate by physical pick identity, preferring picks with event_id over those without
+                seen = {}
+                for p in c1 + c2:
+                    key = (p.network, p.station, p.phase[0].upper(), p.time.datetime)
+                    if key not in seen or (seen[key].event_id is None and p.event_id is not None):
+                        seen[key] = p
+                clusters1.clusters[i] = list(seen.values())
                 merge_count += 1
                 merged = True
                 break
@@ -260,6 +295,7 @@ class Clusterize(object):
         max_search_dist=0,  # same as hdbscan cluster_selection_epsilon: default is 0.
         P_uncertainty=0.1,
         S_uncertainty=0.2,
+        min_com_phases=3,  # minimum common phases for merging clusters
         tt_matrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
         tt_matrix_save=False,
@@ -287,6 +323,7 @@ class Clusterize(object):
         self.min_station_score = min_station_score
         self.min_ps_ratio = min_ps_ratio
         self.force_keep_catalog_events = force_keep_catalog_events
+        self.min_com_phases = min_com_phases
 
         # pick filtering parameters
         self.P_uncertainty = P_uncertainty
@@ -322,7 +359,7 @@ class Clusterize(object):
             except Exception as e:
                 logger.error(e)
                 logger.error("Check your config file !")
-                sys.exit()
+                raise RuntimeError(f"Failed to load tt_matrix from {tt_matrix_fname}: {e}")
         else:
             # sequential computation
             # don't forget to activate lru_cache for compute_tt()
@@ -488,13 +525,13 @@ class Clusterize(object):
             if c_id == -1:
                 noise = cluster.copy()
                 noise_event_ids = Counter(
-                    p.event_id.split("/")[-1] for p in noise if p.event_id
+                    p.event_id.rsplit("/", 1)[-1] for p in noise if p.event_id
                 )
                 logger.debug(f"noise: {len(noise)} phases, event_ids: {dict(noise_event_ids)}")
             else:
                 clusters.append(cluster)
                 event_id_counts = Counter(
-                    p.event_id.split("/")[-1] for p in cluster if p.event_id
+                    p.event_id.rsplit("/", 1)[-1] for p in cluster if p.event_id
                 )
                 logger.debug(f"cluster[{c_id}]: {len(cluster)} phases, event_ids: {dict(event_id_counts)}")
 
@@ -521,8 +558,7 @@ class Clusterize(object):
             cluster_to_remove = []
             logger.debug("Working on cluster %s with %d phases" % (c1, len(c1)))
             for i, c2 in enumerate(self.clusters):
-                # FIXME: missing min_com_phases parameter
-                if cluster_share_eventid(c1, c2):
+                if cluster_share_eventid(c1, c2, shared_threshold=self.min_com_phases):
                     cluster_to_remove.append(c2)
                     clusters_to_merge.append(c2)
                 #     logger.info("Eventid shared.")
@@ -538,7 +574,11 @@ class Clusterize(object):
             final_cluster_list.append(new_cluster)
 
         # Sanity check: self.clusters should be empty
-        assert not len(self.clusters)
+        if len(self.clusters) > 0:
+            logger.error(
+                f"cluster_merge_based_on_eventid: self.clusters should be empty but contains {len(self.clusters)} clusters"
+            )
+            raise RuntimeError("Cluster merge logic error: self.clusters should be empty after merge")
         self.clusters = final_cluster_list
         self.n_clusters = len(self.clusters)
         self.clusters_stability = np.full(self.n_clusters, 1.0)
@@ -561,7 +601,7 @@ class Clusterize(object):
             stations_list = set([p.station for p in cluster])
 
             # Count the number of picks associated to a given event ID (needed for all filters)
-            event_id_counts = Counter([p.event_id.split("/")[-1] for p in cluster if p.event_id])
+            event_id_counts = Counter([p.event_id.rsplit("/", 1)[-1] for p in cluster if p.event_id])
 
             logger.info(
                 f"Generating nllobs for cluster {i} ({len(stations_list)} stations / {len(cluster)} picks)"
