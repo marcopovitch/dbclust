@@ -107,19 +107,12 @@ def get_picks_from_event(event: Event, origin: Origin, time) -> List:
             pick = next(
                 (p for p in event.picks if p.resource_id == arrival.pick_id), None
             )
-            if pick:
-                if time and pick.time >= time:
-                    line = [
-                        pick.waveform_id.get_seed_string(),
-                        pick.phase_hint,
-                        pick.time,
-                    ]
-                else:
-                    line = [
-                        pick.waveform_id.get_seed_string(),
-                        pick.phase_hint,
-                        pick.time,
-                    ]
+            if pick and (time is None or pick.time >= time):
+                line = [
+                    pick.waveform_id.get_seed_string(),
+                    pick.phase_hint,
+                    pick.time,
+                ]
                 lines.append(line)
     return sorted(lines, key=lambda l: l[2])
 
