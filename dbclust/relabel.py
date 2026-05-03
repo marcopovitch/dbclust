@@ -286,7 +286,11 @@ def get_distance_between_longest_edges(
     edges.sort(reverse=True, key=lambda x: x[0])
     longest_edges = edges[:2]
 
-    distance_between_longest_edges = longest_edges[0][1].distance(longest_edges[1][1])
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        distance_between_longest_edges = longest_edges[0][1].distance(longest_edges[1][1])
+    if np.isnan(distance_between_longest_edges) or distance_between_longest_edges == 0:
+        distance_between_longest_edges = 1.0
 
     edges_only = [edge for _, edge in edges]
 
