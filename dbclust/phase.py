@@ -222,7 +222,7 @@ class Phase:
             phase_hint=self.phase,
             method_id=method_id,
         )
-        if self.evaluation:
+        if self.evaluation and isinstance(self.evaluation, str):
             pick.evaluation_mode = self.evaluation
 
         pick.time_errors.uncertainty = self.time_uncertainty
