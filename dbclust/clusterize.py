@@ -236,9 +236,29 @@ def merge_cluster_with_common_phases(
 
     for c2 in clusters2.clusters:
         merged = False
+        c2_times = sorted(p.time for p in c2)
+        c2_t0 = c2_times[0] if c2_times else None
+        c2_t1 = c2_times[-1] if c2_times else None
+        c2_eids = [p.event_id for p in c2 if p.event_id]
+        logger.info(
+            f"merge_cluster_with_common_phases: c2 cluster [{c2_t0} .. {c2_t1}] "
+            f"{len(c2)} picks, {len(c2_eids)} with event_id"
+        )
         for i, c1 in enumerate(clusters1.clusters):
             # Count common phases
             common_count = sum((Counter(c1) & Counter(c2)).values())
+            # Also count spatiotemporal matches (station+phase+time, ignoring event_id)
+            c1_keys = {(p.network, p.station, p.phase[0].upper(), p.time.datetime) for p in c1}
+            c2_keys = {(p.network, p.station, p.phase[0].upper(), p.time.datetime) for p in c2}
+            spatio_count = len(c1_keys & c2_keys)
+            c1_times = sorted(p.time for p in c1)
+            c1_t0 = c1_times[0] if c1_times else None
+            c1_t1 = c1_times[-1] if c1_times else None
+            c1_eids = [p.event_id for p in c1 if p.event_id]
+            logger.info(
+                f"  vs c1[{i}] [{c1_t0} .. {c1_t1}] {len(c1)} picks, {len(c1_eids)} with event_id "
+                f"=> hash_common={common_count}, spatio_common={spatio_count}"
+            )
 
             # Check for shared event IDs
             eventid_shared = cluster_share_eventid(
@@ -247,7 +267,7 @@ def merge_cluster_with_common_phases(
 
             # Merge clusters if conditions are met
             if common_count >= min_com_phases or eventid_shared:
-                logger.debug(
+                logger.info(
                     f"Merging cluster from clusters2 into clusters1: "
                     f"picks shared: {common_count}, event ID shared: {eventid_shared}"
                 )
@@ -488,6 +508,7 @@ class Clusterize(object):
             # min_samples=None                          # default None
             allow_single_cluster=True,
             cluster_selection_epsilon=max_search_dist,  # default 0.0
+            cluster_selection_method="leaf",  # 'leaf' splits multi-event mega-clusters; 'eom' (default) merges sub-clusters upward
             metric="precomputed",
             n_jobs=-1,
         ).fit(pseudo_tt)

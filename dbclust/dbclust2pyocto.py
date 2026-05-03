@@ -90,14 +90,18 @@ def adjust_associator_tolerance(
                             otherwise returns None.
     """
     associator = cfg.pyocto.current_model.associator
-    tolerance = associator.pick_match_tolerance
+    initial_tolerance = associator.pick_match_tolerance
+    tolerance = initial_tolerance
 
     best_result = None
     best_n_clusters = 0
 
-    logger.info(f"Starting linear decay for pick_match_tolerance: {tolerance}")
+    logger.info(
+        f"--- Single-phase: tolerance decay [{min_tolerance:.2f}..{tolerance:.2f}] "
+        f"on {sum(len(c) for c in myclust.clusters)} picks ---"
+    )
     while tolerance >= min_tolerance:
-        logger.info(f"Trying pick_match_tolerance: {tolerance:.2f}")
+        logger.info(f"  Trying pick_match_tolerance: {tolerance:.2f}")
         associator.pick_match_tolerance = tolerance
         try:
             result_myclust = dbclust2pyocto(
@@ -110,7 +114,8 @@ def adjust_associator_tolerance(
                 include_noise_in_aggregation=include_noise_in_aggregation,
                 log_level=log_level,
             )
-            logger.info(f"Success with pick_match_tolerance: {tolerance:.2f}")
+            logger.info(f"--- Single-phase: SUCCESS at tolerance={tolerance:.2f} ---")
+            associator.pick_match_tolerance = initial_tolerance
             return result_myclust
         except pyproj.exceptions.ProjError as e:
             # Skip processing if projection error occurs, likely due to too far away stations
@@ -132,7 +137,8 @@ def adjust_associator_tolerance(
             step = next((s for t, s in tolerance_steps.items() if tolerance > t), 0.5)
             tolerance -= step
 
-    logger.error("Exhausted all tolerances.")
+    logger.error("--- Single-phase: FAILED (exhausted all tolerances) ---")
+    associator.pick_match_tolerance = initial_tolerance
     if best_result is not None:
         logger.warning(
             f"Returning best partial result with {best_n_clusters} clusters "
@@ -141,6 +147,18 @@ def adjust_associator_tolerance(
         return best_result
     logger.error("No partial result available. Skipping pyocto processing.")
     return None
+
+
+def _clusters_share_stations(c1, c2, min_common=3):
+    """Return True if two pick-lists share at least min_common unique stations.
+
+    Used to suppress Phase 2b DL-only clusters that are near-duplicates of
+    a Phase 1 catalogued cluster: if they share enough stations they represent
+    the same physical earthquake, regardless of origin-time or location.
+    """
+    s1 = {(p.network, p.station) for p in c1}
+    s2 = {(p.network, p.station) for p in c2}
+    return len(s1 & s2) >= min_common
 
 
 def adjust_associator_tolerance_two_phase(
@@ -163,9 +181,15 @@ def adjust_associator_tolerance_two_phase(
 
     associator = cfg.pyocto.current_model.associator
 
-    # Build catalogued-only clusters for phase 1 calibration
+    # Build catalogued-only clusters for phase 1 calibration.
+    # Include noise picks with event_id as an extra cluster so that distant
+    # catalogued stations (placed in noise by HDBSCAN due to max_search_dist)
+    # are also visible to PyOcto during calibration.
     catalogued_clusters = [[p for p in c if p.event_id] for c in myclust.clusters]
     catalogued_clusters = [c for c in catalogued_clusters if c]
+    noise_cat = [p for p in getattr(myclust, 'noise', []) if p.event_id]
+    if noise_cat:
+        catalogued_clusters.append(noise_cat)
 
     if not catalogued_clusters:
         logger.info("No catalogued picks found, falling back to single-phase decay.")
@@ -177,7 +201,7 @@ def adjust_associator_tolerance_two_phase(
     n_cat = sum(len(c) for c in catalogued_clusters)
     n_total = sum(len(c) for c in myclust.clusters)
     logger.info(
-        f"Two-phase calibration: {n_cat} catalogued picks / {n_total} total picks"
+        f"--- Two-phase calibration: {n_cat} catalogued / {n_total} total picks ---"
     )
 
     # Phase 1: decay on catalogued picks to find best tolerance
@@ -192,14 +216,15 @@ def adjust_associator_tolerance_two_phase(
     phase1_converged = False  # Track if phase 1 converged successfully
 
     logger.info(
-        f"Phase 1: calibrating tolerance on catalogued picks "
-        f"[{min_tolerance:.2f}, {tolerance:.2f}]"
+        f"--- Phase 1: tolerance decay [{min_tolerance:.2f}..{tolerance:.2f}] "
+        f"on {n_cat} catalogued picks ---"
     )
+    result_cat = None
     while tolerance >= min_tolerance:
-        logger.info(f"Trying pick_match_tolerance: {tolerance:.2f} (catalogued only)")
+        logger.info(f"  Trying pick_match_tolerance: {tolerance:.2f} (catalogued only)")
         associator.pick_match_tolerance = tolerance
         try:
-            dbclust2pyocto(
+            result_cat = dbclust2pyocto(
                 myclust_cat,
                 cfg.pyocto.default_model_name,
                 associator,
@@ -210,8 +235,8 @@ def adjust_associator_tolerance_two_phase(
                 log_level=log_level,
             )
             best_tolerance = tolerance
-            phase1_converged = True  # Phase 1 converged successfully
-            logger.info(f"Phase 1: calibrated tolerance = {best_tolerance:.2f}")
+            phase1_converged = True
+            logger.info(f"--- Phase 1: SUCCESS, calibrated tolerance={best_tolerance:.2f} ---")
             break
         except pyproj.exceptions.ProjError:
             raise
@@ -229,46 +254,171 @@ def adjust_associator_tolerance_two_phase(
             tolerance -= step
     else:
         logger.warning(
-            f"Phase 1: exhausted tolerances, using best partial tolerance "
-            f"{best_tolerance:.2f}"
+            f"--- Phase 1: FAILED (exhausted tolerances), "
+            f"using best partial tolerance={best_tolerance:.2f} ---"
+        )
+        result_cat = best_result_cat
+
+    if result_cat is None or result_cat.n_clusters == 0:
+        # No catalogued clusters to use as seeds — fall back to single-phase on all picks
+        logger.warning("Phase 1 produced no clusters, falling back to single-phase on all picks.")
+        associator.pick_match_tolerance = initial_tolerance
+        return adjust_associator_tolerance(
+            myclust, cfg, tolerance_steps, min_tolerance,
+            include_noise_in_aggregation, log_level,
         )
 
-    # Phase 2: single final pass on all picks using the calibrated tolerance from Phase 1.
-    # Using the initial (higher) tolerance would re-create the agency conflicts that Phase 1 resolved.
-    phase2_tolerance = best_tolerance
-    logger.info(f"Phase 2: tolerance={phase2_tolerance:.2f} (calibrated), phase1_converged={phase1_converged}")
-    associator.pick_match_tolerance = phase2_tolerance
-    try:
-        result = dbclust2pyocto(
-            myclust,
-            cfg.pyocto.default_model_name,
-            associator,
-            cfg.pyocto.velocity_model,
-            cfg.cluster.min_picks_common,
-            delegate_dbclust=cfg.pyocto.delegate_dbclust,
-            include_noise_in_aggregation=include_noise_in_aggregation,
-            log_level=log_level,
-        )
-        logger.info(f"Phase 2: success with tolerance={phase2_tolerance:.2f}")
-        return result
-    except pyproj.exceptions.ProjError:
-        raise
-    except MultipleEventIDsWithSameAgencyError as e:
-        logger.warning(
-            f"Phase 2: agency conflict persists at tolerance={phase2_tolerance:.2f}"
-        )
-        if e.partial_result is not None and e.partial_result.n_clusters > 0:
-            logger.warning(
-                f"Returning partial result with {e.partial_result.n_clusters} clusters"
+    # Phase 2a: for each phase-1 cluster (seed), run PyOcto with initial_tolerance
+    # on seed + all remaining DL picks.  Keep only the cluster that contains the
+    # seed's catalogued picks; the other clusters produced by PyOcto are put back
+    # into the DL residual pool for phase 2b.
+    dl_picks = [p for c in myclust.clusters for p in c if not p.event_id]
+    if include_noise_in_aggregation:
+        dl_picks += [p for p in getattr(myclust, 'noise', []) if not p.event_id]
+    dl_pick_ids = {id(p) for p in dl_picks}
+
+    logger.info(
+        f"--- Phase 2a: enriching {result_cat.n_clusters} phase-1 cluster(s) "
+        f"with {len(dl_picks)} DL picks at tolerance={initial_tolerance:.2f} ---"
+    )
+
+    associator.pick_match_tolerance = initial_tolerance
+    enriched_clusters = []
+    enriched_preloc = []
+
+    # Process largest clusters first
+    cat_order = sorted(range(result_cat.n_clusters), key=lambda i: len(result_cat.clusters[i]), reverse=True)
+
+    # Noise pool maintained across iterations (catalogued + DL noise not yet consumed)
+    remaining_noise = list(getattr(myclust, 'noise', []))
+
+    for i in cat_order:
+        cat_cluster = result_cat.clusters[i]
+        cat_pick_ids = {id(p) for p in cat_cluster}
+
+        myclust_single = copy.copy(myclust)
+        myclust_single.clusters = [cat_cluster + dl_picks]
+        myclust_single.n_clusters = 1
+        myclust_single.clusters_stability = [1.0]
+        myclust_single.noise = remaining_noise
+        myclust_single.preloc = [result_cat.preloc[i]] if result_cat.preloc else []
+
+        try:
+            r = dbclust2pyocto(
+                myclust_single,
+                cfg.pyocto.default_model_name,
+                associator,
+                cfg.pyocto.velocity_model,
+                cfg.cluster.min_picks_common,
+                delegate_dbclust=True,
+                include_noise_in_aggregation=include_noise_in_aggregation,
+                skip_aggregation=True,
+                log_level=log_level,
             )
-            return e.partial_result
-        if best_result_cat is not None:
-            logger.warning(
-                f"Returning phase 1 best partial result with {best_n_clusters} clusters"
+        except (MultipleEventIDsWithSameAgencyError, pyproj.exceptions.ProjError):
+            r = None
+
+        if r is not None and r.n_clusters > 0:
+            # Find the cluster that contains the seed's catalogued picks
+            best_cluster, best_idx = max(
+                ((c, idx) for idx, c in enumerate(r.clusters)),
+                key=lambda ci: sum(1 for p in ci[0] if id(p) in cat_pick_ids)
             )
-            return best_result_cat
-        logger.error("No usable result available.")
-        return None
+            best_preloc = r.preloc[best_idx] if r.preloc and best_idx < len(r.preloc) else None
+
+            enriched_clusters.append(best_cluster)
+            enriched_preloc.append(best_preloc)
+
+            # DL picks from spurious clusters and unused picks go to the residual pool
+            all_r_pick_ids = {id(p) for c in r.clusters for p in c}
+            other_dl = [
+                p for idx, c in enumerate(r.clusters) if idx != best_idx
+                for p in c if id(p) in dl_pick_ids
+            ]
+            unused_dl = [p for p in dl_picks if id(p) not in all_r_pick_ids]
+            dl_picks = other_dl + unused_dl
+            dl_pick_ids = {id(p) for p in dl_picks}
+            # Update remaining noise pool (remove noise picks consumed by best_cluster)
+            best_pick_ids = {id(p) for p in best_cluster}
+            remaining_noise = [p for p in remaining_noise if id(p) not in best_pick_ids]
+            n_spurious = r.n_clusters - 1
+            logger.info(
+                f"  Phase-1 cluster {i}: enriched to {len(best_cluster)} picks, "
+                f"{n_spurious} spurious cluster(s) returned to DL pool, "
+                f"{len(dl_picks)} DL picks remaining"
+            )
+        else:
+            enriched_clusters.append(cat_cluster)
+            enriched_preloc.append(result_cat.preloc[i] if result_cat.preloc else None)
+            logger.info(f"  Phase-1 cluster {i}: kept as-is (PyOcto found nothing)")
+
+    # Phase 2b: run PyOcto on residual DL picks to find DL-only events
+    if dl_picks:
+        logger.info(
+            f"--- Phase 2b: searching {len(dl_picks)} residual DL picks "
+            f"for DL-only events at tolerance={initial_tolerance:.2f} ---"
+        )
+        myclust_dl = copy.copy(myclust)
+        myclust_dl.clusters = [dl_picks]
+        myclust_dl.n_clusters = 1
+        myclust_dl.clusters_stability = [1.0]
+        myclust_dl.noise = []
+        myclust_dl.preloc = []
+        try:
+            r_dl = dbclust2pyocto(
+                myclust_dl,
+                cfg.pyocto.default_model_name,
+                associator,
+                cfg.pyocto.velocity_model,
+                cfg.cluster.min_picks_common,
+                delegate_dbclust=False,
+                include_noise_in_aggregation=False,
+                log_level=log_level,
+            )
+            if r_dl is not None and r_dl.n_clusters > 0:
+                dl_prelocs = r_dl.preloc if r_dl.preloc else [None] * r_dl.n_clusters
+                filtered_clusters, filtered_preloc = [], []
+                for dl_clust, dl_pre in zip(r_dl.clusters, dl_prelocs):
+                    if any(_clusters_share_stations(dl_clust, ec) for ec in enriched_clusters):
+                        n_shared = max(
+                            len(
+                                {(p.network, p.station) for p in dl_clust}
+                                & {(p.network, p.station) for p in ec}
+                            )
+                            for ec in enriched_clusters
+                        )
+                        logger.info(
+                            f"--- Phase 2b: suppressing DL-only cluster"
+                            f" ({len(dl_clust)} picks, {n_shared} stations shared with Phase 1)"
+                            f" — duplicate of a catalogued cluster ---"
+                        )
+                    else:
+                        filtered_clusters.append(dl_clust)
+                        filtered_preloc.append(dl_pre)
+                if filtered_clusters:
+                    logger.info(f"--- Phase 2b: found {len(filtered_clusters)} DL-only cluster(s) ---")
+                    enriched_clusters += filtered_clusters
+                    enriched_preloc += filtered_preloc
+                else:
+                    logger.info("--- Phase 2b: no DL-only events found (all suppressed as duplicates) ---")
+            else:
+                logger.info("--- Phase 2b: no DL-only events found ---")
+        except (MultipleEventIDsWithSameAgencyError, pyproj.exceptions.ProjError):
+            logger.warning("--- Phase 2b: PyOcto failed on residual DL picks, skipping ---")
+
+    if not enriched_clusters:
+        logger.warning("Phase 2 produced no clusters.")
+        associator.pick_match_tolerance = initial_tolerance
+        return result_cat
+
+    associator.pick_match_tolerance = initial_tolerance
+    newclust = copy.copy(myclust)
+    newclust.clusters = enriched_clusters
+    newclust.n_clusters = len(enriched_clusters)
+    newclust.clusters_stability = [1.0] * len(enriched_clusters)
+    newclust.preloc = enriched_preloc
+    logger.info(f"--- Phase 2: SUCCESS, {newclust.n_clusters} cluster(s) total ---")
+    return newclust
 
 
 # def create_velocity_model(velocity_cfg: dict, model_path: str) -> None:
@@ -317,6 +467,7 @@ def dbclust2pyocto(
     min_com_phases: int,
     delegate_dbclust: bool = False,
     include_noise_in_aggregation: bool = False,
+    skip_aggregation: bool = False,
     log_level=logging.INFO,
 ) -> Optional[Clusterize]:
     """
@@ -334,6 +485,8 @@ def dbclust2pyocto(
             aggregate_pick_to_cluster_with_common_event_id(). Useful to recover small events
             whose picks were classified as noise because they overlapped with a larger event.
             Defaults to False.
+        skip_aggregation (bool, optional): If True, skip aggregate_pick_to_cluster_with_common_event_id().
+            Used in Phase 2a where the seed already contains the catalogued picks. Defaults to False.
         log_level (int, optional): Logging level. Defaults to logging.INFO.
 
     Returns:
@@ -572,16 +725,25 @@ def dbclust2pyocto(
     newclust.clusters_stability = [1] * newclust.n_clusters  # unused but needed
     newclust.preloc = pyocto_preloc  # used to choose NLL velocity model
 
-    # Aggregate picks into clusters with shared event IDs
-    # If multiple event_ids share the same agency, attach the partial result to the
-    # exception so that the caller can use it as a fallback.
-    try:
-        pyocto_clusters = aggregate_pick_to_cluster_with_common_event_id(
-            pyocto_clusters, all_picks_list, min_com_phases
-        )
-    except MultipleEventIDsWithSameAgencyError as e:
-        e.partial_result = newclust
-        raise
+    # Only re-inject picks that PyOcto itself validated (same Phase object identity).
+    # all_picks_list may contain catalog picks from distant stations (e.g., national
+    # networks) that PyOcto correctly excluded via its velocity-model geographic range.
+    # Re-injecting those bypasses PyOcto's seismological validation and causes NLLoc
+    # to receive incoherent picks → NaN uncertainty on pass 0 → event silently dropped.
+    pyocto_selected_ids = {id(p) for c in pyocto_clusters for p in c}
+    picks_for_aggregation = [p for p in all_picks_list if id(p) in pyocto_selected_ids]
+
+    # Aggregate picks into clusters with shared event IDs.
+    # Skipped in Phase 2a (skip_aggregation=True) because the seed already contains
+    # the catalogued picks — re-aggregating would inject duplicates into best_cluster.
+    if not skip_aggregation:
+        try:
+            pyocto_clusters = aggregate_pick_to_cluster_with_common_event_id(
+                pyocto_clusters, picks_for_aggregation, min_com_phases
+            )
+        except MultipleEventIDsWithSameAgencyError as e:
+            e.partial_result = newclust
+            raise
 
     newclust.clusters = pyocto_clusters
     newclust.n_clusters = len(newclust.clusters)
