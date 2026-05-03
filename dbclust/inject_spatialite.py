@@ -2953,6 +2953,12 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
         cursor = conn.cursor()
 
         # Check and add columns to origins
+        # Check and add columns to events
+        _ensure_column(cursor, "events", "agency_names", "JSON")
+        _ensure_column(cursor, "events", "agency_ai_contributors", "JSON")
+        _ensure_column(cursor, "events", "multiple_same_agencies", "BOOLEAN")
+
+        # Check and add columns to origins
         _ensure_column(cursor, "origins", "station_score", "DOUBLE DEFAULT 0.0")
         _ensure_column(cursor, "origins", "ps_ratio", "DOUBLE")
 
