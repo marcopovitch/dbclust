@@ -19,6 +19,7 @@ from collections import defaultdict
 from itertools import combinations
 from math import fabs
 from math import isclose
+from math import isnan
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -1865,6 +1866,17 @@ class NllLoc(object):
 
             # check if pick is within zone
             if arrival.phase in ["P", "S", "Pg", "Pn", "Sg", "Sn"]:
+                try:
+                    _dist_check = float(arrival.distance)
+                    _dist_invalid = arrival.distance is None or isnan(_dist_check)
+                except (TypeError, ValueError):
+                    _dist_invalid = True
+                if _dist_invalid:
+                    logger.debug(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase}: "
+                        f"skipping polygon check (distance is None/NaN)"
+                    )
+                    continue
                 key, score, polygons_score, evaluation_score = (
                     get_best_polygon_for_point(
                         Point(arrival.distance, pick.time - orig.time),
