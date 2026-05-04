@@ -480,6 +480,50 @@ def adjust_associator_tolerance_two_phase(
 #     )
 
 
+def get_effective_min_pick_fraction(
+    cluster: list,
+    associator_cfg,
+    cluster_idx: int = 0,
+) -> float:
+    """Compute the effective min_pick_fraction for a cluster.
+
+    When adaptive_min_pick_fraction is enabled and multiple distinct event_ids
+    are present (multi-event cluster), the fraction is scaled by median DL
+    probability and floored at min_pick_fraction_floor, allowing PyOcto to
+    find smaller events within a densely populated cluster.
+
+    Returns associator_cfg.min_pick_fraction unchanged in all other cases.
+    """
+    if not associator_cfg.adaptive_min_pick_fraction:
+        return associator_cfg.min_pick_fraction
+
+    dl_method_ids = {m.upper() for m in associator_cfg.dl_method_ids}
+    dl_probas = [
+        p.proba for p in cluster
+        if p.method is not None
+        and isinstance(p.method, str)
+        and p.method.upper() in dl_method_ids
+    ]
+    median_proba = statistics.median(dl_probas) if dl_probas else 1.0
+    cluster_event_ids = {p.event_id for p in cluster if p.event_id}
+
+    if len(cluster_event_ids) > 1:
+        # Multiple catalogued events in cluster: scale fraction by DL quality
+        effective = max(
+            associator_cfg.min_pick_fraction_floor,
+            associator_cfg.min_pick_fraction * median_proba,
+        )
+        logger.info(
+            f"Cluster#{cluster_idx}: {len(cluster_event_ids)} distinct event_ids, "
+            f"median DL proba={median_proba:.3f} ({len(dl_probas)} DL picks), "
+            f"min_pick_fraction: {associator_cfg.min_pick_fraction} -> {effective:.3f} "
+            f"(floor={associator_cfg.min_pick_fraction_floor})"
+        )
+        return effective
+
+    return associator_cfg.min_pick_fraction
+
+
 def dbclust2pyocto(
     myclust: Clusterize,
     model_name: str,
@@ -538,28 +582,9 @@ def dbclust2pyocto(
         stations = get_stations_from_cluster(cluster)
         picks = get_picks_from_cluster(cluster)
 
-        # Detect multi-event clusters: if multiple distinct event_ids are present,
-        # reduce min_pick_fraction to allow PyOcto to find smaller events
-        cluster_event_ids = set(p.event_id for p in cluster if p.event_id)
-        if associator_cfg.adaptive_min_pick_fraction and len(cluster_event_ids) > 1:
-            dl_method_ids = {m.upper() for m in associator_cfg.dl_method_ids}
-            dl_probas = [
-                p.proba for p in cluster
-                if p.method is not None and isinstance(p.method, str) and p.method.upper() in dl_method_ids
-            ]
-            median_proba = statistics.median(dl_probas) if dl_probas else 1.0
-            effective_min_pick_fraction = max(
-                associator_cfg.min_pick_fraction_floor,
-                associator_cfg.min_pick_fraction * median_proba,
-            )
-            logger.info(
-                f"Cluster#{i}: {len(cluster_event_ids)} distinct event_ids detected, "
-                f"median DL proba={median_proba:.3f} ({len(dl_probas)} DL picks), "
-                f"reducing min_pick_fraction: {associator_cfg.min_pick_fraction} -> {effective_min_pick_fraction:.3f} "
-                f"(floor={associator_cfg.min_pick_fraction_floor})"
-            )
-        else:
-            effective_min_pick_fraction = associator_cfg.min_pick_fraction
+        effective_min_pick_fraction = get_effective_min_pick_fraction(
+            cluster, associator_cfg, cluster_idx=i
+        )
 
         # Step 1: pre-filter stations to max_lat_range/max_lon_range BEFORE computing
         # the range, so that extreme outliers do not corrupt min/max calculations.
