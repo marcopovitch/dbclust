@@ -177,8 +177,6 @@ def adjust_associator_tolerance_two_phase(
 
     Falls back to single-phase behaviour if no catalogued picks are available.
     """
-    import copy
-
     associator = cfg.pyocto.current_model.associator
 
     # Build catalogued-only clusters for phase 1 calibration.
@@ -325,6 +323,29 @@ def adjust_associator_tolerance_two_phase(
                 key=lambda ci: sum(1 for p in ci[0] if id(p) in cat_pick_ids)
             )
             best_preloc = r.preloc[best_idx] if r.preloc and best_idx < len(r.preloc) else None
+
+            # Re-inject catalogued picks (with event_id) from the Phase 2a seed that
+            # PyOcto rejected (unassigned). Only picks whose event_id is already
+            # represented in best_cluster are re-injected — this ensures they belong
+            # to the same physical event. NLL will judge them via residuals.
+            best_event_ids = {p.event_id for p in best_cluster if p.event_id}
+            best_keys = {
+                (p.network, p.station, p.phase[0].upper(), p.time.datetime)
+                for p in best_cluster
+            }
+            assigned_pick_ids = {id(p) for c in r.clusters for p in c}
+            rescued = [
+                p for p in cat_cluster
+                if id(p) not in assigned_pick_ids
+                and p.event_id in best_event_ids
+                and (p.network, p.station, p.phase[0].upper(), p.time.datetime) not in best_keys
+            ]
+            if rescued:
+                logger.info(
+                    f"  Phase-1 cluster {i}: re-injecting {len(rescued)} catalogued pick(s) "
+                    f"rejected by PyOcto but matching known event_ids."
+                )
+                best_cluster = best_cluster + rescued
 
             enriched_clusters.append(best_cluster)
             enriched_preloc.append(best_preloc)
@@ -695,8 +716,11 @@ def dbclust2pyocto(
                 get_clusters_from_assignment(cluster, events, assignments)
             )
 
+        assigned_pick_ids = set(assignments["pick_idx"].to_list()) if len(assignments) else set()
+        n_unassigned = len(cluster) - len(assigned_pick_ids)
         logger.info(
             f"\t{len(events)} events found in cluster#{i} with {len(cluster)} picks"
+            f" ({n_unassigned} unassigned by PyOcto)"
         )
 
     # Merge clusters with common picks or event IDs

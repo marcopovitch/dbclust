@@ -180,15 +180,16 @@ def feed_picks_probabilities(cat: Catalog, clusters: List[List[Phase]]) -> None:
 #         event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
 
 def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
-    # Build lookup dictionary: (station, time) -> cluster_event_ids
+    # Build lookup dictionary: (station, time.datetime) -> cluster_event_ids
+    # Use .datetime (Python datetime) rather than float() to avoid floating-point
+    # representation differences between two UTCDateTime objects for the same timestamp.
     pick_to_cluster = {}
     for c in clusters:
         cluster_event_ids = list(set([p.event_id for p in c if p.event_id]))
         for p in c:
-            # Convert UTCDateTime to float timestamp for hashability
-            key = (p.station, float(p.time))
+            key = (p.station, p.time.datetime)
             pick_to_cluster[key] = cluster_event_ids
-    
+
     for event in cat:
         o = event.preferred_origin()
         event_ids = []
@@ -198,12 +199,11 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
                     (p for p in event.picks if p.resource_id == a.pick_id), None
                 )
                 if pick:
-                    # Convert UTCDateTime to float timestamp for hashability (consistent with key creation)
-                    key = (pick.waveform_id["station_code"], float(pick.time))
+                    key = (pick.waveform_id["station_code"], pick.time.datetime)
                     if key in pick_to_cluster:
                         event_ids = pick_to_cluster[key]
                         break  # Found the cluster, no need to continue
-        
+
         event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
 
 
@@ -266,7 +266,8 @@ def merge_cluster_with_common_phases(
             )
 
             # Merge clusters if conditions are met
-            if common_count >= min_com_phases or eventid_shared:
+            # spatio_count is used as fallback when Phase.__hash__ differs due to event_id mismatch
+            if common_count >= min_com_phases or spatio_count >= min_com_phases or eventid_shared:
                 logger.info(
                     f"Merging cluster from clusters2 into clusters1: "
                     f"picks shared: {common_count}, event ID shared: {eventid_shared}"
@@ -576,19 +577,19 @@ class Clusterize(object):
             clusters_to_merge = []
             c1 = self.clusters.pop(0)
             clusters_to_merge.append(c1)
-            cluster_to_remove = []
+            indices_to_remove = []
             logger.debug("Working on cluster %s with %d phases" % (c1, len(c1)))
             for i, c2 in enumerate(self.clusters):
                 if cluster_share_eventid(c1, c2, shared_threshold=self.min_com_phases):
-                    cluster_to_remove.append(c2)
+                    indices_to_remove.append(i)
                     clusters_to_merge.append(c2)
                 #     logger.info("Eventid shared.")
                 # else:
                 #     logger.info("No eventid shared.")
 
-            # cleanup
-            for c in cluster_to_remove:
-                self.clusters.remove(c)
+            # Remove in reverse order to preserve indices
+            for i in reversed(indices_to_remove):
+                self.clusters.pop(i)
 
             # merge clusters
             new_cluster = list(chain(*clusters_to_merge))

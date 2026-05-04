@@ -533,6 +533,36 @@ def dbclust(
                 f"==> Last job in the time partition, merging all remaining clusters."
             )
             previous_myclust.merge(myclust)
+        elif myclust.n_clusters > 0:
+            # Promote all non-merged myclust clusters into previous_myclust so
+            # PyOcto Phase 2a can enrich them with the current window's DL picks.
+            # Without this, HDBSCAN clusters bypass PyOcto for a full window
+            # and miss DL picks that are only available in the current df_subset.
+            # The overlap rules (Rule 1 / Rule 3) in the localization section
+            # will correctly defer or prune events whose picks straddle next_begin.
+            logger.info(
+                f"Promoting {myclust.n_clusters} myclust cluster(s) "
+                f"into previous_myclust for immediate PyOcto processing."
+            )
+            # Collect DL picks (no event_id) from promoted clusters + noise so
+            # PyOcto Phase 2a can still use them as enrichment candidates.
+            # Without this, promoting clusters empties myclust.clusters and
+            # Phase 2a loses access to the DL picks from the current window.
+            extra_dl_picks = [
+                p for c in myclust.clusters for p in c if not p.event_id
+            ] + [p for p in myclust.noise if not p.event_id]
+            previous_myclust.clusters += myclust.clusters
+            previous_myclust.n_clusters = len(previous_myclust.clusters)
+            previous_myclust.clusters_stability = (
+                list(previous_myclust.clusters_stability) + [1.0] * myclust.n_clusters
+            )
+            previous_myclust.noise = list(getattr(previous_myclust, 'noise', [])) + extra_dl_picks
+            previous_myclust.n_noise = len(previous_myclust.noise)
+            myclust.clusters = []
+            myclust.n_clusters = 0
+            myclust.clusters_stability = []
+            myclust.noise = []
+            myclust.n_noise = 0
 
         if cfg.pyocto.enable and cfg.pyocto.current_model:
             # Restore original tolerance before each call so windows don't
