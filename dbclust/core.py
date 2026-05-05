@@ -102,7 +102,7 @@ def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
     results = pd.merge(
         df1, df2, how="left", on=["station_id", "phase_type", "phase_time"]
     )
-    keep = results[results["unload"] != True]
+    keep = results[results["unload"].isna()]
     keep = keep.drop(columns=["unload"])
     return keep
 
@@ -583,6 +583,11 @@ def dbclust(
                     logger.info("Cleaning previous_myclust.")
                     previous_myclust = get_clusterize_from_config(cfg, phases=None)
                 continue
+            except Exception as e:
+                import traceback
+                logger.error(f"Unexpected error in adjust_associator_tolerance(): {e}")
+                logger.error(traceback.format_exc())
+                raise
 
             if result is None:
                 logger.error("Failed to process with any pick_match_tolerance.")
@@ -708,6 +713,18 @@ def dbclust(
                             picks_to_remove += get_picks_from_event(
                                 event, origin, next_begin
                             )
+                        # Remove picks beyond next_begin from the event for the next iteration
+                        if picks_to_remove:
+                            logger.info(f"Removing {len(picks_to_remove)} picks from straddle event")
+                            for pick in picks_to_remove:
+                                # Remove pick from event's preferred origin picks
+                                if event.preferred_origin() and pick in event.preferred_origin().picks:
+                                    event.preferred_origin().picks.remove(pick)
+                                # Remove pick from all origins
+                                for origin in event.origins:
+                                    if pick in origin.picks:
+                                        origin.picks.remove(pick)
+                            logger.info(f"Event kept with {len(event.preferred_origin().picks) if event.preferred_origin() else 0} picks after pruning")
 
                 # Rule 4 — Normal acceptance
                 else:

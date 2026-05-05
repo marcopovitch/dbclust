@@ -7,7 +7,6 @@ import os
 import sys
 from collections import Counter, defaultdict
 from itertools import chain
-from itertools import product
 from math import isnan
 from math import pow
 from math import sqrt
@@ -18,7 +17,6 @@ from typing import Tuple
 import hdbscan
 import numpy as np
 import pandas as pd
-from icecream import ic
 from obspy import Catalog
 from obspy.core.event import Comment
 from obspy.core.event import CreationInfo
@@ -32,7 +30,6 @@ from tqdm import tqdm
 from dbclust.phase import import_phases
 from dbclust.phase import Phase
 from dbclust.quakeml import deduplicate_picks
-#import dask.bag as db
 
 # default logger (uses hierarchical name for selective level control)
 logger = logging.getLogger("dbclust.clusterize")
@@ -147,38 +144,6 @@ def feed_picks_probabilities(cat: Catalog, clusters: List[List[Phase]]) -> None:
                     )
 
 
-# def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
-#     for event in cat:
-#         o = event.preferred_origin()
-#         cluster_found = False
-#         event_ids = []
-#         for a in o.arrivals:
-#             if cluster_found:
-#                 break
-#             if a.time_weight and a.time_residual:
-#                 pick = next(
-#                     (p for p in event.picks if p.resource_id == a.pick_id), None
-#                 )
-#                 if pick is None:
-#                     continue
-#                 for c in clusters:
-#                     for cluster_pick in c:
-#                         if (
-#                             pick.waveform_id["station_code"] == cluster_pick.station
-#                             and pick.time == cluster_pick.time
-#                             # We don't check phase_hint because after relabelling
-#                             # (ex: P -> Pg), pick.phase_hint is modified but not cluster_pick.phase
-#                         ):
-#                             # cluster found
-#                             event_ids = list(set([p.event_id for p in c if p.event_id]))
-#                             cluster_found = True
-#                             break
-#                     if cluster_found:
-#                         break
-
-#         # event_ids = list(set([p.event_id for p in chain(*clusters) if p.event_id]))
-#         event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
-
 def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
     # Build lookup dictionary: (station, time.datetime) -> cluster_event_ids
     # Use .datetime (Python datetime) rather than float() to avoid floating-point
@@ -223,6 +188,7 @@ def merge_cluster_with_common_phases(
         Tuple: (updated clusters1, updated clusters2, number of merges performed).
     """
     new_clusters2 = []
+    new_stability2 = []
     merge_count = 0
 
     logger.debug(
@@ -234,7 +200,7 @@ def merge_cluster_with_common_phases(
         len(clusters2.clusters),
     )
 
-    for c2 in clusters2.clusters:
+    for j, c2 in enumerate(clusters2.clusters):
         merged = False
         c2_times = sorted(p.time for p in c2)
         c2_t0 = c2_times[0] if c2_times else None
@@ -279,21 +245,24 @@ def merge_cluster_with_common_phases(
                     if key not in seen or (seen[key].event_id is None and p.event_id is not None):
                         seen[key] = p
                 clusters1.clusters[i] = list(seen.values())
+                # Preserve the higher stability score from either merged cluster
+                clusters1.clusters_stability[i] = max(
+                    clusters1.clusters_stability[i],
+                    clusters2.clusters_stability[j],
+                )
                 merge_count += 1
                 merged = True
                 break
 
         if not merged:
             new_clusters2.append(c2)
+            new_stability2.append(clusters2.clusters_stability[j])
 
-    # Update clusters2 attributes
     clusters2.clusters = new_clusters2
     clusters2.n_clusters = len(new_clusters2)
-    clusters2.clusters_stability = np.ones(clusters2.n_clusters, dtype=float)
+    clusters2.clusters_stability = np.array(new_stability2, dtype=float) if new_stability2 else np.ones(0, dtype=float)
 
-    # Update clusters1 stability (not used but consistent with clusters2)
     clusters1.n_clusters = len(clusters1.clusters)
-    clusters1.clusters_stability = np.ones(clusters1.n_clusters, dtype=float)
 
     logger.debug(
         "merge_cluster_with_common_phases: Total merges performed: %d", merge_count
@@ -489,16 +458,6 @@ class Clusterize(object):
         dd = dist_km / vmean                      # (n, n)
         dt = times[:, None] - times[None, :]      # (n, n)
         return np.sqrt(dt ** 2 + dd ** 2)
-
-    # @staticmethod
-    # def dask_compute_tt_matrix(phases, vmean):
-    #     """Optimization to compute tt_matrix in //"""
-    #     # data = [sorted((p1, p2)) for p1 in phases for p2 in phases]
-    #     data = product(phases, repeat=2)
-    #     b = db.from_sequence(data)
-    #     tt_matrix_tmp = b.map(lambda x: compute_tt(*x, vmean)).compute()
-    #     tt_matrix = np.array(tt_matrix_tmp).reshape((len(phases), len(phases)))
-    #     return tt_matrix
 
     @staticmethod
     def get_clusters(phases, pseudo_tt, max_search_dist, min_cluster_size):
@@ -748,7 +707,7 @@ class Clusterize(object):
 
             # use pyocto pre-localization to select velocity model to be used
             # create vel_file with required information
-            if self.preloc:
+            if self.preloc and self.preloc[i]:
                 hypo = self.preloc[i]
                 logger.info(
                     f"Prelocalization is time={hypo['time']}, lat={hypo['latitude']}, "
@@ -830,9 +789,8 @@ class Clusterize(object):
         self.noise += clusters2.noise
         self.n_noise = len(self.noise)
 
-        # clusters_stability are ndarray ... not a list : should be fixed !
-        self.clusters_stability = np.array(
-            self.clusters_stability.tolist() + clusters2.clusters_stability.tolist()
+        self.clusters_stability = np.concatenate(
+            [self.clusters_stability, clusters2.clusters_stability]
         )
         # self.show_clusters()
 
