@@ -861,6 +861,8 @@ class Associator:
     dl_method_ids: List[str] = field(default_factory=lambda: ["PHASENET"])
     # Minimum S/P pick ratio to accept a PyOcto cluster (None = disabled)
     min_ps_ratio: Optional[float] = None
+    # Time-slicing size in seconds for PyOcto time blocks (default 1200)
+    time_slicing: float = 1200.0
 
 
 @dataclass
