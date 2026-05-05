@@ -286,6 +286,7 @@ class Clusterize(object):
         P_uncertainty=0.1,
         S_uncertainty=0.2,
         min_com_phases=3,  # minimum common phases for merging clusters
+        cluster_selection_method="eom",  # 'eom' (default) or 'leaf'
         tt_matrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
         tt_matrix_save=False,
@@ -314,6 +315,7 @@ class Clusterize(object):
         self.min_ps_ratio = min_ps_ratio
         self.force_keep_catalog_events = force_keep_catalog_events
         self.min_com_phases = min_com_phases
+        self.cluster_selection_method = cluster_selection_method
 
         # pick filtering parameters
         self.P_uncertainty = P_uncertainty
@@ -330,7 +332,8 @@ class Clusterize(object):
         logger.info(
             f"Starting Clustering (nb phases={len(phases)}, "
             f"min_cluster_size={min_cluster_size}, "
-            f"min_station_with_P_and_S={min_station_with_P_and_S})."
+            f"min_station_with_P_and_S={min_station_with_P_and_S}, "
+            f"cluster_selection_method={cluster_selection_method})."
         )
         if len(phases) < min_cluster_size:
             logger.info(f"Too few picks ({len(phases)}/{min_cluster_size})!")
@@ -377,7 +380,7 @@ class Clusterize(object):
             np.save(tt_matrix_fname, pseudo_tt)
 
         self.clusters, self.clusters_stability, self.noise = self.get_clusters(
-            phases, pseudo_tt, max_search_dist, min_cluster_size
+            phases, pseudo_tt, max_search_dist, min_cluster_size, cluster_selection_method
         )
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
@@ -460,15 +463,15 @@ class Clusterize(object):
         return np.sqrt(dt ** 2 + dd ** 2)
 
     @staticmethod
-    def get_clusters(phases, pseudo_tt, max_search_dist, min_cluster_size):
-        # metric is “precomputed” ==> X is assumed to be a distance matrix and must be square
+    def get_clusters(phases, pseudo_tt, max_search_dist, min_cluster_size, cluster_selection_method="eom"):
+        # metric is "precomputed" ==> X is assumed to be a distance matrix and must be square
 
         db = hdbscan.HDBSCAN(
             min_cluster_size=min_cluster_size,  # default 5
             # min_samples=None                          # default None
             allow_single_cluster=True,
             cluster_selection_epsilon=max_search_dist,  # default 0.0
-            cluster_selection_method="leaf",  # 'leaf' splits multi-event mega-clusters; 'eom' (default) merges sub-clusters upward
+            cluster_selection_method=cluster_selection_method,  # 'eom' merges sub-clusters (default); 'leaf' splits mega-clusters
             metric="precomputed",
             n_jobs=-1,
         ).fit(pseudo_tt)

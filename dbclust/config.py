@@ -486,6 +486,8 @@ class ClusterConfig:
     min_picks_common: int
     max_search_dist: Optional[float] = 0.0
     pre_computed_tt_matrix_file: Optional[str] = None
+    # HDBSCAN cluster selection method: 'eom' (default, merges sub-clusters) or 'leaf' (splits mega-clusters)
+    cluster_selection_method: str = "eom"
     # Include HDBSCAN noise picks in PyOcto aggregation (as an additional cluster)
     include_noise_in_aggregation: bool = False
     # Minimum S/P pick ratio to accept a localized event (None = disabled)

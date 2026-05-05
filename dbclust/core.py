@@ -239,6 +239,7 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         min_ps_ratio=cfg.cluster.min_ps_ratio,
         force_keep_catalog_events=cfg.cluster.force_keep_catalog_events,
         max_search_dist=cfg.cluster.max_search_dist,
+        cluster_selection_method=cfg.cluster.cluster_selection_method,
         P_uncertainty=cfg.pick.P_uncertainty,
         S_uncertainty=cfg.pick.S_uncertainty,
         tt_matrix_fname=cfg.cluster.pre_computed_tt_matrix_file,
