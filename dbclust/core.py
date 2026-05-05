@@ -617,121 +617,104 @@ def dbclust(
                     my_obs_path, picks=nll_picks, append=True
                 )
 
-                if cfg.nll.enable_scatter:
-                    logger.warning("FIXME: scatter file not yet handled !")
+                if len(clustcat) > 0:
+                    for event in sorted(clustcat.events, key=lambda e: e.preferred_origin().time):
+                        origin = event.preferred_origin()
+                        picks = get_picks_from_event(event, origin, None)
+                        if not picks:
+                            logger.warning(f"Event {event.resource_id.id} has no picks, skipping")
+                            continue
+                        _, _, first_pick_time = picks[0]
+                        _, _, last_pick_time = picks[-1]
 
-        if len(clustcat) > 0:
-            for event in sorted(
-                clustcat.events, key=lambda e: e.preferred_origin().time
-            ):
-                origin = event.preferred_origin()
-                picks = get_picks_from_event(event, origin, None)
-                if not picks:
-                    logger.warning(f"Event {event.resource_id.id} has no picks, skipping")
-                    continue
-                _, _, first_pick_time = picks[0]
-                _, _, last_pick_time = picks[-1]
+                        if not short_window:
+                            next_begin = end - overlap_timedelta
+                            event_in_overlapped_zone = first_pick_time > next_begin
+                        else:
+                            next_begin = end
+                            event_in_overlapped_zone = False
 
-                # check if the event is in the overlapped zone
-                event_in_overlapped_zone = False
-                if not short_window:
-                    next_begin = end - overlap_timedelta
-                    if first_pick_time > next_begin:
-                        event_in_overlapped_zone = True
-                else:
-                    next_begin = end
-
-                logger.info(
-                    f"Event first pick is: {first_pick_time}, last pick is: {last_pick_time}, "
-                    f"overlapped zone starts: {begin}, next overlapped zone starts: {next_begin}, "
-                    f"short_window={short_window}, last_job_partition={last_partition_job}, last_job={last_job}, "
-                    f"pick_in_overlapped_zone={event_in_overlapped_zone}"
-                )
-
-                # Rule 1 — Window overlap zone: first_pick falls beyond next_begin.
-                # The next window (or next job) will detect this event with more picks.
-                # DL picks appear naturally in the next window via the DB query — no
-                # deferred injection needed.
-                if not (last_partition_job and last_job) and event_in_overlapped_zone:
-                    for line in format_event(event, "***D"):
-                        logger.info(line)
-                    logger.info(
-                        f"Found event in overlapped zone to be (D)eleted ({event.resource_id.id})"
-                    )
-                    locator.catalog.events.remove(event)
-                    locator.nb_events = len(locator.catalog)
-                    clustcat = locator.catalog
-
-                # Rule 2 — Forward overlap zone (parallel mode, last window of job N):
-                # any event starting in [stop-overlap, stop] is always deferred to job N+1,
-                # which will reconstruct it with the full pick set via backward injection.
-                # No exception for complete events (last_pick < stop): we always defer to
-                # avoid duplicates when job N+1 assembles the event from backward picks.
-                elif (
-                    parallel_mode
-                    and not last_job
-                    and last_partition_job
-                    and first_pick_time >= stop - overlap_timedelta
-                ):
-                    for line in format_event(event, "***D"):
-                        logger.info(line)
-                    logger.info(
-                        f"Event in forward overlap zone (first_pick={first_pick_time} >= "
-                        f"stop-overlap={stop - overlap_timedelta}), deferred to next job "
-                        f"({event.resource_id.id})"
-                    )
-                    locator.catalog.events.remove(event)
-                    locator.nb_events = len(locator.catalog)
-                    clustcat = locator.catalog
-
-                # Rule 3 — Straddle: first_pick in normal zone but last_pick in overlap zone.
-                # Intermediate window: prune picks beyond next_begin and keep the event.
-                # Last window of job N (last_partition_job): suppress — job N+1 has full picks.
-                elif (
-                    event.event_type != "not existing"
-                    and not (last_partition_job and last_job)
-                    and first_pick_time < next_begin
-                    and last_pick_time >= next_begin
-                ):
-                    if last_partition_job:
-                        for line in format_event(event, "***D"):
-                            logger.info(line)
                         logger.info(
-                            f"Cross-partition event suppressed, next job will handle it ({event.resource_id.id})"
+                            f"Event first pick is: {first_pick_time}, last pick is: {last_pick_time}, "
+                            f"overlapped zone starts: {begin}, next overlapped zone starts: {next_begin}, "
+                            f"short_window={short_window}, last_job_partition={last_partition_job}, last_job={last_job}, "
+                            f"pick_in_overlapped_zone={event_in_overlapped_zone}"
                         )
-                        locator.catalog.events.remove(event)
-                        locator.nb_events = len(locator.catalog)
-                        clustcat = locator.catalog
-                    else:
-                        for line in format_event(event, "***P"):
-                            logger.info(line)
-                        logger.info(
-                            f"Found event between normal and overlapped zone where picks must be (P)runed ({event.resource_id.id})"
-                        )
-                        picks_to_remove = []
-                        for origin in event.origins:
-                            picks_to_remove += get_picks_from_event(
-                                event, origin, next_begin
+
+                        # Rule 1 — Window overlap zone: first_pick falls beyond next_begin.
+                        # The next window (or next job) will detect this event with more picks.
+                        # DL picks appear naturally in the next window via the DB query — no
+                        # deferred injection needed.
+                        if not (last_partition_job and last_job) and event_in_overlapped_zone:
+                            for line in format_event(event, "***D"):
+                                logger.info(line)
+                            logger.info(
+                                f"Found event in overlapped zone to be (D)eleted ({event.resource_id.id})"
                             )
-                        # Remove picks beyond next_begin from the event for the next iteration
-                        if picks_to_remove:
-                            logger.info(f"Removing {len(picks_to_remove)} picks from straddle event")
-                            for pick in picks_to_remove:
-                                # Remove pick from event's preferred origin picks
-                                if event.preferred_origin() and pick in event.preferred_origin().picks:
-                                    event.preferred_origin().picks.remove(pick)
-                                # Remove pick from all origins
-                                for origin in event.origins:
-                                    if pick in origin.picks:
-                                        origin.picks.remove(pick)
-                            logger.info(f"Event kept with {len(event.preferred_origin().picks) if event.preferred_origin() else 0} picks after pruning")
+                            locator.catalog.events.remove(event)
+                            locator.nb_events = len(locator.catalog)
+                            clustcat = locator.catalog
 
-                # Rule 4 — Normal acceptance
+                        # Rule 2 — Forward overlap zone (parallel mode, last window of job N):
+                        # any event starting in [stop-overlap, stop] is always deferred to job N+1,
+                        # which will reconstruct it with the full pick set via backward injection.
+                        # No exception for complete events (last_pick < stop): we always defer to
+                        # avoid duplicates when job N+1 assembles the event from backward picks.
+                        elif (
+                            parallel_mode
+                            and not last_job
+                            and last_partition_job
+                            and first_pick_time >= stop - overlap_timedelta
+                        ):
+                            for line in format_event(event, "***D"):
+                                logger.info(line)
+                            logger.info(
+                                f"Event in forward overlap zone (first_pick={first_pick_time} >= "
+                                f"stop-overlap={stop - overlap_timedelta}), deferred to next job "
+                                f"({event.resource_id.id})"
+                            )
+                            locator.catalog.events.remove(event)
+                            locator.nb_events = len(locator.catalog)
+                            clustcat = locator.catalog
+
+                        # Rule 3 — Straddle: first_pick in normal zone but last_pick in overlap zone.
+                        # Intermediate window: prune picks beyond next_begin and keep the event.
+                        # Last window of job N (last_partition_job): suppress — job N+1 has full picks.
+                        elif (
+                            event.event_type != "not existing"
+                            and not (last_partition_job and last_job)
+                            and first_pick_time < next_begin
+                            and last_pick_time >= next_begin
+                        ):
+                            if last_partition_job:
+                                for line in format_event(event, "***D"):
+                                    logger.info(line)
+                                logger.info(
+                                    f"Cross-partition event suppressed, next job will handle it ({event.resource_id.id})"
+                                )
+                                locator.catalog.events.remove(event)
+                                locator.nb_events = len(locator.catalog)
+                                clustcat = locator.catalog
+                            else:
+                                for line in format_event(event, "***P"):
+                                    logger.info(line)
+                                logger.info(
+                                    f"Found event between normal and overlapped zone where picks must be (P)runed ({event.resource_id.id})"
+                                )
+                                picks_to_remove = []
+                                for origin in event.origins:
+                                    event_picks = get_picks_from_event(
+                                        event, origin, next_begin
+                                    )
+                                    picks_to_remove += event_picks
+                                    logger.info(f"Collected {len(event_picks)} picks >= {next_begin} from origin for pruning")
+
+                        # Rule 4 — Normal acceptance
+                        else:
+                            for line in format_event(event, "****"):
+                                logger.info(line)
                 else:
-                    for line in format_event(event, "****"):
-                        logger.info(line)
-        else:
-            logger.info("No event found in theses clusters.")
+                    logger.info("No event found in theses clusters.")
 
         # Write picks probabilities and event_ids
         feed_picks_probabilities(clustcat, previous_myclust.clusters)
