@@ -91,7 +91,7 @@ def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
         Filtered DataFrame.
     """
     df2 = pd.DataFrame(picks, columns=["station_id", "phase_type", "phase_time"])
-    df2["station_id"] = df2["station_id"].map(lambda x: ".".join(x.split(".")[:2]))
+    df2["station_id"] = df2["station_id"].map(lambda x: ".".join(x.split(".")[:2]) if pd.notna(x) else x)
     df2["phase_time"] = pd.to_datetime(
         df2["phase_time"].map(lambda x: str(x)), utc=True
     )
@@ -102,7 +102,7 @@ def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
     results = pd.merge(
         df1, df2, how="left", on=["station_id", "phase_type", "phase_time"]
     )
-    keep = results[results["unload"] != True]
+    keep = results[~results["unload"]]
     keep = keep.drop(columns=["unload"])
     return keep
 
@@ -144,6 +144,14 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
     Returns:
         Configured NllLoc instance.
     """
+    # Type assertions and defaults for potentially None config values
+    gap_dist_max_km: int = int(cfg.relocation.gap_dist_max_km) if cfg.relocation.gap_dist_max_km is not None else 360
+    nll_min_phase: int = cfg.nll.min_phase if cfg.nll.min_phase is not None else 4
+    min_score_threshold_pick_zone: float = cfg.relocation.min_score_threshold_pick_zone if cfg.relocation.min_score_threshold_pick_zone is not None else 0.0
+    use_pick_zone: bool = cfg.relocation.use_pick_zone if cfg.relocation.use_pick_zone is not None else False
+    enable_relabel_pick_zone: bool = cfg.relocation.enable_relabel_pick_zone if cfg.relocation.enable_relabel_pick_zone is not None else False
+    enable_cleanup_pick_zone: bool = cfg.relocation.enable_cleanup_pick_zone if cfg.relocation.enable_cleanup_pick_zone is not None else False
+    
     locator = NllLoc(
         cfg.nll.nlloc_bin,
         cfg.nll.scat2latlon_bin,
@@ -158,12 +166,12 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         double_pass=cfg.relocation.double_pass,
         P_time_residual_threshold=cfg.relocation.P_time_residual_threshold,
         S_time_residual_threshold=cfg.relocation.S_time_residual_threshold,
-        gap_dist_max_km=cfg.relocation.gap_dist_max_km,
+        gap_dist_max_km=gap_dist_max_km,
         closest_station_dist_km=cfg.relocation.closest_station_dist_km,
         dist_km_cutoff=cfg.relocation.dist_km_cutoff,
         use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,
         keep_manual_picks=cfg.relocation.keep_manual_picks,
-        nll_min_phase=cfg.nll.min_phase,
+        nll_min_phase=nll_min_phase,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         min_station_score=cfg.cluster.min_station_score,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
@@ -171,11 +179,11 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         keep_scat=cfg.nll.enable_scatter,
         #
         zones=cfg.zones,
-        force_zone_name=None,
-        min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
-        use_pick_zone=cfg.relocation.use_pick_zone,
-        enable_relabel_pick_zone=cfg.relocation.enable_relabel_pick_zone,
-        enable_cleanup_pick_zone=cfg.relocation.enable_cleanup_pick_zone,
+        force_zone_name="",
+        min_score_threshold_pick_zone=min_score_threshold_pick_zone,
+        use_pick_zone=use_pick_zone,
+        enable_relabel_pick_zone=enable_relabel_pick_zone,
+        enable_cleanup_pick_zone=enable_cleanup_pick_zone,
         min_dist_relabel_deg=getattr(cfg.relocation, "min_dist_relabel_deg", 0.0),
         min_time_weight=getattr(cfg.relocation, "min_time_weight", None),
         enable_residual_threshold_with_pick_zone=getattr(cfg.relocation, "enable_residual_threshold_with_pick_zone", False),
@@ -197,20 +205,25 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
     Returns:
         Configured Clusterize instance.
     """
+    # Type assertions and defaults for potentially None config values
+    average_velocity: int = int(cfg.cluster.average_velocity) if cfg.cluster.average_velocity is not None else 5
+    max_search_dist: int = int(cfg.cluster.max_search_dist) if cfg.cluster.max_search_dist is not None else 100
+    tt_matrix_fname: str = cfg.cluster.pre_computed_tt_matrix_file or ""
+    
     myclust = Clusterize(
         phases=phases,
         min_cluster_size=cfg.cluster.min_cluster_size,
-        average_velocity=cfg.cluster.average_velocity,
+        average_velocity=average_velocity,
         min_station_count=cfg.cluster.min_station_count,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         min_station_score=cfg.cluster.min_station_score,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
         force_keep_catalog_events=cfg.cluster.force_keep_catalog_events,
-        max_search_dist=cfg.cluster.max_search_dist,
+        max_search_dist=max_search_dist,
         P_uncertainty=cfg.pick.P_uncertainty,
         S_uncertainty=cfg.pick.S_uncertainty,
         min_com_phases=cfg.cluster.min_picks_common,
-        tt_matrix_fname=cfg.cluster.pre_computed_tt_matrix_file,
+        tt_matrix_fname=tt_matrix_fname,
         tt_matrix_save=cfg.cluster.tt_matrix_save,
         zones=cfg.zones,
     )
@@ -256,6 +269,10 @@ def dbclust(
         # parallel mode is enabled
         parallel_mode = True
 
+        if cfg.parallel.time_partitions is None:
+            logger.error("time_partitions not configured for parallel mode.")
+            return False
+
         if job_index < 0 or job_index >= len(cfg.parallel.time_partitions):
             logger.error(f"Invalid job_index {job_index}, out of range.")
             return False
@@ -269,6 +286,9 @@ def dbclust(
         parallel_mode = False
         last_job = True
         job_index = 0
+        if cfg.parallel.time_partitions is None:
+            logger.error("time_partitions not configured.")
+            return False
 
     start, stop = cfg.parallel.time_partitions[job_index]
 
@@ -287,7 +307,8 @@ def dbclust(
 
     if df is None or df.empty:
         # Uses duckdb
-        con = duckdb_init(cfg.pick.filenames, cfg.pick.type)
+        pick_type = cfg.pick.type or "csv"
+        con = duckdb_init(cfg.pick.filenames, pick_type)
     else:
         # Uses the pandas Dataframe given as function argument.
         con = None
@@ -331,8 +352,11 @@ def dbclust(
             last_partition_job = False
 
         # add the time overlap only if it is not the last round
-        if end >= cfg.pick.end:
-            end = pd.to_datetime(cfg.pick.end)
+        pick_end = cfg.pick.end
+        if pick_end is None:
+            pick_end = pd.Timestamp.now(tz="UTC")
+        if end >= pick_end:
+            end = pd.Timestamp(pick_end).tz_localize(None) if not hasattr(pick_end, 'tz') else pd.Timestamp(pick_end)
             short_window = True
 
             # complementary check
@@ -392,7 +416,8 @@ def dbclust(
             # so cross-partition events are reconstructed before HDBSCAN.
             if parallel_mode and job_index > 0 and i == 1:
                 known_event_ids = df_subset["event_id"].dropna().unique().tolist()
-                global_start = pd.Timestamp(cfg.pick.start).tz_localize(None)
+                pick_start = cfg.pick.start or pd.Timestamp("1970-01-01")
+                global_start = pd.Timestamp(pick_start).tz_localize(None) if not hasattr(pick_start, 'tz') else pd.Timestamp(pick_start)
                 df_cat, df_auto = get_cross_partition_picks(
                     con, start, overlap_timedelta, global_start, known_event_ids
                 )
@@ -468,7 +493,8 @@ def dbclust(
             df_subset = df_subset[df_subset["station_id"].isin(station_ids_to_keep)]
 
         # Rename station_id.channel by user request
-        df_subset = rename_waveform_id(df_subset, cfg.station.rename)
+        if cfg.station.rename is not None:
+            df_subset = rename_waveform_id(df_subset, cfg.station.rename)
 
         # Import picks and get coordinates
         phases = import_phases(
@@ -511,7 +537,7 @@ def dbclust(
 
         if last_partition_job:
             logger.info(
-                f"==> Last job in the time partition, merging all remaining clusters."
+                "==> Last job in the time partition, merging all remaining clusters."
             )
             previous_myclust.merge(myclust)
 
