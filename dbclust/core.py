@@ -107,6 +107,34 @@ def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
     return keep
 
 
+def get_cross_partition_picks(
+    con, start, overlap_timedelta, global_start, known_event_ids: list
+) -> tuple:
+    """Fetch picks from backward overlap zone for cross-partition events."""
+    empty = pd.DataFrame()
+    backward_start = max(start - overlap_timedelta, global_start)
+    if backward_start >= start:
+        return empty, empty
+
+    rqt = f"""
+        SELECT * FROM PICKS
+        WHERE phase_time BETWEEN '{backward_start}' AND '{start}'
+        AND phase_type IN ('P', 'Pg', 'Pn', 'S', 'Sg', 'Sn')
+    """
+    df_all = con.sql(rqt).fetchdf()
+    if df_all.empty:
+        return empty, empty
+
+    df_auto = df_all[df_all["event_id"].isna()].copy()
+    df_cat = (
+        df_all[df_all["event_id"].isin(known_event_ids)].copy()
+        if known_event_ids
+        else empty
+    )
+
+    return df_cat, df_auto
+
+
 def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
     """Create a NllLoc instance from configuration.
 
@@ -357,6 +385,31 @@ def dbclust(
             else:
                 df_subset["phase_time"] = df_subset["phase_time"].dt.tz_convert("UTC")
 
+            # Inject backward-overlap picks in first window of non-first parallel jobs
+            # so cross-partition events are reconstructed before HDBSCAN.
+            if parallel_mode and job_index > 0 and i == 1:
+                known_event_ids = df_subset["event_id"].dropna().unique().tolist()
+                global_start = pd.Timestamp(cfg.pick.start).tz_localize(None)
+                df_cat, df_auto = get_cross_partition_picks(
+                    con, start, overlap_timedelta, global_start, known_event_ids
+                )
+                for df_inject, label in [(df_cat, "catalogued"), (df_auto, "automatic")]:
+                    if len(df_inject) == 0:
+                        continue
+                    logger.info(
+                        f"[{job_index}] Injecting {len(df_inject)} {label} cross-partition picks "
+                        f"from [{start - overlap_timedelta}, {start}]"
+                    )
+                    for col in df_inject.columns:
+                        if col == "phase_time":
+                            if df_inject[col].dt.tz is None:
+                                df_inject[col] = df_inject[col].dt.tz_localize("UTC")
+                            else:
+                                df_inject[col] = df_inject[col].dt.tz_convert("UTC")
+                        elif col in df_subset.columns:
+                            df_inject[col] = df_inject[col].astype(df_subset[col].dtype)
+                    df_subset = pd.concat([df_inject, df_subset]).drop_duplicates()
+
         else:
             df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
 
@@ -535,7 +588,16 @@ def dbclust(
                     f"pick_in_overlapped_zone={event_in_overlapped_zone}"
                 )
 
-                if not last_job and event_in_overlapped_zone:
+                if parallel_mode and job_index > 0 and i == 1 and last_pick_time < start:
+                    for line in format_event(event, "***D"):
+                        logger.info(line)
+                    logger.info(
+                        f"Event in backward overlap zone (last_pick={last_pick_time} < partition_start={start}), suppressed ({event.resource_id.id})"
+                    )
+                    locator.catalog.events.remove(event)
+                    locator.nb_events = len(locator.catalog)
+                    clustcat = locator.catalog
+                elif not (last_partition_job and last_job) and event_in_overlapped_zone:
                     for line in format_event(event, "***D"):
                         logger.info(line)
                     logger.info(
@@ -546,20 +608,30 @@ def dbclust(
                     clustcat = locator.catalog
                 elif (
                     event.event_type != "not existing"
-                    and not last_job
+                    and not (last_partition_job and last_job)
                     and first_pick_time < next_begin
                     and last_pick_time >= next_begin
                 ):
-                    for line in format_event(event, "***P"):
-                        logger.info(line)
-                    logger.info(
-                        f"Found event between normal and overlapped zone where picks must be (P)runed ({event.resource_id.id})"
-                    )
-                    picks_to_remove = []
-                    for origin in event.origins:
-                        picks_to_remove += get_picks_from_event(
-                            event, origin, next_begin
+                    if last_partition_job:
+                        for line in format_event(event, "***D"):
+                            logger.info(line)
+                        logger.info(
+                            f"Cross-partition event suppressed, next job will handle it ({event.resource_id.id})"
                         )
+                        locator.catalog.events.remove(event)
+                        locator.nb_events = len(locator.catalog)
+                        clustcat = locator.catalog
+                    else:
+                        for line in format_event(event, "***P"):
+                            logger.info(line)
+                        logger.info(
+                            f"Found event between normal and overlapped zone where picks must be (P)runed ({event.resource_id.id})"
+                        )
+                        picks_to_remove = []
+                        for origin in event.origins:
+                            picks_to_remove += get_picks_from_event(
+                                event, origin, next_begin
+                            )
                 else:
                     for line in format_event(event, "****"):
                         logger.info(line)
