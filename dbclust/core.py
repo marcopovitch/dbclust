@@ -209,6 +209,7 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         max_search_dist=cfg.cluster.max_search_dist,
         P_uncertainty=cfg.pick.P_uncertainty,
         S_uncertainty=cfg.pick.S_uncertainty,
+        min_com_phases=cfg.cluster.min_picks_common,
         tt_matrix_fname=cfg.cluster.pre_computed_tt_matrix_file,
         tt_matrix_save=cfg.cluster.tt_matrix_save,
         zones=cfg.zones,
@@ -318,6 +319,8 @@ def dbclust(
     # keep track of each time division processed
     last_saved_event_count = 0
     picks_to_remove = []
+
+    i = 0
 
     # start time looping
     for i, (begin, end) in enumerate(time_divisions, start=1):
@@ -627,7 +630,6 @@ def dbclust(
                         logger.info(
                             f"Found event between normal and overlapped zone where picks must be (P)runed ({event.resource_id.id})"
                         )
-                        picks_to_remove = []
                         for origin in event.origins:
                             picks_to_remove += get_picks_from_event(
                                 event, origin, next_begin
@@ -710,11 +712,17 @@ def save_catalog(
         temp_dir = cfg.catalog.temp_db_dir or cfg.catalog.sqlite_db_path
         temp_db_path = os.path.join(temp_dir, f"tmp_worker_{job_index}.db")
         logger.info(f"Writing {len(catalog)} events to temp DB {temp_db_path}")
+        conn = None
         try:
             conn = create_schema(temp_db_path)
             import_catalog_to_sqlite(conn, catalog, enable_quakeml=True, disable_tqdm=True)
             conn.commit()
-            conn.close()
             logger.info(f"Temp DB written: {temp_db_path}")
         except Exception as e:
             logger.error(f"Error writing catalog to temp SQLite: {e}")
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception as close_error:
+                    logger.error(f"Error closing temp SQLite connection: {close_error}")

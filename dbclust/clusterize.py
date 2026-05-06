@@ -103,7 +103,7 @@ def get_picks_from_event(event: Event, origin: Origin, time) -> List:
     # 1K.OFAS0.00.EH.D,P,2023-02-13T18:30:58.558999Z
     lines = []
     for arrival in origin.arrivals:
-        if arrival.time_weight and arrival.time_residual:
+        if arrival.time_weight is not None and arrival.time_residual is not None:
             pick = next(
                 (p for p in event.picks if p.resource_id == arrival.pick_id), None
             )
@@ -153,7 +153,7 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
         for a in o.arrivals:
             if cluster_found:
                 break
-            if a.time_weight and a.time_residual:
+            if a.time_weight is not None and a.time_residual is not None:
                 pick = next(
                     (p for p in event.picks if p.resource_id == a.pick_id), None
                 )
@@ -260,6 +260,7 @@ class Clusterize(object):
         max_search_dist=0,  # same as hdbscan cluster_selection_epsilon: default is 0.
         P_uncertainty=0.1,
         S_uncertainty=0.2,
+        min_com_phases=3,
         tt_matrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
         tt_matrix_save=False,
@@ -291,6 +292,7 @@ class Clusterize(object):
         # pick filtering parameters
         self.P_uncertainty = P_uncertainty
         self.S_uncertainty = S_uncertainty
+        self.min_com_phases = min_com_phases
 
         # tt_matrix load/save parameters
         self.tt_matrix_fname = tt_matrix_fname
@@ -521,8 +523,9 @@ class Clusterize(object):
             cluster_to_remove = []
             logger.debug("Working on cluster %s with %d phases" % (c1, len(c1)))
             for i, c2 in enumerate(self.clusters):
-                # FIXME: missing min_com_phases parameter
-                if cluster_share_eventid(c1, c2):
+                if cluster_share_eventid(
+                    c1, c2, shared_threshold=self.min_com_phases
+                ):
                     cluster_to_remove.append(c2)
                     clusters_to_merge.append(c2)
                 #     logger.info("Eventid shared.")
