@@ -400,7 +400,7 @@ if __name__ == "__main__":
     # loc from scatter data
     df = pd.read_csv(
         scat_file,
-        sep="\s+",
+        sep=r"\s+",
         skiprows=3,
         header=None,
         names=("latitude", "longitude", "depth", "h1", "h2"),

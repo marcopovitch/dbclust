@@ -235,7 +235,8 @@ def get_best_polygon_for_point(
         confidence_ratio = 1.0  # single polygon: unambiguous
     else:
         best, second = sorted_scores[0], sorted_scores[1]
-        confidence_ratio = (best - second) / (best + second)
+        denom = best + second
+        confidence_ratio = (best - second) / denom if denom != 0 else 0.0
 
     # Check if the confidence is sufficient
     if confidence_ratio < eval_threshold:
