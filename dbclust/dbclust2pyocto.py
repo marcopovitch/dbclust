@@ -143,44 +143,6 @@ def adjust_associator_tolerance(
     return None
 
 
-# def create_velocity_model(velocity_cfg: dict, model_path: str) -> None:
-#     """
-#     Create a 1D velocity model and save it to the specified path.
-
-#     Parameters:
-#         velocity_cfg (dict): Configuration dictionary containing the following keys:
-#             - "depth" (list or array-like): Depth values for the model.
-#             - "vp" (list or array-like): P-wave velocities for a given depths list.
-#             - "vs" (list or array-like): S-wave velocities for a given  depths list.
-#             - "grid_spacing_km" (float): Grid spacing in kilometers.
-#             - "max_horizontal_dist_km" (float): Maximum distance in the horizontal direction in kilometers.
-#             - "max_vertical_dist_km" (float): Maximum distance in the vertical direction in kilometers.
-#         model_path (str): Path where the velocity model will be saved.
-
-#     Returns:
-#         None
-#     """
-#     model = pd.DataFrame(
-#         {
-#             "depth": velocity_cfg["depth"],
-#             "vp": velocity_cfg["vp"],
-#             "vs": velocity_cfg["vs"],
-#         }
-#     )
-
-#     pyocto.VelocityModel1D.create_model(
-#         model,
-#         velocity_cfg["grid_spacing_km"],  # Grid spacing in kilometer
-#         velocity_cfg[
-#             "max_horizontal_dist_km"
-#         ],  # Maximum distance in horizontal direction in km
-#         velocity_cfg[
-#             "max_vertical_dist_km"
-#         ],  # Maximum distance in vertical direction in km
-#         model_path,
-#     )
-
-
 def dbclust2pyocto(
     myclust: Clusterize,
     model_name: str,
@@ -217,7 +179,9 @@ def dbclust2pyocto(
 
     noise_picks = list(myclust.noise) if include_noise_in_aggregation else []
     if noise_picks:
-        logger.info(f"Including {len(noise_picks)} HDBSCAN noise picks in aggregation pool")
+        logger.info(
+            f"Including {len(noise_picks)} HDBSCAN noise picks in aggregation pool"
+        )
     all_picks_list = list(chain(*myclust.clusters)) + noise_picks
     pyocto_clusters, pyocto_preloc = [], []
 
@@ -242,8 +206,11 @@ def dbclust2pyocto(
         if associator_cfg.adaptive_min_pick_fraction and len(cluster_event_ids) > 1:
             dl_method_ids = {m.upper() for m in associator_cfg.dl_method_ids}
             dl_probas = [
-                p.proba for p in cluster
-                if p.method is not None and isinstance(p.method, str) and p.method.upper() in dl_method_ids
+                p.proba
+                for p in cluster
+                if p.method is not None
+                and isinstance(p.method, str)
+                and p.method.upper() in dl_method_ids
             ]
             median_proba = statistics.median(dl_probas) if dl_probas else 1.0
             effective_min_pick_fraction = max(
@@ -262,9 +229,7 @@ def dbclust2pyocto(
         # Step 1: pre-filter stations to max_lat_range/max_lon_range BEFORE computing
         # the range, so that extreme outliers do not corrupt min/max calculations.
         if associator_cfg.max_lat_range is not None:
-            mask_out_lat = (
-                stations["latitude"] < associator_cfg.max_lat_range[0]
-            ) | (
+            mask_out_lat = (stations["latitude"] < associator_cfg.max_lat_range[0]) | (
                 stations["latitude"] > associator_cfg.max_lat_range[1]
             )
             for row in stations.loc[mask_out_lat].itertuples():
@@ -275,9 +240,7 @@ def dbclust2pyocto(
             stations = stations[~mask_out_lat].reset_index(drop=True)
 
         if associator_cfg.max_lon_range is not None:
-            mask_out_lon = (
-                stations["longitude"] < associator_cfg.max_lon_range[0]
-            ) | (
+            mask_out_lon = (stations["longitude"] < associator_cfg.max_lon_range[0]) | (
                 stations["longitude"] > associator_cfg.max_lon_range[1]
             )
             for row in stations.loc[mask_out_lon].itertuples():
@@ -288,14 +251,18 @@ def dbclust2pyocto(
             stations = stations[~mask_out_lon].reset_index(drop=True)
 
         if stations.empty:
-            logger.warning(f"Cluster#{i}: no stations left after range filtering, skipping.")
+            logger.warning(
+                f"Cluster#{i}: no stations left after range filtering, skipping."
+            )
             continue
 
         # Filter picks to only keep those whose station is still in the stations df
         valid_station_ids = set(stations["id"])
         picks = picks[picks["station"].isin(valid_station_ids)].reset_index(drop=True)
         if picks.empty:
-            logger.warning(f"Cluster#{i}: no picks left after station range filtering, skipping.")
+            logger.warning(
+                f"Cluster#{i}: no picks left after station range filtering, skipping."
+            )
             continue
 
         # Step 2: define a safe range around the remaining stations coordinates
@@ -326,6 +293,7 @@ def dbclust2pyocto(
             associator = pyocto.OctoAssociator.from_area(
                 lat=lat_range,
                 lon=lon_range,
+                #time_slicing=10 * 60, 
                 zlim=associator_cfg.zlim,
                 time_before=associator_cfg.time_before,  # should be greater than dbclust time_window parameter
                 max_pick_overlap=associator_cfg.max_pick_overlap,
@@ -394,7 +362,8 @@ def dbclust2pyocto(
                         station_phases[station_code].add("S")
                 total_stations = len(station_phases)
                 stations_with_both = sum(
-                    1 for phases in station_phases.values()
+                    1
+                    for phases in station_phases.values()
                     if "P" in phases and "S" in phases
                 )
                 ps_ratio = (
@@ -414,8 +383,13 @@ def dbclust2pyocto(
                 get_clusters_from_assignment(cluster, events, assignments)
             )
 
+        assigned_pick_ids = (
+            set(assignments["pick_idx"].to_list()) if len(assignments) else set()
+        )
+        n_unassigned = len(cluster) - len(assigned_pick_ids)
         logger.info(
             f"\t{len(events)} events found in cluster#{i} with {len(cluster)} picks"
+            f" ({n_unassigned} unassigned by PyOcto)"
         )
 
     # Merge clusters with common picks or event IDs
@@ -621,7 +595,8 @@ def aggregate_pick_to_cluster_with_common_event_id(
 
         # Partition picks into those added to cluster and those remaining
         picks_to_add = [
-            p for p in picks
+            p
+            for p in picks
             if p.event_id
             and p.event_id in event_id_counts
             and event_id_counts[p.event_id] > pick_count_threshold

@@ -85,9 +85,14 @@ def cluster_share_eventid(
     c1_counts = Counter(c1_event_ids)
     c2_counts = Counter(c2_event_ids)
 
-    # Compute the total shared occurrences for each common event_id
+    # Compute the shared occurrences for each common event_id.
+    # Use max() so that merging fires if EITHER cluster has enough picks
+    # from the same event_id. min() was too conservative: PyOcto distributes
+    # event_id picks non-redundantly (max_pick_overlap=0) between sub-clusters
+    # of the same physical event, so min() could be below threshold even when
+    # both clusters represent the same event.
     shared_counts = {
-        event_id: min(c1_counts[event_id], c2_counts[event_id])
+        event_id: max(c1_counts[event_id], c2_counts[event_id])
         for event_id in common_event_ids
     }
 
@@ -146,35 +151,27 @@ def feed_picks_probabilities(cat: Catalog, clusters: List[List[Phase]]) -> None:
 
 
 def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
+    pick_to_cluster = {}
+    for c in clusters:
+        cluster_event_ids = list(set([p.event_id for p in c if p.event_id]))
+        for p in c:
+            key = (p.station, p.time.datetime)
+            pick_to_cluster[key] = cluster_event_ids
+
     for event in cat:
         o = event.preferred_origin()
-        cluster_found = False
         event_ids = []
         for a in o.arrivals:
-            if cluster_found:
+            if a.time_weight is None or a.time_residual is None:
+                continue
+            pick = next((p for p in event.picks if p.resource_id == a.pick_id), None)
+            if pick is None:
+                continue
+            key = (pick.waveform_id["station_code"], pick.time.datetime)
+            if key in pick_to_cluster:
+                event_ids = pick_to_cluster[key]
                 break
-            if a.time_weight is not None and a.time_residual is not None:
-                pick = next(
-                    (p for p in event.picks if p.resource_id == a.pick_id), None
-                )
-                if pick is None:
-                    continue
-                for c in clusters:
-                    for cluster_pick in c:
-                        if (
-                            pick.waveform_id["station_code"] == cluster_pick.station
-                            and pick.time == cluster_pick.time
-                            # We don't check phase_hint because after relabelling
-                            # (ex: P -> Pg), pick.phase_hint is modified but not cluster_pick.phase
-                        ):
-                            # cluster found
-                            event_ids = list(set([p.event_id for p in c if p.event_id]))
-                            cluster_found = True
-                            break
-                    if cluster_found:
-                        break
 
-        # event_ids = list(set([p.event_id for p in chain(*clusters) if p.event_id]))
         event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
 
 
@@ -194,6 +191,7 @@ def merge_cluster_with_common_phases(
         Tuple: (updated clusters1, updated clusters2, number of merges performed).
     """
     new_clusters2 = []
+    new_stability2 = []
     merge_count = 0
 
     logger.debug(
@@ -205,11 +203,32 @@ def merge_cluster_with_common_phases(
         len(clusters2.clusters),
     )
 
-    for c2 in clusters2.clusters:
+    for j, c2 in enumerate(clusters2.clusters):
         merged = False
-        for c1 in clusters1.clusters:
-            # Count common phases
+        c2_times = sorted(p.time for p in c2)
+        c2_t0 = c2_times[0] if c2_times else None
+        c2_t1 = c2_times[-1] if c2_times else None
+        c2_eids = [p.event_id for p in c2 if p.event_id]
+        logger.info(
+            f"merge_cluster_with_common_phases: c2 cluster [{c2_t0} .. {c2_t1}] "
+            f"{len(c2)} picks, {len(c2_eids)} with event_id"
+        )
+        for i, c1 in enumerate(clusters1.clusters):
+            # Count common phases using hash equality
             common_count = sum((Counter(c1) & Counter(c2)).values())
+            # Also count spatiotemporal matches (station+phase+time, ignoring event_id)
+            # Used as fallback when Phase.__hash__ differs due to event_id mismatch
+            c1_keys = {(p.network, p.station, p.phase[0].upper(), p.time.datetime) for p in c1}
+            c2_keys = {(p.network, p.station, p.phase[0].upper(), p.time.datetime) for p in c2}
+            spatio_count = len(c1_keys & c2_keys)
+            c1_times = sorted(p.time for p in c1)
+            c1_t0 = c1_times[0] if c1_times else None
+            c1_t1 = c1_times[-1] if c1_times else None
+            c1_eids = [p.event_id for p in c1 if p.event_id]
+            logger.info(
+                f"  vs c1[{i}] [{c1_t0} .. {c1_t1}] {len(c1)} picks, {len(c1_eids)} with event_id "
+                f"=> hash_common={common_count}, spatio_common={spatio_count}"
+            )
 
             # Check for shared event IDs
             eventid_shared = cluster_share_eventid(
@@ -217,27 +236,43 @@ def merge_cluster_with_common_phases(
             )
 
             # Merge clusters if conditions are met
-            if common_count >= min_com_phases or eventid_shared:
+            # spatio_count is used as fallback when Phase.__hash__ differs due to event_id mismatch
+            if common_count >= min_com_phases or spatio_count >= min_com_phases or eventid_shared:
                 logger.debug(
                     f"Merging cluster from clusters2 into clusters1: "
-                    f"picks shared: {common_count}, event ID shared: {eventid_shared}"
+                    f"picks shared: {common_count}, spatio_shared: {spatio_count}, event ID shared: {eventid_shared}"
                 )
-                c1[:] = list(set(c1 + c2))  # Update in place
+                # Deduplicate by physical pick identity, preferring picks with event_id over those without
+                seen: dict = {}
+                for p in c1 + c2:
+                    key = (p.network, p.station, p.phase[0].upper(), p.time.datetime)
+                    if key not in seen or (seen[key].event_id is None and p.event_id is not None):
+                        seen[key] = p
+                c1[:] = list(seen.values())  # Update in place
+                if len(clusters1.clusters_stability) > i and len(clusters2.clusters_stability) > j:
+                    clusters1.clusters_stability[i] = max(
+                        clusters1.clusters_stability[i],
+                        clusters2.clusters_stability[j],
+                    )
                 merge_count += 1
                 merged = True
                 break
 
         if not merged:
             new_clusters2.append(c2)
+            if len(clusters2.clusters_stability) > j:
+                new_stability2.append(clusters2.clusters_stability[j])
 
     # Update clusters2 attributes
     clusters2.clusters = new_clusters2
     clusters2.n_clusters = len(new_clusters2)
-    clusters2.clusters_stability = np.ones(clusters2.n_clusters, dtype=float)
+    clusters2.clusters_stability = (
+        np.array(new_stability2, dtype=float)
+        if new_stability2
+        else np.ones(0, dtype=float)
+    )
 
-    # Update clusters1 stability (not used but consistent with clusters2)
     clusters1.n_clusters = len(clusters1.clusters)
-    clusters1.clusters_stability = np.ones(clusters1.n_clusters, dtype=float)
 
     logger.debug(
         "merge_cluster_with_common_phases: Total merges performed: %d", merge_count
@@ -336,7 +371,8 @@ class Clusterize(object):
             # pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
 
             # vectorized haversine: ~20-100x faster than per-pair gps2dist_azimuth
-            pseudo_tt = self.numpy_compute_tt_matrix_vectorized(phases, average_velocity)
+            #pseudo_tt = self.numpy_compute_tt_matrix_vectorized(phases, average_velocity)
+            pseudo_tt = self.numpy_compute_tt_matrix_vectorized_physical(phases, average_velocity)
 
             # // computation using dask bag: slower for small cluster
             # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
@@ -433,6 +469,109 @@ class Clusterize(object):
         dd = dist_km / vmean                      # (n, n)
         dt = times[:, None] - times[None, :]      # (n, n)
         return np.sqrt(dt ** 2 + dd ** 2)
+    
+
+    @staticmethod
+    def numpy_compute_tt_matrix_vectorized_physical(
+        phases,
+        vp: float,
+        vs: float = 3.5,
+        max_residual: float = 10.0,
+    ):
+        """
+        Physically-based precomputed distance matrix for HDBSCAN.
+
+        Distance meaning:
+            0 → compatible picks (same event likely)
+            >0 → increasing incompatibility
+
+        Based on:
+            |Δt| <= distance / v_min
+        """
+
+        R = 6371.0  # Earth radius (km)
+
+        # ------------------------------------------------------------
+        # Coordinates
+        # ------------------------------------------------------------
+        lats = np.radians(
+            np.array([p.coord["latitude"] for p in phases], dtype=np.float64)
+        )
+        lons = np.radians(
+            np.array([p.coord["longitude"] for p in phases], dtype=np.float64)
+        )
+
+        # ------------------------------------------------------------
+        # Times
+        # ------------------------------------------------------------
+        times = np.array(
+            [float(p.time) for p in phases],
+            dtype=np.float64,
+        )
+
+        # ------------------------------------------------------------
+        # Phase-dependent velocities
+        # ------------------------------------------------------------
+        velocities = np.array(
+            [
+                vp if p.phase.upper() == "P" else vs
+                for p in phases
+            ],
+            dtype=np.float64,
+        )
+
+        vmin = np.minimum(
+            velocities[:, None],
+            velocities[None, :],
+        )
+
+        # ------------------------------------------------------------
+        # Haversine distance (km)
+        # ------------------------------------------------------------
+        dlat = lats[:, None] - lats[None, :]
+        dlon = lons[:, None] - lons[None, :]
+
+        a = (
+            np.sin(dlat / 2.0) ** 2
+            + np.cos(lats[:, None])
+            * np.cos(lats[None, :])
+            * np.sin(dlon / 2.0) ** 2
+        )
+
+        a = np.clip(a, 0.0, 1.0)
+
+        dist_km = 2.0 * R * np.arcsin(np.sqrt(a))
+
+        # ------------------------------------------------------------
+        # Observed time differences
+        # ------------------------------------------------------------
+        dt_obs = np.abs(
+            times[:, None] - times[None, :]
+        )
+
+        # ------------------------------------------------------------
+        # Physical maximum allowed time difference
+        # ------------------------------------------------------------
+        dt_max = dist_km / vmin
+
+        # ------------------------------------------------------------
+        # Physically meaningful residual
+        # ------------------------------------------------------------
+        residual = np.maximum(
+            0.0,
+            dt_obs - dt_max,
+        )
+
+        # Strong separation (better cluster contrast)
+        residual = residual ** 2
+
+        # Clamp extreme values (important for stability)
+        residual = np.minimum(residual, max_residual)
+
+        # Symmetry + diagonal
+        np.fill_diagonal(residual, 0.0)
+
+        return residual.astype(np.float64)
 
     # @staticmethod
     # def dask_compute_tt_matrix(phases, vmean):
@@ -450,11 +589,13 @@ class Clusterize(object):
 
         db = hdbscan.HDBSCAN(
             min_cluster_size=min_cluster_size,  # default 5
-            # min_samples=None                          # default None
+            min_samples=None,  # default None
             allow_single_cluster=True,
-            cluster_selection_epsilon=max_search_dist,  # default 0.0
+            #cluster_selection_epsilon=max_search_dist,  # default 0.0
+            cluster_selection_epsilon=0,
             metric="precomputed",
             n_jobs=-1,
+            cluster_selection_method="eom",  # default 'eom', other option is 'leaf' (more clusters, less stable)
         ).fit(pseudo_tt)
 
         labels = db.labels_
@@ -520,21 +661,20 @@ class Clusterize(object):
             clusters_to_merge = []
             c1 = self.clusters.pop(0)
             clusters_to_merge.append(c1)
-            cluster_to_remove = []
+            indices_to_remove = []
             logger.debug("Working on cluster %s with %d phases" % (c1, len(c1)))
             for i, c2 in enumerate(self.clusters):
                 if cluster_share_eventid(
                     c1, c2, shared_threshold=self.min_com_phases
                 ):
-                    cluster_to_remove.append(c2)
+                    indices_to_remove.append(i)
                     clusters_to_merge.append(c2)
                 #     logger.info("Eventid shared.")
                 # else:
                 #     logger.info("No eventid shared.")
 
-            # cleanup
-            for c in cluster_to_remove:
-                self.clusters.remove(c)
+            for i in reversed(indices_to_remove):
+                self.clusters.pop(i)
 
             # merge clusters
             new_cluster = list(chain(*clusters_to_merge))
@@ -689,7 +829,7 @@ class Clusterize(object):
 
             # use pyocto pre-localization to select velocity model to be used
             # create vel_file with required information
-            if self.preloc:
+            if self.preloc and self.preloc[i]:
                 hypo = self.preloc[i]
                 logger.info(
                     f"Prelocalization is time={hypo['time']}, lat={hypo['latitude']}, "
@@ -771,9 +911,8 @@ class Clusterize(object):
         self.noise += clusters2.noise
         self.n_noise = len(self.noise)
 
-        # clusters_stability are ndarray ... not a list : should be fixed !
-        self.clusters_stability = np.array(
-            self.clusters_stability.tolist() + clusters2.clusters_stability.tolist()
+        self.clusters_stability = np.concatenate(
+            [self.clusters_stability, clusters2.clusters_stability]
         )
         # self.show_clusters()
 
