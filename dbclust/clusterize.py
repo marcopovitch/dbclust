@@ -371,8 +371,8 @@ class Clusterize(object):
             # pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
 
             # vectorized haversine: ~20-100x faster than per-pair gps2dist_azimuth
-            #pseudo_tt = self.numpy_compute_tt_matrix_vectorized(phases, average_velocity)
-            pseudo_tt = self.numpy_compute_tt_matrix_vectorized_physical(phases, average_velocity)
+            pseudo_tt = self.numpy_compute_tt_matrix_vectorized(phases, average_velocity)
+            #pseudo_tt = self.numpy_compute_tt_matrix_vectorized_physical(phases, average_velocity)
 
             # // computation using dask bag: slower for small cluster
             # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
@@ -476,19 +476,43 @@ class Clusterize(object):
         phases,
         vp: float,
         vs: float = 3.5,
-        max_residual: float = 10.0,
+        max_residual: float = 50.0,
+        w_intra: float = 2.0,
+        ps_base: float = 10.0,
+        w_geo: float = 0.05,
     ):
         """
         Physically-based precomputed distance matrix for HDBSCAN.
 
-        Distance meaning:
-            0 → compatible picks (same event likely)
-            >0 → increasing incompatibility
+        Two-component distance:
+          1. Intra-gradient  : usage² × w_intra + dist_km × w_geo
+             For compatible pairs (dt_obs ≤ dt_max).
+             - usage² × w_intra  ∈ [0, w_intra]: temporal coherence gradient.
+             - dist_km × w_geo: geographic baseline — ensures distant stations
+               (e.g. 500 km apart → +25 with w_geo=0.05) cannot trivially cluster
+               even when their pick times happen to be travel-time compatible.
+             Provides a smooth gradient within the compatible zone so HDBSCAN can
+             distinguish tightly-coupled picks from marginally-compatible ones even
+             without relying solely on "leaf" cluster selection.
+          2. Extra-penalty   : max(0, dt_obs - dt_max)²  — 0 for compatible picks,
+             grows quadratically beyond the travel-time limit.
 
-        Based on:
-            |Δt| <= distance / v_min
+        Improvements over the bare residual version:
+          - P-S pairs: adds ps_tolerance to dt_max so that realistic P-S delays at
+            the same station (where dist_AB=0 → dt_max=0 otherwise) are correctly
+            treated as compatible rather than maximally penalised.
+          - max_residual=50 (cliff at 7 s residual) is more tolerant of DL pick
+            timing uncertainty than the previous value of 10 (cliff at 3.16 s).
+          - w_intra=2.0 keeps the intra-cluster temporal gradient well below the
+            minimum inter-event penalty (~25 for events 5 s apart at same station).
+          - ps_base=40s: P-S tolerance, same as original constant ps_tolerance=40s.
+            Covers events up to ~465 km (P-S ≈ 40 s at same station).
+          - w_geo=0.05: linear geo penalty. At 200km: +10; at 400km: +20;
+            at 1000km: +50. Provides enough floor (>> PS-bridge d≈0-2) so
+            HDBSCAN can separate clusters despite cross-event PS bridges.
         """
 
+        eps = 1e-6
         R = 6371.0  # Earth radius (km)
 
         # ------------------------------------------------------------
@@ -512,13 +536,10 @@ class Clusterize(object):
         # ------------------------------------------------------------
         # Phase-dependent velocities
         # ------------------------------------------------------------
-        velocities = np.array(
-            [
-                vp if p.phase.upper() == "P" else vs
-                for p in phases
-            ],
-            dtype=np.float64,
+        is_P = np.array(
+            [p.phase.upper().startswith("P") for p in phases], dtype=bool
         )
+        velocities = np.where(is_P, vp, vs).astype(np.float64)
 
         vmin = np.minimum(
             velocities[:, None],
@@ -551,27 +572,46 @@ class Clusterize(object):
 
         # ------------------------------------------------------------
         # Physical maximum allowed time difference
+        # P-S pairs get a distance-dependent tolerance:
+        #   ps_tol(d_AB) = max(ps_base, d_AB/2 × (1/vs - 1/vp))
+        # Rationale: d_AB/2 is a proxy for the event-to-station distance
+        # (assumes event is roughly midway between the two stations). The P-S
+        # delay grows linearly with source distance, so the tolerance should too.
+        # A constant large tolerance (e.g. 40 s) would bridge cross-event P/S
+        # pairs at the same station in dense seismic zones.
         # ------------------------------------------------------------
-        dt_max = dist_km / vmin
+        is_ps_pair = is_P[:, None] ^ is_P[None, :]  # True for mixed P/S pairs
+        ps_factor = 0.5 * (1.0 / vs - 1.0 / vp)    # (1/vs - 1/vp)/2  ≈ 0.043 s/km
+        ps_tolerance = np.maximum(ps_base, dist_km * ps_factor)
+        dt_max = dist_km / vmin + is_ps_pair * ps_tolerance
 
         # ------------------------------------------------------------
-        # Physically meaningful residual
+        # Intra-cluster gradient
+        # usage ∈ [0, 1] for compatible picks: 0 = tightly coupled, 1 = at limit
+        # Geographic baseline: dist_km * w_geo ensures that even perfectly
+        # compatible picks from distant stations carry a cost proportional to
+        # their separation (prevents mega-clusters spanning unrelated regions).
         # ------------------------------------------------------------
-        residual = np.maximum(
-            0.0,
-            dt_obs - dt_max,
-        )
+        usage = np.clip(dt_obs / (dt_max + eps), 0.0, 1.0)
+        # Geo penalty: linear distance baseline so that distant-station pairs
+        # carry a spatial cost even when perfectly time-compatible.
+        geo_penalty = dist_km * w_geo
+        intra = usage ** 2 * w_intra + geo_penalty
 
-        # Strong separation (better cluster contrast)
-        residual = residual ** 2
+        # ------------------------------------------------------------
+        # Extra-zone penalty (0 for compatible picks)
+        # ------------------------------------------------------------
+        extra = np.maximum(0.0, dt_obs - dt_max) ** 2
 
-        # Clamp extreme values (important for stability)
-        residual = np.minimum(residual, max_residual)
+        # ------------------------------------------------------------
+        # Combined distance
+        # ------------------------------------------------------------
+        d = intra + extra
+        d = np.minimum(d, max_residual)
 
-        # Symmetry + diagonal
-        np.fill_diagonal(residual, 0.0)
+        np.fill_diagonal(d, 0.0)
 
-        return residual.astype(np.float64)
+        return d.astype(np.float64)
 
     # @staticmethod
     # def dask_compute_tt_matrix(phases, vmean):
