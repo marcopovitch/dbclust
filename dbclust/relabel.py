@@ -175,7 +175,13 @@ def get_best_polygon_for_point(
                 zone_polygon["geometry"], zone_polygon["name"]
             )
             # find the minimum distance between the point and the edges
-            dist = min(point.distance(e) for e in edges)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                distances = [point.distance(e) for e in edges]
+            valid_distances = [d for d in distances if not np.isnan(d)]
+            if not valid_distances:
+                continue
+            dist = min(valid_distances)
 
             # Convert distance from the edge to distance to the "center"
             # fixme: take into account of Mu
