@@ -30,7 +30,7 @@ from tqdm import tqdm
 from dbclust.phase import import_phases
 from dbclust.phase import Phase
 from dbclust.quakeml import deduplicate_picks
-#import dask.bag as db
+# import dask.bag as db
 
 # default logger (uses hierarchical name for selective level control)
 logger = logging.getLogger("dbclust.clusterize")
@@ -218,8 +218,12 @@ def merge_cluster_with_common_phases(
             common_count = sum((Counter(c1) & Counter(c2)).values())
             # Also count spatiotemporal matches (station+phase+time, ignoring event_id)
             # Used as fallback when Phase.__hash__ differs due to event_id mismatch
-            c1_keys = {(p.network, p.station, p.phase[0].upper(), p.time.datetime) for p in c1}
-            c2_keys = {(p.network, p.station, p.phase[0].upper(), p.time.datetime) for p in c2}
+            c1_keys = {
+                (p.network, p.station, p.phase[0].upper(), p.time.datetime) for p in c1
+            }
+            c2_keys = {
+                (p.network, p.station, p.phase[0].upper(), p.time.datetime) for p in c2
+            }
             spatio_count = len(c1_keys & c2_keys)
             c1_times = sorted(p.time for p in c1)
             c1_t0 = c1_times[0] if c1_times else None
@@ -237,7 +241,11 @@ def merge_cluster_with_common_phases(
 
             # Merge clusters if conditions are met
             # spatio_count is used as fallback when Phase.__hash__ differs due to event_id mismatch
-            if common_count >= min_com_phases or spatio_count >= min_com_phases or eventid_shared:
+            if (
+                common_count >= min_com_phases
+                or spatio_count >= min_com_phases
+                or eventid_shared
+            ):
                 logger.debug(
                     f"Merging cluster from clusters2 into clusters1: "
                     f"picks shared: {common_count}, spatio_shared: {spatio_count}, event ID shared: {eventid_shared}"
@@ -246,10 +254,15 @@ def merge_cluster_with_common_phases(
                 seen: dict = {}
                 for p in c1 + c2:
                     key = (p.network, p.station, p.phase[0].upper(), p.time.datetime)
-                    if key not in seen or (seen[key].event_id is None and p.event_id is not None):
+                    if key not in seen or (
+                        seen[key].event_id is None and p.event_id is not None
+                    ):
                         seen[key] = p
                 c1[:] = list(seen.values())  # Update in place
-                if len(clusters1.clusters_stability) > i and len(clusters2.clusters_stability) > j:
+                if (
+                    len(clusters1.clusters_stability) > i
+                    and len(clusters2.clusters_stability) > j
+                ):
                     clusters1.clusters_stability[i] = max(
                         clusters1.clusters_stability[i],
                         clusters2.clusters_stability[j],
@@ -371,8 +384,9 @@ class Clusterize(object):
             # pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
 
             # vectorized haversine: ~20-100x faster than per-pair gps2dist_azimuth
-            pseudo_tt = self.numpy_compute_tt_matrix_vectorized(phases, average_velocity)
-            #pseudo_tt = self.numpy_compute_tt_matrix_vectorized_physical(phases, average_velocity)
+            pseudo_tt = self.numpy_compute_tt_matrix_vectorized(
+                phases, average_velocity
+            )
 
             # // computation using dask bag: slower for small cluster
             # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
@@ -454,9 +468,9 @@ class Clusterize(object):
         Haversine error < 0.5% for distances < 2000 km — sufficient for clustering.
         """
         R = 6371.0  # Earth radius in km
-        lats = np.radians([p.coord["latitude"] for p in phases])   # (n,)
+        lats = np.radians([p.coord["latitude"] for p in phases])  # (n,)
         lons = np.radians([p.coord["longitude"] for p in phases])  # (n,)
-        times = np.array([float(p.time) for p in phases])          # (n,)
+        times = np.array([float(p.time) for p in phases])  # (n,)
 
         dlat = lats[:, None] - lats[None, :]  # (n, n)
         dlon = lons[:, None] - lons[None, :]  # (n, n)
@@ -466,152 +480,9 @@ class Clusterize(object):
         )
         dist_km = 2 * R * np.arcsin(np.sqrt(a))  # (n, n)
 
-        dd = dist_km / vmean                      # (n, n)
-        dt = times[:, None] - times[None, :]      # (n, n)
-        return np.sqrt(dt ** 2 + dd ** 2)
-    
-
-    @staticmethod
-    def numpy_compute_tt_matrix_vectorized_physical(
-        phases,
-        vp: float,
-        vs: float = 3.5,
-        max_residual: float = 50.0,
-        w_intra: float = 2.0,
-        ps_base: float = 10.0,
-        w_geo: float = 0.05,
-    ):
-        """
-        Physically-based precomputed distance matrix for HDBSCAN.
-
-        Two-component distance:
-          1. Intra-gradient  : usage² × w_intra + dist_km × w_geo
-             For compatible pairs (dt_obs ≤ dt_max).
-             - usage² × w_intra  ∈ [0, w_intra]: temporal coherence gradient.
-             - dist_km × w_geo: geographic baseline — ensures distant stations
-               (e.g. 500 km apart → +25 with w_geo=0.05) cannot trivially cluster
-               even when their pick times happen to be travel-time compatible.
-             Provides a smooth gradient within the compatible zone so HDBSCAN can
-             distinguish tightly-coupled picks from marginally-compatible ones even
-             without relying solely on "leaf" cluster selection.
-          2. Extra-penalty   : max(0, dt_obs - dt_max)²  — 0 for compatible picks,
-             grows quadratically beyond the travel-time limit.
-
-        Improvements over the bare residual version:
-          - P-S pairs: adds ps_tolerance to dt_max so that realistic P-S delays at
-            the same station (where dist_AB=0 → dt_max=0 otherwise) are correctly
-            treated as compatible rather than maximally penalised.
-          - max_residual=50 (cliff at 7 s residual) is more tolerant of DL pick
-            timing uncertainty than the previous value of 10 (cliff at 3.16 s).
-          - w_intra=2.0 keeps the intra-cluster temporal gradient well below the
-            minimum inter-event penalty (~25 for events 5 s apart at same station).
-          - ps_base=40s: P-S tolerance, same as original constant ps_tolerance=40s.
-            Covers events up to ~465 km (P-S ≈ 40 s at same station).
-          - w_geo=0.05: linear geo penalty. At 200km: +10; at 400km: +20;
-            at 1000km: +50. Provides enough floor (>> PS-bridge d≈0-2) so
-            HDBSCAN can separate clusters despite cross-event PS bridges.
-        """
-
-        eps = 1e-6
-        R = 6371.0  # Earth radius (km)
-
-        # ------------------------------------------------------------
-        # Coordinates
-        # ------------------------------------------------------------
-        lats = np.radians(
-            np.array([p.coord["latitude"] for p in phases], dtype=np.float64)
-        )
-        lons = np.radians(
-            np.array([p.coord["longitude"] for p in phases], dtype=np.float64)
-        )
-
-        # ------------------------------------------------------------
-        # Times
-        # ------------------------------------------------------------
-        times = np.array(
-            [float(p.time) for p in phases],
-            dtype=np.float64,
-        )
-
-        # ------------------------------------------------------------
-        # Phase-dependent velocities
-        # ------------------------------------------------------------
-        is_P = np.array(
-            [p.phase.upper().startswith("P") for p in phases], dtype=bool
-        )
-        velocities = np.where(is_P, vp, vs).astype(np.float64)
-
-        vmin = np.minimum(
-            velocities[:, None],
-            velocities[None, :],
-        )
-
-        # ------------------------------------------------------------
-        # Haversine distance (km)
-        # ------------------------------------------------------------
-        dlat = lats[:, None] - lats[None, :]
-        dlon = lons[:, None] - lons[None, :]
-
-        a = (
-            np.sin(dlat / 2.0) ** 2
-            + np.cos(lats[:, None])
-            * np.cos(lats[None, :])
-            * np.sin(dlon / 2.0) ** 2
-        )
-
-        a = np.clip(a, 0.0, 1.0)
-
-        dist_km = 2.0 * R * np.arcsin(np.sqrt(a))
-
-        # ------------------------------------------------------------
-        # Observed time differences
-        # ------------------------------------------------------------
-        dt_obs = np.abs(
-            times[:, None] - times[None, :]
-        )
-
-        # ------------------------------------------------------------
-        # Physical maximum allowed time difference
-        # P-S pairs get a distance-dependent tolerance:
-        #   ps_tol(d_AB) = max(ps_base, d_AB/2 × (1/vs - 1/vp))
-        # Rationale: d_AB/2 is a proxy for the event-to-station distance
-        # (assumes event is roughly midway between the two stations). The P-S
-        # delay grows linearly with source distance, so the tolerance should too.
-        # A constant large tolerance (e.g. 40 s) would bridge cross-event P/S
-        # pairs at the same station in dense seismic zones.
-        # ------------------------------------------------------------
-        is_ps_pair = is_P[:, None] ^ is_P[None, :]  # True for mixed P/S pairs
-        ps_factor = 0.5 * (1.0 / vs - 1.0 / vp)    # (1/vs - 1/vp)/2  ≈ 0.043 s/km
-        ps_tolerance = np.maximum(ps_base, dist_km * ps_factor)
-        dt_max = dist_km / vmin + is_ps_pair * ps_tolerance
-
-        # ------------------------------------------------------------
-        # Intra-cluster gradient
-        # usage ∈ [0, 1] for compatible picks: 0 = tightly coupled, 1 = at limit
-        # Geographic baseline: dist_km * w_geo ensures that even perfectly
-        # compatible picks from distant stations carry a cost proportional to
-        # their separation (prevents mega-clusters spanning unrelated regions).
-        # ------------------------------------------------------------
-        usage = np.clip(dt_obs / (dt_max + eps), 0.0, 1.0)
-        # Geo penalty: linear distance baseline so that distant-station pairs
-        # carry a spatial cost even when perfectly time-compatible.
-        geo_penalty = dist_km * w_geo
-        intra = usage ** 2 * w_intra + geo_penalty
-
-        # ------------------------------------------------------------
-        # Extra-zone penalty (0 for compatible picks)
-        # ------------------------------------------------------------
-        extra = np.maximum(0.0, dt_obs - dt_max) ** 2
-
-        # ------------------------------------------------------------
-        # Combined distance
-        # ------------------------------------------------------------
-        d = intra + extra
-        d = np.minimum(d, max_residual)
-
-        np.fill_diagonal(d, 0.0)
-
-        return d.astype(np.float64)
+        dd = dist_km / vmean  # (n, n)
+        dt = times[:, None] - times[None, :]  # (n, n)
+        return np.sqrt(dt**2 + dd**2)
 
     # @staticmethod
     # def dask_compute_tt_matrix(phases, vmean):
@@ -631,7 +502,7 @@ class Clusterize(object):
             min_cluster_size=min_cluster_size,  # default 5
             min_samples=None,  # default None
             allow_single_cluster=True,
-            #cluster_selection_epsilon=max_search_dist,  # default 0.0
+            # cluster_selection_epsilon=max_search_dist,  # default 0.0
             cluster_selection_epsilon=0,
             metric="precomputed",
             n_jobs=-1,
@@ -673,13 +544,17 @@ class Clusterize(object):
                 noise_event_ids = Counter(
                     p.event_id.split("/")[-1] for p in noise if p.event_id
                 )
-                logger.debug(f"noise: {len(noise)} phases, event_ids: {dict(noise_event_ids)}")
+                logger.debug(
+                    f"noise: {len(noise)} phases, event_ids: {dict(noise_event_ids)}"
+                )
             else:
                 clusters.append(cluster)
                 event_id_counts = Counter(
                     p.event_id.split("/")[-1] for p in cluster if p.event_id
                 )
-                logger.debug(f"cluster[{c_id}]: {len(cluster)} phases, event_ids: {dict(event_id_counts)}")
+                logger.debug(
+                    f"cluster[{c_id}]: {len(cluster)} phases, event_ids: {dict(event_id_counts)}"
+                )
 
         return clusters, clusters_stability, noise
 
@@ -704,9 +579,7 @@ class Clusterize(object):
             indices_to_remove = []
             logger.debug("Working on cluster %s with %d phases" % (c1, len(c1)))
             for i, c2 in enumerate(self.clusters):
-                if cluster_share_eventid(
-                    c1, c2, shared_threshold=self.min_com_phases
-                ):
+                if cluster_share_eventid(c1, c2, shared_threshold=self.min_com_phases):
                     indices_to_remove.append(i)
                     clusters_to_merge.append(c2)
                 #     logger.info("Eventid shared.")
@@ -744,7 +617,9 @@ class Clusterize(object):
             stations_list = set([p.station for p in cluster])
 
             # Count the number of picks associated to a given event ID (needed for all filters)
-            event_id_counts = Counter([p.event_id.split("/")[-1] for p in cluster if p.event_id])
+            event_id_counts = Counter(
+                [p.event_id.split("/")[-1] for p in cluster if p.event_id]
+            )
 
             logger.info(
                 f"Generating nllobs for cluster {i} ({len(stations_list)} stations / {len(cluster)} picks)"
@@ -763,7 +638,11 @@ class Clusterize(object):
                         logger.info(
                             f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
                             f"not enough stations ({len(stations_list)}/{self.min_station_count})"
-                            + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
+                            + (
+                                f" [event_ids: {dict(event_id_counts)}]"
+                                if event_id_counts
+                                else ""
+                            )
                         )
                         rejected_event_ids.update(event_id_counts.keys())
                         continue
@@ -780,7 +659,8 @@ class Clusterize(object):
                     station_phase_sets[station_code].add("S")
 
             stations_with_both = sum(
-                1 for phases in station_phase_sets.values()
+                1
+                for phases in station_phase_sets.values()
                 if "P" in phases and "S" in phases
             )
             total_stations_ps = len(station_phase_sets)
@@ -788,7 +668,8 @@ class Clusterize(object):
             # Pre-NLL filter: station_score (P:1.0, S:0.5, P+S:2.0)
             if self.min_station_score is not None:
                 station_score = sum(
-                    2.0 if ("P" in phases and "S" in phases)
+                    2.0
+                    if ("P" in phases and "S" in phases)
                     else (1.0 if "P" in phases else 0.5)
                     for phases in station_phase_sets.values()
                 )
@@ -804,7 +685,11 @@ class Clusterize(object):
                         log_fn(
                             f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
                             f"station_score {station_score:.1f} < {self.min_station_score}"
-                            + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
+                            + (
+                                f" [event_ids: {dict(event_id_counts)}]"
+                                if event_id_counts
+                                else ""
+                            )
                         )
                         rejected_event_ids.update(event_id_counts.keys())
                         continue
@@ -823,14 +708,22 @@ class Clusterize(object):
                         log_fn(
                             f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
                             f"not enough stations with both P and S ({stations_with_both}/{self.min_station_with_P_and_S})"
-                            + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
+                            + (
+                                f" [event_ids: {dict(event_id_counts)}]"
+                                if event_id_counts
+                                else ""
+                            )
                         )
                         rejected_event_ids.update(event_id_counts.keys())
                         continue
 
             # Pre-NLL filter: min_ps_ratio (stations with both P and S / total stations)
             if self.min_ps_ratio is not None:
-                ps_ratio = stations_with_both / total_stations_ps if total_stations_ps > 0 else 0.0
+                ps_ratio = (
+                    stations_with_both / total_stations_ps
+                    if total_stations_ps > 0
+                    else 0.0
+                )
                 if ps_ratio < self.min_ps_ratio:
                     if self.force_keep_catalog_events and event_id_counts:
                         logger.warning(
@@ -843,7 +736,11 @@ class Clusterize(object):
                         log_fn(
                             f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
                             f"ps_ratio {stations_with_both}/{total_stations_ps} = {ps_ratio:.2f} < {self.min_ps_ratio}"
-                            + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
+                            + (
+                                f" [event_ids: {dict(event_id_counts)}]"
+                                if event_id_counts
+                                else ""
+                            )
                         )
                         rejected_event_ids.update(event_id_counts.keys())
                         continue
@@ -937,7 +834,9 @@ class Clusterize(object):
         # Summary: known event_ids rejected before NLL (not in any accepted cluster)
         lost = rejected_event_ids - accepted_event_ids
         if lost:
-            logger.warning(f"Known event_id(s) rejected before NLL (all clusters failed pre-filters): {sorted(lost)}")
+            logger.warning(
+                f"Known event_id(s) rejected before NLL (all clusters failed pre-filters): {sorted(lost)}"
+            )
 
         return picks_bundles
 
@@ -979,8 +878,6 @@ class Clusterize(object):
         for i in self.noise:
             print(i)
         print("\n")
-
-
 
 
 def _test():
