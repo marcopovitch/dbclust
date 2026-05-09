@@ -11,6 +11,7 @@ from math import isnan
 from math import pow
 from math import sqrt
 from typing import List
+from typing import Optional
 from typing import Tuple
 
 import hdbscan
@@ -57,6 +58,8 @@ def cluster_share_eventid(
     c1: List[Phase],
     c2: List[Phase],
     shared_threshold: int = 3,
+    min_picks_per_cluster: Optional[int] = None,
+    min_distinct_event_ids: int = 2,
 ) -> bool:
     """
     Check if two clusters share a common event ID, considering station and phase thresholds.
@@ -85,22 +88,23 @@ def cluster_share_eventid(
     c1_counts = Counter(c1_event_ids)
     c2_counts = Counter(c2_event_ids)
 
-    # Compute the shared occurrences for each common event_id.
-    # Use max() so that merging fires if EITHER cluster has enough picks
-    # from the same event_id. min() was too conservative: PyOcto distributes
-    # event_id picks non-redundantly (max_pick_overlap=0) between sub-clusters
-    # of the same physical event, so min() could be below threshold even when
-    # both clusters represent the same event.
+    # Guard against contamination: at least one cluster must have >= shared_threshold
+    # picks with the shared event_id (strong support), and the other must have >= 1
+    # (asymmetric, to handle HDBSCAN fragments where one cluster gets most picks).
+    if min_picks_per_cluster is None:
+        min_picks_per_cluster = shared_threshold
+
     shared_counts = {
-        event_id: max(c1_counts[event_id], c2_counts[event_id])
+        event_id: min(c1_counts[event_id], c2_counts[event_id])
         for event_id in common_event_ids
+        if max(c1_counts[event_id], c2_counts[event_id]) >= min_picks_per_cluster
+        and min(c1_counts[event_id], c2_counts[event_id]) >= 1
     }
 
     for event_id, count in shared_counts.items():
         logger.debug(f"Event ID {event_id}: {count} shared")
 
-    # Return True if any shared count exceeds the threshold
-    return any(count >= shared_threshold for count in shared_counts.values())
+    return len(shared_counts) >= max(1, min_distinct_event_ids)
 
 
 def get_picks_from_event(event: Event, origin: Origin, time) -> List:
@@ -176,7 +180,11 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
 
 
 def merge_cluster_with_common_phases(
-    clusters1, clusters2, min_com_phases: int
+    clusters1,
+    clusters2,
+    min_com_phases: int,
+    eventid_shared_min_picks_per_cluster: Optional[int] = None,
+    eventid_shared_min_distinct_ids: int = 2,
 ) -> Tuple:
     """
     Merge into `clusters1` all clusters from `clusters2` with common phases
@@ -209,7 +217,7 @@ def merge_cluster_with_common_phases(
         c2_t0 = c2_times[0] if c2_times else None
         c2_t1 = c2_times[-1] if c2_times else None
         c2_eids = [p.event_id for p in c2 if p.event_id]
-        logger.info(
+        logger.debug(
             f"merge_cluster_with_common_phases: c2 cluster [{c2_t0} .. {c2_t1}] "
             f"{len(c2)} picks, {len(c2_eids)} with event_id"
         )
@@ -229,14 +237,18 @@ def merge_cluster_with_common_phases(
             c1_t0 = c1_times[0] if c1_times else None
             c1_t1 = c1_times[-1] if c1_times else None
             c1_eids = [p.event_id for p in c1 if p.event_id]
-            logger.info(
+            logger.debug(
                 f"  vs c1[{i}] [{c1_t0} .. {c1_t1}] {len(c1)} picks, {len(c1_eids)} with event_id "
                 f"=> hash_common={common_count}, spatio_common={spatio_count}"
             )
 
             # Check for shared event IDs
             eventid_shared = cluster_share_eventid(
-                c1, c2, shared_threshold=min_com_phases
+                c1,
+                c2,
+                shared_threshold=min_com_phases,
+                min_picks_per_cluster=eventid_shared_min_picks_per_cluster,
+                min_distinct_event_ids=eventid_shared_min_distinct_ids,
             )
 
             # Merge clusters if conditions are met
@@ -309,10 +321,17 @@ class Clusterize(object):
         P_uncertainty=0.1,
         S_uncertainty=0.2,
         min_com_phases=3,
+        eventid_shared_min_picks_per_cluster=None,
+        eventid_shared_min_distinct_ids=2,
         tt_matrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
         tt_matrix_save=False,
         zones=None,
+        use_umap=False,  # if True, apply UMAP on TT matrix before HDBSCAN
+        umap_clip_seconds=0.0,  # explicit clip ceiling (0 = use p75 of TT matrix)
+        umap_aot_tt_blend_alpha=0.3,  # weight of TT in blended dist matrix (0=pure AOT)
+        umap_vp=6.0,  # apparent P-wave velocity for AOT (km/s)
+        umap_vs=3.5,  # apparent S-wave velocity for AOT (km/s)
     ):
         # clusters is a list of cluster :
         # ie. [ [phases, label], ... ]
@@ -341,10 +360,17 @@ class Clusterize(object):
         self.P_uncertainty = P_uncertainty
         self.S_uncertainty = S_uncertainty
         self.min_com_phases = min_com_phases
+        self.eventid_shared_min_picks_per_cluster = eventid_shared_min_picks_per_cluster
+        self.eventid_shared_min_distinct_ids = eventid_shared_min_distinct_ids
 
         # tt_matrix load/save parameters
         self.tt_matrix_fname = tt_matrix_fname
         self.tt_matrix_load = tt_matrix_load
+        self.use_umap = use_umap
+        self.umap_clip_seconds = umap_clip_seconds
+        self.umap_aot_tt_blend_alpha = umap_aot_tt_blend_alpha
+        self.umap_vp = umap_vp
+        self.umap_vs = umap_vs
 
         if phases is None:
             # Simple constructor
@@ -387,6 +413,20 @@ class Clusterize(object):
             pseudo_tt = self.numpy_compute_tt_matrix_vectorized(
                 phases, average_velocity
             )
+            # Optional UMAP dimensionality reduction: embed the TT distance matrix
+            # into a low-dimensional Euclidean space before HDBSCAN. This separates
+            # geographically incoherent pick pools (backward injection) that form
+            # mega-clusters in raw TT space but are well-separated in UMAP space.
+            if use_umap:
+                pseudo_tt, max_search_dist = self.build_umap_embedding(
+                    phases,
+                    pseudo_tt,
+                    min_cluster_size=min_cluster_size,
+                    umap_clip_seconds=umap_clip_seconds,
+                    aot_tt_blend_alpha=umap_aot_tt_blend_alpha,
+                    vp=self.umap_vp,
+                    vs=self.umap_vs,
+                )
 
             # // computation using dask bag: slower for small cluster
             # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
@@ -402,7 +442,8 @@ class Clusterize(object):
             np.save(tt_matrix_fname, pseudo_tt)
 
         self.clusters, self.clusters_stability, self.noise = self.get_clusters(
-            phases, pseudo_tt, max_search_dist, min_cluster_size
+            phases, pseudo_tt, max_search_dist, min_cluster_size,
+            metric="euclidean" if use_umap else "precomputed",
         )
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
@@ -415,6 +456,93 @@ class Clusterize(object):
         Count the number of phases in the clusters.
         """
         return sum(len(cluster) for cluster in self.clusters)
+
+    def absorb_backward_picks(self, backward_phases, assign_threshold=10.0):
+        """Post-clustering absorption of backward overlap picks.
+
+        Called after the main HDBSCAN run on the forward window picks.
+        Operates in two passes so the main clustering is never polluted:
+
+        Case A — Enrich existing clusters:
+            Each backward pick whose minimum TT distance to any pick already
+            in an existing cluster is < assign_threshold is appended to that
+            cluster (nearest wins when several candidates qualify).
+
+        Case B — Discover new clusters from residuals:
+            Backward picks not assigned in Case A, combined with the noise
+            picks from the main run, are re-clustered via a fresh HDBSCAN
+            pass (raw TT matrix, no UMAP) using the same min_cluster_size
+            and max_search_dist parameters.  Valid new clusters are merged
+            into self.clusters; the remaining noise replaces self.noise.
+
+        Parameters
+        ----------
+        backward_phases : list[Phase]
+            Picks from the backward overlap zone [window_start-overlap, window_start].
+        assign_threshold : float
+            Max TT distance (seconds) for Case A assignment.  Default 10 s.
+        """
+        if not backward_phases:
+            return
+
+        # ── Case A: assign each backward pick to the nearest existing cluster ──
+        unassigned = []
+        n_assigned = 0
+        for bp in backward_phases:
+            best_dist = float("inf")
+            best_idx = -1
+            for idx, cluster in enumerate(self.clusters):
+                for cp in cluster:
+                    tt = compute_tt(bp, cp, self.average_velocity)
+                    if tt < best_dist:
+                        best_dist = tt
+                        best_idx = idx
+            if best_idx >= 0 and best_dist <= assign_threshold:
+                self.clusters[best_idx].append(bp)
+                n_assigned += 1
+                logger.debug(
+                    f"[backward A] pick {bp.time} → cluster {best_idx} (TT={best_dist:.2f}s)"
+                )
+            else:
+                unassigned.append(bp)
+
+        logger.info(
+            f"[backward] Case A: {n_assigned}/{len(backward_phases)} picks assigned"
+            f" to existing clusters."
+        )
+
+        # ── Case B: second-pass HDBSCAN on residuals + main-pass noise ──────
+        pool = unassigned + list(self.noise)
+        if len(pool) < self.min_cluster_size:
+            logger.info(
+                f"[backward] Case B: pool too small ({len(pool)} < {self.min_cluster_size}),"
+                f" skipping."
+            )
+            return
+
+        logger.info(
+            f"[backward] Case B: second-pass HDBSCAN on {len(pool)} picks"
+            f" ({len(unassigned)} unassigned backward + {len(self.noise)} noise)."
+        )
+        pseudo_tt2 = self.numpy_compute_tt_matrix_vectorized(pool, self.average_velocity)
+        new_clusters, new_stabilities, new_noise = self.get_clusters(
+            pool, pseudo_tt2, self.max_search_dist, self.min_cluster_size,
+            metric="precomputed",
+        )
+        if new_clusters:
+            logger.info(
+                f"[backward] Case B: {len(new_clusters)} new cluster(s) discovered."
+            )
+            self.clusters += new_clusters
+            self.n_clusters = len(self.clusters)
+            self.clusters_stability = np.concatenate([
+                np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
+                np.array(new_stabilities, dtype=float),
+            ])
+        else:
+            logger.info("[backward] Case B: no new clusters found.")
+        self.noise = new_noise
+        self.n_noise = len(new_noise)
 
     @staticmethod
     def compute_tt_matrix(phases, vmean):
@@ -461,6 +589,31 @@ class Clusterize(object):
         return tt_matrix
 
     @staticmethod
+    def build_umap_embedding(phases, pseudo_tt, *, min_cluster_size, umap_clip_seconds=0.0, aot_tt_blend_alpha=0.3, vp=6.0, vs=3.5):
+        """Thin wrapper around :func:`dbclust.umap_embedding.build_umap_embedding`.
+
+        Extracts numpy arrays from the Phase list and delegates to the
+        standalone function so the same logic can be reused by scripts.
+        """
+        from dbclust.umap_embedding import build_umap_embedding as _build
+        try:
+            return _build(
+                lats_deg    = [p.coord["latitude"]  for p in phases],
+                lons_deg    = [p.coord["longitude"] for p in phases],
+                times       = [float(p.time)        for p in phases],
+                phase_types = [p.phase              for p in phases],
+                pseudo_tt   = pseudo_tt,
+                min_cluster_size   = min_cluster_size,
+                umap_clip_seconds  = umap_clip_seconds,
+                aot_tt_blend_alpha = aot_tt_blend_alpha,
+                vp                 = vp,
+                vs                 = vs,
+            )
+        except ImportError as exc:
+            logger.warning("%s — falling back to standard HDBSCAN on TT matrix.", exc)
+            return pseudo_tt, 0
+
+    @staticmethod
     def numpy_compute_tt_matrix_vectorized(phases, vmean):
         """Vectorized TT matrix using haversine formula.
 
@@ -495,19 +648,23 @@ class Clusterize(object):
     #     return tt_matrix
 
     @staticmethod
-    def get_clusters(phases, pseudo_tt, max_search_dist, min_cluster_size):
-        # metric is “precomputed” ==> X is assumed to be a distance matrix and must be square
+    def get_clusters(phases, pseudo_tt, max_search_dist, min_cluster_size, metric="precomputed"):
+        # metric is "precomputed" ==> X is assumed to be a distance matrix and must be square
+        # metric is "euclidean" when pseudo_tt is a UMAP 2D embedding
 
-        db = hdbscan.HDBSCAN(
+        # n_jobs is not supported by the KDTree-based algorithm used for euclidean metric
+        hdbscan_kwargs = dict(
             min_cluster_size=min_cluster_size,  # default 5
             min_samples=None,  # default None
             allow_single_cluster=True,
-            # cluster_selection_epsilon=max_search_dist,  # default 0.0
-            cluster_selection_epsilon=0,
-            metric="precomputed",
-            n_jobs=-1,
-            cluster_selection_method="eom",  # default 'eom', other option is 'leaf' (more clusters, less stable)
-        ).fit(pseudo_tt)
+            cluster_selection_epsilon=max_search_dist,  # default 0.0,
+            metric=metric,
+            cluster_selection_method="eom",
+        )
+        if metric == "precomputed":
+            hdbscan_kwargs["n_jobs"] = -1
+
+        db = hdbscan.HDBSCAN(**hdbscan_kwargs).fit(pseudo_tt)
 
         labels = db.labels_
 
@@ -579,7 +736,13 @@ class Clusterize(object):
             indices_to_remove = []
             logger.debug("Working on cluster %s with %d phases" % (c1, len(c1)))
             for i, c2 in enumerate(self.clusters):
-                if cluster_share_eventid(c1, c2, shared_threshold=self.min_com_phases):
+                if cluster_share_eventid(
+                    c1,
+                    c2,
+                    shared_threshold=self.min_com_phases,
+                    min_picks_per_cluster=self.eventid_shared_min_picks_per_cluster,
+                    min_distinct_event_ids=self.eventid_shared_min_distinct_ids,
+                ):
                     indices_to_remove.append(i)
                     clusters_to_merge.append(c2)
                 #     logger.info("Eventid shared.")
@@ -625,6 +788,7 @@ class Clusterize(object):
                 f"Generating nllobs for cluster {i} ({len(stations_list)} stations / {len(cluster)} picks)"
                 + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
             )
+
             forced_catalog_event = False
             if self.min_station_count:
                 if len(stations_list) < self.min_station_count:
@@ -720,9 +884,7 @@ class Clusterize(object):
             # Pre-NLL filter: min_ps_ratio (stations with both P and S / total stations)
             if self.min_ps_ratio is not None:
                 ps_ratio = (
-                    stations_with_both / total_stations_ps
-                    if total_stations_ps > 0
-                    else 0.0
+                    stations_with_both / total_stations_ps if total_stations_ps > 0 else 0.0
                 )
                 if ps_ratio < self.min_ps_ratio:
                     if self.force_keep_catalog_events and event_id_counts:
