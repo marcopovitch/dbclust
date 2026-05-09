@@ -1191,9 +1191,17 @@ class NllLoc(object):
                     log_fn(f"Rejected | {summary} | reason: score < {self.min_station_score}")
                     continue
                 if self.min_ps_ratio is not None and ps_ratio < self.min_ps_ratio:
-                    log_fn = logger.warning if event_ids_in_picks else logger.info
-                    log_fn(f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}")
-                    continue
+                    if event_ids_in_picks:
+                        logger.warning(
+                            f"Accepted despite low ps_ratio | {summary} | "
+                            f"reason: known event_id support"
+                        )
+                    else:
+                        log_fn = logger.warning if event_ids_in_picks else logger.info
+                        log_fn(
+                            f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}"
+                        )
+                        continue
                 logger.info(f"Accepted | {summary}")
                 accepted_event_ids.update(event_ids_in_picks)
                 final_catalog += cat
@@ -1212,9 +1220,17 @@ class NllLoc(object):
                 continue
 
             if self.min_ps_ratio is not None and ps_ratio < self.min_ps_ratio:
-                log_fn = logger.warning if event_ids_in_picks else logger.info
-                log_fn(f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}")
-                continue
+                if event_ids_in_picks:
+                    logger.warning(
+                        f"Accepted despite low ps_ratio | {summary} | "
+                        f"reason: known event_id support"
+                    )
+                else:
+                    log_fn = logger.warning if event_ids_in_picks else logger.info
+                    log_fn(
+                        f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}"
+                    )
+                    continue
 
             logger.info(f"Accepted | {summary}")
             accepted_event_ids.update(event_ids_in_picks)

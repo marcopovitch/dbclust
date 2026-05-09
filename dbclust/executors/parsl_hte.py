@@ -221,7 +221,7 @@ class ParslHTEExecutor(ExecutorBase):
         config = Config(
             executors=[executor],
             run_dir=self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo",
-            retries=3,
+            retries=0,  # no silent retries — propagate exceptions immediately for visibility
             strategy="none",  # disable auto scale-in which causes ZMQError mid-run
         )
 
