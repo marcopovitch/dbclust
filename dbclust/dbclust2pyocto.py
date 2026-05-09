@@ -394,7 +394,11 @@ def dbclust2pyocto(
 
     # Merge clusters with common picks or event IDs
     pyocto_clusters, pyocto_preloc = cluster_merge(
-        pyocto_clusters, pyocto_preloc, min_com_phases
+        pyocto_clusters,
+        pyocto_preloc,
+        min_com_phases,
+        eventid_shared_min_picks_per_cluster=myclust.eventid_shared_min_picks_per_cluster,
+        eventid_shared_min_distinct_ids=myclust.eventid_shared_min_distinct_ids,
     )
 
     logger.info(
@@ -441,7 +445,11 @@ def dbclust2pyocto(
 
 
 def cluster_merge(
-    clusters: List[List[Phase]], preloc, min_com_phases: int
+    clusters: List[List[Phase]],
+    preloc,
+    min_com_phases: int,
+    eventid_shared_min_picks_per_cluster: Optional[int] = None,
+    eventid_shared_min_distinct_ids: int = 2,
 ) -> Tuple[List[List[Phase]], List]:
     """
     Iteratively merges clusters with shared phases or event IDs
@@ -457,7 +465,11 @@ def cluster_merge(
     """
     while True:
         clusters, preloc, merge_count = cluster_merge_one_pass(
-            clusters, preloc, min_com_phases
+            clusters,
+            preloc,
+            min_com_phases,
+            eventid_shared_min_picks_per_cluster=eventid_shared_min_picks_per_cluster,
+            eventid_shared_min_distinct_ids=eventid_shared_min_distinct_ids,
         )
         if merge_count == 0:
             break
@@ -465,7 +477,11 @@ def cluster_merge(
 
 
 def cluster_merge_one_pass(
-    clusters: List[List[Phase]], preloc: List, min_com_phases: int
+    clusters: List[List[Phase]],
+    preloc: List,
+    min_com_phases: int,
+    eventid_shared_min_picks_per_cluster: Optional[int] = None,
+    eventid_shared_min_distinct_ids: int = 2,
 ) -> Tuple[List[List[Phase]], List, int]:
     """
     Perform one pass of cluster merging based on shared picks or event IDs.
@@ -490,7 +506,13 @@ def cluster_merge_one_pass(
         common_count = sum((Counter(c1) & Counter(c2)).values())
 
         # Check if clusters share event IDs
-        eventid_shared = cluster_share_eventid(c1, c2, shared_threshold=min_com_phases)
+        eventid_shared = cluster_share_eventid(
+            c1,
+            c2,
+            shared_threshold=min_com_phases,
+            min_picks_per_cluster=eventid_shared_min_picks_per_cluster,
+            min_distinct_event_ids=eventid_shared_min_distinct_ids,
+        )
 
         if common_count >= min_com_phases or eventid_shared:
             logger.info(

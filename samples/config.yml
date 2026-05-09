@@ -63,7 +63,19 @@ cluster:
   max_search_dist: 8.0
   # nb of picks in common to merge cluster in the overlapped zone
   min_picks_common: 3
-
+  # event-id merge guard: minimum picks per cluster for a shared event_id
+  # null means use min_picks_common
+  eventid_shared_min_picks_per_cluster: null
+  # event-id merge guard: minimum number of distinct shared event_id values
+  eventid_shared_min_distinct_ids: 2
+  # Time-gate: set distance=1e9 in TT matrix between picks > N seconds apart.
+  # Prevents HDBSCAN chaining across backward-injection picks from different zones.
+  # Must be < backward injection window duration. Set to null to disable.
+  # Recommended: ~150s when using backward injection with 10-min time windows.
+  # clustering_time_window: null
+  # Use UMAP reduction of TT matrix before HDBSCAN (requires umap-learn).
+  # Separates geographically incoherent pick pools without any time-window parameter.
+  use_umap: false
   # WARNING : to be used only for a unique event !
   # Don't use it if you don't know what you are doing !
   # pre_computed_tt_matrix_file: !join [*DATA, "/", "tt_matrix-min_size", *MIN_CLUSTER_SISE, ".npy"]

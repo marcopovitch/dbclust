@@ -492,6 +492,20 @@ class ClusterConfig:
     min_ps_ratio: Optional[float] = None
     # Force clusters with known event_id through pre-NLL filters even if they fail thresholds
     force_keep_catalog_events: bool = False
+    # Use UMAP dimensionality reduction of TT matrix before HDBSCAN.
+    # Separates geographically incoherent pick pools without any time-window parameter.
+    # Requires umap-learn (pip install umap-learn).
+    use_umap: bool = False
+    # Phase velocities for AOT computation in UMAP embedding.
+    # Should match the apparent wave velocities in the study region.
+    # Defaults: Vp=6.0 km/s, Vs=3.5 km/s.
+    umap_vp: Optional[float] = 6.0
+    umap_vs: Optional[float] = 3.5
+    # Event-ID merge guard: minimum picks per cluster for a shared event_id.
+    # If None, defaults to min_picks_common.
+    eventid_shared_min_picks_per_cluster: Optional[int] = None
+    # Event-ID merge guard: minimum number of distinct shared event_ids.
+    eventid_shared_min_distinct_ids: int = 2
 
     def __post_init__(self) -> None:
         if self.pre_computed_tt_matrix_file:

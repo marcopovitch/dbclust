@@ -15,9 +15,12 @@ import time
 from dataclasses import asdict
 from typing import List, Optional
 
+import numpy as np
 import pandas as pd
 import pyproj
 import pyproj.exceptions
+
+from obspy import UTCDateTime
 
 from dbclust.clusterize import Clusterize
 from dbclust.clusterize import feed_picks_event_ids
@@ -29,6 +32,7 @@ from dbclust.db import duckdb_init
 from dbclust.dbclust2pyocto import adjust_associator_tolerance
 from dbclust.inject_spatialite import (
     create_schema,
+    get_pick_probability,
     import_catalog_to_sqlite,
 )
 from dbclust.localization import NllLoc
@@ -43,6 +47,7 @@ from dbclust.rename import rename_waveform_id
 
 # uses hierarchical name for selective level control
 logger = logging.getLogger("dbclust.core")
+
 
 # CSV fieldnames for progress tracking
 CSV_FIELDNAMES = [
@@ -166,6 +171,66 @@ def get_cross_partition_picks(
     return df_all if not df_all.empty else pd.DataFrame()
 
 
+def extract_deferred_event_picks(event, cfg: DBClustConfig) -> pd.DataFrame:
+    """Extract event picks to be re-injected in the next window.
+
+    The function only keeps picks effectively used by arrivals
+    (time_weight/time_residual both defined), and carries pick probability from
+    QuakeML comments when available.
+    """
+    fallback_score = float(
+        max(
+            float(cfg.pick.P_proba_threshold or 0.0),
+            float(cfg.pick.S_proba_threshold or 0.0),
+        )
+    )
+
+    deferred_rows = []
+    pick_by_id = {p.resource_id: p for p in event.picks}
+
+    for origin in event.origins:
+        for arrival in origin.arrivals:
+            if arrival.time_weight is None or arrival.time_residual is None:
+                continue
+
+            pick = pick_by_id.get(arrival.pick_id)
+            if pick is None:
+                continue
+
+            phase_type = pick.phase_hint
+            phase_type_up = str(phase_type).upper()
+            pick_probability = get_pick_probability(pick)
+
+            if pick_probability is not None:
+                deferred_score = float(pick_probability)
+            elif phase_type_up.startswith("P"):
+                deferred_score = float(cfg.pick.P_proba_threshold or 0.0)
+            elif phase_type_up.startswith("S"):
+                deferred_score = float(cfg.pick.S_proba_threshold or 0.0)
+            else:
+                deferred_score = fallback_score
+
+            deferred_rows.append(
+                {
+                    "station_id": pick.waveform_id.get_seed_string(),
+                    "phase_type": phase_type,
+                    "phase_time": pd.to_datetime(str(pick.time), utc=True),
+                    "phase_score": deferred_score,
+                }
+            )
+
+    if not deferred_rows:
+        return pd.DataFrame(
+            columns=["station_id", "phase_type", "phase_time", "phase_score"]
+        )
+
+    df_deferred = pd.DataFrame(deferred_rows)
+    return df_deferred.drop_duplicates(
+        subset=["station_id", "phase_type", "phase_time"],
+        keep="first",
+    )
+
+
 def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
     """Create a NllLoc instance from configuration.
 
@@ -239,6 +304,8 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
     # Type assertions and defaults for potentially None config values
     average_velocity: int = int(cfg.cluster.average_velocity) if cfg.cluster.average_velocity is not None else 5
     max_search_dist: int = int(cfg.cluster.max_search_dist) if cfg.cluster.max_search_dist is not None else 100
+    umap_vp: float = float(cfg.cluster.umap_vp) if cfg.cluster.umap_vp is not None else 6.0
+    umap_vs: float = float(cfg.cluster.umap_vs) if cfg.cluster.umap_vs is not None else 3.5
     tt_matrix_fname: str = cfg.cluster.pre_computed_tt_matrix_file or ""
     
     myclust = Clusterize(
@@ -250,10 +317,16 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         min_station_score=cfg.cluster.min_station_score,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
         force_keep_catalog_events=cfg.cluster.force_keep_catalog_events,
+        use_umap=cfg.cluster.use_umap,
+        umap_clip_seconds=cfg.time.overlap_window if cfg.cluster.use_umap else 0.0,
+        umap_vp=umap_vp,
+        umap_vs=umap_vs,
         max_search_dist=max_search_dist,
         P_uncertainty=cfg.pick.P_uncertainty,
         S_uncertainty=cfg.pick.S_uncertainty,
         min_com_phases=cfg.cluster.min_picks_common,
+        eventid_shared_min_picks_per_cluster=cfg.cluster.eventid_shared_min_picks_per_cluster,
+        eventid_shared_min_distinct_ids=cfg.cluster.eventid_shared_min_distinct_ids,
         tt_matrix_fname=tt_matrix_fname,
         tt_matrix_save=cfg.cluster.tt_matrix_save,
         zones=cfg.zones,
@@ -371,7 +444,9 @@ def dbclust(
     # keep track of each time division processed
     last_saved_event_count = 0
     picks_to_remove = []
-
+    deferred_picks_next_round = pd.DataFrame(
+        columns=["station_id", "phase_type", "phase_time", "phase_score"]
+    )
     i = 0
 
     # start time looping
@@ -405,6 +480,7 @@ def dbclust(
         )
 
         # Extract picks on this time period
+        df_backward_overlap = None  # populated only for first window of non-first jobs
         if con:
             begin_year = begin.year
             begin_month = begin.month
@@ -443,20 +519,39 @@ def dbclust(
             else:
                 df_subset["phase_time"] = df_subset["phase_time"].dt.tz_convert("UTC")
 
-            # First window of non-first parallel jobs: inject all picks from the
-            # backward overlap zone [start-overlap, start] so that cross-partition
-            # events (suppressed by the forward overlap rule of the previous job)
-            # are reconstructed with their full pick set before HDBSCAN.
+            # First window of non-first parallel jobs: capture picks from the
+            # backward overlap zone [start-overlap, start].  These are NOT
+            # injected into df_subset before HDBSCAN (which could cause
+            # mega-clusters in TT or UMAP space).  Instead they are absorbed
+            # post-clustering via Clusterize.absorb_backward_picks() which
+            # assigns them to existing clusters (Case A) or forms new ones
+            # from the residuals + noise (Case B).
             if parallel_mode and job_index > 0 and i == 1:
                 pick_start = cfg.pick.start or pd.Timestamp("1970-01-01")
                 global_start = pd.Timestamp(pick_start).tz_localize(None) if not hasattr(pick_start, 'tz') else pd.Timestamp(pick_start)
-                df_backward = get_cross_partition_picks(
+                df_backward_overlap = get_cross_partition_picks(
                     con, start, overlap_timedelta, global_start
                 )
-                df_subset = inject_picks_into_df(df_subset, df_backward, "backward", job_index, i)
+                logger.info(
+                    f"[{job_index}] Captured {len(df_backward_overlap)} backward overlap picks"
+                    f" for post-clustering absorption."
+                )
 
         else:
             df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
+
+        if not deferred_picks_next_round.empty:
+            logger.info(
+                f"[{job_index}] Re-injecting {len(deferred_picks_next_round)} deferred picks from previous window."
+            )
+            df_subset = inject_picks_into_df(
+                df_subset,
+                deferred_picks_next_round,
+                label="deferred",
+                job_index=job_index,
+                partition_index=i,
+            )
+            deferred_picks_next_round = deferred_picks_next_round.iloc[0:0]
 
         if df_subset.empty and previous_myclust.phases_count() == 0:
             logger.info(f"[{job_index}] Skipping clustering {len(df_subset)} phases.")
@@ -539,6 +634,23 @@ def dbclust(
         myclust = get_clusterize_from_config(cfg, phases=phases)
         del phases
 
+        # Post-clustering absorption of backward overlap picks (Case A + B).
+        # Must happen before merge_cluster_with_common_phases so that newly
+        # formed clusters are visible to the overlap deduplication step.
+        if df_backward_overlap is not None and not df_backward_overlap.empty:
+            backward_phases = import_phases(
+                df_backward_overlap,
+                cfg.pick.P_proba_threshold,
+                cfg.pick.S_proba_threshold,
+                cfg.pick.P_uncertainty,
+                cfg.pick.S_uncertainty,
+                cfg.station.info_sta,
+                cfg.station.fallback_df,
+            )
+            myclust.absorb_backward_picks(backward_phases)
+            del backward_phases
+        df_backward_overlap = None
+
         if logger.level == logging.DEBUG:
             logger.info("myclust:")
             myclust.show_clusters()
@@ -548,38 +660,86 @@ def dbclust(
 
         previous_myclust, myclust, nb_cluster_removed = (
             merge_cluster_with_common_phases(
-                previous_myclust, myclust, cfg.cluster.min_picks_common
+                previous_myclust,
+                myclust,
+                cfg.cluster.min_picks_common,
+                eventid_shared_min_picks_per_cluster=cfg.cluster.eventid_shared_min_picks_per_cluster,
+                eventid_shared_min_distinct_ids=cfg.cluster.eventid_shared_min_distinct_ids,
             )
         )
 
         if last_partition_job:
             logger.info(
-                f"==> Last job in the time partition, merging all remaining clusters."
+                "==> Last job in the time partition, merging all remaining clusters."
             )
             previous_myclust.merge(myclust)
         elif myclust.n_clusters > 0:
-            # Promote all non-merged myclust clusters into previous_myclust so
-            # PyOcto processes them immediately in this window instead of waiting
-            # for the next window where they would merge into a mega-cluster.
-            logger.info(
-                f"Promoting {myclust.n_clusters} myclust cluster(s) "
-                f"into previous_myclust for immediate PyOcto processing."
+            # Smart overlap promotion: only promote clusters whose picks are entirely
+            # before the overlap zone (temporally complete — they won't gain more picks
+            # in the next window). Clusters with picks reaching into the overlap zone
+            # are left to carry over naturally so they merge with the next window's picks
+            # and avoid forming contaminated mega-clusters.
+            overlap_start = UTCDateTime(
+                (end - overlap_timedelta).isoformat() if not short_window else end.isoformat()
             )
-            # Preserve DL picks (no event_id) as noise so PyOcto can still use
-            # them as enrichment candidates after promotion empties myclust.
-            extra_dl_picks = [
-                p for c in myclust.clusters for p in c if not p.event_id
-            ] + [p for p in (myclust.noise or []) if not p.event_id]
-            previous_myclust.clusters += myclust.clusters
-            previous_myclust.n_clusters = len(previous_myclust.clusters)
-            previous_myclust.clusters_stability = list(previous_myclust.clusters_stability) + [1.0] * myclust.n_clusters
-            previous_myclust.noise = list(getattr(previous_myclust, 'noise', []) or []) + extra_dl_picks
-            previous_myclust.n_noise = len(previous_myclust.noise)
-            myclust.clusters = []
-            myclust.n_clusters = 0
-            myclust.clusters_stability = []
-            myclust.noise = []
-            myclust.n_noise = 0
+
+            ready_clusters = []
+            ready_stabilities = []
+            deferred_clusters = []
+            deferred_stabilities = []
+
+            for j, cluster in enumerate(myclust.clusters):
+                if not cluster:
+                    continue
+                last_pick_ts = max(p.time for p in cluster)
+                stab = (
+                    float(myclust.clusters_stability[j])
+                    if len(myclust.clusters_stability) > j
+                    else 1.0
+                )
+                if last_pick_ts < overlap_start:
+                    ready_clusters.append(cluster)
+                    ready_stabilities.append(stab)
+                else:
+                    deferred_clusters.append(cluster)
+                    deferred_stabilities.append(stab)
+
+            if ready_clusters:
+                overlap_start_label = overlap_start.isoformat()
+                logger.info(
+                    f"Promoting {len(ready_clusters)} temporally-complete cluster(s) "
+                    f"(all picks before overlap zone {overlap_start_label}); "
+                    f"{len(deferred_clusters)} cluster(s) deferred to next window."
+                )
+                previous_myclust.clusters += ready_clusters
+                previous_myclust.n_clusters = len(previous_myclust.clusters)
+                previous_myclust.clusters_stability = np.concatenate([
+                    np.atleast_1d(np.array(previous_myclust.clusters_stability, dtype=float)),
+                    np.array(ready_stabilities, dtype=float),
+                ])
+                # Move noise from myclust into the promoted batch so PyOcto has
+                # access to unassigned picks without double-counting.
+                previous_myclust.noise = (
+                    list(getattr(previous_myclust, "noise", []) or [])
+                    + list(myclust.noise or [])
+                )
+                previous_myclust.n_noise = len(previous_myclust.noise)
+            else:
+                logger.info(
+                    f"No temporally-complete clusters: all {myclust.n_clusters} "
+                    f"cluster(s) have picks in the overlap zone, deferring to next window."
+                )
+
+            # Keep only deferred clusters in myclust for next round
+            myclust.clusters = deferred_clusters
+            myclust.n_clusters = len(deferred_clusters)
+            myclust.clusters_stability = (
+                np.array(deferred_stabilities, dtype=float)
+                if deferred_stabilities
+                else np.ones(0, dtype=float)
+            )
+            myclust.noise = [] if ready_clusters else list(myclust.noise or [])
+            myclust.n_noise = len(myclust.noise)
 
         if cfg.pyocto.enable and cfg.pyocto.current_model:
             try:
@@ -685,12 +845,27 @@ def dbclust(
 
                 # Rule 1 — Window overlap zone: first_pick falls beyond next_begin.
                 # The next window will detect this event with more picks.
-                elif not (last_partition_job and last_job) and event_in_overlapped_zone:
+                elif (not last_partition_job) and event_in_overlapped_zone:
                     for line in format_event(event, "***D"):
                         logger.info(line)
                     logger.info(
                         f"Found event in overlapped zone to be (D)eleted ({event.resource_id.id})"
                     )
+
+                    df_deferred = extract_deferred_event_picks(event, cfg)
+                    if not df_deferred.empty:
+                        deferred_picks_next_round = pd.concat(
+                            [deferred_picks_next_round, df_deferred],
+                            ignore_index=True,
+                        )
+                        deferred_picks_next_round = deferred_picks_next_round.drop_duplicates(
+                            subset=["station_id", "phase_type", "phase_time"],
+                            keep="first",
+                        )
+                        logger.info(
+                            f"[{job_index}] Deferred {len(df_deferred)} picks from ***D event for next window re-clustering."
+                        )
+
                     locator.catalog.events.remove(event)
                     locator.nb_events = len(locator.catalog)
                     clustcat = locator.catalog
