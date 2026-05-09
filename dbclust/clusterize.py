@@ -6,8 +6,6 @@ import os
 import sys
 from collections import Counter, defaultdict
 from itertools import chain
-from itertools import product
-from math import isnan
 from math import pow
 from math import sqrt
 from typing import List
@@ -17,14 +15,10 @@ from typing import Tuple
 import hdbscan
 import numpy as np
 import pandas as pd
-from icecream import ic
 from obspy import Catalog
 from obspy.core.event import Comment
-from obspy.core.event import CreationInfo
 from obspy.core.event import Event
 from obspy.core.event import Origin
-from obspy.core.event.base import WaveformStreamID
-from obspy.core.event.origin import Pick
 from obspy.geodetics import gps2dist_azimuth
 from tqdm import tqdm
 
@@ -456,6 +450,113 @@ class Clusterize(object):
         Count the number of phases in the clusters.
         """
         return sum(len(cluster) for cluster in self.clusters)
+
+    def absorb_deferred_cluster(
+        self,
+        deferred_phases: list,
+        assign_threshold: float = 10.0,
+        overlap_seconds: float = 0.0,
+    ):
+        """Insert a pre-formed deferred cluster and enrich it with nearby picks.
+
+        Parameters
+        ----------
+        deferred_phases : list[Phase]
+            Phases from the pre-formed cluster to inject.
+        assign_threshold : float
+            Max TT distance (seconds) for enrichment.  Default 10 s.
+        overlap_seconds : float
+            Half-width of the temporal enrichment window in seconds.  Only picks
+            whose time falls within [t_min - overlap, t_max + overlap] of the
+            deferred cluster are candidates.  0 means no temporal pre-filter.
+        """
+        if not deferred_phases:
+            return
+
+        # deferred_phases come from a prior Clusterize instance, so their Phase
+        # objects are never physically present in self.clusters — no extraction needed.
+        deferred_keys = {
+            (p.station, p.time.datetime, p.phase) for p in deferred_phases
+        }
+
+        # Remove matching picks (by key) from all existing clusters so the deferred
+        # cluster becomes the sole owner of these picks and is not re-localized later
+        # via the mega-cluster that originally contained them.
+        n_extracted = 0
+        for cluster in self.clusters:
+            to_remove = [
+                p for p in cluster
+                if (p.station, p.time.datetime, p.phase) in deferred_keys
+            ]
+            for p in to_remove:
+                cluster.remove(p)
+                n_extracted += 1
+
+        new_cluster: list = list(deferred_phases)
+        self._deferred_cluster_ref = new_cluster  # exposed for post-localization cleanup
+        cluster_idx = len(self.clusters)
+        self.clusters.append(new_cluster)
+        self.n_clusters = len(self.clusters)
+        self.clusters_stability = np.concatenate([
+            np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
+            np.array([1.0], dtype=float),
+        ])
+        logger.info(
+            f"[deferred] Inserted pre-formed cluster #{cluster_idx}"
+            f" with {len(new_cluster)} phases"
+            f" (extracted {n_extracted} picks from existing clusters)."
+        )
+
+        # Temporal bounds of the deferred cluster, extended by overlap_seconds.
+        t_min = min(float(p.time) for p in new_cluster)
+        t_max = max(float(p.time) for p in new_cluster)
+        t_lo = t_min - overlap_seconds
+        t_hi = t_max + overlap_seconds
+
+        def _is_candidate(p) -> bool:
+            if (p.station, p.time.datetime, p.phase) in deferred_keys:
+                return False
+            if overlap_seconds > 0 and not (t_lo <= float(p.time) <= t_hi):
+                return False
+            return True
+
+        def _tt_to_cluster(p) -> float:
+            c = self.clusters[cluster_idx]
+            if not c:
+                return float("inf")
+            return min(compute_tt(p, cp, self.average_velocity) for cp in c)
+
+        # Enrich from noise
+        remaining_noise = []
+        n_from_noise = 0
+        for p in list(self.noise):
+            if _is_candidate(p) and _tt_to_cluster(p) <= assign_threshold:
+                self.clusters[cluster_idx].append(p)
+                n_from_noise += 1
+            else:
+                remaining_noise.append(p)
+        self.noise = remaining_noise
+        self.n_noise = len(remaining_noise)
+
+        # Enrich from other clusters (only temporally eligible picks)
+        n_from_clusters = 0
+        for ci, cluster in enumerate(self.clusters):
+            if ci == cluster_idx:
+                continue
+            to_move = [
+                p for p in cluster
+                if _is_candidate(p) and _tt_to_cluster(p) <= assign_threshold
+            ]
+            for p in to_move:
+                cluster.remove(p)
+                self.clusters[cluster_idx].append(p)
+                n_from_clusters += 1
+
+        logger.info(
+            f"[deferred] Enriched cluster #{cluster_idx}:"
+            f" +{n_from_noise} from noise, +{n_from_clusters} from other clusters"
+            f" (time window ±{overlap_seconds:.0f}s)."
+        )
 
     def absorb_backward_picks(self, backward_phases, assign_threshold=10.0):
         """Post-clustering absorption of backward overlap picks.
