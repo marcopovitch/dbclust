@@ -32,11 +32,11 @@ from dbclust.db import duckdb_init
 from dbclust.dbclust2pyocto import adjust_associator_tolerance
 from dbclust.inject_spatialite import (
     create_schema,
-    get_pick_probability,
     import_catalog_to_sqlite,
 )
 from dbclust.localization import NllLoc
 from dbclust.localization import format_event
+from dbclust.phase import Phase
 from dbclust.phase import import_phases
 from dbclust.preprocessing_picks import (
     safe_deduplicate_picks_by_time as deduplicate_picks_by_time,
@@ -112,41 +112,6 @@ def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
     return keep
 
 
-def inject_picks_into_df(
-    df_subset: pd.DataFrame,
-    df_inject: pd.DataFrame,
-    label: str,
-    job_index: int,
-    partition_index: int,
-) -> pd.DataFrame:
-    """Inject additional picks into df_subset, normalising dtypes and deduplicating.
-
-    Deduplication is done on (station_id, phase_type, phase_time); a row already
-    present in df_subset with an event_id wins over an injected row without one.
-    """
-    if df_inject.empty:
-        return df_subset
-
-    df_inject = df_inject.copy()
-    if df_inject["phase_time"].dt.tz is None:
-        df_inject["phase_time"] = df_inject["phase_time"].dt.tz_localize("UTC")
-    else:
-        df_inject["phase_time"] = df_inject["phase_time"].dt.tz_convert("UTC")
-    for col in df_inject.columns:
-        if col in df_subset.columns and col != "phase_time":
-            try:
-                df_inject[col] = df_inject[col].astype(df_subset[col].dtype)
-            except (ValueError, TypeError):
-                pass
-
-    logger.info(
-        f"[{job_index}] Injecting {len(df_inject)} {label} picks into partition #{partition_index}"
-    )
-    # Concat with df_inject first so rows with event_id win over duplicates without
-    combined = pd.concat([df_inject, df_subset])
-    combined = combined.drop_duplicates(subset=["station_id", "phase_type", "phase_time"], keep="first")
-    return combined
-
 
 def get_cross_partition_picks(
     con, start, overlap_timedelta, global_start
@@ -171,64 +136,47 @@ def get_cross_partition_picks(
     return df_all if not df_all.empty else pd.DataFrame()
 
 
-def extract_deferred_event_picks(event, cfg: DBClustConfig) -> pd.DataFrame:
-    """Extract event picks to be re-injected in the next window.
+def find_cluster_phases_for_event(event, clusters: List[List]) -> List:
+    """Return the Phase objects from the cluster that produced this event.
 
-    The function only keeps picks effectively used by arrivals
-    (time_weight/time_residual both defined), and carries pick probability from
-    QuakeML comments when available.
+    Matching is done by (station, time) against the preferred origin arrivals.
+    Returns all phases from the best-matching cluster (not just the arrivals),
+    so that picks discarded by NLL are also carried forward.
     """
-    fallback_score = float(
-        max(
-            float(cfg.pick.P_proba_threshold or 0.0),
-            float(cfg.pick.S_proba_threshold or 0.0),
-        )
-    )
+    origin = event.preferred_origin()
+    if origin is None:
+        return []
 
-    deferred_rows = []
+    # Build a set of (station, time) from arrivals that were used by NLL
     pick_by_id = {p.resource_id: p for p in event.picks}
-
-    for origin in event.origins:
-        for arrival in origin.arrivals:
-            if arrival.time_weight is None or arrival.time_residual is None:
-                continue
-
+    anchor_keys: set = set()
+    for arrival in origin.arrivals:
+        if arrival.time_weight is not None and arrival.time_residual is not None:
             pick = pick_by_id.get(arrival.pick_id)
-            if pick is None:
-                continue
+            if pick is not None:
+                anchor_keys.add((pick.waveform_id["station_code"], pick.time.datetime))
 
-            phase_type = pick.phase_hint
-            phase_type_up = str(phase_type).upper()
-            pick_probability = get_pick_probability(pick)
+    if not anchor_keys:
+        return []
 
-            if pick_probability is not None:
-                deferred_score = float(pick_probability)
-            elif phase_type_up.startswith("P"):
-                deferred_score = float(cfg.pick.P_proba_threshold or 0.0)
-            elif phase_type_up.startswith("S"):
-                deferred_score = float(cfg.pick.S_proba_threshold or 0.0)
-            else:
-                deferred_score = fallback_score
-
-            deferred_rows.append(
-                {
-                    "station_id": pick.waveform_id.get_seed_string(),
-                    "phase_type": phase_type,
-                    "phase_time": pd.to_datetime(str(pick.time), utc=True),
-                    "phase_score": deferred_score,
-                }
-            )
-
-    if not deferred_rows:
-        return pd.DataFrame(
-            columns=["station_id", "phase_type", "phase_time", "phase_score"]
+    # Find the cluster with the most matching phases
+    best_cluster: List = []
+    best_count = 0
+    for cluster in clusters:
+        if not cluster:
+            continue
+        count = sum(
+            1 for p in cluster
+            if (p.station, p.time.datetime) in anchor_keys
         )
+        if count > best_count:
+            best_count = count
+            best_cluster = cluster
 
-    df_deferred = pd.DataFrame(deferred_rows)
-    return df_deferred.drop_duplicates(
-        subset=["station_id", "phase_type", "phase_time"],
-        keep="first",
-    )
+    if best_count == 0:
+        return []
+
+    return list(best_cluster)
 
 
 def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
@@ -444,9 +392,8 @@ def dbclust(
     # keep track of each time division processed
     last_saved_event_count = 0
     picks_to_remove = []
-    deferred_picks_next_round = pd.DataFrame(
-        columns=["station_id", "phase_type", "phase_time", "phase_score"]
-    )
+    deferred_phases_next_round: List[Phase] = []
+    deferred_phases_keys: set = set()  # (station, time, phase) — kept in sync with deferred_phases_next_round
     i = 0
 
     # start time looping
@@ -540,20 +487,7 @@ def dbclust(
         else:
             df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
 
-        if not deferred_picks_next_round.empty:
-            logger.info(
-                f"[{job_index}] Re-injecting {len(deferred_picks_next_round)} deferred picks from previous window."
-            )
-            df_subset = inject_picks_into_df(
-                df_subset,
-                deferred_picks_next_round,
-                label="deferred",
-                job_index=job_index,
-                partition_index=i,
-            )
-            deferred_picks_next_round = deferred_picks_next_round.iloc[0:0]
-
-        if df_subset.empty and previous_myclust.phases_count() == 0:
+        if df_subset.empty and previous_myclust.phases_count() == 0 and not deferred_phases_next_round:
             logger.info(f"[{job_index}] Skipping clustering {len(df_subset)} phases.")
             continue
 
@@ -658,7 +592,22 @@ def dbclust(
         # check if some clusters share phases with previous round
         logger.info("Check clusters related to the same event (overlapped zone).")
 
-        previous_myclust, myclust, nb_cluster_removed = (
+        # Inject deferred cluster phases from the previous ***D event into myclust
+        # BEFORE merge and smart-overlap promotion, so the cluster can absorb nearby
+        # noise picks from the current window and participate in the ready/deferred split.
+        if deferred_phases_next_round:
+            logger.info(
+                f"[{job_index}] Injecting {len(deferred_phases_next_round)} deferred"
+                f" cluster phases into myclust (partition #{i}) for enrichment."
+            )
+            myclust.absorb_deferred_cluster(
+                deferred_phases_next_round,
+                overlap_seconds=cfg.time.overlap_window,
+            )
+            deferred_phases_next_round = []
+            deferred_phases_keys = set()
+
+        previous_myclust, myclust, _ = (
             merge_cluster_with_common_phases(
                 previous_myclust,
                 myclust,
@@ -679,6 +628,7 @@ def dbclust(
             # in the next window). Clusters with picks reaching into the overlap zone
             # are left to carry over naturally so they merge with the next window's picks
             # and avoid forming contaminated mega-clusters.
+            # short_window has no meaningful overlap zone: all clusters are ready.
             overlap_start = UTCDateTime(
                 (end - overlap_timedelta).isoformat() if not short_window else end.isoformat()
             )
@@ -741,6 +691,10 @@ def dbclust(
             myclust.noise = [] if ready_clusters else list(myclust.noise or [])
             myclust.n_noise = len(myclust.noise)
 
+        # Snapshot after PyOcto (or before if disabled) — per-event clusters used
+        # by find_cluster_phases_for_event to match ***D events to their exact cluster.
+        clusters_for_deferred_search = list(previous_myclust.clusters)
+
         if cfg.pyocto.enable and cfg.pyocto.current_model:
             try:
                 result = adjust_associator_tolerance(
@@ -772,6 +726,8 @@ def dbclust(
                 continue
             else:
                 previous_myclust = result
+                # Update snapshot: PyOcto has now split mega-clusters into per-event clusters.
+                clusters_for_deferred_search = list(previous_myclust.clusters)
 
         # Process previous_myclust and wait next round to process myclust
         with MyTemporaryDirectory(
@@ -852,18 +808,19 @@ def dbclust(
                         f"Found event in overlapped zone to be (D)eleted ({event.resource_id.id})"
                     )
 
-                    df_deferred = extract_deferred_event_picks(event, cfg)
-                    if not df_deferred.empty:
-                        deferred_picks_next_round = pd.concat(
-                            [deferred_picks_next_round, df_deferred],
-                            ignore_index=True,
-                        )
-                        deferred_picks_next_round = deferred_picks_next_round.drop_duplicates(
-                            subset=["station_id", "phase_type", "phase_time"],
-                            keep="first",
-                        )
+                    cluster_phases = find_cluster_phases_for_event(
+                        event, clusters_for_deferred_search
+                    )
+                    if cluster_phases:
+                        added = 0
+                        for p in cluster_phases:
+                            key = (p.station, p.time.datetime, p.phase)
+                            if key not in deferred_phases_keys:
+                                deferred_phases_next_round.append(p)
+                                deferred_phases_keys.add(key)
+                                added += 1
                         logger.info(
-                            f"[{job_index}] Deferred {len(df_deferred)} picks from ***D event for next window re-clustering."
+                            f"[{job_index}] Deferred {added} cluster phases from ***D event for next window re-clustering."
                         )
 
                     locator.catalog.events.remove(event)
@@ -941,6 +898,18 @@ def dbclust(
             locator.catalog.clear()
             gc.collect()
             last_saved_event_count = 0
+
+        # Remove the deferred cluster from previous_myclust after localization so it
+        # is not re-submitted to NLL in subsequent partitions (would cause duplicates).
+        deferred_ref = getattr(myclust, "_deferred_cluster_ref", None)
+        if deferred_ref is not None:
+            try:
+                previous_myclust.clusters.remove(deferred_ref)
+                previous_myclust.n_clusters = len(previous_myclust.clusters)
+                logger.info("[deferred] Removed deferred cluster from previous_myclust after localization.")
+            except ValueError:
+                pass  # already removed or never promoted
+            myclust._deferred_cluster_ref = None
 
         # prepare next round
         previous_myclust = myclust
