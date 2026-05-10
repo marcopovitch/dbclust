@@ -436,7 +436,10 @@ class Clusterize(object):
             np.save(tt_matrix_fname, pseudo_tt)
 
         self.clusters, self.clusters_stability, self.noise = self.get_clusters(
-            phases, pseudo_tt, max_search_dist, min_cluster_size,
+            phases,
+            pseudo_tt,
+            max_search_dist,
+            min_cluster_size,
             metric="euclidean" if use_umap else "precomputed",
         )
         self.n_clusters = len(self.clusters)
@@ -475,9 +478,7 @@ class Clusterize(object):
 
         # deferred_phases come from a prior Clusterize instance, so their Phase
         # objects are never physically present in self.clusters — no extraction needed.
-        deferred_keys = {
-            (p.station, p.time.datetime, p.phase) for p in deferred_phases
-        }
+        deferred_keys = {(p.station, p.time.datetime, p.phase) for p in deferred_phases}
 
         # Remove matching picks (by key) from all existing clusters so the deferred
         # cluster becomes the sole owner of these picks and is not re-localized later
@@ -485,7 +486,8 @@ class Clusterize(object):
         n_extracted = 0
         for cluster in self.clusters:
             to_remove = [
-                p for p in cluster
+                p
+                for p in cluster
                 if (p.station, p.time.datetime, p.phase) in deferred_keys
             ]
             for p in to_remove:
@@ -493,14 +495,18 @@ class Clusterize(object):
                 n_extracted += 1
 
         new_cluster: list = list(deferred_phases)
-        self._deferred_cluster_ref = new_cluster  # exposed for post-localization cleanup
+        self._deferred_cluster_ref = (
+            new_cluster  # exposed for post-localization cleanup
+        )
         cluster_idx = len(self.clusters)
         self.clusters.append(new_cluster)
         self.n_clusters = len(self.clusters)
-        self.clusters_stability = np.concatenate([
-            np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
-            np.array([1.0], dtype=float),
-        ])
+        self.clusters_stability = np.concatenate(
+            [
+                np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
+                np.array([1.0], dtype=float),
+            ]
+        )
         logger.info(
             f"[deferred] Inserted pre-formed cluster #{cluster_idx}"
             f" with {len(new_cluster)} phases"
@@ -544,7 +550,8 @@ class Clusterize(object):
             if ci == cluster_idx:
                 continue
             to_move = [
-                p for p in cluster
+                p
+                for p in cluster
                 if _is_candidate(p) and _tt_to_cluster(p) <= assign_threshold
             ]
             for p in to_move:
@@ -625,9 +632,14 @@ class Clusterize(object):
             f"[backward] Case B: second-pass HDBSCAN on {len(pool)} picks"
             f" ({len(unassigned)} unassigned backward + {len(self.noise)} noise)."
         )
-        pseudo_tt2 = self.numpy_compute_tt_matrix_vectorized(pool, self.average_velocity)
+        pseudo_tt2 = self.numpy_compute_tt_matrix_vectorized(
+            pool, self.average_velocity
+        )
         new_clusters, new_stabilities, new_noise = self.get_clusters(
-            pool, pseudo_tt2, self.max_search_dist, self.min_cluster_size,
+            pool,
+            pseudo_tt2,
+            self.max_search_dist,
+            self.min_cluster_size,
             metric="precomputed",
         )
         if new_clusters:
@@ -636,10 +648,12 @@ class Clusterize(object):
             )
             self.clusters += new_clusters
             self.n_clusters = len(self.clusters)
-            self.clusters_stability = np.concatenate([
-                np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
-                np.array(new_stabilities, dtype=float),
-            ])
+            self.clusters_stability = np.concatenate(
+                [
+                    np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
+                    np.array(new_stabilities, dtype=float),
+                ]
+            )
         else:
             logger.info("[backward] Case B: no new clusters found.")
         self.noise = new_noise
@@ -690,25 +704,35 @@ class Clusterize(object):
         return tt_matrix
 
     @staticmethod
-    def build_umap_embedding(phases, pseudo_tt, *, min_cluster_size, umap_clip_seconds=0.0, aot_tt_blend_alpha=0.3, vp=6.0, vs=3.5):
+    def build_umap_embedding(
+        phases,
+        pseudo_tt,
+        *,
+        min_cluster_size,
+        umap_clip_seconds=0.0,
+        aot_tt_blend_alpha=0.3,
+        vp=6.0,
+        vs=3.5,
+    ):
         """Thin wrapper around :func:`dbclust.umap_embedding.build_umap_embedding`.
 
         Extracts numpy arrays from the Phase list and delegates to the
         standalone function so the same logic can be reused by scripts.
         """
         from dbclust.umap_embedding import build_umap_embedding as _build
+
         try:
             return _build(
-                lats_deg    = [p.coord["latitude"]  for p in phases],
-                lons_deg    = [p.coord["longitude"] for p in phases],
-                times       = [float(p.time)        for p in phases],
-                phase_types = [p.phase              for p in phases],
-                pseudo_tt   = pseudo_tt,
-                min_cluster_size   = min_cluster_size,
-                umap_clip_seconds  = umap_clip_seconds,
-                aot_tt_blend_alpha = aot_tt_blend_alpha,
-                vp                 = vp,
-                vs                 = vs,
+                lats_deg=[p.coord["latitude"] for p in phases],
+                lons_deg=[p.coord["longitude"] for p in phases],
+                times=[float(p.time) for p in phases],
+                phase_types=[p.phase for p in phases],
+                pseudo_tt=pseudo_tt,
+                min_cluster_size=min_cluster_size,
+                umap_clip_seconds=umap_clip_seconds,
+                aot_tt_blend_alpha=aot_tt_blend_alpha,
+                vp=vp,
+                vs=vs,
             )
         except ImportError as exc:
             logger.warning("%s — falling back to standard HDBSCAN on TT matrix.", exc)
@@ -749,7 +773,9 @@ class Clusterize(object):
     #     return tt_matrix
 
     @staticmethod
-    def get_clusters(phases, pseudo_tt, max_search_dist, min_cluster_size, metric="precomputed"):
+    def get_clusters(
+        phases, pseudo_tt, max_search_dist, min_cluster_size, metric="precomputed"
+    ):
         # metric is "precomputed" ==> X is assumed to be a distance matrix and must be square
         # metric is "euclidean" when pseudo_tt is a UMAP 2D embedding
 
@@ -985,7 +1011,9 @@ class Clusterize(object):
             # Pre-NLL filter: min_ps_ratio (stations with both P and S / total stations)
             if self.min_ps_ratio is not None:
                 ps_ratio = (
-                    stations_with_both / total_stations_ps if total_stations_ps > 0 else 0.0
+                    stations_with_both / total_stations_ps
+                    if total_stations_ps > 0
+                    else 0.0
                 )
                 if ps_ratio < self.min_ps_ratio:
                     if self.force_keep_catalog_events and event_id_counts:
