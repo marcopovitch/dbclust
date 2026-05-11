@@ -254,8 +254,15 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
     max_search_dist: int = int(cfg.cluster.max_search_dist) if cfg.cluster.max_search_dist is not None else 100
     umap_vp: float = float(cfg.cluster.umap_vp) if cfg.cluster.umap_vp is not None else 6.0
     umap_vs: float = float(cfg.cluster.umap_vs) if cfg.cluster.umap_vs is not None else 3.5
+    umap_alpha: float = float(cfg.cluster.umap_alpha) if cfg.cluster.umap_alpha is not None else 0.3
+    # umap_clip_seconds: use explicit value if set, otherwise fall back to overlap_window
+    umap_clip_seconds: float = (
+        float(cfg.cluster.umap_clip_seconds)
+        if cfg.cluster.umap_clip_seconds is not None
+        else (cfg.time.overlap_window if cfg.cluster.use_umap else 0.0)
+    )
     tt_matrix_fname: str = cfg.cluster.pre_computed_tt_matrix_file or ""
-    
+
     myclust = Clusterize(
         phases=phases,
         min_cluster_size=cfg.cluster.min_cluster_size,
@@ -266,9 +273,12 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         min_ps_ratio=cfg.cluster.min_ps_ratio,
         force_keep_catalog_events=cfg.cluster.force_keep_catalog_events,
         use_umap=cfg.cluster.use_umap,
-        umap_clip_seconds=cfg.time.overlap_window if cfg.cluster.use_umap else 0.0,
+        umap_clip_seconds=umap_clip_seconds,
+        umap_aot_tt_blend_alpha=umap_alpha,
         umap_vp=umap_vp,
         umap_vs=umap_vs,
+        cluster_selection_method=cfg.cluster.cluster_selection_method,
+        tt_clip_seconds=cfg.cluster.tt_clip_seconds,
         max_search_dist=max_search_dist,
         P_uncertainty=cfg.pick.P_uncertainty,
         S_uncertainty=cfg.pick.S_uncertainty,
