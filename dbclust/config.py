@@ -496,11 +496,19 @@ class ClusterConfig:
     # Separates geographically incoherent pick pools without any time-window parameter.
     # Requires umap-learn (pip install umap-learn).
     use_umap: bool = False
-    # Phase velocities for AOT computation in UMAP embedding.
-    # Should match the apparent wave velocities in the study region.
-    # Defaults: Vp=6.0 km/s, Vs=3.5 km/s.
-    umap_vp: Optional[float] = 6.0
-    umap_vs: Optional[float] = 3.5
+    # UMAP sub-parameters (only used when use_umap=True).
+    # Can be set either as a nested umap: block or as flat umap_* keys (legacy).
+    # Nested block takes precedence when both are present.
+    umap_vp: Optional[float] = 6.0               # apparent P-wave velocity (km/s)
+    umap_vs: Optional[float] = 3.5               # apparent S-wave velocity (km/s)
+    umap_alpha: Optional[float] = 0.3            # AOT+TT blend weight [0=pure AOT, 1=pure TT]
+    umap_clip_seconds: Optional[float] = None    # AOT normalisation scale (s); None = use overlap_window
+    # HDBSCAN cluster selection method: "eom" (default) or "leaf"
+    # "leaf" splits at finest granularity — better for separating co-located events
+    # "eom" merges sub-clusters upward — better recall for small/isolated events
+    cluster_selection_method: str = "eom"
+    # Clip the pseudo-TT matrix to this value (s) before HDBSCAN; 0 = no clip
+    tt_clip_seconds: float = 0.0
     # Event-ID merge guard: minimum picks per cluster for a shared event_id.
     # If None, defaults to min_picks_common.
     eventid_shared_min_picks_per_cluster: Optional[int] = None
