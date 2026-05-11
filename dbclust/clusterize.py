@@ -326,6 +326,8 @@ class Clusterize(object):
         umap_aot_tt_blend_alpha=0.3,  # weight of TT in blended dist matrix (0=pure AOT)
         umap_vp=6.0,  # apparent P-wave velocity for AOT (km/s)
         umap_vs=3.5,  # apparent S-wave velocity for AOT (km/s)
+        cluster_selection_method="eom",  # HDBSCAN: "eom" (default) or "leaf"
+        tt_clip_seconds=0.0,  # clip TT matrix to this value in seconds (0 = no clip)
     ):
         # clusters is a list of cluster :
         # ie. [ [phases, label], ... ]
@@ -365,6 +367,8 @@ class Clusterize(object):
         self.umap_aot_tt_blend_alpha = umap_aot_tt_blend_alpha
         self.umap_vp = umap_vp
         self.umap_vs = umap_vs
+        self.cluster_selection_method = cluster_selection_method
+        self.tt_clip_seconds = tt_clip_seconds
 
         if phases is None:
             # Simple constructor
@@ -411,6 +415,10 @@ class Clusterize(object):
             # into a low-dimensional Euclidean space before HDBSCAN. This separates
             # geographically incoherent pick pools (backward injection) that form
             # mega-clusters in raw TT space but are well-separated in UMAP space.
+            if tt_clip_seconds > 0:
+                pseudo_tt = np.clip(pseudo_tt, 0.0, tt_clip_seconds)
+                logger.info(f"TT matrix clipped to {tt_clip_seconds}s.")
+
             if use_umap:
                 pseudo_tt, max_search_dist = self.build_umap_embedding(
                     phases,
@@ -441,6 +449,7 @@ class Clusterize(object):
             max_search_dist,
             min_cluster_size,
             metric="euclidean" if use_umap else "precomputed",
+            cluster_selection_method=cluster_selection_method,
         )
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
@@ -774,7 +783,12 @@ class Clusterize(object):
 
     @staticmethod
     def get_clusters(
-        phases, pseudo_tt, max_search_dist, min_cluster_size, metric="precomputed"
+        phases,
+        pseudo_tt,
+        max_search_dist,
+        min_cluster_size,
+        metric="precomputed",
+        cluster_selection_method="eom",
     ):
         # metric is "precomputed" ==> X is assumed to be a distance matrix and must be square
         # metric is "euclidean" when pseudo_tt is a UMAP 2D embedding
@@ -786,7 +800,7 @@ class Clusterize(object):
             allow_single_cluster=True,
             cluster_selection_epsilon=max_search_dist,  # default 0.0,
             metric=metric,
-            cluster_selection_method="eom",
+            cluster_selection_method=cluster_selection_method,
         )
         if metric == "precomputed":
             hdbscan_kwargs["n_jobs"] = -1
