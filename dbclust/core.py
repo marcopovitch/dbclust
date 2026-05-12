@@ -809,6 +809,25 @@ def dbclust(
                     locator.nb_events = len(locator.catalog)
                     clustcat = locator.catalog
 
+                # Rule 0b — Intra-job backward overlap duplicate: for sub-windows i>1,
+                # an event whose first pick is before the job's partition start (meaning it
+                # was reconstructed from Case A-absorbed backward picks in a deferred cluster)
+                # and whose last pick is before this window's start is a duplicate of an
+                # event already processed in sub-window #1. Suppress it.
+                elif (
+                    i > 1
+                    and first_pick_time < start
+                    and last_pick_time < begin
+                ):
+                    for line in format_event(event, "***D"):
+                        logger.info(line)
+                    logger.info(
+                        f"Event in intra-job backward overlap (first_pick={first_pick_time} < partition_start={start}, last_pick={last_pick_time} < begin={begin}), suppressed as duplicate ({event.resource_id.id})"
+                    )
+                    locator.catalog.events.remove(event)
+                    locator.nb_events = len(locator.catalog)
+                    clustcat = locator.catalog
+
                 # Rule 1 — Window overlap zone: first_pick falls beyond next_begin.
                 # The next window will detect this event with more picks.
                 elif (not last_partition_job) and event_in_overlapped_zone:
