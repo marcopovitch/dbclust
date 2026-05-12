@@ -574,6 +574,38 @@ class Clusterize(object):
             f" (time window ±{overlap_seconds:.0f}s)."
         )
 
+        # Pull picks from other clusters sharing a known event_id with the
+        # deferred cluster. This catches catalog picks that were not temporally
+        # close enough to be caught by the TT enrichment above but belong to
+        # the same physical event.
+        known_event_ids = {
+            p.event_id for p in self.clusters[cluster_idx] if p.event_id
+        }
+        n_from_event_id = 0
+        if known_event_ids:
+            # Pull from other clusters
+            for ci, cluster in enumerate(self.clusters):
+                if ci == cluster_idx:
+                    continue
+                to_move = [p for p in cluster if p.event_id in known_event_ids]
+                for p in to_move:
+                    cluster.remove(p)
+                    self.clusters[cluster_idx].append(p)
+                    n_from_event_id += 1
+            # Pull from noise: catalog picks landing in noise also belong to
+            # the same physical event and would otherwise re-appear as a
+            # duplicate in the next window.
+            to_move = [p for p in self.noise if p.event_id in known_event_ids]
+            for p in to_move:
+                self.noise.remove(p)
+                self.clusters[cluster_idx].append(p)
+                n_from_event_id += 1
+            if n_from_event_id:
+                logger.info(
+                    f"[deferred] Pulled {n_from_event_id} picks by event_id"
+                    f" {known_event_ids} from other clusters and noise."
+                )
+
     def absorb_backward_picks(self, backward_phases, assign_threshold=10.0):
         """Post-clustering absorption of backward overlap picks.
 
