@@ -339,6 +339,7 @@ class Clusterize(object):
         self.n_noise = 0
         self.preloc = None  # pre-localization if pyocto was enable
         self.zones = zones
+        self._deferred_cluster_indices: set = set()  # indices of injected deferred clusters
 
         # clustering parameters
         self.max_search_dist = max_search_dist
@@ -453,6 +454,7 @@ class Clusterize(object):
         )
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
+        self.max_search_dist = max_search_dist  # persist post-UMAP value for absorb_deferred_cluster
 
         del pseudo_tt
         self.cluster_merge_based_on_eventid()
@@ -466,7 +468,6 @@ class Clusterize(object):
     def absorb_deferred_cluster(
         self,
         deferred_phases: list,
-        assign_threshold: float = 10.0,
         overlap_seconds: float = 0.0,
     ):
         """Insert a pre-formed deferred cluster and enrich it with nearby picks.
@@ -475,8 +476,6 @@ class Clusterize(object):
         ----------
         deferred_phases : list[Phase]
             Phases from the pre-formed cluster to inject.
-        assign_threshold : float
-            Max TT distance (seconds) for enrichment.  Default 10 s.
         overlap_seconds : float
             Half-width of the temporal enrichment window in seconds.  Only picks
             whose time falls within [t_min - overlap, t_max + overlap] of the
@@ -508,6 +507,7 @@ class Clusterize(object):
             new_cluster  # exposed for post-localization cleanup
         )
         cluster_idx = len(self.clusters)
+        self._deferred_cluster_indices.add(cluster_idx)
         self.clusters.append(new_cluster)
         self.n_clusters = len(self.clusters)
         self.clusters_stability = np.concatenate(
@@ -545,7 +545,7 @@ class Clusterize(object):
         remaining_noise = []
         n_from_noise = 0
         for p in list(self.noise):
-            if _is_candidate(p) and _tt_to_cluster(p) <= assign_threshold:
+            if _is_candidate(p) and _tt_to_cluster(p) <= self.max_search_dist:
                 self.clusters[cluster_idx].append(p)
                 n_from_noise += 1
             else:
@@ -553,15 +553,17 @@ class Clusterize(object):
         self.noise = remaining_noise
         self.n_noise = len(remaining_noise)
 
-        # Enrich from other clusters (only temporally eligible picks)
+        # Enrich from other clusters (only temporally eligible picks).
+        # Skip other deferred clusters — their picks belong to a different event
+        # and must not be stolen by this one.
         n_from_clusters = 0
         for ci, cluster in enumerate(self.clusters):
-            if ci == cluster_idx:
+            if ci == cluster_idx or ci in self._deferred_cluster_indices:
                 continue
             to_move = [
                 p
                 for p in cluster
-                if _is_candidate(p) and _tt_to_cluster(p) <= assign_threshold
+                if _is_candidate(p) and _tt_to_cluster(p) <= self.max_search_dist
             ]
             for p in to_move:
                 cluster.remove(p)
@@ -658,61 +660,11 @@ class Clusterize(object):
         if self.n_clusters > 1:
             self.cluster_merge_based_on_eventid()
 
-    def absorb_backward_picks(self, backward_phases, assign_threshold=10.0):
-        """[kept for reference — superseded by build_clusters_from_backward]"""
-        if not backward_phases:
-            return
-
-        # ── Case A: assign each backward pick to the nearest existing cluster ──
-        unassigned = []
-        n_assigned = 0
-        for bp in backward_phases:
-            best_dist = float("inf")
-            best_idx = -1
-            for idx, cluster in enumerate(self.clusters):
-                for cp in cluster:
-                    tt = compute_tt(bp, cp, self.average_velocity)
-                    if tt < best_dist:
-                        best_dist = tt
-                        best_idx = idx
-            if best_idx >= 0 and best_dist <= assign_threshold:
-                self.clusters[best_idx].append(bp)
-                n_assigned += 1
-                logger.debug(
-                    f"[backward A] pick {bp.time} → cluster {best_idx} (TT={best_dist:.2f}s)"
-                )
-            else:
-                unassigned.append(bp)
-
-        logger.info(
-            f"[backward] Case A: {n_assigned}/{len(backward_phases)} picks assigned"
-            f" to existing clusters."
+    def absorb_backward_picks(self, backward_phases):
+        """Superseded by build_clusters_from_backward — raises if called."""
+        raise NotImplementedError(
+            "absorb_backward_picks is superseded by build_clusters_from_backward"
         )
-
-        # ── Case B: second-pass HDBSCAN on residuals + main-pass noise ──────
-        pool = unassigned + list(self.noise)
-        if len(pool) < self.min_cluster_size:
-            logger.info(
-                f"[backward] Case B: pool too small ({len(pool)} < {self.min_cluster_size}),"
-                f" skipping."
-            )
-            return
-
-        logger.info(
-            f"[backward] Case B: second-pass HDBSCAN on {len(pool)} picks"
-            f" ({len(unassigned)} unassigned backward + {len(self.noise)} noise)."
-        )
-        pseudo_tt2 = self.numpy_compute_tt_matrix_vectorized(
-            pool, self.average_velocity
-        )
-        new_clusters, new_stabilities, new_noise = self.get_clusters(
-            pool,
-            pseudo_tt2,
-            self.max_search_dist,
-            self.min_cluster_size,
-            metric="precomputed",
-        )
-        pass  # superseded by build_clusters_from_backward
 
     @staticmethod
     def compute_tt_matrix(phases, vmean):
