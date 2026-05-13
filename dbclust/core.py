@@ -819,6 +819,7 @@ def dbclust(
                 elif (
                     i > 1
                     and first_pick_time < start
+                    and last_pick_time < start
                     and last_pick_time < begin
                 ):
                     for line in format_event(event, "***D"):
