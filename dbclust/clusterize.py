@@ -642,10 +642,10 @@ class Clusterize(object):
         Called after the main HDBSCAN run on the forward window picks.
         All backward picks (catalog and DL) are pooled with the main-pass
         noise and re-clustered via a fresh HDBSCAN pass (raw TT matrix,
-        no UMAP). HDBSCAN naturally groups them by physical event;
-        cluster_merge_based_on_eventid then merges any fragments that
-        share catalog event_ids. Valid new clusters are appended to
-        self.clusters; the remaining noise replaces self.noise.
+        no UMAP). HDBSCAN naturally groups them by physical event. After
+        clustering, cluster_merge_based_on_eventid is applied exclusively
+        on the new backward clusters (never mixing with forward clusters)
+        to fuse per-agency fragments of the same physical event.
 
         Parameters
         ----------
@@ -655,27 +655,18 @@ class Clusterize(object):
         if not backward_phases:
             return
 
-        # No Case A: all backward picks (catalog and DL) go directly to Case B.
-        # HDBSCAN will group them by physical event using the TT matrix, and
-        # cluster_merge_based_on_eventid will merge any fragments sharing event_ids.
-        unassigned = backward_phases
-        logger.info(
-            f"[backward] Case A: skipped — all {len(backward_phases)} picks"
-            f" forwarded to Case B (HDBSCAN)."
-        )
-
-        # ── Case B: second-pass HDBSCAN on residuals + main-pass noise ──────
-        pool = unassigned + list(self.noise)
+        # All backward picks go to HDBSCAN — no injection into forward clusters.
+        pool = backward_phases + list(self.noise)
         if len(pool) < self.min_cluster_size:
             logger.info(
-                f"[backward] Case B: pool too small ({len(pool)} < {self.min_cluster_size}),"
+                f"[backward] pool too small ({len(pool)} < {self.min_cluster_size}),"
                 f" skipping."
             )
             return
 
         logger.info(
-            f"[backward] Case B: second-pass HDBSCAN on {len(pool)} picks"
-            f" ({len(unassigned)} unassigned backward + {len(self.noise)} noise)."
+            f"[backward] HDBSCAN on {len(pool)} picks"
+            f" ({len(backward_phases)} backward + {len(self.noise)} noise)."
         )
         pseudo_tt2 = self.numpy_compute_tt_matrix_vectorized(
             pool, self.average_velocity
@@ -687,22 +678,50 @@ class Clusterize(object):
             self.min_cluster_size,
             metric="precomputed",
         )
-        if new_clusters:
-            logger.info(
-                f"[backward] Case B: {len(new_clusters)} new cluster(s) discovered."
-            )
-            self.clusters += new_clusters
-            self.n_clusters = len(self.clusters)
-            self.clusters_stability = np.concatenate(
-                [
-                    np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
-                    np.array(new_stabilities, dtype=float),
-                ]
-            )
-        else:
-            logger.info("[backward] Case B: no new clusters found.")
+
+        if not new_clusters:
+            logger.info("[backward] no new clusters found.")
+            self.noise = new_noise
+            self.n_noise = len(new_noise)
+            return
+
+        logger.info(f"[backward] {len(new_clusters)} new cluster(s) discovered.")
+
+        # Merge backward clusters that share event_ids (same physical event,
+        # different agencies) — strictly isolated from the forward clusters.
+        # We do this by temporarily creating a mini Clusterize-like object.
+        first_new_idx = len(self.clusters)
+        self.clusters += new_clusters
+        self.n_clusters = len(self.clusters)
+        self.clusters_stability = np.concatenate(
+            [
+                np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
+                np.array(new_stabilities, dtype=float),
+            ]
+        )
         self.noise = new_noise
         self.n_noise = len(new_noise)
+
+        # cluster_merge_based_on_eventid operates on self.clusters in-place.
+        # To restrict it to backward clusters only, temporarily swap out the
+        # forward clusters, merge, then restore.
+        forward_clusters = self.clusters[:first_new_idx]
+        forward_stabilities = self.clusters_stability[:first_new_idx]
+        self.clusters = self.clusters[first_new_idx:]
+        self.clusters_stability = self.clusters_stability[first_new_idx:]
+        self.n_clusters = len(self.clusters)
+
+        self.cluster_merge_based_on_eventid()
+
+        # Restore: forward clusters first, merged backward clusters after.
+        self.clusters = forward_clusters + self.clusters
+        self.clusters_stability = np.concatenate(
+            [
+                np.atleast_1d(np.array(forward_stabilities, dtype=float)),
+                np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
+            ]
+        )
+        self.n_clusters = len(self.clusters)
 
     @staticmethod
     def compute_tt_matrix(phases, vmean):
