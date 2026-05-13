@@ -552,8 +552,8 @@ def dbclust(
         if cfg.station.rename is not None:
             df_subset = rename_waveform_id(df_subset, cfg.station.rename)
 
-        # Import picks and get coordinates
-        phases = import_phases(
+        # Import forward picks and get coordinates
+        forward_phases = import_phases(
             df_subset,
             cfg.pick.P_proba_threshold,
             cfg.pick.S_proba_threshold,
@@ -563,7 +563,7 @@ def dbclust(
             cfg.station.fallback_df,
         )
         if logger.level == logging.DEBUG:
-            for p in phases:
+            for p in forward_phases:
                 p.show_all()
 
         # clean up
@@ -574,14 +574,12 @@ def dbclust(
             logger.info("previous_myclust:")
             previous_myclust.show_clusters()
 
-        # Instantiate a new tool to get clusters
-        myclust = get_clusterize_from_config(cfg, phases=phases)
-        del phases
-
-        # Post-clustering absorption of backward overlap picks (Case A + B).
-        # Must happen before merge_cluster_with_common_phases so that newly
-        # formed clusters are visible to the overlap deduplication step.
         if df_backward_overlap is not None and not df_backward_overlap.empty:
+            # Backward picks available: cluster backward first, then aggregate
+            # forward picks into those clusters, then cluster the remainder.
+            # This prevents late arrivals of backward events (e.g. S picks
+            # arriving just after the job boundary) from contaminating forward
+            # clusters.
             backward_phases = import_phases(
                 df_backward_overlap,
                 cfg.pick.P_proba_threshold,
@@ -591,8 +589,14 @@ def dbclust(
                 cfg.station.info_sta,
                 cfg.station.fallback_df,
             )
-            myclust.absorb_backward_picks(backward_phases)
+            myclust = get_clusterize_from_config(cfg, phases=None)
+            myclust.build_clusters_from_backward(backward_phases, forward_phases)
             del backward_phases
+        else:
+            # Normal flow: HDBSCAN on forward picks only.
+            myclust = get_clusterize_from_config(cfg, phases=forward_phases)
+
+        del forward_phases
         df_backward_overlap = None
 
         if logger.level == logging.DEBUG:
