@@ -339,6 +339,7 @@ class Clusterize(object):
         self.n_noise = 0
         self.preloc = None  # pre-localization if pyocto was enable
         self.zones = zones
+        self._deferred_cluster_indices: set = set()  # indices of injected deferred clusters
 
         # clustering parameters
         self.max_search_dist = max_search_dist
@@ -453,6 +454,7 @@ class Clusterize(object):
         )
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
+        self.max_search_dist = max_search_dist  # persist: used by absorb_deferred_cluster
 
         del pseudo_tt
         self.cluster_merge_based_on_eventid()
@@ -466,7 +468,6 @@ class Clusterize(object):
     def absorb_deferred_cluster(
         self,
         deferred_phases: list,
-        assign_threshold: float = 10.0,
         overlap_seconds: float = 0.0,
     ):
         """Insert a pre-formed deferred cluster and enrich it with nearby picks.
@@ -475,8 +476,6 @@ class Clusterize(object):
         ----------
         deferred_phases : list[Phase]
             Phases from the pre-formed cluster to inject.
-        assign_threshold : float
-            Max TT distance (seconds) for enrichment.  Default 10 s.
         overlap_seconds : float
             Half-width of the temporal enrichment window in seconds.  Only picks
             whose time falls within [t_min - overlap, t_max + overlap] of the
@@ -508,6 +507,7 @@ class Clusterize(object):
             new_cluster  # exposed for post-localization cleanup
         )
         cluster_idx = len(self.clusters)
+        self._deferred_cluster_indices.add(cluster_idx)
         self.clusters.append(new_cluster)
         self.n_clusters = len(self.clusters)
         self.clusters_stability = np.concatenate(
@@ -545,7 +545,7 @@ class Clusterize(object):
         remaining_noise = []
         n_from_noise = 0
         for p in list(self.noise):
-            if _is_candidate(p) and _tt_to_cluster(p) <= assign_threshold:
+            if _is_candidate(p) and _tt_to_cluster(p) <= self.max_search_dist:
                 self.clusters[cluster_idx].append(p)
                 n_from_noise += 1
             else:
@@ -553,15 +553,17 @@ class Clusterize(object):
         self.noise = remaining_noise
         self.n_noise = len(remaining_noise)
 
-        # Enrich from other clusters (only temporally eligible picks)
+        # Enrich from other clusters (only temporally eligible picks).
+        # Skip other deferred clusters — their picks belong to a different event
+        # and must not be stolen by this one.
         n_from_clusters = 0
         for ci, cluster in enumerate(self.clusters):
-            if ci == cluster_idx:
+            if ci == cluster_idx or ci in self._deferred_cluster_indices:
                 continue
             to_move = [
                 p
                 for p in cluster
-                if _is_candidate(p) and _tt_to_cluster(p) <= assign_threshold
+                if _is_candidate(p) and _tt_to_cluster(p) <= self.max_search_dist
             ]
             for p in to_move:
                 cluster.remove(p)
@@ -583,6 +585,34 @@ class Clusterize(object):
         }
         n_from_event_id = 0
         if known_event_ids:
+            # For each agency, keep only the event_id with the most picks.
+            # Two event_ids from the same agency in the same cluster means the
+            # cluster spans distinct physical events — only the dominant one
+            # should drive the pull.
+            from collections import Counter
+            event_id_counts: Counter = Counter(
+                p.event_id
+                for p in self.clusters[cluster_idx]
+                if p.event_id
+            )
+            agency_event_map: dict = {}
+            for p in self.clusters[cluster_idx]:
+                if not p.event_id:
+                    continue
+                if p.agency not in agency_event_map:
+                    agency_event_map[p.agency] = set()
+                agency_event_map[p.agency].add(p.event_id)
+            for agency, eids in agency_event_map.items():
+                if len(eids) > 1:
+                    dominant = max(eids, key=lambda e: event_id_counts[e])
+                    discarded = eids - {dominant}
+                    logger.warning(
+                        f"[deferred] Agency {agency} has multiple event_ids"
+                        f" {eids}: keeping dominant {dominant},"
+                        f" discarding {discarded} from pull set."
+                    )
+                    known_event_ids -= discarded
+
             # Pull from other clusters
             for ci, cluster in enumerate(self.clusters):
                 if ci == cluster_idx:
@@ -606,58 +636,57 @@ class Clusterize(object):
                     f" {known_event_ids} from other clusters and noise."
                 )
 
-    def absorb_backward_picks(self, backward_phases, assign_threshold=10.0):
+    def absorb_backward_picks(self, backward_phases):
         """Post-clustering absorption of backward overlap picks.
 
         Called after the main HDBSCAN run on the forward window picks.
         Operates in two passes so the main clustering is never polluted:
 
-        Case A — Enrich existing clusters:
-            Each backward pick whose minimum TT distance to any pick already
-            in an existing cluster is < assign_threshold is appended to that
-            cluster (nearest wins when several candidates qualify).
+        Case A — Catalog picks with a known event_id:
+            Backward picks carrying an event_id are grouped by event_id and
+            each group is inserted as a new standalone cluster. This avoids
+            injecting them into existing forward clusters (which may already
+            contain a different event), while still making them available to
+            PyOcto and merge_cluster_with_common_phases for later fusion.
 
         Case B — Discover new clusters from residuals:
-            Backward picks not assigned in Case A, combined with the noise
-            picks from the main run, are re-clustered via a fresh HDBSCAN
-            pass (raw TT matrix, no UMAP) using the same min_cluster_size
-            and max_search_dist parameters.  Valid new clusters are merged
-            into self.clusters; the remaining noise replaces self.noise.
+            All remaining backward picks (DL picks without event_id) combined
+            with the noise picks from the main run are re-clustered via a
+            fresh HDBSCAN pass (raw TT matrix, no UMAP) using the same
+            min_cluster_size and max_search_dist parameters. Valid new
+            clusters are merged into self.clusters; the remaining noise
+            replaces self.noise.
 
         Parameters
         ----------
         backward_phases : list[Phase]
             Picks from the backward overlap zone [window_start-overlap, window_start].
-        assign_threshold : float
-            Max TT distance (seconds) for Case A assignment.  Default 10 s.
         """
         if not backward_phases:
             return
 
-        # ── Case A: assign each backward pick to the nearest existing cluster ──
+        # ── Case A: group catalog backward picks by event_id → one cluster each ─
+        from collections import defaultdict
+        by_event_id: dict = defaultdict(list)
         unassigned = []
-        n_assigned = 0
         for bp in backward_phases:
-            best_dist = float("inf")
-            best_idx = -1
-            for idx, cluster in enumerate(self.clusters):
-                for cp in cluster:
-                    tt = compute_tt(bp, cp, self.average_velocity)
-                    if tt < best_dist:
-                        best_dist = tt
-                        best_idx = idx
-            if best_idx >= 0 and best_dist <= assign_threshold:
-                self.clusters[best_idx].append(bp)
-                n_assigned += 1
-                logger.debug(
-                    f"[backward A] pick {bp.time} → cluster {best_idx} (TT={best_dist:.2f}s)"
-                )
+            if bp.event_id:
+                by_event_id[bp.event_id].append(bp)
             else:
                 unassigned.append(bp)
 
+        n_assigned = sum(len(v) for v in by_event_id.values())
+        for eid, picks in by_event_id.items():
+            self.clusters.append(picks)
+            self.clusters_stability = np.concatenate([
+                np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
+                np.array([1.0], dtype=float),
+            ])
+        self.n_clusters = len(self.clusters)
+
         logger.info(
-            f"[backward] Case A: {n_assigned}/{len(backward_phases)} picks assigned"
-            f" to existing clusters."
+            f"[backward] Case A: {n_assigned}/{len(backward_phases)} picks"
+            f" grouped into {len(by_event_id)} catalog cluster(s) by event_id."
         )
 
         # ── Case B: second-pass HDBSCAN on residuals + main-pass noise ──────
