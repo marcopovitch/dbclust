@@ -676,7 +676,7 @@ class Clusterize(object):
                     self.min_cluster_size, metric="precomputed",
                 )
                 self.clusters_stability = (
-                    np.array(stab, dtype=float) if stab else np.ones(len(self.clusters))
+                    np.array(stab, dtype=float) if len(stab) > 0 else np.ones(len(self.clusters))
                 )
                 self.n_clusters = len(self.clusters)
                 self.n_noise = len(self.noise)
@@ -696,7 +696,7 @@ class Clusterize(object):
 
         self.clusters = bw_clusters
         self.clusters_stability = (
-            np.array(bw_stabilities, dtype=float) if bw_stabilities
+            np.array(bw_stabilities, dtype=float) if len(bw_stabilities) > 0
             else np.ones(len(bw_clusters))
         )
         self.noise = list(bw_noise)
@@ -759,7 +759,7 @@ class Clusterize(object):
             self.clusters += fw_clusters
             self.clusters_stability = np.concatenate([
                 np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
-                np.array(fw_stabilities, dtype=float) if fw_stabilities
+                np.array(fw_stabilities, dtype=float) if len(fw_stabilities) > 0
                 else np.ones(len(fw_clusters)),
             ])
             self.noise += fw_noise
