@@ -640,22 +640,12 @@ class Clusterize(object):
         """Post-clustering absorption of backward overlap picks.
 
         Called after the main HDBSCAN run on the forward window picks.
-        Operates in two passes so the main clustering is never polluted:
-
-        Case A — Catalog picks with a known event_id:
-            Backward picks carrying an event_id are grouped by event_id and
-            each group is inserted as a new standalone cluster. This avoids
-            injecting them into existing forward clusters (which may already
-            contain a different event), while still making them available to
-            PyOcto and merge_cluster_with_common_phases for later fusion.
-
-        Case B — Discover new clusters from residuals:
-            All remaining backward picks (DL picks without event_id) combined
-            with the noise picks from the main run are re-clustered via a
-            fresh HDBSCAN pass (raw TT matrix, no UMAP) using the same
-            min_cluster_size and max_search_dist parameters. Valid new
-            clusters are merged into self.clusters; the remaining noise
-            replaces self.noise.
+        All backward picks (catalog and DL) are pooled with the main-pass
+        noise and re-clustered via a fresh HDBSCAN pass (raw TT matrix,
+        no UMAP). HDBSCAN naturally groups them by physical event;
+        cluster_merge_based_on_eventid then merges any fragments that
+        share catalog event_ids. Valid new clusters are appended to
+        self.clusters; the remaining noise replaces self.noise.
 
         Parameters
         ----------
@@ -665,28 +655,13 @@ class Clusterize(object):
         if not backward_phases:
             return
 
-        # ── Case A: group catalog backward picks by event_id → one cluster each ─
-        from collections import defaultdict
-        by_event_id: dict = defaultdict(list)
-        unassigned = []
-        for bp in backward_phases:
-            if bp.event_id:
-                by_event_id[bp.event_id].append(bp)
-            else:
-                unassigned.append(bp)
-
-        n_assigned = sum(len(v) for v in by_event_id.values())
-        for eid, picks in by_event_id.items():
-            self.clusters.append(picks)
-            self.clusters_stability = np.concatenate([
-                np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
-                np.array([1.0], dtype=float),
-            ])
-        self.n_clusters = len(self.clusters)
-
+        # No Case A: all backward picks (catalog and DL) go directly to Case B.
+        # HDBSCAN will group them by physical event using the TT matrix, and
+        # cluster_merge_based_on_eventid will merge any fragments sharing event_ids.
+        unassigned = backward_phases
         logger.info(
-            f"[backward] Case A: {n_assigned}/{len(backward_phases)} picks"
-            f" grouped into {len(by_event_id)} catalog cluster(s) by event_id."
+            f"[backward] Case A: skipped — all {len(backward_phases)} picks"
+            f" forwarded to Case B (HDBSCAN)."
         )
 
         # ── Case B: second-pass HDBSCAN on residuals + main-pass noise ──────
