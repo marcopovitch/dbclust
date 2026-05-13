@@ -402,8 +402,8 @@ def dbclust(
     # keep track of each time division processed
     last_saved_event_count = 0
     picks_to_remove = []
-    deferred_phases_next_round: List[List[Phase]] = []  # one sub-list per deferred event
-    deferred_phases_keys: set = set()  # (station, time, phase) — global dedup across all deferred events
+    deferred_phases_next_round: List[Phase] = []
+    deferred_phases_keys: set = set()  # (station, time, phase) — kept in sync with deferred_phases_next_round
     i = 0
 
     # start time looping
@@ -575,11 +575,10 @@ def dbclust(
             previous_myclust.show_clusters()
 
         if df_backward_overlap is not None and not df_backward_overlap.empty:
-            # Backward picks available: cluster backward first, then aggregate
-            # forward picks into those clusters, then cluster the remainder.
-            # This prevents late arrivals of backward events (e.g. S picks
-            # arriving just after the job boundary) from contaminating forward
-            # clusters.
+            # Backward picks available: cluster backward+forward together in one
+            # HDBSCAN pass so that late arrivals of backward events (e.g. S picks
+            # arriving just after the job boundary) are not mixed into forward
+            # clusters from different events.
             backward_phases = import_phases(
                 df_backward_overlap,
                 cfg.pick.P_proba_threshold,
@@ -593,7 +592,6 @@ def dbclust(
             myclust.build_clusters_from_backward(backward_phases, forward_phases)
             del backward_phases
         else:
-            # Normal flow: HDBSCAN on forward picks only.
             myclust = get_clusterize_from_config(cfg, phases=forward_phases)
 
         del forward_phases
@@ -610,17 +608,14 @@ def dbclust(
         # BEFORE merge and smart-overlap promotion, so the cluster can absorb nearby
         # noise picks from the current window and participate in the ready/deferred split.
         if deferred_phases_next_round:
-            total_deferred = sum(len(c) for c in deferred_phases_next_round)
             logger.info(
-                f"[{job_index}] Injecting {total_deferred} deferred"
-                f" cluster phases ({len(deferred_phases_next_round)} event(s))"
-                f" into myclust (partition #{i}) for enrichment."
+                f"[{job_index}] Injecting {len(deferred_phases_next_round)} deferred"
+                f" cluster phases into myclust (partition #{i}) for enrichment."
             )
-            for event_cluster in deferred_phases_next_round:
-                myclust.absorb_deferred_cluster(
-                    event_cluster,
-                    overlap_seconds=cfg.time.overlap_window,
-                )
+            myclust.absorb_deferred_cluster(
+                deferred_phases_next_round,
+                overlap_seconds=cfg.time.overlap_window,
+            )
             deferred_phases_next_round = []
             deferred_phases_keys = set()
 
@@ -821,14 +816,9 @@ def dbclust(
                 # was reconstructed from Case A-absorbed backward picks in a deferred cluster)
                 # and whose last pick is before this window's start is a duplicate of an
                 # event already processed in sub-window #1. Suppress it.
-                # Guard: last_pick must also be before the job partition start — if the
-                # event straddles the job boundary (last_pick >= start), its picks span
-                # both the backward overlap and the forward window and it was never emitted
-                # in sub-window #1 (the cluster was deferred forward).
                 elif (
                     i > 1
                     and first_pick_time < start
-                    and last_pick_time < start
                     and last_pick_time < begin
                 ):
                     for line in format_event(event, "***D"):
@@ -853,16 +843,13 @@ def dbclust(
                         event, clusters_for_deferred_search
                     )
                     if cluster_phases:
-                        event_cluster: List[Phase] = []
                         added = 0
                         for p in cluster_phases:
                             key = (p.station, p.time.datetime, p.phase)
                             if key not in deferred_phases_keys:
-                                event_cluster.append(p)
+                                deferred_phases_next_round.append(p)
                                 deferred_phases_keys.add(key)
                                 added += 1
-                        if event_cluster:
-                            deferred_phases_next_round.append(event_cluster)
                         logger.info(
                             f"[{job_index}] Deferred {added} cluster phases from ***D event for next window re-clustering."
                         )
