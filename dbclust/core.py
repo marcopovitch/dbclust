@@ -648,6 +648,8 @@ def dbclust(
                 f" cluster(s) to previous_myclust for PyOcto processing."
             )
             previous_myclust.merge(myclust)
+            # Clear myclust so these clusters are not re-processed in window #2.
+            myclust = get_clusterize_from_config(cfg, phases=None)
         elif myclust.n_clusters > 0:
             # Smart overlap promotion: only promote clusters whose picks are entirely
             # before the overlap zone (temporally complete — they won't gain more picks
