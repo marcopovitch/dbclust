@@ -186,14 +186,14 @@ def dbclust2pyocto(
     pyocto_clusters, pyocto_preloc = [], []
 
     clusters_to_process = list(myclust.clusters)
+    n_first_pass_clusters = len(clusters_to_process)  # only first-pass clusters generate a second pass
     if include_noise_in_aggregation and myclust.noise:
         noise_event_ids = set(p.event_id for p in myclust.noise if p.event_id)
-        if noise_event_ids:
-            logger.info(
-                f"Adding HDBSCAN noise ({len(myclust.noise)} picks, "
-                f"event_ids: {[e.split('/')[-1] for e in noise_event_ids]}) as additional cluster for PyOcto"
-            )
-            clusters_to_process.append(myclust.noise)
+        logger.info(
+            f"Adding HDBSCAN noise ({len(myclust.noise)} picks, "
+            f"event_ids: {[e.split('/')[-1] for e in noise_event_ids]}) as additional cluster for PyOcto"
+        )
+        clusters_to_process.append(myclust.noise)
 
     for i, cluster in enumerate(clusters_to_process):
         # Extract station and pick data for the cluster
@@ -293,7 +293,6 @@ def dbclust2pyocto(
             associator = pyocto.OctoAssociator.from_area(
                 lat=lat_range,
                 lon=lon_range,
-                #time_slicing=10 * 60, 
                 zlim=associator_cfg.zlim,
                 time_before=associator_cfg.time_before,  # should be greater than dbclust time_window parameter
                 max_pick_overlap=associator_cfg.max_pick_overlap,
@@ -391,6 +390,23 @@ def dbclust2pyocto(
             f"\t{len(events)} events found in cluster#{i} with {len(cluster)} picks"
             f" ({n_unassigned} unassigned by PyOcto)"
         )
+        if n_unassigned >= myclust.min_cluster_size and i < n_first_pass_clusters:
+            unassigned = [p for j, p in enumerate(cluster) if j not in assigned_pick_ids]
+            pseudo_tt2 = myclust.numpy_compute_tt_matrix_vectorized(
+                unassigned, myclust.average_velocity
+            )
+            # Use a tighter epsilon than max_search_dist to avoid merging picks
+            # from different events, but larger than pick_match_tolerance to allow
+            # P+S pairs and multi-station grouping within a single event.
+            sp_epsilon = 30
+            sp_clusters, _sp_stab, _sp_noise = myclust.get_clusters(
+                unassigned, pseudo_tt2,
+                max_search_dist=sp_epsilon,
+                min_cluster_size=myclust.min_cluster_size,
+                metric="precomputed",
+            )
+            for sp_cluster in sp_clusters:
+                clusters_to_process.append(sp_cluster)
 
     # Merge clusters with common picks or event IDs
     pyocto_clusters, pyocto_preloc = cluster_merge(
