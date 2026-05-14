@@ -241,8 +241,6 @@ class Phase:
                     self.station,
                     self.phase,
                     self.time.datetime,
-                    self.proba,
-                    self.event_id,
                 )
             )
         )
