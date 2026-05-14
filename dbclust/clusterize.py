@@ -638,27 +638,20 @@ class Clusterize(object):
         shared_event_ids = bw_event_ids & fw_event_ids
 
         if shared_event_ids:
-            # Straddling event detected. Pool backward picks with forward picks
-            # that belong to the straddling event (shared event_ids) or have
-            # no event_id (DL picks — they will join the correct cluster by TT).
-            # Forward picks from other catalog events are treated separately:
-            # they go through normal forward HDBSCAN so they form clean clusters
-            # without polluting the backward pool.
-            pool = [p for p in forward_phases if not p.event_id or p.event_id in shared_event_ids]
-            separate_forward = [p for p in forward_phases if p.event_id and p.event_id not in shared_event_ids]
-            pool = backward_phases + pool
+            # Straddling event detected: pool all picks together so HDBSCAN
+            # can form natural clusters. PyOcto then separates the events.
+            all_phases = backward_phases + forward_phases
             logger.info(
                 f"[backward+forward] shared event_ids {shared_event_ids} detected —"
-                f" HDBSCAN on {len(pool)} picks"
-                f" ({len(backward_phases)} backward + {len(pool) - len(backward_phases)} forward),"
-                f" {len(separate_forward)} catalog forward picks from other events treated separately."
+                f" HDBSCAN on {len(all_phases)} picks"
+                f" ({len(backward_phases)} backward + {len(forward_phases)} forward)."
             )
-            if len(pool) >= self.min_cluster_size:
+            if len(all_phases) >= self.min_cluster_size:
                 pseudo_tt = self.numpy_compute_tt_matrix_vectorized(
-                    pool, self.average_velocity
+                    all_phases, self.average_velocity
                 )
                 self.clusters, stab, self.noise = self.get_clusters(
-                    pool, pseudo_tt, self.max_search_dist,
+                    all_phases, pseudo_tt, self.max_search_dist,
                     self.min_cluster_size, metric="precomputed",
                 )
                 self.clusters_stability = (
@@ -673,46 +666,8 @@ class Clusterize(object):
                 if self.n_clusters > 1:
                     self.cluster_merge_based_on_eventid()
             else:
-                self.noise = list(pool)
+                self.noise = list(all_phases)
                 self.n_noise = len(self.noise)
-
-            # Absorb separate catalog forward picks into existing clusters by
-            # event_id match, then HDBSCAN the unmatched remainder.
-            eventid_to_cluster = {}
-            for idx, cluster in enumerate(self.clusters):
-                for cp in cluster:
-                    if cp.event_id and cp.event_id not in eventid_to_cluster:
-                        eventid_to_cluster[cp.event_id] = idx
-
-            unmatched = []
-            for p in separate_forward:
-                if p.event_id in eventid_to_cluster:
-                    self.clusters[eventid_to_cluster[p.event_id]].append(p)
-                else:
-                    unmatched.append(p)
-
-            if len(unmatched) >= self.min_cluster_size:
-                pseudo_tt_sep = self.numpy_compute_tt_matrix_vectorized(
-                    unmatched, self.average_velocity
-                )
-                sep_clusters, sep_stab, sep_noise = self.get_clusters(
-                    unmatched, pseudo_tt_sep, self.max_search_dist,
-                    self.min_cluster_size, metric="precomputed",
-                )
-                if sep_clusters:
-                    self.clusters += sep_clusters
-                    self.clusters_stability = np.concatenate([
-                        np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
-                        np.array(sep_stab, dtype=float) if len(sep_stab) > 0
-                        else np.ones(len(sep_clusters)),
-                    ])
-                    self.noise += sep_noise
-                else:
-                    self.noise += unmatched
-            else:
-                self.noise += unmatched
-            self.n_clusters = len(self.clusters)
-            self.n_noise = len(self.noise)
         else:
             # No straddling event: run normal HDBSCAN on forward picks only,
             # then cluster backward picks separately and append.
