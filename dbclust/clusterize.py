@@ -638,26 +638,20 @@ class Clusterize(object):
         shared_event_ids = bw_event_ids & fw_event_ids
 
         if shared_event_ids:
-            # Straddling event detected. Pool backward picks with only the
-            # forward picks that belong to the straddling event (shared
-            # event_ids) or have no event_id (DL picks). Forward picks from
-            # other catalog events (e.g. event at 12:12 when backward event
-            # is at 11:58) are kept separate so they don't pollute the pool
-            # and cause PyOcto agency-conflict failures.
-            pooled_forward = [
-                p for p in forward_phases
-                if not p.event_id or p.event_id in shared_event_ids
-            ]
-            separate_forward = [
-                p for p in forward_phases
-                if p.event_id and p.event_id not in shared_event_ids
-            ]
-            pool = backward_phases + pooled_forward
+            # Straddling event detected. Pool backward picks with forward picks
+            # that belong to the straddling event (shared event_ids) or have
+            # no event_id (DL picks — they will join the correct cluster by TT).
+            # Forward picks from other catalog events are treated separately:
+            # they go through normal forward HDBSCAN so they form clean clusters
+            # without polluting the backward pool.
+            pool = [p for p in forward_phases if not p.event_id or p.event_id in shared_event_ids]
+            separate_forward = [p for p in forward_phases if p.event_id and p.event_id not in shared_event_ids]
+            pool = backward_phases + pool
             logger.info(
                 f"[backward+forward] shared event_ids {shared_event_ids} detected —"
                 f" HDBSCAN on {len(pool)} picks"
-                f" ({len(backward_phases)} backward + {len(pooled_forward)} forward),"
-                f" {len(separate_forward)} forward picks from other events kept separate."
+                f" ({len(backward_phases)} backward + {len(pool) - len(backward_phases)} forward),"
+                f" {len(separate_forward)} catalog forward picks from other events treated separately."
             )
             if len(pool) >= self.min_cluster_size:
                 pseudo_tt = self.numpy_compute_tt_matrix_vectorized(
@@ -682,16 +676,27 @@ class Clusterize(object):
                 self.noise = list(pool)
                 self.n_noise = len(self.noise)
 
-            # Run normal HDBSCAN on forward picks from other events and append.
-            if len(separate_forward) >= self.min_cluster_size:
-                logger.info(
-                    f"[forward] HDBSCAN on {len(separate_forward)} separate forward picks."
-                )
+            # Absorb separate catalog forward picks into existing clusters by
+            # event_id match, then HDBSCAN the unmatched remainder.
+            eventid_to_cluster = {}
+            for idx, cluster in enumerate(self.clusters):
+                for cp in cluster:
+                    if cp.event_id and cp.event_id not in eventid_to_cluster:
+                        eventid_to_cluster[cp.event_id] = idx
+
+            unmatched = []
+            for p in separate_forward:
+                if p.event_id in eventid_to_cluster:
+                    self.clusters[eventid_to_cluster[p.event_id]].append(p)
+                else:
+                    unmatched.append(p)
+
+            if len(unmatched) >= self.min_cluster_size:
                 pseudo_tt_sep = self.numpy_compute_tt_matrix_vectorized(
-                    separate_forward, self.average_velocity
+                    unmatched, self.average_velocity
                 )
                 sep_clusters, sep_stab, sep_noise = self.get_clusters(
-                    separate_forward, pseudo_tt_sep, self.max_search_dist,
+                    unmatched, pseudo_tt_sep, self.max_search_dist,
                     self.min_cluster_size, metric="precomputed",
                 )
                 if sep_clusters:
@@ -703,9 +708,9 @@ class Clusterize(object):
                     ])
                     self.noise += sep_noise
                 else:
-                    self.noise += separate_forward
+                    self.noise += unmatched
             else:
-                self.noise += separate_forward
+                self.noise += unmatched
             self.n_clusters = len(self.clusters)
             self.n_noise = len(self.noise)
         else:
