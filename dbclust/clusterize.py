@@ -585,9 +585,10 @@ class Clusterize(object):
         }
         n_from_event_id = 0
         if known_event_ids:
-            # Pull from other clusters
+            # Pull from other clusters, skipping other deferred clusters to avoid
+            # stealing picks that belong to a different deferred event.
             for ci, cluster in enumerate(self.clusters):
-                if ci == cluster_idx:
+                if ci == cluster_idx or ci in self._deferred_cluster_indices:
                     continue
                 to_move = [p for p in cluster if p.event_id in known_event_ids]
                 for p in to_move:
@@ -609,17 +610,26 @@ class Clusterize(object):
                 )
 
     def build_clusters_from_backward(self, backward_phases, forward_phases):
-        """Cluster backward and forward picks together in a single HDBSCAN pass.
+        """Cluster backward and forward picks, handling straddling events correctly.
 
         Called for the first window of a non-first parallel job, where backward
-        overlap picks are available. Instead of clustering forward picks first
-        and trying to absorb backward picks afterward, we pool all picks and run
-        a single HDBSCAN — exactly as the previous job's last window did for its
-        own picks. PyOcto then separates the individual events.
+        overlap picks are available.
 
-        This avoids the contamination problem where late S-wave arrivals of a
-        backward event (e.g. picks at 12:00–12:02 for an event at 11:58) end up
-        in the same forward cluster as a different event (e.g. at 12:12).
+        Two strategies depending on whether catalog event_ids are shared between
+        backward and forward zones:
+
+        - shared event_ids (straddling event): pool all picks into one HDBSCAN so
+          the event's picks form a single natural cluster; PyOcto then separates
+          events within it. This preserves the full pick set for the straddling event.
+
+        - no shared event_ids: sequential consume-as-you-go strategy:
+          Phase 1 — HDBSCAN on backward picks; assign forward picks to bw_clusters
+            via event_id, then via TT distance (only picks within the backward
+            time horizon, i.e. time < bw_t_max + overlap_seconds).
+          Phase 2 — HDBSCAN on remaining forward picks; assign bw_noise to
+            fw_clusters via event_id only (no TT, to avoid cross-zone contamination).
+          This avoids creating a mega-cluster that causes PyOcto to miss small
+          forward events (e.g. a 7-pick event buried in 350 mixed picks).
 
         Parameters
         ----------
@@ -628,18 +638,13 @@ class Clusterize(object):
         forward_phases : list[Phase]
             Picks from [start, end].
         """
-        # Only pool backward+forward if catalog picks in the backward zone share
-        # event_ids with catalog picks in the forward zone. This indicates that
-        # a physical event straddles the job boundary (late arrivals after start).
-        # Otherwise, use the normal forward-only HDBSCAN to avoid creating
-        # mega-clusters that cause PyOcto to miss small forward events.
         bw_event_ids = {p.event_id for p in backward_phases if p.event_id}
         fw_event_ids = {p.event_id for p in forward_phases if p.event_id}
         shared_event_ids = bw_event_ids & fw_event_ids
 
         if shared_event_ids:
-            # Straddling event detected: pool all picks together so HDBSCAN
-            # can form natural clusters. PyOcto then separates the events.
+            # Straddling event detected: pool all picks so HDBSCAN forms natural
+            # clusters that include both backward and forward picks of the same event.
             all_phases = backward_phases + forward_phases
             logger.info(
                 f"[backward+forward] shared event_ids {shared_event_ids} detected —"
@@ -668,61 +673,61 @@ class Clusterize(object):
             else:
                 self.noise = list(all_phases)
                 self.n_noise = len(self.noise)
-        else:
-            # No straddling event: run normal HDBSCAN on forward picks only,
-            # then cluster backward picks separately and append.
-            logger.info(
-                f"[backward+forward] no shared event_ids —"
-                f" HDBSCAN on {len(forward_phases)} forward picks only."
+            return
+
+        # No shared event_ids: run HDBSCAN on forward picks only, then cluster
+        # backward picks separately using the backward pool + forward noise.
+        logger.info(
+            f"[backward+forward] no shared event_ids —"
+            f" HDBSCAN on {len(forward_phases)} forward picks only."
+        )
+        if len(forward_phases) >= self.min_cluster_size:
+            pseudo_tt_fw = self.numpy_compute_tt_matrix_vectorized(
+                forward_phases, self.average_velocity
             )
-            if len(forward_phases) >= self.min_cluster_size:
-                pseudo_tt_fw = self.numpy_compute_tt_matrix_vectorized(
-                    forward_phases, self.average_velocity
-                )
-                self.clusters, stab, self.noise = self.get_clusters(
-                    forward_phases, pseudo_tt_fw, self.max_search_dist,
-                    self.min_cluster_size, metric="precomputed",
-                )
-                self.clusters_stability = (
-                    np.array(stab, dtype=float) if len(stab) > 0
-                    else np.ones(len(self.clusters))
-                )
+            self.clusters, stab, self.noise = self.get_clusters(
+                forward_phases, pseudo_tt_fw, self.max_search_dist,
+                self.min_cluster_size, metric="precomputed",
+            )
+            self.clusters_stability = (
+                np.array(stab, dtype=float) if len(stab) > 0
+                else np.ones(len(self.clusters))
+            )
+            self.n_clusters = len(self.clusters)
+            self.n_noise = len(self.noise)
+            if self.n_clusters > 1:
+                self.cluster_merge_based_on_eventid()
+        else:
+            self.noise = list(forward_phases)
+            self.n_noise = len(self.noise)
+
+        # Cluster backward picks separately and append.
+        pool = backward_phases + list(self.noise)
+        if len(pool) >= self.min_cluster_size:
+            logger.info(
+                f"[backward] HDBSCAN on {len(pool)} picks"
+                f" ({len(backward_phases)} backward + {self.n_noise} noise)."
+            )
+            pseudo_tt_bw = self.numpy_compute_tt_matrix_vectorized(
+                pool, self.average_velocity
+            )
+            bw_clusters, bw_stab, bw_noise = self.get_clusters(
+                pool, pseudo_tt_bw, self.max_search_dist,
+                self.min_cluster_size, metric="precomputed",
+            )
+            if bw_clusters:
+                logger.info(f"[backward] {len(bw_clusters)} cluster(s) discovered.")
+                self.clusters += bw_clusters
+                self.clusters_stability = np.concatenate([
+                    np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
+                    np.array(bw_stab, dtype=float) if len(bw_stab) > 0
+                    else np.ones(len(bw_clusters)),
+                ])
+                self.noise = bw_noise
                 self.n_clusters = len(self.clusters)
                 self.n_noise = len(self.noise)
-                self.max_search_dist = self.max_search_dist
-                if self.n_clusters > 1:
+                if len(bw_clusters) > 1:
                     self.cluster_merge_based_on_eventid()
-            else:
-                self.noise = list(forward_phases)
-                self.n_noise = len(self.noise)
-
-            # Cluster backward picks separately and append.
-            pool = backward_phases + list(self.noise)
-            if len(pool) >= self.min_cluster_size:
-                logger.info(
-                    f"[backward] HDBSCAN on {len(pool)} picks"
-                    f" ({len(backward_phases)} backward + {self.n_noise} noise)."
-                )
-                pseudo_tt_bw = self.numpy_compute_tt_matrix_vectorized(
-                    pool, self.average_velocity
-                )
-                bw_clusters, bw_stab, bw_noise = self.get_clusters(
-                    pool, pseudo_tt_bw, self.max_search_dist,
-                    self.min_cluster_size, metric="precomputed",
-                )
-                if bw_clusters:
-                    logger.info(f"[backward] {len(bw_clusters)} cluster(s) discovered.")
-                    self.clusters += bw_clusters
-                    self.clusters_stability = np.concatenate([
-                        np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
-                        np.array(bw_stab, dtype=float) if len(bw_stab) > 0
-                        else np.ones(len(bw_clusters)),
-                    ])
-                    self.noise = bw_noise
-                    self.n_clusters = len(self.clusters)
-                    self.n_noise = len(self.noise)
-                    if len(bw_clusters) > 1:
-                        self.cluster_merge_based_on_eventid()
 
     def absorb_backward_picks(self, backward_phases):
         """Superseded by build_clusters_from_backward — raises if called."""
@@ -878,43 +883,42 @@ class Clusterize(object):
         logger.info("Number of clusters: %d" % n_clusters_)
         logger.info("Number of noise points: %d" % n_noise_)
 
-        cluster_ids = set(labels)
-
         # only for hdbscan
         # kind of cluster stability measurement [0, 1]
         if hasattr(db, "cluster_persistence_"):
-            clusters_stability = db.cluster_persistence_
+            raw_stability = db.cluster_persistence_
         else:
-            clusters_stability = [1] * n_clusters_
+            raw_stability = [1] * n_clusters_
 
-        # feed picks to associated clusters.
-        clusters = []
+        # Feed picks into clusters, building in sorted label order so that
+        # clusters[i] aligns correctly with cluster_persistence_[i].
+        label_to_cluster: dict = {}
         noise = []
-        for c_id in cluster_ids:
-            cluster = []
-            for p, l in zip(phases, labels):
-                if c_id == l:
-                    cluster.append(p)
-                    # if duplicated picks, rely on NonLinLoc
-                    # to keep the relevant picks at localization level
-                    # or use the pick probability
-
-            if c_id == -1:
-                noise = cluster.copy()
-                noise_event_ids = Counter(
-                    p.event_id.split("/")[-1] for p in noise if p.event_id
-                )
-                logger.debug(
-                    f"noise: {len(noise)} phases, event_ids: {dict(noise_event_ids)}"
-                )
+        for p, label in zip(phases, labels):
+            if label == -1:
+                noise.append(p)
             else:
-                clusters.append(cluster)
-                event_id_counts = Counter(
-                    p.event_id.split("/")[-1] for p in cluster if p.event_id
-                )
-                logger.debug(
-                    f"cluster[{c_id}]: {len(cluster)} phases, event_ids: {dict(event_id_counts)}"
-                )
+                label_to_cluster.setdefault(label, []).append(p)
+
+        sorted_labels = sorted(label_to_cluster)
+        clusters = [label_to_cluster[lbl] for lbl in sorted_labels]
+
+        if hasattr(raw_stability, "__len__") and len(raw_stability) > 0:
+            clusters_stability = [raw_stability[lbl] for lbl in sorted_labels]
+        else:
+            clusters_stability = [1] * len(clusters)
+
+        noise_event_ids = Counter(
+            p.event_id.split("/")[-1] for p in noise if p.event_id
+        )
+        logger.debug(f"noise: {len(noise)} phases, event_ids: {dict(noise_event_ids)}")
+        for lbl, cluster in zip(sorted_labels, clusters):
+            event_id_counts = Counter(
+                p.event_id.split("/")[-1] for p in cluster if p.event_id
+            )
+            logger.debug(
+                f"cluster[{lbl}]: {len(cluster)} phases, event_ids: {dict(event_id_counts)}"
+            )
 
         return clusters, clusters_stability, noise
 
@@ -931,39 +935,60 @@ class Clusterize(object):
             f"cluster_merge_based_on_eventid(): merging clusters sharing same EventId: {self.n_clusters} clusters to handle."
         )
 
-        final_cluster_list = []
-        while self.clusters:
-            clusters_to_merge = []
-            c1 = self.clusters.pop(0)
-            clusters_to_merge.append(c1)
-            indices_to_remove = []
-            logger.debug("Working on cluster %s with %d phases" % (c1, len(c1)))
-            for i, c2 in enumerate(self.clusters):
-                if cluster_share_eventid(
-                    c1,
-                    c2,
-                    shared_threshold=self.min_com_phases,
-                    min_picks_per_cluster=self.eventid_shared_min_picks_per_cluster,
-                    min_distinct_event_ids=self.eventid_shared_min_distinct_ids,
-                ):
-                    indices_to_remove.append(i)
-                    clusters_to_merge.append(c2)
-                #     logger.info("Eventid shared.")
-                # else:
-                #     logger.info("No eventid shared.")
+        # Iterative merge until convergence to handle transitive chains:
+        # if c1 shares event_id A with c2, and c2 shares event_id B with c3,
+        # a single pass misses c1-c3. We repeat until no new merges occur.
+        stabs = list(
+            self.clusters_stability
+            if len(self.clusters_stability) == len(self.clusters)
+            else [1.0] * len(self.clusters)
+        )
+        changed = True
+        while changed:
+            changed = False
+            final_cluster_list = []
+            final_stabs = []
+            while self.clusters:
+                c1 = self.clusters.pop(0)
+                s1 = stabs.pop(0)
+                clusters_to_merge = [c1]
+                stabs_to_merge = [s1]
+                indices_to_remove = []
+                for i, c2 in enumerate(self.clusters):
+                    if cluster_share_eventid(
+                        c1,
+                        c2,
+                        shared_threshold=self.min_com_phases,
+                        min_picks_per_cluster=self.eventid_shared_min_picks_per_cluster,
+                        min_distinct_event_ids=self.eventid_shared_min_distinct_ids,
+                    ):
+                        indices_to_remove.append(i)
+                        clusters_to_merge.append(c2)
+                        stabs_to_merge.append(stabs[i])
 
-            for i in reversed(indices_to_remove):
-                self.clusters.pop(i)
+                if indices_to_remove:
+                    changed = True
+                for i in reversed(indices_to_remove):
+                    self.clusters.pop(i)
+                    stabs.pop(i)
 
-            # merge clusters
-            new_cluster = list(chain(*clusters_to_merge))
-            final_cluster_list.append(new_cluster)
+                new_cluster = list(chain(*clusters_to_merge))
+                # Stability = size-weighted average of merged clusters
+                total = sum(len(c) for c in clusters_to_merge)
+                new_stab = (
+                    sum(s * len(c) for s, c in zip(stabs_to_merge, clusters_to_merge))
+                    / total
+                    if total > 0
+                    else 1.0
+                )
+                final_cluster_list.append(new_cluster)
+                final_stabs.append(new_stab)
 
-        # Sanity check: self.clusters should be empty
-        assert not len(self.clusters)
-        self.clusters = final_cluster_list
+            self.clusters = final_cluster_list
+            stabs = final_stabs
+
         self.n_clusters = len(self.clusters)
-        self.clusters_stability = np.full(self.n_clusters, 1.0)
+        self.clusters_stability = np.array(stabs, dtype=float)
         logger.info(f"EventId merge leads to {self.n_clusters} clusters.")
 
     def generate_nllobs(self, OBS_PATH):
