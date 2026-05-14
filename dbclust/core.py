@@ -637,6 +637,17 @@ def dbclust(
                 "==> Last job in the time partition, merging all remaining clusters."
             )
             previous_myclust.merge(myclust)
+        elif parallel_mode and job_index > 0 and i == 1 and myclust.n_clusters > 0:
+            # Window #1 of a non-first parallel job: the single cluster produced by
+            # build_clusters_from_backward spans backward+forward picks and would be
+            # fully deferred by the temporal promotion logic (last_pick >= overlap_start).
+            # Instead, promote it unconditionally so PyOcto can separate its events —
+            # those with picks in the overlap zone will be re-deferred by Rule 1.
+            logger.info(
+                f"[{job_index}] Window #1 backward+forward: promoting all {myclust.n_clusters}"
+                f" cluster(s) to previous_myclust for PyOcto processing."
+            )
+            previous_myclust.merge(myclust)
         elif myclust.n_clusters > 0:
             # Smart overlap promotion: only promote clusters whose picks are entirely
             # before the overlap zone (temporally complete — they won't gain more picks
