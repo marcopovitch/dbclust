@@ -418,8 +418,14 @@ def dbclust(
         pick_end = cfg.pick.end
         if pick_end is None:
             pick_end = pd.Timestamp.now(tz="UTC")
-        if end >= pick_end:
-            end = pd.Timestamp(pick_end).tz_localize(None) if not hasattr(pick_end, 'tz') else pd.Timestamp(pick_end)
+        pick_end_ts = pd.Timestamp(pick_end)
+        # Normalize pick_end to match begin's tz-awareness to allow comparison
+        if begin.tz is None and pick_end_ts.tz is not None:
+            pick_end_ts = pick_end_ts.tz_convert("UTC").tz_localize(None)
+        elif begin.tz is not None and pick_end_ts.tz is None:
+            pick_end_ts = pick_end_ts.tz_localize("UTC")
+        if end >= pick_end_ts:
+            end = pick_end_ts
             short_window = True
 
             # complementary check
