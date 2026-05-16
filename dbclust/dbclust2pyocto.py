@@ -12,6 +12,7 @@ from typing import Optional
 from typing import Tuple
 from typing import Union
 
+import numpy as np
 import pandas as pd
 import pyocto
 import pyocto._core as _pyocto_backend
@@ -435,7 +436,7 @@ def dbclust2pyocto(
     newclust = copy.copy(myclust)
     newclust.clusters = pyocto_clusters
     newclust.n_clusters = len(newclust.clusters)
-    newclust.clusters_stability = [1] * newclust.n_clusters  # unused but needed
+    newclust.clusters_stability = [1] * newclust.n_clusters  # placeholder, recomputed below
     newclust.preloc = pyocto_preloc  # used to choose NLL velocity model
 
     # Aggregate picks into clusters with shared event IDs
@@ -451,6 +452,52 @@ def dbclust2pyocto(
 
     newclust.clusters = pyocto_clusters
     newclust.n_clusters = len(newclust.clusters)
+
+    # Inherit HDBSCAN stability into PyOcto clusters and annotate the operation
+    # (split / merge / passthrough) by tracking which HDBSCAN parent(s) contributed
+    # picks to each PyOcto cluster.
+    hdbscan_stabs = list(myclust.clusters_stability)
+    pick_key_to_hdbscan: dict = {}
+    for hi, hc in enumerate(myclust.clusters):
+        stab = float(hdbscan_stabs[hi]) if hi < len(hdbscan_stabs) else 1.0
+        for p in hc:
+            pick_key_to_hdbscan[(p.station, p.time.datetime, p.phase)] = (hi, stab)
+
+    # Count how many PyOcto clusters each HDBSCAN parent contributed to (for split detection)
+    hdbscan_parent_usage: dict = defaultdict(int)
+    for pc in newclust.clusters:
+        seen_parents: set = set()
+        for p in pc:
+            k = (p.station, p.time.datetime, p.phase)
+            if k in pick_key_to_hdbscan:
+                seen_parents.add(pick_key_to_hdbscan[k][0])
+        for hi in seen_parents:
+            hdbscan_parent_usage[hi] += 1
+
+    inherited_stabs = []
+    cluster_ops = []
+    for pc in newclust.clusters:
+        parent_info: dict = {}  # hi → stab, deduplicated by parent index
+        for p in pc:
+            k = (p.station, p.time.datetime, p.phase)
+            if k in pick_key_to_hdbscan:
+                hi, stab = pick_key_to_hdbscan[k]
+                parent_info[hi] = stab
+        parent_stabs = list(parent_info.values())
+        avg_stab = float(np.mean(parent_stabs)) if parent_stabs else 1.0
+        inherited_stabs.append(avg_stab)
+
+        parents = set(parent_info.keys())
+        if len(parents) > 1:
+            op = "merge"
+        elif len(parents) == 1 and hdbscan_parent_usage[next(iter(parents))] > 1:
+            op = "split"
+        else:
+            op = "passthrough"
+        cluster_ops.append({"op": op, "parent_stabilities": parent_stabs})
+
+    newclust.clusters_stability = np.array(inherited_stabs, dtype=float)
+    newclust.clusters_pyocto_ops = cluster_ops
 
     # Clean up the original cluster object only after successful processing
     for attr in ["clusters", "clusters_stability", "noise", "zones", "preloc"]:

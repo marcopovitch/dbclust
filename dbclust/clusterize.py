@@ -173,6 +173,45 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
         event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
 
 
+def feed_cluster_stability(
+    cat: Catalog,
+    clusters: List[List[Phase]],
+    clusters_stability,
+    clusters_pyocto_ops=None,
+) -> None:
+    """Inject cluster stability and PyOcto operation metadata as a JSON comment on each Event."""
+    pick_to_cluster_idx = {}
+    for idx, c in enumerate(clusters):
+        for p in c:
+            pick_to_cluster_idx[(p.station, p.time.datetime)] = idx
+
+    for event in cat:
+        o = event.preferred_origin()
+        if o is None:
+            continue
+        for a in o.arrivals:
+            if a.time_weight is None or a.time_residual is None:
+                continue
+            pick = next((p for p in event.picks if p.resource_id == a.pick_id), None)
+            if pick is None:
+                continue
+            key = (pick.waveform_id["station_code"], pick.time.datetime)
+            idx = pick_to_cluster_idx.get(key)
+            if idx is not None and idx < len(clusters_stability):
+                stability = float(clusters_stability[idx])
+                meta: dict = {"cluster_stability": round(stability, 4)}
+                if clusters_pyocto_ops and idx < len(clusters_pyocto_ops):
+                    op_info = clusters_pyocto_ops[idx]
+                    meta["cluster_op"] = op_info.get("op", "unknown")
+                    parent_stabs = op_info.get("parent_stabilities", [])
+                    if len(parent_stabs) > 1:
+                        meta["hdbscan_parent_stabilities"] = [round(s, 4) for s in parent_stabs]
+                    else:
+                        meta["hdbscan_parent_stability"] = round(parent_stabs[0], 4) if parent_stabs else stability
+                event.comments.append(Comment(text=json.dumps(meta)))
+                break
+
+
 def merge_cluster_with_common_phases(
     clusters1,
     clusters2,
@@ -205,7 +244,20 @@ def merge_cluster_with_common_phases(
         len(clusters2.clusters),
     )
 
-    for j, c2 in enumerate(clusters2.clusters):
+    # Traverse order: least stable first so that fragile clusters absorb/get absorbed
+    # before stable ones — unstable c1 need picks most, unstable c2 should be merged first.
+    if len(clusters2.clusters_stability) == len(clusters2.clusters):
+        c2_order = np.argsort(clusters2.clusters_stability)
+    else:
+        c2_order = np.arange(len(clusters2.clusters))
+
+    if len(clusters1.clusters_stability) == len(clusters1.clusters):
+        c1_order = np.argsort(clusters1.clusters_stability)
+    else:
+        c1_order = np.arange(len(clusters1.clusters))
+
+    for j in c2_order:
+        c2 = clusters2.clusters[j]
         merged = False
         c2_times = sorted(p.time for p in c2)
         c2_t0 = c2_times[0] if c2_times else None
@@ -215,7 +267,8 @@ def merge_cluster_with_common_phases(
             f"merge_cluster_with_common_phases: c2 cluster [{c2_t0} .. {c2_t1}] "
             f"{len(c2)} picks, {len(c2_eids)} with event_id"
         )
-        for i, c1 in enumerate(clusters1.clusters):
+        for i in c1_order:
+            c1 = clusters1.clusters[i]
             # Count common phases using hash equality
             common_count = sum((Counter(c1) & Counter(c2)).values())
             # Also count spatiotemporal matches (station+phase+time, ignoring event_id)
@@ -344,6 +397,7 @@ class Clusterize(object):
         self.preloc = None  # pre-localization if pyocto was enable
         self.zones = zones
         self._deferred_cluster_indices: set = set()  # indices of injected deferred clusters
+        self.clusters_pyocto_ops = None  # set by process_clusters_with_pyocto when PyOcto is used
 
         # clustering parameters
         self.max_search_dist = max_search_dist
@@ -907,7 +961,9 @@ class Clusterize(object):
         sorted_labels = sorted(label_to_cluster)
         clusters = [label_to_cluster[lbl] for lbl in sorted_labels]
 
-        if hasattr(raw_stability, "__len__") and len(raw_stability) > 0:
+        if hasattr(raw_stability, "__len__") and len(raw_stability) > 0 and len(sorted_labels) > 0:
+            # Guard against HDBSCAN returning a non-empty cluster_persistence_ even when all
+            # labels are -1 (0 clusters): skip the mismatch check in that degenerate case.
             # Safety check: ensure stability array matches number of clusters
             if len(raw_stability) != len(sorted_labels):
                 logger.warning(

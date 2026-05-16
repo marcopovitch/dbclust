@@ -1270,10 +1270,11 @@ class NllLoc(object):
 
         cat_results = []
 
-        for i, nll_obs_file in enumerate(
-            sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file)
-        ):
+        nll_obs_files = sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file)
+        n_total = len(nll_obs_files)
+        for i, nll_obs_file in enumerate(nll_obs_files):
             picks_set = picks[i] if picks else None
+            logger.info(f"--- Event #{i + 1}/{n_total} [{os.path.basename(nll_obs_file)}] ---")
 
             try:
                 cat = self.nll_localisation(

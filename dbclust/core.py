@@ -23,6 +23,7 @@ import pyproj.exceptions
 from obspy import UTCDateTime
 
 from dbclust.clusterize import Clusterize
+from dbclust.clusterize import feed_cluster_stability
 from dbclust.clusterize import feed_picks_event_ids
 from dbclust.clusterize import feed_picks_probabilities
 from dbclust.clusterize import get_picks_from_event
@@ -437,10 +438,11 @@ def dbclust(
             short_window = False
 
         logger.info("")
-        logger.info("")
+        logger.info("=" * 72)
         logger.info(
             f"============== job index:[{job_index}] Time window extraction with overlap {overlap_timedelta}: #{i}/{len(time_divisions)} picks from {begin} to {end}."
         )
+        logger.info("=" * 72)
 
         # Extract picks on this time period
         df_backward_overlap = None  # populated only for first window of non-first jobs
@@ -770,6 +772,7 @@ def dbclust(
             my_obs_path = os.path.join(TMP_OBS_PATH, f"{i}")
             nll_picks = previous_myclust.generate_nllobs(my_obs_path)
 
+            logger.info("-" * 60)
             logger.info(f"Starting localization using {locator.loc_method}.")
             with MyTemporaryDirectory(
                 dir=cfg.file.tmp_path,
@@ -924,6 +927,12 @@ def dbclust(
         # Write picks probabilities and event_ids
         feed_picks_probabilities(clustcat, previous_myclust.clusters)
         feed_picks_event_ids(clustcat, previous_myclust.clusters)
+        feed_cluster_stability(
+            clustcat,
+            previous_myclust.clusters,
+            previous_myclust.clusters_stability,
+            getattr(previous_myclust, "clusters_pyocto_ops", None),
+        )
 
         # Write distance from preferred origin and prelocalization
         clustcat = feed_distance_from_preloc_to_pref_origin(clustcat)
