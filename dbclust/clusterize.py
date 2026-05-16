@@ -269,9 +269,13 @@ def merge_cluster_with_common_phases(
                     len(clusters1.clusters_stability) > i
                     and len(clusters2.clusters_stability) > j
                 ):
-                    clusters1.clusters_stability[i] = max(
-                        clusters1.clusters_stability[i],
-                        clusters2.clusters_stability[j],
+                    # Use size-weighted average for consistency with cluster_merge_based_on_eventid()
+                    c1_size = len(c1)
+                    c2_size = len(c2)
+                    total_size = c1_size + c2_size
+                    clusters1.clusters_stability[i] = (
+                        (clusters1.clusters_stability[i] * c1_size +
+                         clusters2.clusters_stability[j] * c2_size) / total_size
                     )
                 merge_count += 1
                 merged = True
@@ -904,7 +908,16 @@ class Clusterize(object):
         clusters = [label_to_cluster[lbl] for lbl in sorted_labels]
 
         if hasattr(raw_stability, "__len__") and len(raw_stability) > 0:
-            clusters_stability = [raw_stability[lbl] for lbl in sorted_labels]
+            # Safety check: ensure stability array matches number of clusters
+            if len(raw_stability) != len(sorted_labels):
+                logger.warning(
+                    f"Stability array length mismatch: {len(raw_stability)} "
+                    f"stability values for {len(sorted_labels)} clusters. "
+                    f"Using default stability=1.0 for all clusters."
+                )
+                clusters_stability = [1.0] * len(clusters)
+            else:
+                clusters_stability = [raw_stability[lbl] for lbl in sorted_labels]
         else:
             clusters_stability = [1] * len(clusters)
 
@@ -989,7 +1002,53 @@ class Clusterize(object):
 
         self.n_clusters = len(self.clusters)
         self.clusters_stability = np.array(stabs, dtype=float)
-        logger.info(f"EventId merge leads to {self.n_clusters} clusters.")
+        # Verify consistency after merge
+        if len(self.clusters) != len(self.clusters_stability):
+            logger.error(
+                f"Cluster/stability length mismatch after merge: {len(self.clusters)} "
+                f"clusters vs {len(self.clusters_stability)} stability values. "
+                f"Attempting to recover..."
+            )
+            # Attempt recovery by truncating or padding stability array
+            if len(self.clusters_stability) > len(self.clusters):
+                self.clusters_stability = self.clusters_stability[:len(self.clusters)]
+            else:
+                # Pad with default stability value (1.0)
+                padding = len(self.clusters) - len(self.clusters_stability)
+                self.clusters_stability = np.concatenate([
+                    self.clusters_stability,
+                    np.ones(padding, dtype=float)
+                ])
+            logger.warning("Recovery successful - please investigate root cause")
+        logger.debug(f"EventId merge completed: {self.n_clusters} clusters with stabilities {self.clusters_stability}")
+        
+        # Log stability statistics after merge
+        if len(self.clusters) > 0:
+            min_stab = float(np.min(self.clusters_stability))
+            max_stab = float(np.max(self.clusters_stability))
+            logger.info(
+                f"EventId merge leads to {self.n_clusters} clusters. "
+                f"Stability range: {min_stab:.3f}-{max_stab:.3f}"
+            )
+
+    def log_stability_summary(self):
+        """Log a summary of cluster stability statistics."""
+        if not self.clusters:
+            logger.info("No clusters to analyze for stability")
+            return
+
+        stabilities = self.clusters_stability
+        min_stab = float(np.min(stabilities))
+        max_stab = float(np.max(stabilities))
+        avg_stab = float(np.mean(stabilities))
+        med_stab = float(np.median(stabilities))
+
+        logger.info("Cluster stability summary:")
+        logger.info(f"  Total clusters: {len(self.clusters)}")
+        logger.info(f"  Min stability: {min_stab:.3f}")
+        logger.info(f"  Max stability: {max_stab:.3f}")
+        logger.info(f"  Average stability: {avg_stab:.3f}")
+        logger.info(f"  Median stability: {med_stab:.3f}")
 
     def generate_nllobs(self, OBS_PATH):
         """
@@ -998,6 +1057,10 @@ class Clusterize(object):
         no duplicated pick !
         """
         logger.info(f"Starting generate_nllobs()")
+        
+        # Log stability statistics before processing
+        self.log_stability_summary()
+        
         picks_bundles = []
         rejected_event_ids: set = set()
         accepted_event_ids: set = set()
@@ -1013,7 +1076,8 @@ class Clusterize(object):
             )
 
             logger.info(
-                f"Generating nllobs for cluster {i} ({len(stations_list)} stations / {len(cluster)} picks)"
+                f"Generating nllobs for cluster {i} ({len(stations_list)} stations / {len(cluster)} picks, "
+                f"stability={self.clusters_stability[i]:.3f})"
                 + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
             )
 
@@ -1242,6 +1306,22 @@ class Clusterize(object):
         self.noise += clusters2.noise
         self.n_noise = len(self.noise)
 
+        # Verify clusters2 consistency before merging
+        if len(clusters2.clusters_stability) != len(clusters2.clusters):
+            logger.warning(
+                f"Inconsistent clusters2: {len(clusters2.clusters)} clusters "
+                f"but {len(clusters2.clusters_stability)} stability values. "
+                f"Using default stability=1.0 for additional clusters."
+            )
+            # Pad with 1.0 values if needed
+            required_length = len(clusters2.clusters)
+            current_length = len(clusters2.clusters_stability)
+            if current_length < required_length:
+                clusters2.clusters_stability = np.concatenate([
+                    clusters2.clusters_stability,
+                    np.ones(required_length - current_length, dtype=float)
+                ])
+        
         self.clusters_stability = np.concatenate(
             [self.clusters_stability, clusters2.clusters_stability]
         )
