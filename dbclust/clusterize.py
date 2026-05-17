@@ -246,13 +246,17 @@ def merge_cluster_with_common_phases(
 
     # Traverse order: least stable first so that fragile clusters absorb/get absorbed
     # before stable ones — unstable c1 need picks most, unstable c2 should be merged first.
+    # Tie-break by number of picks ascending: smaller clusters are processed first,
+    # giving them priority to claim shared picks before larger clusters do.
     if len(clusters2.clusters_stability) == len(clusters2.clusters):
-        c2_order = np.argsort(clusters2.clusters_stability)
+        c2_sizes = np.array([len(c) for c in clusters2.clusters], dtype=float)
+        c2_order = np.lexsort((c2_sizes, clusters2.clusters_stability))
     else:
         c2_order = np.arange(len(clusters2.clusters))
 
     if len(clusters1.clusters_stability) == len(clusters1.clusters):
-        c1_order = np.argsort(clusters1.clusters_stability)
+        c1_sizes = np.array([len(c) for c in clusters1.clusters], dtype=float)
+        c1_order = np.lexsort((c1_sizes, clusters1.clusters_stability))
     else:
         c1_order = np.arange(len(clusters1.clusters))
 
@@ -896,6 +900,46 @@ class Clusterize(object):
         dt = times[:, None] - times[None, :]  # (n, n)
         return np.sqrt(dt**2 + dd**2)
 
+    @staticmethod
+    def numpy_compute_proba_weighted_tt_matrix(phases, vmean, alpha):
+        """Compute TT matrix with pick probability weighting on the temporal component.
+
+        Low-probability picks get a larger effective time tolerance, making them
+        easier to cluster with their high-probability neighbours. The spatial
+        component (dd = dist/vmean) is left untouched so that two distinct events
+        at the same time but different locations remain separated by their geography.
+
+        alpha controls the strength of the effect. Physically, it sets the minimum
+        weight applied when avg_proba → 0 (i.e. how much extra time tolerance a
+        pair of near-zero-probability picks receives):
+
+            w(p_i, p_j) = 1 / (alpha + (1-alpha) * avg(p_i, p_j))
+
+            alpha=1.0 → w=1 always — identical to numpy_compute_tt_matrix_vectorized (no effect)
+            alpha=0.7 → picks (0.9,0.9): w≈1.05 (+5%)  ; picks (0.3,0.3): w≈1.23 (+23%)
+            alpha=0.5 → picks (0.9,0.9): w≈1.14 (+14%) ; picks (0.3,0.3): w≈1.54 (+54%)
+            alpha=0.0 → w = 1/avg_proba — unbounded, use with caution
+        """
+        R = 6371.0
+        lats = np.radians([p.coord["latitude"] for p in phases])
+        lons = np.radians([p.coord["longitude"] for p in phases])
+        times = np.array([float(p.time) for p in phases])
+        probas = np.clip([p.proba for p in phases], 0.0, 1.0)
+
+        dlat = lats[:, None] - lats[None, :]
+        dlon = lons[:, None] - lons[None, :]
+        a = (
+            np.sin(dlat / 2) ** 2
+            + np.cos(lats[:, None]) * np.cos(lats[None, :]) * np.sin(dlon / 2) ** 2
+        )
+        dd = 2 * R * np.arcsin(np.sqrt(a)) / vmean  # same dd as in numpy_compute_tt_matrix_vectorized
+
+        avg_p = (probas[:, None] + probas[None, :]) / 2
+        w = 1.0 / (alpha + (1.0 - alpha) * avg_p)
+        dt = (times[:, None] - times[None, :]) * w
+
+        return np.sqrt(dt**2 + dd**2)
+
     # @staticmethod
     # def dask_compute_tt_matrix(phases, vmean):
     #     """Optimization to compute tt_matrix in //"""
@@ -921,7 +965,7 @@ class Clusterize(object):
         # n_jobs is not supported by the KDTree-based algorithm used for euclidean metric
         hdbscan_kwargs = dict(
             min_cluster_size=min_cluster_size,  # default 5
-            min_samples=None,  # default None
+            min_samples=1,  # default None
             allow_single_cluster=True,
             cluster_selection_epsilon=max_search_dist,  # default 0.0,
             metric=metric,
