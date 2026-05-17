@@ -115,11 +115,13 @@ def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
 
 
 def get_cross_partition_picks(
-    con, start, overlap_timedelta, global_start
+    con, start, overlap_timedelta, global_start,
+    P_proximity_threshold: float = 0.1,
+    S_proximity_threshold: float = 0.2,
 ) -> pd.DataFrame:
     """Fetch all picks from the backward overlap zone [start-overlap, start].
 
-    Returns a single DataFrame with all picks (catalogued and DL automatic).
+    Returns a deduplicated DataFrame with all picks (catalogued and DL automatic).
     Injected into df_subset before HDBSCAN so that cross-partition events
     (suppressed by the forward overlap rule of the previous job) are
     reconstructed with their full pick set in this job.
@@ -129,12 +131,23 @@ def get_cross_partition_picks(
         return pd.DataFrame()
 
     rqt = f"""
-        SELECT * FROM PICKS
+        SELECT DISTINCT station_id, channel, phase_type, phase_time,
+                        phase_score, phase_evaluation, phase_method,
+                        event_id, agency
+        FROM PICKS
         WHERE phase_time BETWEEN '{backward_start}' AND '{start}'
         AND phase_type IN ('P', 'Pg', 'Pn', 'S', 'Sg', 'Sn')
     """
     df_all = con.sql(rqt).fetchdf()
-    return df_all if not df_all.empty else pd.DataFrame()
+    if df_all.empty:
+        return pd.DataFrame()
+
+    if df_all["phase_time"].dt.tz is None:
+        df_all["phase_time"] = df_all["phase_time"].dt.tz_localize("UTC")
+    else:
+        df_all["phase_time"] = df_all["phase_time"].dt.tz_convert("UTC")
+
+    return deduplicate_picks_by_time(df_all, P_proximity_threshold, S_proximity_threshold)
 
 
 def find_cluster_phases_for_event(event, clusters: List[List]) -> List:
@@ -455,7 +468,10 @@ def dbclust(
             if cfg.pick.type == "parquet":
                 # benefit from parquet partitioning by year and month
                 rqt = f"""
-                    SELECT * FROM PICKS
+                    SELECT DISTINCT station_id, channel, phase_type, phase_time,
+                                    phase_score, phase_evaluation, phase_method,
+                                    event_id, agency
+                    FROM PICKS
                     WHERE
                     (year > {begin_year} OR (year = {begin_year} AND month >= {begin_month}))
                     AND
@@ -468,7 +484,10 @@ def dbclust(
             else:
                 # csv
                 rqt = f"""
-                    SELECT * FROM PICKS
+                    SELECT DISTINCT station_id, channel, phase_type, phase_time,
+                                    phase_score, phase_evaluation, phase_method,
+                                    event_id, agency
+                    FROM PICKS
                     WHERE phase_time BETWEEN '{begin}' AND '{end}'
                     AND phase_type IN ('P', 'Pg', 'Pn', 'S', 'Sg', 'Sn')
                 """
@@ -495,7 +514,9 @@ def dbclust(
                 pick_start = cfg.pick.start or pd.Timestamp("1970-01-01")
                 global_start = pd.Timestamp(pick_start).tz_localize(None) if not hasattr(pick_start, 'tz') else pd.Timestamp(pick_start)
                 df_backward_overlap = get_cross_partition_picks(
-                    con, start, overlap_timedelta, global_start
+                    con, start, overlap_timedelta, global_start,
+                    cfg.pick.P_proximity_threshold,
+                    cfg.pick.S_proximity_threshold,
                 )
                 logger.info(
                     f"[{job_index}] Captured {len(df_backward_overlap)} backward overlap picks"
