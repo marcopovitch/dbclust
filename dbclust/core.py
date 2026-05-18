@@ -791,6 +791,7 @@ def dbclust(
             dir=cfg.file.obs_path, delete=cfg.file.automatic_cleanup_tmp
         ) as TMP_OBS_PATH:
             my_obs_path = os.path.join(TMP_OBS_PATH, f"{i}")
+            previous_myclust.cluster_merge_based_on_eventid()
             nll_picks = previous_myclust.generate_nllobs(my_obs_path)
 
             logger.info("-" * 60)
@@ -855,7 +856,10 @@ def dbclust(
                     )
                     locator.catalog.events.remove(event)
                     locator.nb_events = len(locator.catalog)
-                    clustcat = locator.catalog
+                    try:
+                        clustcat.events.remove(event)
+                    except ValueError:
+                        pass
 
                 # Rule 1 — Window overlap zone: first_pick falls beyond next_begin.
                 # The next window will detect this event with more picks.
@@ -886,7 +890,10 @@ def dbclust(
 
                     locator.catalog.events.remove(event)
                     locator.nb_events = len(locator.catalog)
-                    clustcat = locator.catalog
+                    try:
+                        clustcat.events.remove(event)
+                    except ValueError:
+                        pass
 
                 # Rule 2 — Forward overlap zone (parallel mode, last window of job N):
                 # any event starting in [stop-overlap, stop] is deferred to job N+1,
@@ -906,7 +913,10 @@ def dbclust(
                     )
                     locator.catalog.events.remove(event)
                     locator.nb_events = len(locator.catalog)
-                    clustcat = locator.catalog
+                    try:
+                        clustcat.events.remove(event)
+                    except ValueError:
+                        pass
 
                 # Rule 3 — Straddle: first_pick in normal zone, last_pick in overlap zone.
                 # Intermediate window: prune picks beyond next_begin and keep the event.
@@ -925,7 +935,10 @@ def dbclust(
                         )
                         locator.catalog.events.remove(event)
                         locator.nb_events = len(locator.catalog)
-                        clustcat = locator.catalog
+                        try:
+                            clustcat.events.remove(event)
+                        except ValueError:
+                            pass
                     else:
                         for line in format_event(event, "***P"):
                             logger.info(line)
