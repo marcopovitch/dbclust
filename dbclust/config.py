@@ -514,6 +514,21 @@ class ClusterConfig:
     eventid_shared_min_picks_per_cluster: Optional[int] = None
     # Event-ID merge guard: minimum number of distinct shared event_ids.
     eventid_shared_min_distinct_ids: int = 2
+    # Clustering algorithm: "hdbscan" (default) or "leiden"
+    # Leiden uses graph community detection (CPM objective) instead of density-based
+    # clustering. Requires: uv pip install leidenalg python-igraph
+    clustering_method: str = "hdbscan"
+    # Leiden CPM resolution γ: higher → more, smaller communities. Typical range 0.01–0.2.
+    leiden_resolution: float = 0.05
+    # Leiden edge weight σ (s) in exp(-d/σ). None → max_search_dist / 2.
+    leiden_edge_weight_scale: Optional[float] = None
+    # When True, replace pick probabilities by fixed weights in edge construction:
+    #   manual picks    → leiden_edge_manual_weight
+    #   automatic picks → leiden_edge_automatic_weight
+    # When False (default), the pick's own proba is used.
+    leiden_edge_use_fixed_weight: bool = False
+    leiden_edge_manual_weight: float = 1.0
+    leiden_edge_automatic_weight: float = 0.8
 
     def __post_init__(self) -> None:
         if self.pre_computed_tt_matrix_file:

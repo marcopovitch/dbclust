@@ -389,6 +389,12 @@ class Clusterize(object):
         umap_vs=3.5,  # apparent S-wave velocity for AOT (km/s)
         cluster_selection_method="eom",  # HDBSCAN: "eom" (default) or "leaf"
         tt_clip_seconds=0.0,  # clip TT matrix to this value in seconds (0 = no clip)
+        clustering_method="hdbscan",    # "hdbscan" or "leiden"
+        leiden_resolution=0.05,         # CPM resolution γ (higher → more clusters)
+        leiden_edge_weight_scale=None,  # σ for exp(-d/σ); None → max_search_dist/2
+        leiden_edge_use_fixed_weight=False,   # True → use fixed weights instead of pick probas
+        leiden_edge_manual_weight=1.0,       # weight for manual picks
+        leiden_edge_automatic_weight=0.8,    # weight for automatic picks
     ):
         # clusters is a list of cluster :
         # ie. [ [phases, label], ... ]
@@ -432,6 +438,12 @@ class Clusterize(object):
         self.umap_vs = umap_vs
         self.cluster_selection_method = cluster_selection_method
         self.tt_clip_seconds = tt_clip_seconds
+        self.clustering_method = clustering_method
+        self.leiden_resolution = leiden_resolution
+        self.leiden_edge_weight_scale = leiden_edge_weight_scale
+        self.leiden_edge_use_fixed_weight = leiden_edge_use_fixed_weight
+        self.leiden_edge_manual_weight = leiden_edge_manual_weight
+        self.leiden_edge_automatic_weight = leiden_edge_automatic_weight
 
         if phases is None:
             # Simple constructor
@@ -513,6 +525,12 @@ class Clusterize(object):
             min_cluster_size,
             metric="euclidean" if use_umap else "precomputed",
             cluster_selection_method=cluster_selection_method,
+            clustering_method=clustering_method,
+            leiden_resolution=leiden_resolution,
+            leiden_edge_weight_scale=leiden_edge_weight_scale,
+            leiden_edge_use_fixed_weight=leiden_edge_use_fixed_weight,
+            leiden_edge_manual_weight=leiden_edge_manual_weight,
+            leiden_edge_automatic_weight=leiden_edge_automatic_weight,
         )
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
@@ -720,6 +738,9 @@ class Clusterize(object):
                 self.clusters, stab, self.noise = self.get_clusters(
                     all_phases, pseudo_tt, self.max_search_dist,
                     self.min_cluster_size, metric="precomputed",
+                    clustering_method=self.clustering_method,
+                    leiden_resolution=self.leiden_resolution,
+                    leiden_edge_weight_scale=self.leiden_edge_weight_scale,
                 )
                 self.clusters_stability = (
                     np.array(stab, dtype=float) if len(stab) > 0
@@ -750,6 +771,12 @@ class Clusterize(object):
             self.clusters, stab, self.noise = self.get_clusters(
                 forward_phases, pseudo_tt_fw, self.max_search_dist,
                 self.min_cluster_size, metric="precomputed",
+                clustering_method=self.clustering_method,
+                leiden_resolution=self.leiden_resolution,
+                leiden_edge_weight_scale=self.leiden_edge_weight_scale,
+                leiden_edge_use_fixed_weight=self.leiden_edge_use_fixed_weight,
+                leiden_edge_manual_weight=self.leiden_edge_manual_weight,
+                leiden_edge_automatic_weight=self.leiden_edge_automatic_weight,
             )
             self.clusters_stability = (
                 np.array(stab, dtype=float) if len(stab) > 0
@@ -776,6 +803,12 @@ class Clusterize(object):
             bw_clusters, bw_stab, bw_noise = self.get_clusters(
                 pool, pseudo_tt_bw, self.max_search_dist,
                 self.min_cluster_size, metric="precomputed",
+                clustering_method=self.clustering_method,
+                leiden_resolution=self.leiden_resolution,
+                leiden_edge_weight_scale=self.leiden_edge_weight_scale,
+                leiden_edge_use_fixed_weight=self.leiden_edge_use_fixed_weight,
+                leiden_edge_manual_weight=self.leiden_edge_manual_weight,
+                leiden_edge_automatic_weight=self.leiden_edge_automatic_weight,
             )
             if bw_clusters:
                 logger.info(f"[backward] {len(bw_clusters)} cluster(s) discovered.")
@@ -909,16 +942,17 @@ class Clusterize(object):
         component (dd = dist/vmean) is left untouched so that two distinct events
         at the same time but different locations remain separated by their geography.
 
-        alpha controls the strength of the effect. Physically, it sets the minimum
-        weight applied when avg_proba → 0 (i.e. how much extra time tolerance a
-        pair of near-zero-probability picks receives):
+        alpha controls the strength of the effect. The tolerance is driven by the
+        weakest pick in each pair via min(p_i, p_j): a strong pick (0.9) paired
+        with a weak one (0.3) gets the same stretch as two weak picks (0.3, 0.3)
+        — the uncertain pick sets the tolerance, not the average.
 
-            w(p_i, p_j) = 1 / (alpha + (1-alpha) * avg(p_i, p_j))
+            w(p_i, p_j) = 1 / (alpha + (1-alpha) * min(p_i, p_j))    [w >= 1]
 
             alpha=1.0 → w=1 always — identical to numpy_compute_tt_matrix_vectorized (no effect)
-            alpha=0.7 → picks (0.9,0.9): w≈1.05 (+5%)  ; picks (0.3,0.3): w≈1.23 (+23%)
-            alpha=0.5 → picks (0.9,0.9): w≈1.14 (+14%) ; picks (0.3,0.3): w≈1.54 (+54%)
-            alpha=0.0 → w = 1/avg_proba — unbounded, use with caution
+            alpha=0.5 → picks (0.9,0.9): w≈1.04 (+4%)  ; picks (0.9,0.3) or (0.3,0.3): w≈1.23 (+23%)
+            alpha=0.5 → picks (0.9,0.9): w≈1.10 (+10%) ; picks (0.9,0.3) or (0.3,0.3): w≈1.54 (+54%)
+            alpha=0.0 → w = 1/min_proba — unbounded for near-zero picks, use with caution
         """
         R = 6371.0
         lats = np.radians([p.coord["latitude"] for p in phases])
@@ -934,8 +968,8 @@ class Clusterize(object):
         )
         dd = 2 * R * np.arcsin(np.sqrt(a)) / vmean  # same dd as in numpy_compute_tt_matrix_vectorized
 
-        avg_p = (probas[:, None] + probas[None, :]) / 2
-        w = 1.0 / (alpha + (1.0 - alpha) * avg_p)
+        min_p = np.minimum(probas[:, None], probas[None, :])
+        w = 1.0 / (alpha + (1.0 - alpha) * min_p)
         dt = (times[:, None] - times[None, :]) * w
 
         return np.sqrt(dt**2 + dd**2)
@@ -958,9 +992,26 @@ class Clusterize(object):
         min_cluster_size,
         metric="precomputed",
         cluster_selection_method="eom",
+        clustering_method="hdbscan",
+        leiden_resolution=0.05,
+        leiden_edge_weight_scale=None,
+        leiden_edge_use_fixed_weight=False,
+        leiden_edge_manual_weight=1.0,
+        leiden_edge_automatic_weight=0.8,
     ):
         # metric is "precomputed" ==> X is assumed to be a distance matrix and must be square
         # metric is "euclidean" when pseudo_tt is a UMAP 2D embedding
+
+        if clustering_method == "leiden":
+            from dbclust.leiden import leiden_cluster
+            return leiden_cluster(
+                phases, pseudo_tt, max_search_dist, min_cluster_size,
+                resolution=leiden_resolution,
+                edge_weight_scale=leiden_edge_weight_scale,
+                use_fixed_weight=leiden_edge_use_fixed_weight,
+                manual_weight=leiden_edge_manual_weight,
+                automatic_weight=leiden_edge_automatic_weight,
+            )
 
         # n_jobs is not supported by the KDTree-based algorithm used for euclidean metric
         hdbscan_kwargs = dict(
@@ -1209,9 +1260,9 @@ class Clusterize(object):
                 if not p.phase:
                     continue
                 station_code = f"{p.network}.{p.station}"
-                if "P" in p.phase.upper():
+                if p.phase.upper().startswith("P"):
                     station_phase_sets[station_code].add("P")
-                elif "S" in p.phase.upper():
+                elif p.phase.upper().startswith("S"):
                     station_phase_sets[station_code].add("S")
 
             stations_with_both = sum(
@@ -1298,6 +1349,14 @@ class Clusterize(object):
                                 else ""
                             )
                         )
+                        if total_stations_ps >= 8:
+                            p_stns = sorted(s for s, ph in station_phase_sets.items() if "P" in ph and "S" not in ph)
+                            s_stns = sorted(s for s, ph in station_phase_sets.items() if "S" in ph and "P" not in ph)
+                            ps_stns = sorted(s for s, ph in station_phase_sets.items() if "P" in ph and "S" in ph)
+                            logger.info(
+                                f"  Cluster {i} phases — P-only({len(p_stns)}): {p_stns[:8]},"
+                                f" S-only({len(s_stns)}): {s_stns[:8]}, P+S({len(ps_stns)}): {ps_stns}"
+                            )
                         rejected_event_ids.update(event_id_counts.keys())
                         continue
 

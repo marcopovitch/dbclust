@@ -2218,6 +2218,7 @@ def import_catalog_to_sqlite(
 
     try:
         for i, event in enumerate(catalog):
+            conn.execute("SAVEPOINT sp_event;")
             try:
                 if enable_quakeml:
                     quakeml_data = compress_quakeml_data(event, format="QUAKEML")
@@ -2231,6 +2232,7 @@ def import_catalog_to_sqlite(
                     fix_quality=fix_quality,
                     ignore_missing_picks=ignore_missing_picks,
                 )
+                conn.execute("RELEASE SAVEPOINT sp_event;")
                 success_count += 1
                 batch_count += 1
 
@@ -2243,25 +2245,21 @@ def import_catalog_to_sqlite(
                         conn.execute("BEGIN IMMEDIATE;")
 
             except sqlite3.IntegrityError as e:
+                conn.execute("ROLLBACK TO SAVEPOINT sp_event;")
+                conn.execute("RELEASE SAVEPOINT sp_event;")
                 duplicate_count += 1
                 logging.warning(
                     f"Event {event.resource_id.id} skipped (duplicate): {e}"
                 )
-                conn.rollback()
-                batch_count = 0
-                if i < len(catalog) - 1:
-                    conn.execute("BEGIN IMMEDIATE;")
                 continue
 
             except ValueError as e:
+                conn.execute("ROLLBACK TO SAVEPOINT sp_event;")
+                conn.execute("RELEASE SAVEPOINT sp_event;")
                 malformed_count += 1
                 logging.warning(
                     f"Event {event.resource_id.id} skipped (malformed): {e}"
                 )
-                conn.rollback()
-                batch_count = 0
-                if i < len(catalog) - 1:
-                    conn.execute("BEGIN IMMEDIATE;")
                 continue
 
         # Final commit if there are remaining events in the batch

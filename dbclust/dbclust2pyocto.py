@@ -393,18 +393,56 @@ def dbclust2pyocto(
         )
         if n_unassigned >= myclust.min_cluster_size and i < n_first_pass_clusters:
             unassigned = [p for j, p in enumerate(cluster) if j not in assigned_pick_ids]
+
+            # Reinject assigned P picks whose S partner is in the unassigned pool.
+            # PyOcto may associate a P pick to an event while leaving its same-station
+            # S pick unassigned, splitting a physical P-S pair.  Adding the P back
+            # lets the sub-clustering re-form the complete pair.
+            if myclust.clustering_method == "leiden":
+                assigned = [p for j, p in enumerate(cluster) if j in assigned_pick_ids]
+                unassigned_keys = {
+                    (p.network, p.station)
+                    for p in unassigned
+                    if p.phase and p.phase.upper().startswith("S")
+                }
+                reinjected = [
+                    p for p in assigned
+                    if p.phase and p.phase.upper().startswith("P")
+                    and (p.network, p.station) in unassigned_keys
+                ]
+                if reinjected:
+                    logger.info(
+                        "Leiden sub-clustering: reinserting %d P pick(s) whose S "
+                        "partner is unassigned: %s",
+                        len(reinjected),
+                        [f"{p.network}.{p.station}@{p.time.strftime('%H:%M:%S')}"
+                         for p in reinjected],
+                    )
+                    unassigned = unassigned + reinjected
             pseudo_tt2 = myclust.numpy_compute_tt_matrix_vectorized(
                 unassigned, myclust.average_velocity
             )
             # Use a tighter epsilon than max_search_dist to avoid merging picks
             # from different events, but larger than pick_match_tolerance to allow
             # P+S pairs and multi-station grouping within a single event.
-            sp_epsilon = 30
+            # Leiden uses the full max_search_dist because its P-S boost prevents
+            # spurious merges; HDBSCAN needs the tighter 30s cap.
+            sp_epsilon = (
+                myclust.max_search_dist
+                if myclust.clustering_method == "leiden"
+                else 30
+            )
             sp_clusters, _sp_stab, _sp_noise = myclust.get_clusters(
                 unassigned, pseudo_tt2,
                 max_search_dist=sp_epsilon,
                 min_cluster_size=myclust.min_cluster_size,
                 metric="precomputed",
+                clustering_method=myclust.clustering_method,
+                leiden_resolution=myclust.leiden_resolution,
+                leiden_edge_weight_scale=myclust.leiden_edge_weight_scale,
+                leiden_edge_use_fixed_weight=myclust.leiden_edge_use_fixed_weight,
+                leiden_edge_manual_weight=myclust.leiden_edge_manual_weight,
+                leiden_edge_automatic_weight=myclust.leiden_edge_automatic_weight,
             )
             for sp_cluster in sp_clusters:
                 clusters_to_process.append(sp_cluster)

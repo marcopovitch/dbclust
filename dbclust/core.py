@@ -299,6 +299,12 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         min_com_phases=cfg.cluster.min_picks_common,
         eventid_shared_min_picks_per_cluster=cfg.cluster.eventid_shared_min_picks_per_cluster,
         eventid_shared_min_distinct_ids=cfg.cluster.eventid_shared_min_distinct_ids,
+        clustering_method=cfg.cluster.clustering_method,
+        leiden_resolution=cfg.cluster.leiden_resolution,
+        leiden_edge_weight_scale=cfg.cluster.leiden_edge_weight_scale,
+        leiden_edge_use_fixed_weight=cfg.cluster.leiden_edge_use_fixed_weight,
+        leiden_edge_manual_weight=cfg.cluster.leiden_edge_manual_weight,
+        leiden_edge_automatic_weight=cfg.cluster.leiden_edge_automatic_weight,
         tt_matrix_fname=tt_matrix_fname,
         tt_matrix_save=cfg.cluster.tt_matrix_save,
         zones=cfg.zones,
@@ -791,6 +797,11 @@ def dbclust(
             dir=cfg.file.obs_path, delete=cfg.file.automatic_cleanup_tmp
         ) as TMP_OBS_PATH:
             my_obs_path = os.path.join(TMP_OBS_PATH, f"{i}")
+            # Merge any clusters that share a dominant event_id before NLL submission.
+            # This prevents the same physical event from being localized twice when
+            # ready_clusters (promoted from myclust) and/or PyOcto fallback leave two
+            # Leiden communities covering the same earthquake in previous_myclust.
+            previous_myclust.cluster_merge_based_on_eventid()
             nll_picks = previous_myclust.generate_nllobs(my_obs_path)
 
             logger.info("-" * 60)
@@ -855,7 +866,10 @@ def dbclust(
                     )
                     locator.catalog.events.remove(event)
                     locator.nb_events = len(locator.catalog)
-                    clustcat = locator.catalog
+                    try:
+                        clustcat.events.remove(event)
+                    except ValueError:
+                        pass
 
                 # Rule 1 — Window overlap zone: first_pick falls beyond next_begin.
                 # The next window will detect this event with more picks.
@@ -886,7 +900,10 @@ def dbclust(
 
                     locator.catalog.events.remove(event)
                     locator.nb_events = len(locator.catalog)
-                    clustcat = locator.catalog
+                    try:
+                        clustcat.events.remove(event)
+                    except ValueError:
+                        pass
 
                 # Rule 2 — Forward overlap zone (parallel mode, last window of job N):
                 # any event starting in [stop-overlap, stop] is deferred to job N+1,
@@ -906,7 +923,10 @@ def dbclust(
                     )
                     locator.catalog.events.remove(event)
                     locator.nb_events = len(locator.catalog)
-                    clustcat = locator.catalog
+                    try:
+                        clustcat.events.remove(event)
+                    except ValueError:
+                        pass
 
                 # Rule 3 — Straddle: first_pick in normal zone, last_pick in overlap zone.
                 # Intermediate window: prune picks beyond next_begin and keep the event.
@@ -925,7 +945,10 @@ def dbclust(
                         )
                         locator.catalog.events.remove(event)
                         locator.nb_events = len(locator.catalog)
-                        clustcat = locator.catalog
+                        try:
+                            clustcat.events.remove(event)
+                        except ValueError:
+                            pass
                     else:
                         for line in format_event(event, "***P"):
                             logger.info(line)
