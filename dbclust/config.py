@@ -499,14 +499,17 @@ class ClusterConfig:
     # UMAP sub-parameters (only used when use_umap=True).
     # Can be set either as a nested umap: block or as flat umap_* keys (legacy).
     # Nested block takes precedence when both are present.
-    umap_vp: Optional[float] = 6.0               # apparent P-wave velocity (km/s)
-    umap_vs: Optional[float] = 3.5               # apparent S-wave velocity (km/s)
+    apparent_vp: Optional[float] = 6.0               # apparent P-wave velocity (km/s)
+    apparent_vs: Optional[float] = 3.5               # apparent S-wave velocity (km/s)
     umap_alpha: Optional[float] = 0.3            # AOT+TT blend weight [0=pure AOT, 1=pure TT]
     umap_clip_seconds: Optional[float] = None    # AOT normalisation scale (s); None = use overlap_window
     # HDBSCAN cluster selection method: "eom" (default) or "leaf"
     # "leaf" splits at finest granularity — better for separating co-located events
     # "eom" merges sub-clusters upward — better recall for small/isolated events
     cluster_selection_method: str = "eom"
+    # If False, HDBSCAN puts all picks in noise when no multi-cluster structure is found.
+    # Useful to avoid mega-clusters; noise picks are then passed to PyOcto.
+    allow_single_cluster: bool = True
     # Clip the pseudo-TT matrix to this value (s) before HDBSCAN; 0 = no clip
     tt_clip_seconds: float = 0.0
     # Event-ID merge guard: minimum picks per cluster for a shared event_id.
@@ -514,6 +517,7 @@ class ClusterConfig:
     eventid_shared_min_picks_per_cluster: Optional[int] = None
     # Event-ID merge guard: minimum number of distinct shared event_ids.
     eventid_shared_min_distinct_ids: int = 2
+    
     # Clustering algorithm: "hdbscan" (default) or "leiden"
     # Leiden uses graph community detection (CPM objective) instead of density-based
     # clustering. Requires: uv pip install leidenalg python-igraph
@@ -522,13 +526,27 @@ class ClusterConfig:
     leiden_resolution: float = 0.05
     # Leiden edge weight σ (s) in exp(-d/σ). None → max_search_dist / 2.
     leiden_edge_weight_scale: Optional[float] = None
-    # When True, replace pick probabilities by fixed weights in edge construction:
-    #   manual picks    → leiden_edge_manual_weight
-    #   automatic picks → leiden_edge_automatic_weight
-    # When False (default), the pick's own proba is used.
-    leiden_edge_use_fixed_weight: bool = False
-    leiden_edge_manual_weight: float = 1.0
-    leiden_edge_automatic_weight: float = 0.8
+    # Multiplicative boost for same-station P-S edge weights.
+    # Must be >> 1/leiden_resolution to guarantee P and S stay in the same community.
+    leiden_ps_boost_factor: float = 100.0
+    # Minimum edge weight threshold: edges below this value are dropped after boost.
+    # Boosted P-S same-station edges are always kept.
+    # 0.0 disables the filter.
+    leiden_min_edge_weight: float = 0.0
+    # Re-cluster oversized HDBSCAN clusters with Leiden as a fallback.
+    mega_cluster_fallback_leiden: bool = False
+    # A cluster is a "mega-cluster" if it holds more than this fraction of all picks …
+    mega_cluster_threshold: float = 0.8
+    # … AND has at least this many picks in absolute terms.
+    mega_cluster_min_size: int = 150
+    # Leiden resolution used specifically for mega-cluster fallback re-clustering.
+    # Higher than leiden_resolution to produce coarser communities on mixed pools.
+    mega_cluster_leiden_resolution: float = 0.1
+    # After Leiden clustering, run HDBSCAN on Leiden noise picks to recover missed events.
+    leiden_hdbscan_fallback: bool = False
+    # Leiden clusters with stability below this threshold are dissolved into the HDBSCAN pool.
+    # 0.0 = only noise goes to HDBSCAN (no unstable cluster dissolution).
+    leiden_min_stability: float = 0.0
 
     def __post_init__(self) -> None:
         if self.pre_computed_tt_matrix_file:

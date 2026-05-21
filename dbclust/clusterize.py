@@ -385,16 +385,22 @@ class Clusterize(object):
         use_umap=False,  # if True, apply UMAP on TT matrix before HDBSCAN
         umap_clip_seconds=0.0,  # explicit clip ceiling (0 = use p75 of TT matrix)
         umap_aot_tt_blend_alpha=0.3,  # weight of TT in blended dist matrix (0=pure AOT)
-        umap_vp=6.0,  # apparent P-wave velocity for AOT (km/s)
-        umap_vs=3.5,  # apparent S-wave velocity for AOT (km/s)
+        apparent_vp=6.0,  # apparent P-wave velocity for AOT (km/s)
+        apparent_vs=3.5,  # apparent S-wave velocity for AOT (km/s)
         cluster_selection_method="eom",  # HDBSCAN: "eom" (default) or "leaf"
+        allow_single_cluster=True,        # HDBSCAN: allow a single cluster (False → noise if no structure)
         tt_clip_seconds=0.0,  # clip TT matrix to this value in seconds (0 = no clip)
         clustering_method="hdbscan",    # "hdbscan" or "leiden"
         leiden_resolution=0.05,         # CPM resolution γ (higher → more clusters)
         leiden_edge_weight_scale=None,  # σ for exp(-d/σ); None → max_search_dist/2
-        leiden_edge_use_fixed_weight=False,   # True → use fixed weights instead of pick probas
-        leiden_edge_manual_weight=1.0,       # weight for manual picks
-        leiden_edge_automatic_weight=0.8,    # weight for automatic picks
+        leiden_ps_boost_factor=100.0,        # multiplicative boost for same-station P-S edges
+        leiden_min_edge_weight=0.0,          # drop edges below this weight (0 = disabled)
+        mega_cluster_fallback_leiden=False,  # re-cluster mega-clusters with Leiden
+        mega_cluster_threshold=0.8,          # fraction of picks to trigger mega-cluster
+        mega_cluster_min_size=150,           # minimum absolute size to trigger
+        mega_cluster_leiden_resolution=0.1,  # Leiden resolution for mega-cluster fallback
+        leiden_hdbscan_fallback=False,       # run HDBSCAN on Leiden noise + unstable clusters
+        leiden_min_stability=0.0,            # clusters below this stability go to HDBSCAN pool
     ):
         # clusters is a list of cluster :
         # ie. [ [phases, label], ... ]
@@ -434,16 +440,22 @@ class Clusterize(object):
         self.use_umap = use_umap
         self.umap_clip_seconds = umap_clip_seconds
         self.umap_aot_tt_blend_alpha = umap_aot_tt_blend_alpha
-        self.umap_vp = umap_vp
-        self.umap_vs = umap_vs
+        self.apparent_vp = apparent_vp
+        self.apparent_vs = apparent_vs
         self.cluster_selection_method = cluster_selection_method
+        self.allow_single_cluster = allow_single_cluster
         self.tt_clip_seconds = tt_clip_seconds
         self.clustering_method = clustering_method
         self.leiden_resolution = leiden_resolution
         self.leiden_edge_weight_scale = leiden_edge_weight_scale
-        self.leiden_edge_use_fixed_weight = leiden_edge_use_fixed_weight
-        self.leiden_edge_manual_weight = leiden_edge_manual_weight
-        self.leiden_edge_automatic_weight = leiden_edge_automatic_weight
+        self.leiden_ps_boost_factor = leiden_ps_boost_factor
+        self.leiden_min_edge_weight = leiden_min_edge_weight
+        self.mega_cluster_fallback_leiden = mega_cluster_fallback_leiden
+        self.mega_cluster_threshold = mega_cluster_threshold
+        self.mega_cluster_min_size = mega_cluster_min_size
+        self.mega_cluster_leiden_resolution = mega_cluster_leiden_resolution
+        self.leiden_hdbscan_fallback = leiden_hdbscan_fallback
+        self.leiden_min_stability = leiden_min_stability
 
         if phases is None:
             # Simple constructor
@@ -484,7 +496,9 @@ class Clusterize(object):
 
             # vectorized haversine: ~20-100x faster than per-pair gps2dist_azimuth
             pseudo_tt = self.numpy_compute_tt_matrix_vectorized(
-                phases, average_velocity
+                phases, average_velocity,
+                vp=6.0 if self.clustering_method != "leiden" else None,
+                vs=3.5 if self.clustering_method != "leiden" else None,
             )
             # Optional UMAP dimensionality reduction: embed the TT distance matrix
             # into a low-dimensional Euclidean space before HDBSCAN. This separates
@@ -501,8 +515,8 @@ class Clusterize(object):
                     min_cluster_size=min_cluster_size,
                     umap_clip_seconds=umap_clip_seconds,
                     aot_tt_blend_alpha=umap_aot_tt_blend_alpha,
-                    vp=self.umap_vp,
-                    vs=self.umap_vs,
+                    vp=self.apparent_vp,
+                    vs=self.apparent_vs,
                 )
 
             # // computation using dask bag: slower for small cluster
@@ -525,12 +539,18 @@ class Clusterize(object):
             min_cluster_size,
             metric="euclidean" if use_umap else "precomputed",
             cluster_selection_method=cluster_selection_method,
+            allow_single_cluster=allow_single_cluster,
             clustering_method=clustering_method,
             leiden_resolution=leiden_resolution,
             leiden_edge_weight_scale=leiden_edge_weight_scale,
-            leiden_edge_use_fixed_weight=leiden_edge_use_fixed_weight,
-            leiden_edge_manual_weight=leiden_edge_manual_weight,
-            leiden_edge_automatic_weight=leiden_edge_automatic_weight,
+            leiden_ps_boost_factor=leiden_ps_boost_factor,
+            leiden_min_edge_weight=leiden_min_edge_weight,
+            mega_cluster_fallback_leiden=mega_cluster_fallback_leiden,
+            mega_cluster_threshold=mega_cluster_threshold,
+            mega_cluster_min_size=mega_cluster_min_size,
+            mega_cluster_leiden_resolution=mega_cluster_leiden_resolution,
+            leiden_hdbscan_fallback=leiden_hdbscan_fallback,
+            leiden_min_stability=leiden_min_stability,
         )
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
@@ -733,14 +753,23 @@ class Clusterize(object):
             )
             if len(all_phases) >= self.min_cluster_size:
                 pseudo_tt = self.numpy_compute_tt_matrix_vectorized(
-                    all_phases, self.average_velocity
+                    all_phases, self.average_velocity, vp=6.0 if self.clustering_method != "leiden" else None, vs=3.5 if self.clustering_method != "leiden" else None
                 )
                 self.clusters, stab, self.noise = self.get_clusters(
                     all_phases, pseudo_tt, self.max_search_dist,
                     self.min_cluster_size, metric="precomputed",
                     clustering_method=self.clustering_method,
+                    allow_single_cluster=self.allow_single_cluster,
                     leiden_resolution=self.leiden_resolution,
                     leiden_edge_weight_scale=self.leiden_edge_weight_scale,
+                    leiden_ps_boost_factor=self.leiden_ps_boost_factor,
+                    leiden_min_edge_weight=self.leiden_min_edge_weight,
+                    mega_cluster_fallback_leiden=self.mega_cluster_fallback_leiden,
+                    mega_cluster_threshold=self.mega_cluster_threshold,
+                    mega_cluster_min_size=self.mega_cluster_min_size,
+                    mega_cluster_leiden_resolution=self.mega_cluster_leiden_resolution,
+                    leiden_hdbscan_fallback=self.leiden_hdbscan_fallback,
+                    leiden_min_stability=self.leiden_min_stability,
                 )
                 self.clusters_stability = (
                     np.array(stab, dtype=float) if len(stab) > 0
@@ -766,7 +795,7 @@ class Clusterize(object):
         )
         if len(forward_phases) >= self.min_cluster_size:
             pseudo_tt_fw = self.numpy_compute_tt_matrix_vectorized(
-                forward_phases, self.average_velocity
+                forward_phases, self.average_velocity, vp=6.0 if self.clustering_method != "leiden" else None, vs=3.5 if self.clustering_method != "leiden" else None
             )
             self.clusters, stab, self.noise = self.get_clusters(
                 forward_phases, pseudo_tt_fw, self.max_search_dist,
@@ -774,9 +803,14 @@ class Clusterize(object):
                 clustering_method=self.clustering_method,
                 leiden_resolution=self.leiden_resolution,
                 leiden_edge_weight_scale=self.leiden_edge_weight_scale,
-                leiden_edge_use_fixed_weight=self.leiden_edge_use_fixed_weight,
-                leiden_edge_manual_weight=self.leiden_edge_manual_weight,
-                leiden_edge_automatic_weight=self.leiden_edge_automatic_weight,
+                leiden_ps_boost_factor=self.leiden_ps_boost_factor,
+                leiden_min_edge_weight=self.leiden_min_edge_weight,
+                    mega_cluster_fallback_leiden=self.mega_cluster_fallback_leiden,
+                    mega_cluster_threshold=self.mega_cluster_threshold,
+                    mega_cluster_min_size=self.mega_cluster_min_size,
+                    mega_cluster_leiden_resolution=self.mega_cluster_leiden_resolution,
+                    leiden_hdbscan_fallback=self.leiden_hdbscan_fallback,
+                    leiden_min_stability=self.leiden_min_stability,
             )
             self.clusters_stability = (
                 np.array(stab, dtype=float) if len(stab) > 0
@@ -798,7 +832,7 @@ class Clusterize(object):
                 f" ({len(backward_phases)} backward + {self.n_noise} noise)."
             )
             pseudo_tt_bw = self.numpy_compute_tt_matrix_vectorized(
-                pool, self.average_velocity
+                pool, self.average_velocity, vp=6.0 if self.clustering_method != "leiden" else None, vs=3.5 if self.clustering_method != "leiden" else None
             )
             bw_clusters, bw_stab, bw_noise = self.get_clusters(
                 pool, pseudo_tt_bw, self.max_search_dist,
@@ -806,9 +840,14 @@ class Clusterize(object):
                 clustering_method=self.clustering_method,
                 leiden_resolution=self.leiden_resolution,
                 leiden_edge_weight_scale=self.leiden_edge_weight_scale,
-                leiden_edge_use_fixed_weight=self.leiden_edge_use_fixed_weight,
-                leiden_edge_manual_weight=self.leiden_edge_manual_weight,
-                leiden_edge_automatic_weight=self.leiden_edge_automatic_weight,
+                leiden_ps_boost_factor=self.leiden_ps_boost_factor,
+                leiden_min_edge_weight=self.leiden_min_edge_weight,
+                    mega_cluster_fallback_leiden=self.mega_cluster_fallback_leiden,
+                    mega_cluster_threshold=self.mega_cluster_threshold,
+                    mega_cluster_min_size=self.mega_cluster_min_size,
+                    mega_cluster_leiden_resolution=self.mega_cluster_leiden_resolution,
+                    leiden_hdbscan_fallback=self.leiden_hdbscan_fallback,
+                    leiden_min_stability=self.leiden_min_stability,
             )
             if bw_clusters:
                 logger.info(f"[backward] {len(bw_clusters)} cluster(s) discovered.")
@@ -910,28 +949,63 @@ class Clusterize(object):
             return pseudo_tt, 0
 
     @staticmethod
-    def numpy_compute_tt_matrix_vectorized(phases, vmean):
+    def numpy_compute_tt_matrix_vectorized(phases, vmean, vp=None, vs=None):
         """Vectorized TT matrix using haversine formula.
 
         Replaces per-pair gps2dist_azimuth calls with a single NumPy broadcast.
         Haversine error < 0.5% for distances < 2000 km — sufficient for clustering.
+
+        When vp and vs are provided, same-station P-S pairs whose observed S-P
+        delay exceeds the maximum physically plausible value given the inter-station
+        distance (dt_SP_max = dist_km * (1/vs - 1/vp)) are capped.  This prevents
+        spurious links between P and S picks from different events that share a
+        station code.  Enabled for HDBSCAN; disabled for Leiden (Leiden uses PS-boost
+        instead, and the cap alters cluster composition adversely).
         """
         R = 6371.0  # Earth radius in km
-        lats = np.radians([p.coord["latitude"] for p in phases])  # (n,)
-        lons = np.radians([p.coord["longitude"] for p in phases])  # (n,)
-        times = np.array([float(p.time) for p in phases])  # (n,)
+        lats = np.radians([p.coord["latitude"] for p in phases])
+        lons = np.radians([p.coord["longitude"] for p in phases])
+        times = np.array([float(p.time) for p in phases])
+        stations = np.array([f"{p.network}.{p.station}" for p in phases])
+        is_p = np.array([p.is_p() for p in phases])
+        is_s = np.array([p.is_s() for p in phases])
 
-        dlat = lats[:, None] - lats[None, :]  # (n, n)
-        dlon = lons[:, None] - lons[None, :]  # (n, n)
+        dlat = lats[:, None] - lats[None, :]
+        dlon = lons[:, None] - lons[None, :]
         a = (
             np.sin(dlat / 2) ** 2
             + np.cos(lats[:, None]) * np.cos(lats[None, :]) * np.sin(dlon / 2) ** 2
         )
-        dist_km = 2 * R * np.arcsin(np.sqrt(a))  # (n, n)
+        dist_km = 2 * R * np.arcsin(np.sqrt(a))
 
-        dd = dist_km / vmean  # (n, n)
-        dt = times[:, None] - times[None, :]  # (n, n)
-        return np.sqrt(dt**2 + dd**2)
+        dd = dist_km / vmean
+        dt = times[:, None] - times[None, :]
+
+        if vp is not None and vs is not None:
+            # Cap |dt| for same-station P-S pairs at the maximum plausible S-P delay.
+            # dt_SP_max = dist_km * (1/vs - 1/vp): beyond this, the implied source
+            # distance is incompatible with the inter-station geometry.
+            sp_inv = 1.0 / vs - 1.0 / vp
+            ps_pair = (
+                (stations[:, None] == stations[None, :])
+                & ((is_p[:, None] & is_s[None, :]) | (is_s[:, None] & is_p[None, :]))
+            )
+            dt_SP_max = dist_km * sp_inv
+            dt_capped = np.where(
+                ps_pair & (np.abs(dt) > dt_SP_max),
+                np.sign(dt) * dt_SP_max,
+                dt,
+            )
+            n_capped = int(np.sum(np.triu(ps_pair & (np.abs(dt) > dt_SP_max), k=1)))
+            if n_capped:
+                logger.debug(
+                    "TT matrix: %d same-station P-S pair(s) dt capped to dt_SP_max.",
+                    n_capped,
+                )
+        else:
+            dt_capped = dt
+
+        return np.sqrt(dt_capped**2 + dd**2)
 
     @staticmethod
     def numpy_compute_proba_weighted_tt_matrix(phases, vmean, alpha):
@@ -985,6 +1059,147 @@ class Clusterize(object):
     #     return tt_matrix
 
     @staticmethod
+    def _merge_ps_split_clusters(
+        clusters: list, clusters_stability: list,
+        phases: list, pseudo_tt: np.ndarray, max_search_dist: float,
+    ) -> tuple[list, list]:
+        """Merge HDBSCAN clusters split across a P-S pair from the same station.
+
+        HDBSCAN may put the P pick of a station in one cluster and its S pick
+        in another because the S is temporally closer to a different cluster.
+        This mirrors Leiden's PS-boost: union-find any pair of clusters where
+        one contains a P and the other the S of the same station, provided:
+          - t_S > t_P  (causal ordering)
+          - pseudo_tt[i_p, i_s] <= max_search_dist  (physically compatible)
+
+        Returns updated (clusters, clusters_stability).
+        """
+        n = len(clusters)
+        if n <= 1:
+            return clusters, clusters_stability
+
+        phase_to_idx = {id(p): i for i, p in enumerate(phases)}
+
+        parent = list(range(n))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        # Map (network, station) → list of (cluster_idx, pick) for P picks
+        p_index: dict = {}
+        for ci, cluster in enumerate(clusters):
+            for pick in cluster:
+                if pick.is_p():
+                    key = (pick.network, pick.station)
+                    p_index.setdefault(key, []).append((ci, pick))
+
+        # Process clusters smallest-first so small coherent clusters are merged
+        # before larger ones can absorb their picks.  Once unioned, the union-find
+        # prevents a pick from being moved again.
+        order = sorted(range(n), key=lambda ci: len(clusters[ci]))
+
+        merges = 0
+        for ci in order:
+            cluster = clusters[ci]
+            for s_pick in cluster:
+                if not s_pick.is_s():
+                    continue
+                i_s = phase_to_idx.get(id(s_pick))
+                if i_s is None:
+                    continue
+                key = (s_pick.network, s_pick.station)
+                for p_ci, p_pick in p_index.get(key, []):
+                    if p_ci == ci:
+                        continue
+                    # Guard: P cluster must not be much larger than S cluster
+                    # (avoids absorbing small events into a large noisy cluster)
+                    if len(clusters[p_ci]) > 3 * len(cluster):
+                        continue
+                    if s_pick.time <= p_pick.time:
+                        continue
+                    i_p = phase_to_idx.get(id(p_pick))
+                    if i_p is None:
+                        continue
+                    if pseudo_tt[i_p, i_s] > max_search_dist:
+                        continue
+                    if find(p_ci) != find(ci):
+                        union(p_ci, ci)
+                        merges += 1
+
+        if merges == 0:
+            return clusters, clusters_stability
+
+        root_to_members: dict = {}
+        for ci in range(n):
+            root_to_members.setdefault(find(ci), []).append(ci)
+
+        new_clusters = []
+        new_stability = []
+        for members in root_to_members.values():
+            merged = []
+            for ci in members:
+                merged.extend(clusters[ci])
+            new_clusters.append(merged)
+            new_stability.append(
+                sum(clusters_stability[ci] for ci in members) / len(members)
+            )
+
+        logger.info(
+            "HDBSCAN PS-merge: %d union(s), %d → %d clusters.",
+            merges, n, len(new_clusters),
+        )
+        return new_clusters, new_stability
+
+    @staticmethod
+    def _absorb_noise_s_picks(
+        clusters: list, noise: list
+    ) -> tuple[list, list]:
+        """Absorb noise S picks whose same-station P partner is in a cluster.
+
+        HDBSCAN may classify an S pick as noise while keeping its P in a cluster,
+        degrading ps_ratio and station_score.  This mirrors the Leiden union-find
+        P-S enforcement and restores coherent P-S pairs.
+
+        Returns updated (clusters, noise).
+        """
+        recovered = 0
+        remaining_noise = []
+        for s_pick in noise:
+            if not s_pick.is_s():
+                remaining_noise.append(s_pick)
+                continue
+            absorbed = False
+            for cluster in clusters:
+                for p_pick in cluster:
+                    if (
+                        p_pick.is_p()
+                        and p_pick.network == s_pick.network
+                        and p_pick.station == s_pick.station
+                    ):
+                        cluster.append(s_pick)
+                        recovered += 1
+                        absorbed = True
+                        break
+                if absorbed:
+                    break
+            if not absorbed:
+                remaining_noise.append(s_pick)
+        if recovered:
+            logger.info(
+                "HDBSCAN P-S recovery: absorbed %d noise S pick(s) "
+                "into clusters with matching P partner.", recovered
+            )
+        return clusters, remaining_noise
+
+    @staticmethod
     def get_clusters(
         phases,
         pseudo_tt,
@@ -992,32 +1207,80 @@ class Clusterize(object):
         min_cluster_size,
         metric="precomputed",
         cluster_selection_method="eom",
+        allow_single_cluster=True,
         clustering_method="hdbscan",
         leiden_resolution=0.05,
         leiden_edge_weight_scale=None,
-        leiden_edge_use_fixed_weight=False,
-        leiden_edge_manual_weight=1.0,
-        leiden_edge_automatic_weight=0.8,
+        leiden_ps_boost_factor=100.0,
+        leiden_min_edge_weight=0.0,
+        mega_cluster_fallback_leiden=False,
+        mega_cluster_threshold=0.8,
+        mega_cluster_min_size=150,
+        mega_cluster_leiden_resolution=0.1,
+        leiden_hdbscan_fallback=False,      # run HDBSCAN on Leiden noise + unstable clusters
+        leiden_min_stability=0.0,           # clusters below this stability are re-tried with HDBSCAN
     ):
         # metric is "precomputed" ==> X is assumed to be a distance matrix and must be square
         # metric is "euclidean" when pseudo_tt is a UMAP 2D embedding
 
         if clustering_method == "leiden":
             from dbclust.leiden import leiden_cluster
-            return leiden_cluster(
+            clusters, stabilities, noise = leiden_cluster(
                 phases, pseudo_tt, max_search_dist, min_cluster_size,
                 resolution=leiden_resolution,
                 edge_weight_scale=leiden_edge_weight_scale,
-                use_fixed_weight=leiden_edge_use_fixed_weight,
-                manual_weight=leiden_edge_manual_weight,
-                automatic_weight=leiden_edge_automatic_weight,
+                ps_boost_factor=leiden_ps_boost_factor,
+                min_edge_weight=leiden_min_edge_weight,
             )
+            if leiden_hdbscan_fallback:
+                # Separate stable clusters from unstable ones
+                stable_clusters, stable_stab = [], []
+                hdbscan_pool = list(noise)  # start with Leiden noise
+                for cluster, stab in zip(clusters, stabilities):
+                    if stab >= leiden_min_stability:
+                        stable_clusters.append(cluster)
+                        stable_stab.append(stab)
+                    else:
+                        hdbscan_pool.extend(cluster)
+
+                n_unstable = len(clusters) - len(stable_clusters)
+                if n_unstable:
+                    logger.info(
+                        "Leiden+HDBSCAN fallback: %d unstable cluster(s) (stability < %.3f) "
+                        "+ %d noise picks → HDBSCAN pool (%d picks total).",
+                        n_unstable, leiden_min_stability, len(noise), len(hdbscan_pool),
+                    )
+
+                if len(hdbscan_pool) >= min_cluster_size:
+                    phase_to_idx = {id(p): i for i, p in enumerate(phases)}
+                    pool_indices = [phase_to_idx[id(p)] for p in hdbscan_pool if id(p) in phase_to_idx]
+                    sub_tt = pseudo_tt[np.ix_(pool_indices, pool_indices)]
+                    hdb_clusters, hdb_stab, hdb_noise = Clusterize.get_clusters(
+                        hdbscan_pool, sub_tt, max_search_dist, min_cluster_size,
+                        metric="precomputed",
+                        cluster_selection_method=cluster_selection_method,
+                        allow_single_cluster=allow_single_cluster,
+                        clustering_method="hdbscan",
+                    )
+                    if hdb_clusters:
+                        logger.info(
+                            "Leiden+HDBSCAN fallback: %d extra cluster(s) recovered.",
+                            len(hdb_clusters),
+                        )
+                    clusters = stable_clusters + hdb_clusters
+                    stabilities = stable_stab + hdb_stab
+                    noise = hdb_noise
+                else:
+                    clusters = stable_clusters
+                    stabilities = stable_stab
+                    noise = hdbscan_pool
+            return clusters, stabilities, noise
 
         # n_jobs is not supported by the KDTree-based algorithm used for euclidean metric
         hdbscan_kwargs = dict(
             min_cluster_size=min_cluster_size,  # default 5
             min_samples=1,  # default None
-            allow_single_cluster=True,
+            allow_single_cluster=allow_single_cluster,
             cluster_selection_epsilon=max_search_dist,  # default 0.0,
             metric=metric,
             cluster_selection_method=cluster_selection_method,
@@ -1083,6 +1346,24 @@ class Clusterize(object):
             logger.debug(
                 f"cluster[{lbl}]: {len(cluster)} phases, event_ids: {dict(event_id_counts)}"
             )
+
+        if mega_cluster_fallback_leiden:
+            from dbclust.leiden import find_mega_cluster, recluster_mega_with_leiden
+            mega_idx = find_mega_cluster(
+                clusters, len(phases), mega_cluster_threshold, mega_cluster_min_size
+            )
+            if mega_idx >= 0:
+                clusters, clusters_stability, noise = recluster_mega_with_leiden(
+                    mega_idx, clusters, clusters_stability, noise,
+                    phases, pseudo_tt, max_search_dist, min_cluster_size,
+                    mega_cluster_leiden_resolution, leiden_edge_weight_scale,
+                    leiden_ps_boost_factor, leiden_min_edge_weight,
+                )
+
+        clusters, clusters_stability = Clusterize._merge_ps_split_clusters(
+            clusters, clusters_stability, phases, pseudo_tt, max_search_dist
+        )
+        clusters, noise = Clusterize._absorb_noise_s_picks(clusters, noise)
 
         return clusters, clusters_stability, noise
 
@@ -1260,9 +1541,9 @@ class Clusterize(object):
                 if not p.phase:
                     continue
                 station_code = f"{p.network}.{p.station}"
-                if p.phase.upper().startswith("P"):
+                if p.is_p():
                     station_phase_sets[station_code].add("P")
-                elif p.phase.upper().startswith("S"):
+                elif p.is_s():
                     station_phase_sets[station_code].add("S")
 
             stations_with_both = sum(

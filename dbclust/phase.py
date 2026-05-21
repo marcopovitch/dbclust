@@ -77,6 +77,12 @@ class Phase:
         if not self.coord:
             self._fetch_coordinates()
 
+    def is_p(self) -> bool:
+        return bool(self.phase) and self.phase.upper().startswith("P")
+
+    def is_s(self) -> bool:
+        return bool(self.phase) and self.phase.upper().startswith("S")
+
     def _fetch_coordinates(self) -> None:
         """
         Fetch coordinates and channel information for the station associated with this phase.

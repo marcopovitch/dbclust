@@ -356,9 +356,9 @@ def dbclust2pyocto(
                     if not p.phase:
                         continue
                     station_code = f"{p.network}.{p.station}"
-                    if p.phase.upper().startswith("P"):
+                    if p.is_p():
                         station_phases[station_code].add("P")
-                    elif p.phase.upper().startswith("S"):
+                    elif p.is_s():
                         station_phases[station_code].add("S")
                 total_stations = len(station_phases)
                 stations_with_both = sum(
@@ -382,51 +382,23 @@ def dbclust2pyocto(
             pyocto_clusters.extend(
                 get_clusters_from_assignment(cluster, events, assignments)
             )
-
         assigned_pick_ids = (
             set(assignments["pick_idx"].to_list()) if len(assignments) else set()
         )
+
         n_unassigned = len(cluster) - len(assigned_pick_ids)
         logger.info(
             f"\t{len(events)} events found in cluster#{i} with {len(cluster)} picks"
             f" ({n_unassigned} unassigned by PyOcto)"
         )
+
         if n_unassigned >= myclust.min_cluster_size and i < n_first_pass_clusters:
             unassigned = [p for j, p in enumerate(cluster) if j not in assigned_pick_ids]
-
-            # Reinject assigned P picks whose S partner is in the unassigned pool.
-            # PyOcto may associate a P pick to an event while leaving its same-station
-            # S pick unassigned, splitting a physical P-S pair.  Adding the P back
-            # lets the sub-clustering re-form the complete pair.
-            if myclust.clustering_method == "leiden":
-                assigned = [p for j, p in enumerate(cluster) if j in assigned_pick_ids]
-                unassigned_keys = {
-                    (p.network, p.station)
-                    for p in unassigned
-                    if p.phase and p.phase.upper().startswith("S")
-                }
-                reinjected = [
-                    p for p in assigned
-                    if p.phase and p.phase.upper().startswith("P")
-                    and (p.network, p.station) in unassigned_keys
-                ]
-                if reinjected:
-                    logger.info(
-                        "Leiden sub-clustering: reinserting %d P pick(s) whose S "
-                        "partner is unassigned: %s",
-                        len(reinjected),
-                        [f"{p.network}.{p.station}@{p.time.strftime('%H:%M:%S')}"
-                         for p in reinjected],
-                    )
-                    unassigned = unassigned + reinjected
             pseudo_tt2 = myclust.numpy_compute_tt_matrix_vectorized(
-                unassigned, myclust.average_velocity
+                unassigned, myclust.average_velocity,
+                vp=myclust.apparent_vp,
+                vs=myclust.apparent_vs,
             )
-            # Use a tighter epsilon than max_search_dist to avoid merging picks
-            # from different events, but larger than pick_match_tolerance to allow
-            # P+S pairs and multi-station grouping within a single event.
-            # Leiden uses the full max_search_dist because its P-S boost prevents
-            # spurious merges; HDBSCAN needs the tighter 30s cap.
             sp_epsilon = (
                 myclust.max_search_dist
                 if myclust.clustering_method == "leiden"
@@ -440,9 +412,14 @@ def dbclust2pyocto(
                 clustering_method=myclust.clustering_method,
                 leiden_resolution=myclust.leiden_resolution,
                 leiden_edge_weight_scale=myclust.leiden_edge_weight_scale,
-                leiden_edge_use_fixed_weight=myclust.leiden_edge_use_fixed_weight,
-                leiden_edge_manual_weight=myclust.leiden_edge_manual_weight,
-                leiden_edge_automatic_weight=myclust.leiden_edge_automatic_weight,
+                leiden_ps_boost_factor=myclust.leiden_ps_boost_factor,
+                leiden_min_edge_weight=myclust.leiden_min_edge_weight,
+                mega_cluster_fallback_leiden=myclust.mega_cluster_fallback_leiden,
+                mega_cluster_threshold=myclust.mega_cluster_threshold,
+                mega_cluster_min_size=myclust.mega_cluster_min_size,
+                mega_cluster_leiden_resolution=myclust.mega_cluster_leiden_resolution,
+                leiden_hdbscan_fallback=myclust.leiden_hdbscan_fallback,
+                leiden_min_stability=myclust.leiden_min_stability,
             )
             for sp_cluster in sp_clusters:
                 clusters_to_process.append(sp_cluster)

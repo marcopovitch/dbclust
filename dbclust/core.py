@@ -113,7 +113,6 @@ def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
     return keep
 
 
-
 def get_cross_partition_picks(
     con, start, overlap_timedelta, global_start,
     P_proximity_threshold: float = 0.1,
@@ -266,8 +265,8 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
     # Type assertions and defaults for potentially None config values
     average_velocity: int = int(cfg.cluster.average_velocity) if cfg.cluster.average_velocity is not None else 5
     max_search_dist: int = int(cfg.cluster.max_search_dist) if cfg.cluster.max_search_dist is not None else 100
-    umap_vp: float = float(cfg.cluster.umap_vp) if cfg.cluster.umap_vp is not None else 6.0
-    umap_vs: float = float(cfg.cluster.umap_vs) if cfg.cluster.umap_vs is not None else 3.5
+    apparent_vp: float = float(cfg.cluster.apparent_vp) if cfg.cluster.apparent_vp is not None else 6.0
+    apparent_vs: float = float(cfg.cluster.apparent_vs) if cfg.cluster.apparent_vs is not None else 3.5
     umap_alpha: float = float(cfg.cluster.umap_alpha) if cfg.cluster.umap_alpha is not None else 0.3
     # umap_clip_seconds: use explicit value if set, otherwise fall back to overlap_window
     umap_clip_seconds: float = (
@@ -289,9 +288,10 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         use_umap=cfg.cluster.use_umap,
         umap_clip_seconds=umap_clip_seconds,
         umap_aot_tt_blend_alpha=umap_alpha,
-        umap_vp=umap_vp,
-        umap_vs=umap_vs,
+        apparent_vp=apparent_vp,
+        apparent_vs=apparent_vs,
         cluster_selection_method=cfg.cluster.cluster_selection_method,
+        allow_single_cluster=cfg.cluster.allow_single_cluster,
         tt_clip_seconds=cfg.cluster.tt_clip_seconds,
         max_search_dist=max_search_dist,
         P_uncertainty=cfg.pick.P_uncertainty,
@@ -302,9 +302,14 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         clustering_method=cfg.cluster.clustering_method,
         leiden_resolution=cfg.cluster.leiden_resolution,
         leiden_edge_weight_scale=cfg.cluster.leiden_edge_weight_scale,
-        leiden_edge_use_fixed_weight=cfg.cluster.leiden_edge_use_fixed_weight,
-        leiden_edge_manual_weight=cfg.cluster.leiden_edge_manual_weight,
-        leiden_edge_automatic_weight=cfg.cluster.leiden_edge_automatic_weight,
+        leiden_ps_boost_factor=cfg.cluster.leiden_ps_boost_factor,
+        leiden_min_edge_weight=cfg.cluster.leiden_min_edge_weight,
+        mega_cluster_fallback_leiden=cfg.cluster.mega_cluster_fallback_leiden,
+        mega_cluster_threshold=cfg.cluster.mega_cluster_threshold,
+        mega_cluster_min_size=cfg.cluster.mega_cluster_min_size,
+        mega_cluster_leiden_resolution=cfg.cluster.mega_cluster_leiden_resolution,
+        leiden_hdbscan_fallback=cfg.cluster.leiden_hdbscan_fallback,
+        leiden_min_stability=cfg.cluster.leiden_min_stability,
         tt_matrix_fname=tt_matrix_fname,
         tt_matrix_save=cfg.cluster.tt_matrix_save,
         zones=cfg.zones,
