@@ -79,7 +79,7 @@ def _build_edges(
     #   PS/SP: no moveout bound — the valid Δt range depends on source position
     #     relative to both stations, making a station-pair bound too restrictive.
     #     Same-station PS is gated by max_search_dist; cross-station PS by the
-    #     PS-boost causal guard (t_S > t_P) and ps_dt_max on same-station pairs.
+    #     PS-boost causal guard (t_S > t_P).
     # Edges that violate these bounds cannot come from the same event.
     if dist_km is not None:
         abs_dt = np.abs(times[rows] - times[cols])
@@ -286,8 +286,6 @@ def leiden_cluster(
     min_edge_weight: float = 0.0,
     vp: float = 6.0,   # P-wave velocity (km/s) for moveout compatibility filter
     vs: float = 3.5,   # S-wave velocity (km/s) for moveout compatibility filter
-    ps_dt_max: float = 0.0,  # max S-P delay (s) for same-station boost; 0 = disabled
-    sigma_km: float = 0.0,   # spatial decay (km) in factored weight; 0 = disabled
 ) -> tuple:
     """Cluster picks using Leiden community detection on the TT graph.
 
@@ -376,8 +374,6 @@ def leiden_cluster(
         dist_km=dist_km_matrix,
         vp=vp,
         vs=vs,
-        ps_dt_max=ps_dt_max,
-        sigma_km=sigma_km,
     )
     if len(rows) == 0:
         logger.info("Leiden: no edges within max_search_dist — all picks are noise.")
