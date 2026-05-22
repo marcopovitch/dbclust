@@ -46,11 +46,17 @@ def _build_edges(
     stations: np.ndarray,
     is_p: np.ndarray,
     is_s: np.ndarray,
+    times: np.ndarray,
     max_search_dist: float,
     sigma: float,
     resolution: float,
     ps_boost_factor: float = 100.0,
     min_edge_weight: float = 0.0,
+    dist_km: np.ndarray = None,
+    vp: float = 6.0,
+    vs: float = 3.5,
+    ps_dt_max: float = 0.0,
+    sigma_km: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Return edge arrays for the TT graph with P-S boost applied.
 
@@ -67,20 +73,72 @@ def _build_edges(
     mask = np.triu(pseudo_tt < max_search_dist, k=1)
     rows, cols = np.where(mask)
 
+    # Phase-aware moveout compatibility filter.
+    # For a pair (i, j), the observed Δt must be compatible with at least one
+    # physical source location.  By the triangle inequality on travel times:
+    #   PP: |t_i - t_j| ≤ dist(s_i, s_j) / vp
+    #   SS: |t_i - t_j| ≤ dist(s_i, s_j) / vs
+    #   PS/SP: no moveout bound — the valid Δt range depends on source position
+    #     relative to both stations, making a station-pair bound too restrictive.
+    #     Same-station PS is gated by max_search_dist; cross-station PS by the
+    #     PS-boost causal guard (t_S > t_P) and ps_dt_max on same-station pairs.
+    # Edges that violate these bounds cannot come from the same event.
+    if dist_km is not None:
+        abs_dt = np.abs(times[rows] - times[cols])
+        d = dist_km[rows, cols]
+        pp = is_p[rows] & is_p[cols]
+        ss = is_s[rows] & is_s[cols]
+        # PP: |Δt| ≤ d/vp — SS: |Δt| ≤ d/vs — PS: no bound (geometry too complex)
+        dt_max = np.where(pp, d / vp, np.where(ss, d / vs, np.inf))
+        incompatible = abs_dt > dt_max
+        n_incompatible = int(np.sum(incompatible))
+        if n_incompatible:
+            keep = ~incompatible
+            rows, cols = rows[keep], cols[keep]
+            logger.info(
+                "Leiden moveout filter: removed %d incompatible edge(s) "
+                "(PP>d/vp, SS>d/vs, or PS-cross>d/vs).", n_incompatible,
+            )
+
     edge_w = probas[rows] * probas[cols]
 
-    weights = np.exp(-pseudo_tt[rows, cols] / sigma) * edge_w
+    abs_dt = np.abs(times[rows] - times[cols])
+    if sigma_km > 0.0 and dist_km is not None:
+        # Factored weight: temporal × spatial × proba
+        # exp(-|dt|/sigma_t) * exp(-dist/sigma_km)
+        # Decouples time and space: picks from the same distant event get
+        # a non-negligible weight even when pseudo_tt >> sigma.
+        weights = np.exp(-abs_dt / sigma) * np.exp(-dist_km[rows, cols] / sigma_km) * edge_w
+    else:
+        weights = np.exp(-pseudo_tt[rows, cols] / sigma) * edge_w
     weights_no_boost = weights.copy()
 
     # Same-station P-S pairs: replace weight with p_P * p_S * ps_boost_factor.
     # A large ps_boost_factor (>> 1/resolution) makes it unprofitable for CPM
     # to separate P and S from the same station into different communities.
+    # PS-boost conditions:
+    #   1. same station
+    #   2. causal ordering: t_S > t_P
+    #   3. if ps_dt_max > 0: S-P delay within physical plausibility bound
+    abs_dt_ps = np.abs(times[rows] - times[cols])
+    dt_ok = (ps_dt_max <= 0.0) | (abs_dt_ps <= ps_dt_max)
     ps_same = (
         (stations[rows] == stations[cols])
-        & ((is_p[rows] & is_s[cols]) | (is_s[rows] & is_p[cols]))
+        & (
+            (is_p[rows] & is_s[cols] & (times[cols] > times[rows]))
+            | (is_s[rows] & is_p[cols] & (times[rows] > times[cols]))
+        )
+        & dt_ok
     )
     weights[ps_same] = edge_w[ps_same] * ps_boost_factor
 
+    if ps_dt_max > 0.0:
+        n_filtered = int(np.sum(~dt_ok & (stations[rows] == stations[cols])))
+        if n_filtered:
+            logger.info(
+                "Leiden PS boost: %d same-station P-S edge(s) suppressed (S-P delay > %.1fs).",
+                n_filtered, ps_dt_max,
+            )
     logger.info(
         "Leiden PS boost: %d same-station P-S edges (out of %d total edges), factor=%.1f.",
         int(np.sum(ps_same)), len(rows), ps_boost_factor,
@@ -247,6 +305,10 @@ def leiden_cluster(
     edge_weight_scale: float = None,
     ps_boost_factor: float = 100.0,
     min_edge_weight: float = 0.0,
+    vp: float = 6.0,   # P-wave velocity (km/s) for moveout compatibility filter
+    vs: float = 3.5,   # S-wave velocity (km/s) for moveout compatibility filter
+    ps_dt_max: float = 0.0,  # max S-P delay (s) for same-station boost; 0 = disabled
+    sigma_km: float = 0.0,   # spatial decay (km) in factored weight; 0 = disabled
 ) -> tuple:
     """Cluster picks using Leiden community detection on the TT graph.
 
@@ -313,12 +375,30 @@ def leiden_cluster(
     stations = np.array([f"{p.network}.{p.station}" for p in phases])
     is_p = np.array([p.is_p() for p in phases])
     is_s = np.array([p.is_s() for p in phases])
+    times = np.array([float(p.time) for p in phases])
+
+    # --- Compute inter-station distances for moveout compatibility filter ---
+    # Disabled when vp=0 or vs=0.
+    dist_km_matrix = None
+    if vp > 0 and vs > 0:
+        R = 6371.0
+        lats = np.radians([p.coord["latitude"] for p in phases])
+        lons = np.radians([p.coord["longitude"] for p in phases])
+        dlat = lats[:, None] - lats[None, :]
+        dlon = lons[:, None] - lons[None, :]
+        a = np.sin(dlat / 2) ** 2 + np.cos(lats[:, None]) * np.cos(lats[None, :]) * np.sin(dlon / 2) ** 2
+        dist_km_matrix = 2 * R * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
 
     # --- Build graph ---
     rows, cols, weights, weights_no_boost, ps_same = _build_edges(
-        pseudo_tt, probas, stations, is_p, is_s, max_search_dist, sigma, resolution,
+        pseudo_tt, probas, stations, is_p, is_s, times, max_search_dist, sigma, resolution,
         ps_boost_factor=ps_boost_factor,
         min_edge_weight=min_edge_weight,
+        dist_km=dist_km_matrix,
+        vp=vp,
+        vs=vs,
+        ps_dt_max=ps_dt_max,
+        sigma_km=sigma_km,
     )
     if len(rows) == 0:
         logger.info("Leiden: no edges within max_search_dist — all picks are noise.")

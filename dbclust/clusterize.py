@@ -395,6 +395,10 @@ class Clusterize(object):
         leiden_edge_weight_scale=None,  # σ for exp(-d/σ); None → max_search_dist/2
         leiden_ps_boost_factor=100.0,        # multiplicative boost for same-station P-S edges
         leiden_min_edge_weight=0.0,          # drop edges below this weight (0 = disabled)
+        leiden_vp=6.0,                       # P-wave velocity for moveout compatibility filter
+        leiden_vs=3.5,                       # S-wave velocity for moveout compatibility filter
+        leiden_ps_dt_max=0.0,                # max S-P delay (s) for same-station boost;
+        leiden_sigma_km=0.0,                 # spatial decay (km) in factored weight; 0 = disabled 0 = disabled
         mega_cluster_fallback_leiden=False,  # re-cluster mega-clusters with Leiden
         mega_cluster_threshold=0.8,          # fraction of picks to trigger mega-cluster
         mega_cluster_min_size=150,           # minimum absolute size to trigger
@@ -450,6 +454,10 @@ class Clusterize(object):
         self.leiden_edge_weight_scale = leiden_edge_weight_scale
         self.leiden_ps_boost_factor = leiden_ps_boost_factor
         self.leiden_min_edge_weight = leiden_min_edge_weight
+        self.leiden_vp = leiden_vp
+        self.leiden_vs = leiden_vs
+        self.leiden_ps_dt_max = leiden_ps_dt_max
+        self.leiden_sigma_km = leiden_sigma_km
         self.mega_cluster_fallback_leiden = mega_cluster_fallback_leiden
         self.mega_cluster_threshold = mega_cluster_threshold
         self.mega_cluster_min_size = mega_cluster_min_size
@@ -537,6 +545,7 @@ class Clusterize(object):
             pseudo_tt,
             max_search_dist,
             min_cluster_size,
+            average_velocity=average_velocity,
             metric="euclidean" if use_umap else "precomputed",
             cluster_selection_method=cluster_selection_method,
             allow_single_cluster=allow_single_cluster,
@@ -545,6 +554,10 @@ class Clusterize(object):
             leiden_edge_weight_scale=leiden_edge_weight_scale,
             leiden_ps_boost_factor=leiden_ps_boost_factor,
             leiden_min_edge_weight=leiden_min_edge_weight,
+            leiden_vp=leiden_vp,
+            leiden_vs=leiden_vs,
+            leiden_ps_dt_max=leiden_ps_dt_max,
+            leiden_sigma_km=leiden_sigma_km,
             mega_cluster_fallback_leiden=mega_cluster_fallback_leiden,
             mega_cluster_threshold=mega_cluster_threshold,
             mega_cluster_min_size=mega_cluster_min_size,
@@ -710,26 +723,14 @@ class Clusterize(object):
                 )
 
     def build_clusters_from_backward(self, backward_phases, forward_phases):
-        """Cluster backward and forward picks, handling straddling events correctly.
+        """Cluster backward and forward picks together in a single pass.
 
         Called for the first window of a non-first parallel job, where backward
         overlap picks are available.
 
-        Two strategies depending on whether catalog event_ids are shared between
-        backward and forward zones:
-
-        - shared event_ids (straddling event): pool all picks into one clustering pass so
-          the event's picks form a single natural cluster; PyOcto then separates
-          events within it. This preserves the full pick set for the straddling event.
-
-        - no shared event_ids: sequential consume-as-you-go strategy:
-          Phase 1 — cluster backward picks; assign forward picks to bw_clusters
-            via event_id, then via TT distance (only picks within the backward
-            time horizon, i.e. time < bw_t_max + overlap_seconds).
-          Phase 2 — cluster remaining forward picks; assign bw_noise to
-            fw_clusters via event_id only (no TT, to avoid cross-zone contamination).
-          This avoids creating a mega-cluster that causes PyOcto to miss small
-          forward events (e.g. a 7-pick event buried in 350 mixed picks).
+        All picks (backward + forward) are pooled into one clustering pass so that
+        Leiden/HDBSCAN has a complete view of all picks. This simplifies the workflow
+        and ensures events crossing the backward/forward boundary are properly clustered.
 
         Parameters
         ----------
@@ -738,79 +739,36 @@ class Clusterize(object):
         forward_phases : list[Phase]
             Picks from [start, end].
         """
-        bw_event_ids = {p.event_id for p in backward_phases if p.event_id}
-        fw_event_ids = {p.event_id for p in forward_phases if p.event_id}
-        shared_event_ids = bw_event_ids & fw_event_ids
-
-        if shared_event_ids:
-            # Straddling event detected: pool all picks so HDBSCAN forms natural
-            # clusters that include both backward and forward picks of the same event.
-            all_phases = backward_phases + forward_phases
-            logger.info(
-                f"[backward+forward] shared event_ids {shared_event_ids} detected —"
-                f" clustering {len(all_phases)} picks"
-                f" ({len(backward_phases)} backward + {len(forward_phases)} forward)."
-            )
-            if len(all_phases) >= self.min_cluster_size:
-                pseudo_tt = self.numpy_compute_tt_matrix_vectorized(
-                    all_phases, self.average_velocity, vp=6.0 if self.clustering_method != "leiden" else None, vs=3.5 if self.clustering_method != "leiden" else None
-                )
-                self.clusters, stab, self.noise = self.get_clusters(
-                    all_phases, pseudo_tt, self.max_search_dist,
-                    self.min_cluster_size, metric="precomputed",
-                    clustering_method=self.clustering_method,
-                    allow_single_cluster=self.allow_single_cluster,
-                    leiden_resolution=self.leiden_resolution,
-                    leiden_edge_weight_scale=self.leiden_edge_weight_scale,
-                    leiden_ps_boost_factor=self.leiden_ps_boost_factor,
-                    leiden_min_edge_weight=self.leiden_min_edge_weight,
-                    mega_cluster_fallback_leiden=self.mega_cluster_fallback_leiden,
-                    mega_cluster_threshold=self.mega_cluster_threshold,
-                    mega_cluster_min_size=self.mega_cluster_min_size,
-                    mega_cluster_leiden_resolution=self.mega_cluster_leiden_resolution,
-                    leiden_hdbscan_fallback=self.leiden_hdbscan_fallback,
-                    leiden_min_stability=self.leiden_min_stability,
-                )
-                self.clusters_stability = (
-                    np.array(stab, dtype=float) if len(stab) > 0
-                    else np.ones(len(self.clusters))
-                )
-                self.n_clusters = len(self.clusters)
-                self.n_noise = len(self.noise)
-                logger.info(
-                    f"[backward+forward] {self.n_clusters} cluster(s), {self.n_noise} noise."
-                )
-                if self.n_clusters > 1:
-                    self.cluster_merge_based_on_eventid()
-            else:
-                self.noise = list(all_phases)
-                self.n_noise = len(self.noise)
-            return
-
-        # No shared event_ids: run HDBSCAN on forward picks only, then cluster
-        # backward picks separately using the backward pool + forward noise.
+        all_phases = backward_phases + forward_phases
         logger.info(
-            f"[backward+forward] no shared event_ids —"
-            f" clustering {len(forward_phases)} forward picks only."
+            f"[backward+forward] clustering {len(all_phases)} picks"
+            f" ({len(backward_phases)} backward + {len(forward_phases)} forward)."
         )
-        if len(forward_phases) >= self.min_cluster_size:
-            pseudo_tt_fw = self.numpy_compute_tt_matrix_vectorized(
-                forward_phases, self.average_velocity, vp=6.0 if self.clustering_method != "leiden" else None, vs=3.5 if self.clustering_method != "leiden" else None
+
+        if len(all_phases) >= self.min_cluster_size:
+            pseudo_tt = self.numpy_compute_tt_matrix_vectorized(
+                all_phases, self.average_velocity, vp=6.0 if self.clustering_method != "leiden" else None, vs=3.5 if self.clustering_method != "leiden" else None
             )
             self.clusters, stab, self.noise = self.get_clusters(
-                forward_phases, pseudo_tt_fw, self.max_search_dist,
-                self.min_cluster_size, metric="precomputed",
+                all_phases, pseudo_tt, self.max_search_dist,
+                self.min_cluster_size, average_velocity=self.average_velocity,
+                metric="precomputed",
                 clustering_method=self.clustering_method,
+                allow_single_cluster=self.allow_single_cluster,
                 leiden_resolution=self.leiden_resolution,
                 leiden_edge_weight_scale=self.leiden_edge_weight_scale,
                 leiden_ps_boost_factor=self.leiden_ps_boost_factor,
                 leiden_min_edge_weight=self.leiden_min_edge_weight,
-                    mega_cluster_fallback_leiden=self.mega_cluster_fallback_leiden,
-                    mega_cluster_threshold=self.mega_cluster_threshold,
-                    mega_cluster_min_size=self.mega_cluster_min_size,
-                    mega_cluster_leiden_resolution=self.mega_cluster_leiden_resolution,
-                    leiden_hdbscan_fallback=self.leiden_hdbscan_fallback,
-                    leiden_min_stability=self.leiden_min_stability,
+                leiden_vp=self.leiden_vp,
+                leiden_vs=self.leiden_vs,
+                leiden_ps_dt_max=self.leiden_ps_dt_max,
+                leiden_sigma_km=self.leiden_sigma_km,
+                mega_cluster_fallback_leiden=self.mega_cluster_fallback_leiden,
+                mega_cluster_threshold=self.mega_cluster_threshold,
+                mega_cluster_min_size=self.mega_cluster_min_size,
+                mega_cluster_leiden_resolution=self.mega_cluster_leiden_resolution,
+                leiden_hdbscan_fallback=self.leiden_hdbscan_fallback,
+                leiden_min_stability=self.leiden_min_stability,
             )
             self.clusters_stability = (
                 np.array(stab, dtype=float) if len(stab) > 0
@@ -818,50 +776,43 @@ class Clusterize(object):
             )
             self.n_clusters = len(self.clusters)
             self.n_noise = len(self.noise)
+            logger.info(
+                f"[backward+forward] {self.n_clusters} cluster(s), {self.n_noise} noise."
+            )
+            
+            # Debug logging for target event picks in clusters
+            target_times = ["2014-07-09T09:01:54", "2014-07-09T10:11:52", "2014-07-09T10:36:44"]
+            for target_str in target_times:
+                try:
+                    from datetime import datetime, timedelta
+                    from obspy import UTCDateTime
+                    target = UTCDateTime(target_str)
+                    for i, cluster in enumerate(self.clusters):
+                        matches = [p for p in cluster if abs(float(p.time) - float(target)) < 60]
+                        if matches:
+                            stations = set(p.station for p in matches)
+                            phases = [f"{p.station}:{p.phase}" for p in matches[:5]]
+                            logger.info(
+                                f"[DEBUG-CLUSTER] {target_str}: Cluster {i} "
+                                f"({len(cluster)} picks) has {len(matches)} matching picks "
+                                f"from stations {stations}, phases: {phases}"
+                    )
+                    # Check noise
+                    noise_matches = [p for p in self.noise if abs(float(p.time) - float(target)) < 60]
+                    if noise_matches:
+                        stations = set(p.station for p in noise_matches)
+                        logger.info(
+                            f"[DEBUG-CLUSTER] {target_str}: {len(noise_matches)} picks in NOISE "
+                            f"from stations {stations}"
+                        )
+                except Exception:
+                    pass
+            
             if self.n_clusters > 1:
                 self.cluster_merge_based_on_eventid()
         else:
-            self.noise = list(forward_phases)
+            self.noise = list(all_phases)
             self.n_noise = len(self.noise)
-
-        # Cluster backward picks separately and append.
-        pool = backward_phases + list(self.noise)
-        if len(pool) >= self.min_cluster_size:
-            logger.info(
-                f"[backward] clustering {len(pool)} picks"
-                f" ({len(backward_phases)} backward + {self.n_noise} noise)."
-            )
-            pseudo_tt_bw = self.numpy_compute_tt_matrix_vectorized(
-                pool, self.average_velocity, vp=6.0 if self.clustering_method != "leiden" else None, vs=3.5 if self.clustering_method != "leiden" else None
-            )
-            bw_clusters, bw_stab, bw_noise = self.get_clusters(
-                pool, pseudo_tt_bw, self.max_search_dist,
-                self.min_cluster_size, metric="precomputed",
-                clustering_method=self.clustering_method,
-                leiden_resolution=self.leiden_resolution,
-                leiden_edge_weight_scale=self.leiden_edge_weight_scale,
-                leiden_ps_boost_factor=self.leiden_ps_boost_factor,
-                leiden_min_edge_weight=self.leiden_min_edge_weight,
-                    mega_cluster_fallback_leiden=self.mega_cluster_fallback_leiden,
-                    mega_cluster_threshold=self.mega_cluster_threshold,
-                    mega_cluster_min_size=self.mega_cluster_min_size,
-                    mega_cluster_leiden_resolution=self.mega_cluster_leiden_resolution,
-                    leiden_hdbscan_fallback=self.leiden_hdbscan_fallback,
-                    leiden_min_stability=self.leiden_min_stability,
-            )
-            if bw_clusters:
-                logger.info(f"[backward] {len(bw_clusters)} cluster(s) discovered.")
-                self.clusters += bw_clusters
-                self.clusters_stability = np.concatenate([
-                    np.atleast_1d(np.array(self.clusters_stability, dtype=float)),
-                    np.array(bw_stab, dtype=float) if len(bw_stab) > 0
-                    else np.ones(len(bw_clusters)),
-                ])
-                self.noise = bw_noise
-                self.n_clusters = len(self.clusters)
-                self.n_noise = len(self.noise)
-                if len(bw_clusters) > 1:
-                    self.cluster_merge_based_on_eventid()
 
     def absorb_backward_picks(self, backward_phases):
         """Superseded by build_clusters_from_backward — raises if called."""
@@ -1205,6 +1156,7 @@ class Clusterize(object):
         pseudo_tt,
         max_search_dist,
         min_cluster_size,
+        average_velocity=5.0,
         metric="precomputed",
         cluster_selection_method="eom",
         allow_single_cluster=True,
@@ -1213,6 +1165,10 @@ class Clusterize(object):
         leiden_edge_weight_scale=None,
         leiden_ps_boost_factor=100.0,
         leiden_min_edge_weight=0.0,
+        leiden_vp=6.0,
+        leiden_vs=3.5,
+        leiden_ps_dt_max=0.0,
+        leiden_sigma_km=0.0,
         mega_cluster_fallback_leiden=False,
         mega_cluster_threshold=0.8,
         mega_cluster_min_size=150,
@@ -1231,6 +1187,10 @@ class Clusterize(object):
                 edge_weight_scale=leiden_edge_weight_scale,
                 ps_boost_factor=leiden_ps_boost_factor,
                 min_edge_weight=leiden_min_edge_weight,
+                vp=leiden_vp,
+                vs=leiden_vs,
+                ps_dt_max=leiden_ps_dt_max,
+                sigma_km=leiden_sigma_km,
             )
             if leiden_hdbscan_fallback:
                 # Separate stable clusters from unstable ones

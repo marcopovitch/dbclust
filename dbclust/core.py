@@ -118,7 +118,7 @@ def get_cross_partition_picks(
     P_proximity_threshold: float = 0.1,
     S_proximity_threshold: float = 0.2,
 ) -> pd.DataFrame:
-    """Fetch all picks from the backward overlap zone [start-overlap, start].
+    """Fetch all picks from the backward overlap zone [start-overlap, start).
 
     Returns a deduplicated DataFrame with all picks (catalogued and DL automatic).
     Injected into df_subset before HDBSCAN so that cross-partition events
@@ -134,7 +134,7 @@ def get_cross_partition_picks(
                         phase_score, phase_evaluation, phase_method,
                         event_id, agency
         FROM PICKS
-        WHERE phase_time BETWEEN '{backward_start}' AND '{start}'
+        WHERE phase_time >= '{backward_start}' AND phase_time < '{start}'
         AND phase_type IN ('P', 'Pg', 'Pn', 'S', 'Sg', 'Sn')
     """
     df_all = con.sql(rqt).fetchdf()
@@ -304,6 +304,10 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         leiden_edge_weight_scale=cfg.cluster.leiden_edge_weight_scale,
         leiden_ps_boost_factor=cfg.cluster.leiden_ps_boost_factor,
         leiden_min_edge_weight=cfg.cluster.leiden_min_edge_weight,
+        leiden_vp=cfg.cluster.leiden_vp,
+        leiden_vs=cfg.cluster.leiden_vs,
+        leiden_ps_dt_max=cfg.cluster.leiden_ps_dt_max,
+        leiden_sigma_km=cfg.cluster.leiden_sigma_km,
 
 
         mega_cluster_fallback_leiden=cfg.cluster.mega_cluster_fallback_leiden,

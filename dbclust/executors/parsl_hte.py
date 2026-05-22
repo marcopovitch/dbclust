@@ -257,23 +257,26 @@ class ParslHTEExecutor(ExecutorBase):
 
         future_to_index = getattr(self, "_future_to_index", {})
 
-        for completed_future in as_completed(futures):
-            job_index = future_to_index.get(completed_future, -1)
-            try:
-                r = completed_future.result()
-                yield (
-                    r["task_index"],
-                    r["result"],
-                    r["duration_sec"],
-                    r["peak_memory_mb"],
-                )
-            except (ManagerLost, WorkerLost) as e:
-                logger.error(f"Parsl worker/manager lost, task {job_index} will be skipped: {e}")
-                yield (job_index, False, 0, 0)
-            except Exception as e:
-                import traceback
-                logger.error(f"Task {job_index} failed with error: {e}\n{traceback.format_exc()}")
-                yield (job_index, False, 0, 0)
+        try:
+            for completed_future in as_completed(futures):
+                job_index = future_to_index.get(completed_future, -1)
+                try:
+                    r = completed_future.result()
+                    yield (
+                        r["task_index"],
+                        r["result"],
+                        r["duration_sec"],
+                        r["peak_memory_mb"],
+                    )
+                except (ManagerLost, WorkerLost) as e:
+                    logger.error(f"Parsl worker/manager lost, task {job_index} will be skipped: {e}")
+                    yield (job_index, False, 0, 0)
+                except Exception as e:
+                    import traceback
+                    logger.error(f"Task {job_index} failed with error: {e}\n{traceback.format_exc()}")
+                    yield (job_index, False, 0, 0)
+        except KeyboardInterrupt:
+            return
 
     def run(self) -> List[Any]:
         """Override run() to submit ALL tasks upfront before collecting results.
@@ -404,6 +407,8 @@ class ParslHTEExecutor(ExecutorBase):
                     self._mark_completed(job_index)
                 results.append(result)
 
+        except KeyboardInterrupt:
+            pass
         finally:
             # Restore original signal handlers unconditionally.
             signal.signal(signal.SIGINT, _orig_sigint)

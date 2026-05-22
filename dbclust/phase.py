@@ -615,10 +615,41 @@ def import_phases(
             df["station_id"] = df["station_id"].astype(str) + "." + channel
 
     # Filter by phase score thresholds
+    df_before = df.copy()
     df = df.loc[
         ~((df["phase_type"] == "P") & (df["phase_score"] < P_proba_threshold))
         & ~((df["phase_type"] == "S") & (df["phase_score"] < S_proba_threshold))
     ]
+    
+    # Debug logging for target event times
+    target_times = ["2014-07-09T09:01:54", "2014-07-09T10:11:52", "2014-07-09T10:36:44"]
+    for target_str in target_times:
+        try:
+            from datetime import datetime, timedelta
+            target = pd.to_datetime(target_str)
+            window = df_before[
+                (df_before["phase_time"] >= target - timedelta(seconds=30)) &
+                (df_before["phase_time"] <= target + timedelta(seconds=30))
+            ]
+            if len(window) > 0:
+                logger.info(
+                    f"[DEBUG-PICKS] {target_str}: {len(window)} picks before threshold filter"
+                )
+                for _, row in window.head(10).iterrows():
+                    logger.info(
+                        f"[DEBUG-PICKS]   {row['station_id']} {row['phase_type']} "
+                        f"t={row['phase_time']} p={row['phase_score']:.2f}"
+                    )
+                after_filter = df[
+                    (df["phase_time"] >= target - timedelta(seconds=30)) &
+                    (df["phase_time"] <= target + timedelta(seconds=30))
+                ]
+                logger.info(
+                    f"[DEBUG-PICKS] {target_str}: {len(after_filter)} picks after filter "
+                    f"(P>{P_proba_threshold}, S>{S_proba_threshold})"
+                )
+        except Exception:
+            pass
 
     # Iterate through filtered rows
     for row in df.itertuples(index=False):
