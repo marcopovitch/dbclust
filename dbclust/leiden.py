@@ -102,6 +102,7 @@ def _build_edges(
     return rows, cols, weights, weights_no_boost, ps_same
 
 
+
 # ---------------------------------------------------------------------------
 # Post-partition P-S enforcement (union-find)
 # ---------------------------------------------------------------------------

@@ -718,15 +718,15 @@ class Clusterize(object):
         Two strategies depending on whether catalog event_ids are shared between
         backward and forward zones:
 
-        - shared event_ids (straddling event): pool all picks into one HDBSCAN so
+        - shared event_ids (straddling event): pool all picks into one clustering pass so
           the event's picks form a single natural cluster; PyOcto then separates
           events within it. This preserves the full pick set for the straddling event.
 
         - no shared event_ids: sequential consume-as-you-go strategy:
-          Phase 1 — HDBSCAN on backward picks; assign forward picks to bw_clusters
+          Phase 1 — cluster backward picks; assign forward picks to bw_clusters
             via event_id, then via TT distance (only picks within the backward
             time horizon, i.e. time < bw_t_max + overlap_seconds).
-          Phase 2 — HDBSCAN on remaining forward picks; assign bw_noise to
+          Phase 2 — cluster remaining forward picks; assign bw_noise to
             fw_clusters via event_id only (no TT, to avoid cross-zone contamination).
           This avoids creating a mega-cluster that causes PyOcto to miss small
           forward events (e.g. a 7-pick event buried in 350 mixed picks).
@@ -748,7 +748,7 @@ class Clusterize(object):
             all_phases = backward_phases + forward_phases
             logger.info(
                 f"[backward+forward] shared event_ids {shared_event_ids} detected —"
-                f" HDBSCAN on {len(all_phases)} picks"
+                f" clustering {len(all_phases)} picks"
                 f" ({len(backward_phases)} backward + {len(forward_phases)} forward)."
             )
             if len(all_phases) >= self.min_cluster_size:
@@ -791,7 +791,7 @@ class Clusterize(object):
         # backward picks separately using the backward pool + forward noise.
         logger.info(
             f"[backward+forward] no shared event_ids —"
-            f" HDBSCAN on {len(forward_phases)} forward picks only."
+            f" clustering {len(forward_phases)} forward picks only."
         )
         if len(forward_phases) >= self.min_cluster_size:
             pseudo_tt_fw = self.numpy_compute_tt_matrix_vectorized(
@@ -828,7 +828,7 @@ class Clusterize(object):
         pool = backward_phases + list(self.noise)
         if len(pool) >= self.min_cluster_size:
             logger.info(
-                f"[backward] HDBSCAN on {len(pool)} picks"
+                f"[backward] clustering {len(pool)} picks"
                 f" ({len(backward_phases)} backward + {self.n_noise} noise)."
             )
             pseudo_tt_bw = self.numpy_compute_tt_matrix_vectorized(

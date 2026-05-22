@@ -304,6 +304,8 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         leiden_edge_weight_scale=cfg.cluster.leiden_edge_weight_scale,
         leiden_ps_boost_factor=cfg.cluster.leiden_ps_boost_factor,
         leiden_min_edge_weight=cfg.cluster.leiden_min_edge_weight,
+
+
         mega_cluster_fallback_leiden=cfg.cluster.mega_cluster_fallback_leiden,
         mega_cluster_threshold=cfg.cluster.mega_cluster_threshold,
         mega_cluster_min_size=cfg.cluster.mega_cluster_min_size,

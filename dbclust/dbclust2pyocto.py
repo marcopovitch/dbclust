@@ -181,7 +181,7 @@ def dbclust2pyocto(
     noise_picks = list(myclust.noise) if include_noise_in_aggregation else []
     if noise_picks:
         logger.info(
-            f"Including {len(noise_picks)} HDBSCAN noise picks in aggregation pool"
+            f"Including {len(noise_picks)} noise picks in aggregation pool"
         )
     all_picks_list = list(chain(*myclust.clusters)) + noise_picks
     pyocto_clusters, pyocto_preloc = [], []
@@ -191,7 +191,7 @@ def dbclust2pyocto(
     if include_noise_in_aggregation and myclust.noise:
         noise_event_ids = set(p.event_id for p in myclust.noise if p.event_id)
         logger.info(
-            f"Adding HDBSCAN noise ({len(myclust.noise)} picks, "
+            f"Adding noise ({len(myclust.noise)} picks, "
             f"event_ids: {[e.split('/')[-1] for e in noise_event_ids]}) as additional cluster for PyOcto"
         )
         clusters_to_process.append(myclust.noise)
@@ -414,6 +414,8 @@ def dbclust2pyocto(
                 leiden_edge_weight_scale=myclust.leiden_edge_weight_scale,
                 leiden_ps_boost_factor=myclust.leiden_ps_boost_factor,
                 leiden_min_edge_weight=myclust.leiden_min_edge_weight,
+
+
                 mega_cluster_fallback_leiden=myclust.mega_cluster_fallback_leiden,
                 mega_cluster_threshold=myclust.mega_cluster_threshold,
                 mega_cluster_min_size=myclust.mega_cluster_min_size,

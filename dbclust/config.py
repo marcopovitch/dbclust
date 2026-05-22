@@ -533,6 +533,9 @@ class ClusterConfig:
     # Boosted P-S same-station edges are always kept.
     # 0.0 disables the filter.
     leiden_min_edge_weight: float = 0.0
+    # Leiden partition type: "CPM" (default) or "RBConfiguration"
+
+
     # Re-cluster oversized HDBSCAN clusters with Leiden as a fallback.
     mega_cluster_fallback_leiden: bool = False
     # A cluster is a "mega-cluster" if it holds more than this fraction of all picks …
