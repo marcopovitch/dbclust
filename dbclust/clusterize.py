@@ -397,8 +397,6 @@ class Clusterize(object):
         leiden_min_edge_weight=0.0,          # drop edges below this weight (0 = disabled)
         leiden_vp=6.0,                       # P-wave velocity for moveout compatibility filter
         leiden_vs=3.5,                       # S-wave velocity for moveout compatibility filter
-        leiden_ps_dt_max=0.0,                # max S-P delay (s) for same-station boost;
-        leiden_sigma_km=0.0,                 # spatial decay (km) in factored weight; 0 = disabled 0 = disabled
         mega_cluster_fallback_leiden=False,  # re-cluster mega-clusters with Leiden
         mega_cluster_threshold=0.8,          # fraction of picks to trigger mega-cluster
         mega_cluster_min_size=150,           # minimum absolute size to trigger
@@ -456,8 +454,6 @@ class Clusterize(object):
         self.leiden_min_edge_weight = leiden_min_edge_weight
         self.leiden_vp = leiden_vp
         self.leiden_vs = leiden_vs
-        self.leiden_ps_dt_max = leiden_ps_dt_max
-        self.leiden_sigma_km = leiden_sigma_km
         self.mega_cluster_fallback_leiden = mega_cluster_fallback_leiden
         self.mega_cluster_threshold = mega_cluster_threshold
         self.mega_cluster_min_size = mega_cluster_min_size
@@ -556,8 +552,6 @@ class Clusterize(object):
             leiden_min_edge_weight=leiden_min_edge_weight,
             leiden_vp=leiden_vp,
             leiden_vs=leiden_vs,
-            leiden_ps_dt_max=leiden_ps_dt_max,
-            leiden_sigma_km=leiden_sigma_km,
             mega_cluster_fallback_leiden=mega_cluster_fallback_leiden,
             mega_cluster_threshold=mega_cluster_threshold,
             mega_cluster_min_size=mega_cluster_min_size,
@@ -761,8 +755,6 @@ class Clusterize(object):
                 leiden_min_edge_weight=self.leiden_min_edge_weight,
                 leiden_vp=self.leiden_vp,
                 leiden_vs=self.leiden_vs,
-                leiden_ps_dt_max=self.leiden_ps_dt_max,
-                leiden_sigma_km=self.leiden_sigma_km,
                 mega_cluster_fallback_leiden=self.mega_cluster_fallback_leiden,
                 mega_cluster_threshold=self.mega_cluster_threshold,
                 mega_cluster_min_size=self.mega_cluster_min_size,
@@ -779,35 +771,6 @@ class Clusterize(object):
             logger.info(
                 f"[backward+forward] {self.n_clusters} cluster(s), {self.n_noise} noise."
             )
-            
-            # Debug logging for target event picks in clusters
-            target_times = ["2014-07-09T09:01:54", "2014-07-09T10:11:52", "2014-07-09T10:36:44"]
-            for target_str in target_times:
-                try:
-                    from datetime import datetime, timedelta
-                    from obspy import UTCDateTime
-                    target = UTCDateTime(target_str)
-                    for i, cluster in enumerate(self.clusters):
-                        matches = [p for p in cluster if abs(float(p.time) - float(target)) < 60]
-                        if matches:
-                            stations = set(p.station for p in matches)
-                            phases = [f"{p.station}:{p.phase}" for p in matches[:5]]
-                            logger.info(
-                                f"[DEBUG-CLUSTER] {target_str}: Cluster {i} "
-                                f"({len(cluster)} picks) has {len(matches)} matching picks "
-                                f"from stations {stations}, phases: {phases}"
-                    )
-                    # Check noise
-                    noise_matches = [p for p in self.noise if abs(float(p.time) - float(target)) < 60]
-                    if noise_matches:
-                        stations = set(p.station for p in noise_matches)
-                        logger.info(
-                            f"[DEBUG-CLUSTER] {target_str}: {len(noise_matches)} picks in NOISE "
-                            f"from stations {stations}"
-                        )
-                except Exception:
-                    pass
-            
             if self.n_clusters > 1:
                 self.cluster_merge_based_on_eventid()
         else:
@@ -1167,8 +1130,6 @@ class Clusterize(object):
         leiden_min_edge_weight=0.0,
         leiden_vp=6.0,
         leiden_vs=3.5,
-        leiden_ps_dt_max=0.0,
-        leiden_sigma_km=0.0,
         mega_cluster_fallback_leiden=False,
         mega_cluster_threshold=0.8,
         mega_cluster_min_size=150,
@@ -1189,8 +1150,6 @@ class Clusterize(object):
                 min_edge_weight=leiden_min_edge_weight,
                 vp=leiden_vp,
                 vs=leiden_vs,
-                ps_dt_max=leiden_ps_dt_max,
-                sigma_km=leiden_sigma_km,
             )
             if leiden_hdbscan_fallback:
                 # Separate stable clusters from unstable ones
