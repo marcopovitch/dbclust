@@ -55,8 +55,6 @@ def _build_edges(
     dist_km: np.ndarray = None,
     vp: float = 6.0,
     vs: float = 3.5,
-    ps_dt_max: float = 0.0,
-    sigma_km: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Return edge arrays for the TT graph with P-S boost applied.
 
@@ -102,15 +100,7 @@ def _build_edges(
 
     edge_w = probas[rows] * probas[cols]
 
-    abs_dt = np.abs(times[rows] - times[cols])
-    if sigma_km > 0.0 and dist_km is not None:
-        # Factored weight: temporal × spatial × proba
-        # exp(-|dt|/sigma_t) * exp(-dist/sigma_km)
-        # Decouples time and space: picks from the same distant event get
-        # a non-negligible weight even when pseudo_tt >> sigma.
-        weights = np.exp(-abs_dt / sigma) * np.exp(-dist_km[rows, cols] / sigma_km) * edge_w
-    else:
-        weights = np.exp(-pseudo_tt[rows, cols] / sigma) * edge_w
+    weights = np.exp(-pseudo_tt[rows, cols] / sigma) * edge_w
     weights_no_boost = weights.copy()
 
     # Same-station P-S pairs: replace weight with p_P * p_S * ps_boost_factor.
@@ -119,26 +109,15 @@ def _build_edges(
     # PS-boost conditions:
     #   1. same station
     #   2. causal ordering: t_S > t_P
-    #   3. if ps_dt_max > 0: S-P delay within physical plausibility bound
-    abs_dt_ps = np.abs(times[rows] - times[cols])
-    dt_ok = (ps_dt_max <= 0.0) | (abs_dt_ps <= ps_dt_max)
     ps_same = (
         (stations[rows] == stations[cols])
         & (
             (is_p[rows] & is_s[cols] & (times[cols] > times[rows]))
             | (is_s[rows] & is_p[cols] & (times[rows] > times[cols]))
         )
-        & dt_ok
     )
     weights[ps_same] = edge_w[ps_same] * ps_boost_factor
 
-    if ps_dt_max > 0.0:
-        n_filtered = int(np.sum(~dt_ok & (stations[rows] == stations[cols])))
-        if n_filtered:
-            logger.info(
-                "Leiden PS boost: %d same-station P-S edge(s) suppressed (S-P delay > %.1fs).",
-                n_filtered, ps_dt_max,
-            )
     logger.info(
         "Leiden PS boost: %d same-station P-S edges (out of %d total edges), factor=%.1f.",
         int(np.sum(ps_same)), len(rows), ps_boost_factor,

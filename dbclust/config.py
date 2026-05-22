@@ -537,12 +537,6 @@ class ClusterConfig:
     # that are nearly simultaneous but geographically distant. 0.0 = disabled.
     leiden_vp: float = 6.0  # P-wave velocity for moveout compatibility filter (km/s)
     leiden_vs: float = 3.5  # S-wave velocity for moveout compatibility filter (km/s)
-    leiden_ps_dt_max: float = 0.0  # max S-P delay (s) for same-station boost; 0 = disabled
-    leiden_sigma_km: float = 0.0  # spatial decay (km) in factored weight; 0 = disabled
-    # Merge failed PyOcto clusters within this time window (s) and retry; 0 = disabled
-    failed_cluster_merge_window: float = 0.0
-    # Max total picks in a merged group; prevents oversized heterogeneous pools
-    failed_cluster_merge_max_picks: int = 60
 
 
     # Re-cluster oversized HDBSCAN clusters with Leiden as a fallback.

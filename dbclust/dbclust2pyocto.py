@@ -92,7 +92,6 @@ def adjust_associator_tolerance(
     """
     associator = cfg.pyocto.current_model.associator
     tolerance = associator.pick_match_tolerance
-
     best_result = None
     best_n_clusters = 0
 
@@ -110,19 +109,15 @@ def adjust_associator_tolerance(
                 delegate_dbclust=cfg.pyocto.delegate_dbclust,
                 include_noise_in_aggregation=include_noise_in_aggregation,
                 log_level=log_level,
-                failed_cluster_merge_window=cfg.cluster.failed_cluster_merge_window,
-                failed_cluster_merge_max_picks=cfg.cluster.failed_cluster_merge_max_picks,
             )
             logger.info(f"Success with pick_match_tolerance: {tolerance:.2f}")
             return result_myclust
         except pyproj.exceptions.ProjError as e:
-            # Skip processing if projection error occurs, likely due to too far away stations
             logger.error(f"Projection error, skipping dbclust2pyocto() processing: {e}")
             raise
         except MultipleEventIDsWithSameAgencyError as e:
             logger.warning(f"Unsuccessful with pick_match_tolerance: {tolerance:.2f}.")
             logger.warning(f"{e}")
-            # Keep track of the best partial result (most clusters produced)
             if e.partial_result is not None:
                 n = e.partial_result.n_clusters
                 if n > best_n_clusters:
@@ -131,7 +126,6 @@ def adjust_associator_tolerance(
                     logger.info(
                         f"New best partial result: {n} clusters at tolerance {tolerance:.2f}"
                     )
-            # Determine step size based on tolerance range
             step = next((s for t, s in tolerance_steps.items() if tolerance > t), 0.5)
             tolerance -= step
 
@@ -146,54 +140,6 @@ def adjust_associator_tolerance(
     return None
 
 
-def _group_failed_clusters(
-    failed_clusters: list,
-    window_s: float,
-    max_merged_picks: int = 60,
-) -> list:
-    """Group failed clusters whose pick time ranges overlap within window_s seconds.
-
-    Two clusters are candidates for merging when their [t_min, t_max] intervals
-    overlap or are within window_s. A merge is skipped if the resulting group
-    would exceed max_merged_picks — this avoids creating oversized heterogeneous
-    pools that PyOcto cannot associate.
-
-    Uses greedy single-linkage: clusters are sorted by t_min and merged left-to-right
-    as long as the size constraint holds.
-
-    Returns a list of groups, each group being a list of clusters.
-    """
-    if not failed_clusters:
-        return []
-
-    # Sort by t_min for left-to-right greedy merging
-    decorated = []
-    for c in failed_clusters:
-        times = [float(p.time) for p in c]
-        decorated.append((min(times), max(times), c))
-    decorated.sort(key=lambda x: x[0])
-
-    groups = []
-    current_group = [decorated[0][2]]
-    current_tmax = decorated[0][1]
-    current_picks = len(decorated[0][2])
-
-    for t_min, t_max, c in decorated[1:]:
-        n = len(c)
-        if t_min <= current_tmax + window_s and current_picks + n <= max_merged_picks:
-            current_group.append(c)
-            current_tmax = max(current_tmax, t_max)
-            current_picks += n
-        else:
-            groups.append(current_group)
-            current_group = [c]
-            current_tmax = t_max
-            current_picks = n
-
-    groups.append(current_group)
-    return groups
-
-
 def dbclust2pyocto(
     myclust: Clusterize,
     model_name: str,
@@ -203,8 +149,6 @@ def dbclust2pyocto(
     delegate_dbclust: bool = False,
     include_noise_in_aggregation: bool = False,
     log_level=logging.INFO,
-    failed_cluster_merge_window: float = 0.0,
-    failed_cluster_merge_max_picks: int = 60,
 ) -> Optional[Clusterize]:
     """
     Processes clusters using the pyocto library to check, split, and filter them.
@@ -238,8 +182,6 @@ def dbclust2pyocto(
     all_picks_list = list(chain(*myclust.clusters)) + noise_picks
     pyocto_clusters, pyocto_preloc = [], []
     # Seed with failed clusters carried over from the previous window
-    failed_clusters: list = list(getattr(myclust, "pyocto_failed", []))
-
     clusters_to_process = list(myclust.clusters)
     if include_noise_in_aggregation and myclust.noise:
         noise_event_ids = set(p.event_id for p in myclust.noise if p.event_id)
@@ -446,10 +388,6 @@ def dbclust2pyocto(
             f" ({n_unassigned} unassigned by PyOcto)"
         )
 
-        # Track first-pass failures for post-loop temporal merging
-        if len(events) == 0 and i < n_first_pass_clusters and failed_cluster_merge_window > 0:
-            failed_clusters.append(cluster)
-
         if n_unassigned >= myclust.min_cluster_size and i < n_first_pass_clusters:
             unassigned = [p for j, p in enumerate(cluster) if j not in assigned_pick_ids]
             pseudo_tt2 = myclust.numpy_compute_tt_matrix_vectorized(
@@ -494,81 +432,6 @@ def dbclust2pyocto(
             )
             for sp_cluster in sp_clusters:
                 clusters_to_process.append(sp_cluster)
-
-    # Post-loop: merge temporally overlapping failed clusters and retry PyOcto.
-    # Targets events whose picks are split across multiple Leiden communities
-    # (e.g. a regional event seen by stations spread over the whole network).
-    if failed_cluster_merge_window > 0 and failed_clusters:
-        merged_groups = _group_failed_clusters(
-            failed_clusters, failed_cluster_merge_window,
-            max_merged_picks=failed_cluster_merge_max_picks,
-        )
-        for group in merged_groups:
-            if len(group) < 2:
-                continue
-            merged = list(chain(*group))
-            n_picks = len(merged)
-            logger.info(
-                f"Failed-cluster merge: retrying PyOcto on {len(group)} merged clusters "
-                f"({n_picks} picks, window={failed_cluster_merge_window:.0f}s)."
-            )
-            retry_stations = get_stations_from_cluster(merged)
-            retry_picks = get_picks_from_cluster(merged)
-            if associator_cfg.max_lat_range is not None:
-                mask = (retry_stations["latitude"] < associator_cfg.max_lat_range[0]) | \
-                       (retry_stations["latitude"] > associator_cfg.max_lat_range[1])
-                retry_stations = retry_stations[~mask].reset_index(drop=True)
-            if associator_cfg.max_lon_range is not None:
-                mask = (retry_stations["longitude"] < associator_cfg.max_lon_range[0]) | \
-                       (retry_stations["longitude"] > associator_cfg.max_lon_range[1])
-                retry_stations = retry_stations[~mask].reset_index(drop=True)
-            if retry_stations.empty:
-                continue
-            valid_ids = set(retry_stations["id"])
-            retry_picks = retry_picks[retry_picks["station"].isin(valid_ids)].reset_index(drop=True)
-            if retry_picks.empty:
-                continue
-            lat_range = (retry_stations["latitude"].min(), retry_stations["latitude"].max())
-            lon_range = (retry_stations["longitude"].min(), retry_stations["longitude"].max())
-            try:
-                retry_assoc = pyocto.OctoAssociator.from_area(
-                    lat=lat_range, lon=lon_range,
-                    zlim=associator_cfg.zlim,
-                    time_before=associator_cfg.time_before,
-                    max_pick_overlap=associator_cfg.max_pick_overlap,
-                    min_pick_fraction=associator_cfg.min_pick_fraction,
-                    min_node_size=associator_cfg.min_node_size,
-                    min_node_size_location=associator_cfg.min_node_size_location,
-                    velocity_model=velocity_model,
-                    pick_match_tolerance=associator_cfg.pick_match_tolerance,
-                    min_interevent_time=0.4,
-                    n_picks=associator_cfg.n_picks,
-                    n_p_picks=associator_cfg.n_p_picks,
-                    n_s_picks=associator_cfg.n_s_picks,
-                    n_p_and_s_picks=associator_cfg.n_p_and_s_picks,
-                    exponential_edt=True,
-                    location_split_depth=6,
-                    location_split_return=4,
-                    refinement_iterations=3,
-                )
-                retry_assoc.transform_stations(retry_stations)
-                retry_events, retry_assignments = retry_assoc.associate(retry_picks, retry_stations)
-                if len(retry_events):
-                    retry_assoc.transform_events(retry_events)
-                    retry_events["time"] = retry_events["time"].apply(
-                        datetime.datetime.fromtimestamp, tz=datetime.timezone.utc
-                    )
-                    pyocto_preloc.extend(get_events_list(retry_events, retry_assignments, retry_stations, model_name))
-                    new_clusters = get_clusters_from_assignment(merged, retry_events, retry_assignments)
-                    pyocto_clusters.extend(new_clusters)
-                    logger.info(
-                        f"Failed-cluster merge: found {len(retry_events)} event(s) "
-                        f"in merged pool of {n_picks} picks."
-                    )
-                else:
-                    logger.info("Failed-cluster merge: PyOcto still found 0 events.")
-            except Exception as e:
-                logger.warning(f"Failed-cluster merge: PyOcto error — {e}")
 
     # Merge clusters with common picks or event IDs
     pyocto_clusters, pyocto_preloc = cluster_merge(
@@ -664,10 +527,6 @@ def dbclust2pyocto(
     for attr in ["clusters", "clusters_stability", "noise", "zones", "preloc"]:
         if hasattr(myclust, attr):
             delattr(myclust, attr)
-
-    # Carry failed clusters to the next window so they can be merged with
-    # temporally adjacent clusters from the next Leiden pass.
-    newclust.pyocto_failed = failed_clusters
 
     return newclust
 
