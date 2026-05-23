@@ -1524,41 +1524,6 @@ class Clusterize(object):
                         rejected_event_ids.update(event_id_counts.keys())
                         continue
 
-            # Pre-NLL filter: min_ps_ratio (stations with both P and S / total stations)
-            if self.min_ps_ratio is not None:
-                ps_ratio = (
-                    stations_with_both / total_stations_ps
-                    if total_stations_ps > 0
-                    else 0.0
-                )
-                if ps_ratio < self.min_ps_ratio:
-                    if self.force_keep_catalog_events and event_id_counts:
-                        logger.warning(
-                            f"Cluster {i} failed min_ps_ratio ({stations_with_both}/{total_stations_ps}={ps_ratio:.2f}/{self.min_ps_ratio}) "
-                            f"but force_keep_catalog_events=True [event_ids: {dict(event_id_counts)}] — keeping anyway"
-                        )
-                        forced_catalog_event = True
-                    else:
-                        log_fn = logger.warning if event_id_counts else logger.info
-                        log_fn(
-                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
-                            f"ps_ratio {stations_with_both}/{total_stations_ps} = {ps_ratio:.2f} < {self.min_ps_ratio}"
-                            + (
-                                f" [event_ids: {dict(event_id_counts)}]"
-                                if event_id_counts
-                                else ""
-                            )
-                        )
-                        if total_stations_ps >= 8:
-                            p_stns = sorted(s for s, ph in station_phase_sets.items() if "P" in ph and "S" not in ph)
-                            s_stns = sorted(s for s, ph in station_phase_sets.items() if "S" in ph and "P" not in ph)
-                            ps_stns = sorted(s for s, ph in station_phase_sets.items() if "P" in ph and "S" in ph)
-                            logger.info(
-                                f"  Cluster {i} phases — P-only({len(p_stns)}): {p_stns[:8]},"
-                                f" S-only({len(s_stns)}): {s_stns[:8]}, P+S({len(ps_stns)}): {ps_stns}"
-                            )
-                        rejected_event_ids.update(event_id_counts.keys())
-                        continue
 
             for p in cluster:
                 pick = p.to_pick()
