@@ -117,6 +117,8 @@ def get_cross_partition_picks(
     con, start, overlap_timedelta, global_start,
     P_proximity_threshold: float = 0.1,
     S_proximity_threshold: float = 0.2,
+    P_proba_threshold: float = 0.6,
+    S_proba_threshold: float = 0.5,
 ) -> pd.DataFrame:
     """Fetch all picks from the backward overlap zone [start-overlap, start).
 
@@ -136,6 +138,11 @@ def get_cross_partition_picks(
         FROM PICKS
         WHERE phase_time >= '{backward_start}' AND phase_time < '{start}'
         AND phase_type IN ('P', 'Pg', 'Pn', 'S', 'Sg', 'Sn')
+        AND (
+            (phase_type IN ('P', 'Pg', 'Pn') AND phase_score >= {P_proba_threshold})
+            OR
+            (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {S_proba_threshold})
+        )
     """
     df_all = con.sql(rqt).fetchdf()
     if df_all.empty:
@@ -232,6 +239,7 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         min_station_score=cfg.cluster.min_station_score,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
+        min_ps_ratio_wilson_z=getattr(cfg.cluster, "min_ps_ratio_wilson_z", None),
         quakeml_settings=asdict(cfg.quakeml),
         keep_scat=cfg.nll.enable_scatter,
         #
@@ -493,6 +501,11 @@ def dbclust(
                     phase_time BETWEEN '{begin}' AND '{end}'
                     AND
                     phase_type IN ('P', 'Pg', 'Pn', 'S', 'Sg', 'Sn')
+                    AND (
+                        (phase_type IN ('P', 'Pg', 'Pn') AND phase_score >= {cfg.pick.P_proba_threshold})
+                        OR
+                        (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {cfg.pick.S_proba_threshold})
+                    )
                 """
             else:
                 # csv
@@ -503,6 +516,11 @@ def dbclust(
                     FROM PICKS
                     WHERE phase_time BETWEEN '{begin}' AND '{end}'
                     AND phase_type IN ('P', 'Pg', 'Pn', 'S', 'Sg', 'Sn')
+                    AND (
+                        (phase_type IN ('P', 'Pg', 'Pn') AND phase_score >= {cfg.pick.P_proba_threshold})
+                        OR
+                        (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {cfg.pick.S_proba_threshold})
+                    )
                 """
 
             # Time measure of the query
@@ -530,6 +548,8 @@ def dbclust(
                     con, start, overlap_timedelta, global_start,
                     cfg.pick.P_proximity_threshold,
                     cfg.pick.S_proximity_threshold,
+                    cfg.pick.P_proba_threshold,
+                    cfg.pick.S_proba_threshold,
                 )
                 logger.info(
                     f"[{job_index}] Captured {len(df_backward_overlap)} backward overlap picks"
@@ -604,6 +624,7 @@ def dbclust(
             cfg.station.info_sta,
             cfg.station.fallback_df,
         )
+
         if logger.level == logging.DEBUG:
             for p in forward_phases:
                 p.show_all()
