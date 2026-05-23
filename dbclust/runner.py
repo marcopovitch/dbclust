@@ -74,6 +74,11 @@ def run_parallel(cfg: DBClustConfig) -> list:
     executor = get_executor(cfg)
     logger.info(f"Using executor: {executor.name}")
 
+    # Check if all partitions are already completed
+    completed = _load_completed_indices(cfg)
+    if completed:
+        logger.info(f"Found {len(completed)} completed partitions from previous run")
+
     _shutdown_called = [False]
     _old_sigint = [signal.getsignal(signal.SIGINT)]
     _old_sigterm = [signal.getsignal(signal.SIGTERM)]
@@ -100,7 +105,10 @@ def run_parallel(cfg: DBClustConfig) -> list:
     # so that Parsl/Ray process launches don't accidentally trigger shutdown.
     executor.on_initialized = _install_handlers
     try:
-        return executor.run()
+        logger.info("Calling executor.run()...")
+        results = executor.run()
+        logger.info(f"executor.run() returned {len(results)} results")
+        return results
     finally:
         if not _shutdown_called[0]:
             signal.signal(signal.SIGINT, _old_sigint[0])
@@ -264,7 +272,7 @@ def main():
 
     app_logger.info(f"Processing complete. {len(results)} partitions processed.")
 
-    # Flush output
+    # Flush output and exit cleanly
     sys.stdout.flush()
     sys.stderr.flush()
     sys.exit(0)
