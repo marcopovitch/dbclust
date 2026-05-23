@@ -5,10 +5,10 @@ parallel execution on a single machine. It avoids GIL limitations and provides
 better CPU utilization for CPU-bound tasks.
 """
 
+import atexit
 import logging
 import os
 import random
-from concurrent.futures import as_completed
 from datetime import datetime
 from typing import Any, Generator, List, Dict
 
@@ -112,8 +112,20 @@ class ParslHTEExecutor(ExecutorBase):
 
     def initialize(self) -> None:
         """Initialize Parsl with HighThroughputExecutor."""
+        import atexit
         import signal
         import psutil
+
+        # Patch Parsl's atexit handler to prevent "DFK still running" warning on exit
+        # We handle cleanup ourselves in cleanup()
+        try:
+            import parsl.dataflow.dflow as dflow_module
+            def _silent_atexit(*args, **kwargs):
+                pass
+            dflow_module.atexit.register = _silent_atexit
+            logger.debug("Patched Parsl atexit handler")
+        except Exception:
+            pass
 
         # Kill any orphaned process_worker_pool processes from a previous crashed run.
         # These hold ZMQ ports open and cause SIGSEGV (exit code -11) on the next launch.
@@ -253,29 +265,46 @@ class ParslHTEExecutor(ExecutorBase):
         Yields:
             Tuples of (job_index, result, duration, peak_memory_mb).
         """
+        from concurrent.futures import wait, FIRST_COMPLETED
         from parsl.executors.high_throughput.errors import ManagerLost, WorkerLost
 
         future_to_index = getattr(self, "_future_to_index", {})
+        pending = set(futures)
+        total = len(pending)
+
+        logger.info(f"Waiting for {total} task(s) to complete...")
 
         try:
-            for completed_future in as_completed(futures):
-                job_index = future_to_index.get(completed_future, -1)
-                try:
-                    r = completed_future.result()
-                    yield (
-                        r["task_index"],
-                        r["result"],
-                        r["duration_sec"],
-                        r["peak_memory_mb"],
-                    )
-                except (ManagerLost, WorkerLost) as e:
-                    logger.error(f"Parsl worker/manager lost, task {job_index} will be skipped: {e}")
-                    yield (job_index, False, 0, 0)
-                except Exception as e:
-                    import traceback
-                    logger.error(f"Task {job_index} failed with error: {e}\n{traceback.format_exc()}")
-                    yield (job_index, False, 0, 0)
+            while pending:
+                # Wait with 30s timeout to avoid infinite hangs
+                done, pending = wait(pending, timeout=30, return_when=FIRST_COMPLETED)
+
+                if not done:
+                    logger.warning(f"Timeout waiting for tasks, {len(pending)} still pending")
+                    continue
+
+                for completed_future in done:
+                    job_index = future_to_index.get(completed_future, -1)
+                    try:
+                        r = completed_future.result()
+                        logger.info(f"Task {job_index} completed successfully")
+                        yield (
+                            r["task_index"],
+                            r["result"],
+                            r["duration_sec"],
+                            r["peak_memory_mb"],
+                        )
+                    except (ManagerLost, WorkerLost) as e:
+                        logger.error(f"Parsl worker/manager lost, task {job_index} will be skipped: {e}")
+                        yield (job_index, False, 0, 0)
+                    except Exception as e:
+                        import traceback
+                        logger.error(f"Task {job_index} failed with error: {e}\n{traceback.format_exc()}")
+                        yield (job_index, False, 0, 0)
+
+            logger.info("All tasks completed, exiting wait loop")
         except KeyboardInterrupt:
+            logger.info("KeyboardInterrupt in wait_for_results, exiting")
             return
 
     def run(self) -> List[Any]:
@@ -310,6 +339,9 @@ class ParslHTEExecutor(ExecutorBase):
         if self.on_initialized:
             self.on_initialized()
 
+        # Register atexit handler to ensure cleanup on abnormal exit
+        atexit.register(self.cleanup)
+
         # Install signal handlers so Ctrl-C / SIGTERM triggers a clean Parsl shutdown.
         # IMPORTANT: the handler must NOT call cleanup() directly — it is invoked from a
         # thread (inside threading.Condition.wait) and Parsl's ZMQ calls are not
@@ -334,6 +366,7 @@ class ParslHTEExecutor(ExecutorBase):
         signal.signal(signal.SIGTERM, _handle_signal)
 
         results: List[Any] = []
+        logger.info("=== run() started ===")
         try:
             indexed_partitions = list(enumerate(self.cfg.parallel.time_partitions or []))
             partition_map = {idx: (s, e) for idx, (s, e) in indexed_partitions}
@@ -354,68 +387,81 @@ class ParslHTEExecutor(ExecutorBase):
 
             total_tasks = len(indexed_partitions)
 
-            # Submit ALL tasks upfront — Parsl throttles execution via max_workers_per_node.
-            logger.info(f"Submitting all {total_tasks} tasks to Parsl...")
-            futures = []
-            self._future_to_index = {}
-            for idx, _ in indexed_partitions:
-                f = self.submit_task(idx)
-                futures.append(f)
-                self._future_to_index[f] = idx
-            logger.info(f"All {total_tasks} tasks submitted.")
+            if total_tasks == 0:
+                logger.info("No tasks to run - all partitions already completed")
+            else:
+                # Submit ALL tasks upfront — Parsl throttles execution via max_workers_per_node.
+                logger.info(f"Submitting all {total_tasks} tasks to Parsl...")
+                futures = []
+                self._future_to_index = {}
+                for idx, _ in indexed_partitions:
+                    f = self.submit_task(idx)
+                    futures.append(f)
+                    self._future_to_index[f] = idx
+                logger.info(f"All {total_tasks} tasks submitted.")
 
-            # Collect results as they complete.
-            completed_count = 0
-            processing_start = datetime.now()
+                # Collect results as they complete.
+                completed_count = 0
+                processing_start = datetime.now()
 
-            for job_index, result, duration, peak_memory_mb in self.wait_for_results(futures):
-                completed_count += 1
-                progress_pct = ((already_done + completed_count) / total_overall) * 100
-                partition_start, partition_end = partition_map.get(job_index, (None, None))
-                completion_time = datetime.now()
-                task_start_time = datetime.fromtimestamp(completion_time.timestamp() - duration)
+                for job_index, result, duration, peak_memory_mb in self.wait_for_results(futures):
+                    completed_count += 1
+                    progress_pct = ((already_done + completed_count) / total_overall) * 100
+                    partition_start, partition_end = partition_map.get(job_index, (None, None))
+                    completion_time = datetime.now()
+                    task_start_time = datetime.fromtimestamp(completion_time.timestamp() - duration)
 
-                with open(self.profile_csv_path, "a", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
-                    writer.writerow({
-                        "task_index": job_index,
-                        "start_time": task_start_time.isoformat(),
-                        "completion_time": completion_time.isoformat(),
-                        "duration_sec": f"{duration:.2f}",
-                        "peak_memory_mb": f"{peak_memory_mb:.1f}" if peak_memory_mb else "N/A",
-                        "completed_count": already_done + completed_count,
-                        "total_tasks": total_overall,
-                        "progress_pct": f"{progress_pct:.1f}",
-                        "time_partition_start": str(partition_start) if partition_start else "N/A",
-                        "time_partition_end": str(partition_end) if partition_end else "N/A",
-                    })
+                    with open(self.profile_csv_path, "a", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
+                        writer.writerow({
+                            "task_index": job_index,
+                            "start_time": task_start_time.isoformat(),
+                            "completion_time": completion_time.isoformat(),
+                            "duration_sec": f"{duration:.2f}",
+                            "peak_memory_mb": f"{peak_memory_mb:.1f}" if peak_memory_mb else "N/A",
+                            "completed_count": already_done + completed_count,
+                            "total_tasks": total_overall,
+                            "progress_pct": f"{progress_pct:.1f}",
+                            "time_partition_start": str(partition_start) if partition_start else "N/A",
+                            "time_partition_end": str(partition_end) if partition_end else "N/A",
+                        })
 
-                elapsed = (datetime.now() - processing_start).total_seconds()
-                elapsed_str = f"{elapsed/3600:.1f}h" if elapsed > 3600 else f"{elapsed/60:.0f}min"
-                rate = completed_count / elapsed if elapsed > 0 else 0
-                remaining = total_tasks - completed_count
-                eta_sec = remaining / rate if rate > 0 else 0
-                eta_str = f"{eta_sec/3600:.1f}h" if eta_sec > 3600 else f"{eta_sec/60:.0f}min"
-                msg = (
-                    f"[{already_done + completed_count}/{total_overall}] ({progress_pct:.1f}%) "
-                    f"task {job_index} done in {duration:.0f}s "
-                    f"— elapsed {elapsed_str} — ETA {eta_str}"
-                )
-                logger.info(msg)
-                print(msg, flush=True)
-                if job_index >= 0:
-                    self._mark_completed(job_index)
-                results.append(result)
+                    elapsed = (datetime.now() - processing_start).total_seconds()
+                    elapsed_str = f"{elapsed/3600:.1f}h" if elapsed > 3600 else f"{elapsed/60:.0f}min"
+                    rate = completed_count / elapsed if elapsed > 0 else 0
+                    remaining = total_tasks - completed_count
+                    eta_sec = remaining / rate if rate > 0 else 0
+                    eta_str = f"{eta_sec/3600:.1f}h" if eta_sec > 3600 else f"{eta_sec/60:.0f}min"
+                    msg = (
+                        f"[{already_done + completed_count}/{total_overall}] ({progress_pct:.1f}%) "
+                        f"task {job_index} done in {duration:.0f}s "
+                        f"— elapsed {elapsed_str} — ETA {eta_str}"
+                    )
+                    logger.info(msg)
+                    print(msg, flush=True)
+                    if job_index >= 0:
+                        self._mark_completed(job_index)
+                    results.append(result)
+
+                logger.info(f"Results loop completed - processed {completed_count} tasks")
 
         except KeyboardInterrupt:
+            logger.info("KeyboardInterrupt caught in run()")
             pass
         finally:
+            # Unregister atexit handler to avoid double cleanup
+            try:
+                atexit.unregister(self.cleanup)
+            except Exception:
+                pass
             # Restore original signal handlers unconditionally.
             signal.signal(signal.SIGINT, _orig_sigint)
             signal.signal(signal.SIGTERM, _orig_sigterm)
             if _interrupted[0]:
                 logger.warning("Interrupted — shutting down Parsl workers, please wait...")
+            logger.info("Entering finally block - about to call cleanup()")
             self.cleanup()
+            logger.info("Returned from cleanup()")
             if not _interrupted[0]:
                 self._write_execution_summary(results)
                 logger.info(f"Parallel execution completed with {self.name}")
@@ -424,9 +470,70 @@ class ParslHTEExecutor(ExecutorBase):
 
     def cleanup(self) -> None:
         """Cleanup Parsl resources."""
+        import psutil
+        import signal
+
+        logger.info("cleanup() started - shutting down Parsl resources")
+
+        # Check if DFK is already cleaned
         try:
-            parsl.dfk().cleanup()
+            dfk = parsl.dfk()
+            if dfk is None:
+                logger.info("DFK is None, already cleaned - skipping cleanup")
+                return
+        except Exception:
+            logger.info("DFK not available, skipping cleanup")
+            return
+
+        # On interrupt, aggressively kill Parsl child processes first
+        # to prevent ZMQ/interchange from printing stack traces
+        try:
+            current_pid = os.getpid()
+            killed = 0
+            for proc in psutil.process_iter(["pid", "ppid", "name", "cmdline"]):
+                try:
+                    cmdline = " ".join(proc.info["cmdline"] or [])
+                    is_parsl_proc = ("interchange" in cmdline or "process_worker_pool" in cmdline)
+                    is_child = proc.info["ppid"] == current_pid and proc.pid != current_pid
+                    # Kill both direct children and any interchange process
+                    if is_parsl_proc or (is_child and "parsl" in cmdline.lower()):
+                        proc.send_signal(signal.SIGTERM)
+                        killed += 1
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            logger.info(f"Sent SIGTERM to {killed} Parsl worker process(es)")
+        except Exception as e:
+            logger.warning(f"Error killing Parsl processes: {e}")
+
+        try:
+            # Stop the job status poller first to prevent "Scaling in executor" hang
+            if hasattr(dfk, '_job_status_poller') and dfk._job_status_poller:
+                logger.info("Stopping Parsl job status poller...")
+                try:
+                    dfk._job_status_poller.close()
+                except Exception as e:
+                    logger.warning(f"Error stopping poller: {e}")
+            # Explicitly shutdown executors
+            for executor in dfk.executors.values():
+                logger.info(f"Shutting down executor: {executor.label}")
+                try:
+                    if hasattr(executor, 'shutdown'):
+                        executor.shutdown()
+                except Exception as e:
+                    logger.warning(f"Error shutting down executor: {e}")
+            logger.info("Calling Parsl DFK cleanup...")
+            try:
+                dfk.cleanup()
+            except Exception as e:
+                if "already been cleaned-up" in str(e):
+                    logger.info("DFK already cleaned, skipping")
+                else:
+                    raise
+            logger.info("Calling parsl.clear()...")
             parsl.clear()
+            # Explicitly mark DFK as cleaned to prevent atexit warning
+            if hasattr(parsl, '_DFK') and parsl._DFK is not None:
+                parsl._DFK = None
             logger.info("Parsl HighThroughputExecutor cleaned up")
         except Exception as e:
             logger.warning(f"Error during Parsl cleanup: {e}")
