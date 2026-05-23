@@ -201,6 +201,7 @@ class NllLoc(object):
         enable_relabel_pick_zone: bool = False,  # relabel pick within zone
         keep_not_existing_event: bool = False,  # keep "not existing" event, or not
         min_ps_ratio: Optional[float] = None,  # Minimum S/P pick ratio (None = disabled)
+        min_ps_ratio_wilson_z: Optional[float] = None,  # Wilson z for adaptive threshold (None = fixed)
         min_dist_relabel_deg: float = 0.0,  # minimum distance (degrees) to epicenter to allow relabeling
         min_time_weight: Optional[float] = None,  # remove all picks (incl. manual) with NLLoc time_weight below this threshold
         enable_residual_threshold_with_pick_zone: bool = False,  # apply P/S residual thresholds even when using pick zones
@@ -227,6 +228,7 @@ class NllLoc(object):
         self.gap_dist_max_km = gap_dist_max_km
         self.closest_station_dist_km = closest_station_dist_km
         self.min_ps_ratio = min_ps_ratio
+        self.min_ps_ratio_wilson_z = min_ps_ratio_wilson_z
         self.dist_km_cutoff = dist_km_cutoff
         self.use_deactivated_arrivals = use_deactivated_arrivals
         self.keep_manual_picks = keep_manual_picks
@@ -1127,15 +1129,32 @@ class NllLoc(object):
         ps_ratio = stations_with_both / total_stations if total_stations > 0 else 0.0
         return stations_with_both, total_stations, ps_ratio
 
+    @staticmethod
+    def _wilson_high(n_ps: int, n: int, z: float) -> float:
+        """Wilson score interval upper bound.
+        Used to test if observed ps_ratio is statistically below threshold.
+        """
+        if n <= 0:
+            return 1.0
+        p = min(n_ps / n, 1.0)
+        denom = 1 + z ** 2 / n
+        center = p + z ** 2 / (2 * n)
+        margin = z * np.sqrt(p * (1 - p) / n + z ** 2 / (4 * n ** 2))
+        return (center + margin) / denom
+
     def _check_ps_ratio(self, event, origin) -> bool:
         """Check PS ratio (stations with both P and S / total stations).
-        Returns False (reject) if below min_ps_ratio."""
+        If min_ps_ratio_wilson_z is set, reject only when the Wilson upper bound
+        of the observed ratio is below min_ps_ratio (adaptive, sample-size aware).
+        Otherwise fall back to a fixed threshold comparison.
+        Returns False (reject) if below threshold.
+        """
         if self.min_ps_ratio is None:
             return True
-        _, _, ps_ratio = self._compute_ps_ratio(event, origin)
-        if ps_ratio < self.min_ps_ratio:
-            return False
-        return True
+        n_ps, n_total, ps_ratio = self._compute_ps_ratio(event, origin)
+        if self.min_ps_ratio_wilson_z is not None:
+            return self._wilson_high(n_ps, n_total, self.min_ps_ratio_wilson_z) >= self.min_ps_ratio
+        return ps_ratio >= self.min_ps_ratio
 
     def get_catalog_from_results(self, cat_results: List[Catalog]) -> Catalog:
         """Compute attributes and filter events from catalogs"""
@@ -1190,18 +1209,24 @@ class NllLoc(object):
                     log_fn = logger.warning if event_ids_in_picks else logger.info
                     log_fn(f"Rejected | {summary} | reason: score < {self.min_station_score}")
                     continue
-                if self.min_ps_ratio is not None and ps_ratio < self.min_ps_ratio:
-                    if event_ids_in_picks:
-                        logger.warning(
-                            f"Accepted despite low ps_ratio | {summary} | "
-                            f"reason: known event_id support"
-                        )
-                    else:
-                        log_fn = logger.warning if event_ids_in_picks else logger.info
-                        log_fn(
-                            f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}"
-                        )
-                        continue
+                if self.min_ps_ratio is not None:
+                    ps_rejected = (
+                        self._wilson_high(ps_with_both, ps_total, self.min_ps_ratio_wilson_z) < self.min_ps_ratio
+                        if self.min_ps_ratio_wilson_z is not None
+                        else ps_ratio < self.min_ps_ratio
+                    )
+                    if ps_rejected:
+                        if event_ids_in_picks:
+                            logger.warning(
+                                f"Accepted despite low ps_ratio | {summary} | "
+                                f"reason: known event_id support"
+                            )
+                        else:
+                            log_fn = logger.warning if event_ids_in_picks else logger.info
+                            log_fn(
+                                f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}"
+                            )
+                            continue
                 logger.info(f"Accepted | {summary}")
                 accepted_event_ids.update(event_ids_in_picks)
                 final_catalog += cat
@@ -1219,18 +1244,24 @@ class NllLoc(object):
                 log_fn(f"Rejected | {summary} | reason: P+S stations={ps_station_count} < {self.min_station_with_P_and_S}")
                 continue
 
-            if self.min_ps_ratio is not None and ps_ratio < self.min_ps_ratio:
-                if event_ids_in_picks:
-                    logger.warning(
-                        f"Accepted despite low ps_ratio | {summary} | "
-                        f"reason: known event_id support"
-                    )
-                else:
-                    log_fn = logger.warning if event_ids_in_picks else logger.info
-                    log_fn(
-                        f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}"
-                    )
-                    continue
+            if self.min_ps_ratio is not None:
+                ps_rejected = (
+                    self._wilson_high(ps_with_both, ps_total, self.min_ps_ratio_wilson_z) < self.min_ps_ratio
+                    if self.min_ps_ratio_wilson_z is not None
+                    else ps_ratio < self.min_ps_ratio
+                )
+                if ps_rejected:
+                    if event_ids_in_picks:
+                        logger.warning(
+                            f"Accepted despite low ps_ratio | {summary} | "
+                            f"reason: known event_id support"
+                        )
+                    else:
+                        log_fn = logger.warning if event_ids_in_picks else logger.info
+                        log_fn(
+                            f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}"
+                        )
+                        continue
 
             logger.info(f"Accepted | {summary}")
             accepted_event_ids.update(event_ids_in_picks)

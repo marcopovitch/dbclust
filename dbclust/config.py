@@ -490,6 +490,10 @@ class ClusterConfig:
     include_noise_in_aggregation: bool = False
     # Minimum S/P pick ratio to accept a localized event (None = disabled)
     min_ps_ratio: Optional[float] = None
+    # Wilson upper-bound z for adaptive ps_ratio threshold (None = fixed threshold)
+    # Reject only when wilson_high(n_ps, n_stations, z) < min_ps_ratio.
+    # Recommended: 1.645 (90% confidence). None = legacy fixed threshold.
+    min_ps_ratio_wilson_z: Optional[float] = None
     # Force clusters with known event_id through pre-NLL filters even if they fail thresholds
     force_keep_catalog_events: bool = False
     # Use UMAP dimensionality reduction of TT matrix before HDBSCAN.
