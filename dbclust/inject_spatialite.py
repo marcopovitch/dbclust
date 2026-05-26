@@ -137,6 +137,7 @@ EVENT_COORDINATES_VIEW = """
         o.cpq, o.gallacher_gt5_status,
         COALESCE(o.station_score, 0.0) AS station_score,
         o.ps_ratio,
+        o.ps_station_count,
         COALESCE(o.median_prob_p, 0.0) AS median_prob_p,
         COALESCE(o.median_prob_s, 0.0) AS median_prob_s,
         COALESCE(o.median_prob_total, 0.0) AS median_prob_total,
@@ -718,18 +719,18 @@ def compute_ps_ratio(event: Event, origin: Origin) -> float:
     Returns:
         float: The PS ratio (0.0 to 1.0), or None if no used station.
     """
-    ps_ratio, _ = compute_ps_ratio_and_station_score(event, origin)
+    ps_ratio, _, _ = compute_ps_ratio_and_station_score(event, origin)
     return ps_ratio
 
 
 def compute_ps_ratio_and_station_score(
     event: Event, origin: Origin
-) -> Tuple[Optional[float], float]:
+) -> Tuple[Optional[float], float, int]:
     """
-    Compute ps_ratio and station_score in a single pass over arrivals.
+    Compute ps_ratio, station_score, and ps_station_count in a single pass over arrivals.
 
     Returns:
-        Tuple[Optional[float], float]: (ps_ratio, station_score)
+        Tuple[Optional[float], float, int]: (ps_ratio, station_score, ps_station_count)
     """
     station_phases = defaultdict(set)
     for arrival in origin.arrivals:
@@ -765,7 +766,7 @@ def compute_ps_ratio_and_station_score(
 
     ps_ratio = stations_with_both / total_stations if total_stations > 0 else None
 
-    return ps_ratio, station_score
+    return ps_ratio, station_score, stations_with_both
 
 
 # -----------------------------------------------------------------------------
@@ -1204,8 +1205,8 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
         logger.debug(f"Could not compute Gallacher GT5 score for origin {origin.resource_id.id}: {e}")
 
     # Ratio of stations with both P and S used phases over total used stations
-    # Also compute station_score in the same pass to avoid redundant iteration
-    ps_ratio, station_score = compute_ps_ratio_and_station_score(event, origin)
+    # Also compute station_score and ps_station_count in the same pass to avoid redundant iteration
+    ps_ratio, station_score, ps_station_count = compute_ps_ratio_and_station_score(event, origin)
 
     # Use azimuthal gaps from quality object
     azimuthal_gap = quality.azimuthal_gap
@@ -1252,13 +1253,13 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             gt5_status,
             cpq,
             gallacher_gt5_status,
-            evaluation_mode, preferred, ps_ratio, station_score, geometry
+            evaluation_mode, preferred, ps_ratio, ps_station_count, station_score, geometry
         )
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ST_GeomFromText(?, 4326)
         )
         """,
@@ -1307,6 +1308,7 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
                 else 0
             ),
             ps_ratio,
+            ps_station_count,
             station_score,
             f"POINT({origin.longitude} {origin.latitude})",
         ),
@@ -1773,6 +1775,7 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 preferred BOOLEAN,
                 station_score DOUBLE,
                 ps_ratio DOUBLE,
+                ps_station_count INTEGER,
                 median_prob_p DOUBLE,
                 median_prob_s DOUBLE,
                 median_prob_total DOUBLE
@@ -2846,15 +2849,17 @@ def compute_origin_station_score(conn: sqlite3.Connection) -> None:
 
 def recompute_ps_ratio(conn: sqlite3.Connection) -> None:
     """
-    Recompute ps_ratio for all preferred origins in the database.
+    Recompute ps_ratio and ps_station_count for all preferred origins in the database.
 
     ps_ratio is the ratio of stations with both P and S phases over total stations
     with at least one used phase (time_weight > 0).
+    ps_station_count is the absolute number of stations with both P and S phases.
     """
-    logger.info("Recomputing ps_ratio for all preferred origins...")
+    logger.info("Recomputing ps_ratio and ps_station_count for all preferred origins...")
     cursor = conn.cursor()
 
     _ensure_column(cursor, "origins", "ps_ratio", "DOUBLE")
+    _ensure_column(cursor, "origins", "ps_station_count", "INTEGER")
 
     cursor.execute("SELECT id FROM origins WHERE preferred = 1")
     origins = cursor.fetchall()
@@ -2865,6 +2870,7 @@ def recompute_ps_ratio(conn: sqlite3.Connection) -> None:
         total_stations = len(station_phases)
         if total_stations == 0:
             ps_ratio = None
+            ps_station_count = 0
         else:
             stations_with_both = sum(
                 1
@@ -2872,13 +2878,15 @@ def recompute_ps_ratio(conn: sqlite3.Connection) -> None:
                 if "P" in phases and "S" in phases
             )
             ps_ratio = stations_with_both / total_stations
+            ps_station_count = stations_with_both
 
         cursor.execute(
-            "UPDATE origins SET ps_ratio = ? WHERE id = ?", (ps_ratio, origin_id)
+            "UPDATE origins SET ps_ratio = ?, ps_station_count = ? WHERE id = ?",
+            (ps_ratio, ps_station_count, origin_id)
         )
 
     conn.commit()
-    logger.info("ps_ratio recomputation completed")
+    logger.info("ps_ratio and ps_station_count recomputation completed")
 
 
 def compute_median_probabilities(conn):
