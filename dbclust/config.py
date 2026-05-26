@@ -668,6 +668,17 @@ class RelocationConfig:
     pass2_degradation_factor: Optional[float] = None
     # if True AND degradation is detected, revert to pass 1 as preferred origin
     pass2_fallback: Optional[bool] = False
+    # --- Time weight outlier detection (MAD-based) ---
+    # Enable statistical outlier detection for abnormally low time_weight values
+    # Uses Median Absolute Deviation (MAD): removes picks with time_weight < median - k*MAD
+    enable_time_weight_outlier_filter: Optional[bool] = False
+    # MAD sensitivity factor: higher = less aggressive (3.0 ≈ 3-sigma equivalent)
+    time_weight_outlier_mad_factor: Optional[float] = 3.0
+    # Minimum number of picks required to compute MAD statistics
+    time_weight_outlier_min_picks: Optional[int] = 5
+    # Absolute threshold: remove picks with time_weight below this value (regardless of MAD)
+    # Useful for extreme cases with many zero weights (e.g., 0.1)
+    time_weight_outlier_absolute_threshold: Optional[float] = None
 
 
 @dataclass

@@ -207,6 +207,10 @@ class NllLoc(object):
         enable_residual_threshold_with_pick_zone: bool = False,  # apply P/S residual thresholds even when using pick zones
         pass2_degradation_factor: Optional[float] = None,  # warn if RMS_pass2 > RMS_pass1 * factor (None = disabled)
         pass2_fallback: bool = False,  # if True AND degradation detected, revert to pass 1 as preferred origin
+        enable_time_weight_outlier_filter: bool = False,  # enable MAD-based outlier detection for abnormally low time_weight
+        time_weight_outlier_mad_factor: float = 3.0,  # MAD multiplier for outlier threshold (higher = less aggressive)
+        time_weight_outlier_min_picks: int = 5,  # minimum picks needed to compute MAD statistics
+        time_weight_outlier_absolute_threshold: Optional[float] = None,  # absolute threshold for time_weight (regardless of MAD)
     ):
         # define locator
         self.nll_bin = nll_bin
@@ -249,6 +253,16 @@ class NllLoc(object):
         self.enable_residual_threshold_with_pick_zone = enable_residual_threshold_with_pick_zone
         self.pass2_degradation_factor = pass2_degradation_factor
         self.pass2_fallback = pass2_fallback
+        self.enable_time_weight_outlier_filter = enable_time_weight_outlier_filter
+        self.time_weight_outlier_mad_factor = time_weight_outlier_mad_factor
+        self.time_weight_outlier_min_picks = time_weight_outlier_min_picks
+        self.time_weight_outlier_absolute_threshold = time_weight_outlier_absolute_threshold
+
+        logger.info(
+            f"NllLoc initialized: MAD filter={'enabled' if enable_time_weight_outlier_filter else 'disabled'}, "
+            f"factor={time_weight_outlier_mad_factor}, min_picks={time_weight_outlier_min_picks}, "
+            f"absolute_threshold={time_weight_outlier_absolute_threshold}"
+        )
 
         # keep track of cluster affiliation
         self.event_cluster_mapping = {}
@@ -501,6 +515,7 @@ class NllLoc(object):
         force_model_id: str = None,
         force_template: str = None,
         force_loc_method: str = None,
+        _pass_label: str = None,  # optional label for logging (e.g. "Pass 0 preloc")
     ):
         """
         Perform NonLinLoc localization for seismic events.
@@ -615,6 +630,49 @@ class NllLoc(object):
                 logger.info(
                     f"No preloc file found. Using default nll template and model {os.path.basename(nll_template)}"
                 )
+
+                # Pass 0: fast NLL preloc with all raw picks to detect MAD outliers.
+                # Only when double_pass is active — otherwise pass 1 is the only loc.
+                if self.double_pass:
+                    logger.info("Pass 0 (preloc NLL): GAU_ANALYTIC with all raw picks.")
+                    # Use pass_count=1 to block double-pass recursion inside this call.
+                    # Do NOT pass double_pass=False: that would mutate self.double_pass
+                    # and break the pass 1 → pass 2 chain that follows.
+                    cat_preloc = self.nll_localisation(
+                        nll_obs_file,
+                        picks=picks,
+                        pass_count=1,  # blocks double-pass recursion without mutating self.double_pass
+                        force_template=nll_template,
+                        force_loc_method="GAU_ANALYTIC",
+                        _pass_label="Pass 0 (preloc NLL/GAU_ANALYTIC)",
+                    )
+                    if not cat_preloc:
+                        logger.warning("Pass 0 preloc NLL failed — aborting.")
+                        return Catalog()
+
+                    e_preloc = cat_preloc.events[0]
+                    o_preloc = e_preloc.preferred_origin()
+                    outlier_arrivals = self._detect_mad_outliers(e_preloc, o_preloc)
+
+                    if outlier_arrivals:
+                        if picks is None:
+                            logger.warning(
+                                "Pass 0 MAD filter: outliers detected but no picks list available "
+                                "— cannot rewrite obs file, filter skipped."
+                            )
+                        else:
+                            outlier_pick_ids = {a.pick_id for a in outlier_arrivals}
+                            n_before = len(picks)
+                            picks = [p for p in picks if p.resource_id not in outlier_pick_ids]
+                            logger.info(
+                                f"Pass 0 MAD filter: removed {n_before - len(picks)} outlier pick(s), "
+                                f"{len(picks)} remaining."
+                            )
+                            # Rewrite the obs file from the original filtered picks list
+                            # (not from e_preloc which may have NLL-merged co-located picks).
+                            tmp_event = Event(picks=picks)
+                            tmp_cat = Catalog(events=[tmp_event])
+                            tmp_cat.write(nll_obs_file, format="NLLOC_OBS")
 
         logger.debug(f"Localization of {nll_obs_file} using {nll_template} template.")
         nll_obs_file_basename = os.path.basename(nll_obs_file)
@@ -799,6 +857,8 @@ class NllLoc(object):
 
         o.quality.used_station_count = self.get_used_station_count(e, o)
         o.quality.used_phase_count = self.get_used_phase_count(e, o)
+        ps_with_both, ps_total, ps_ratio = self._compute_ps_ratio(e, o)
+        o.quality.ps_station_count = ps_with_both
 
         # set time_weight to 0 for arrival if time_weight < time_weight_tolerance
         # to avoid any issue with seiscomp
@@ -862,8 +922,9 @@ class NllLoc(object):
             for p in e.picks
             if p.creation_info and p.creation_info.author
         ))
+        pass_label = _pass_label if _pass_label else f"Pass {pass_count + 1}"
         logger.info(
-            f"Pass {pass_count + 1} localization: "
+            f"{pass_label} localization: "
             f"lat={o.latitude:.4f}, lon={o.longitude:.4f}, depth={o.depth/1000:.1f}km, "
             f"RMS={o.quality.standard_error:.3f}, phases={o.quality.used_phase_count}, "
             f"model={model_id}"
@@ -1182,11 +1243,12 @@ class NllLoc(object):
             # Compute quality attributes
             o.quality.used_station_count = self.get_used_station_count(e, o)
             o.quality.used_phase_count = self.get_used_phase_count(e, o)
+            ps_with_both, ps_total, ps_ratio = self._compute_ps_ratio(e, o)
+            o.quality.ps_station_count = ps_with_both
 
             # Gather all criteria values upfront for consolidated logging
             closest_km = get_closest_station_dist_km(e) if self.closest_station_dist_km is not None else None
             station_score = self.get_origin_station_score(e, o)
-            ps_with_both, ps_total, ps_ratio = self._compute_ps_ratio(e, o)
             ps_str = f"ps={ps_with_both}/{ps_total}({ps_ratio:.2f})"
             closest_str = f"closest={closest_km:.1f}km" if closest_km is not None else "closest=N/A"
             summary = (
@@ -1504,6 +1566,7 @@ class NllLoc(object):
 
         Remove picks/arrivals with:
             - time weight set to 0
+            - abnormally low time_weight (MAD-based outlier detection, if enabled)
             - bad residual
             - duplicated phases (remove the one with highest residual)
             - distance > dist_km_cutoff (if defined)
@@ -1511,6 +1574,11 @@ class NllLoc(object):
         Keep (forced):
             - pick with evaluation_mode set "manual" if keep_manual_picks is True
             - bypass relabel steps
+
+        MAD outlier detection (if enable_time_weight_outlier_filter=True):
+            - Computes median and MAD of time_weight values
+            - Removes picks with time_weight < median - k*MAD
+            - Only applied if number of picks >= time_weight_outlier_min_picks
 
         Update "used_station_count" and "used_phase_count" in origin quality.
 
@@ -1524,6 +1592,10 @@ class NllLoc(object):
         orig = event.preferred_origin()
         pick_to_delete = []
         arrival_to_delete = []
+        
+        # Detect time_weight outliers using MAD (Median Absolute Deviation)
+        mad_outliers = self._detect_mad_outliers(event, orig)
+        arrival_to_delete.extend(mad_outliers)
         for arrival in orig.arrivals:
             pick = next(
                 (p for p in event.picks if p.resource_id == arrival.pick_id), None
@@ -1669,6 +1741,9 @@ class NllLoc(object):
         cleaned_by_gap_dist = 0
         cleaned_by_cutoff = 0
 
+        arrival_to_delete = []
+        pick_to_delete = []
+
         if df_polygons.empty:
             logger.warning("No polygon defined in zone. Can't cleanup picks.")
             # ic(zone)
@@ -1676,6 +1751,13 @@ class NllLoc(object):
             region_name = df_polygons["region"].unique()[0]
 
         orig = event.preferred_origin()
+
+        # Detect time_weight outliers using MAD (Median Absolute Deviation)
+        # Do this BEFORE other filters to ensure outliers are counted correctly
+        mad_outliers = self._detect_mad_outliers(event, orig)
+        cleaned_by_mad = len(mad_outliers)
+        logger.info(f"MAD outliers detected: {cleaned_by_mad} arrivals")
+        arrival_to_delete.extend(mad_outliers)
 
         # Deduplicate arrivals that point to the same station with the same phase
         # before relabeling. This prevents conflicts when two arrivals (e.g., from
@@ -2095,7 +2177,7 @@ class NllLoc(object):
 
         logger.info(
             f"Removed arrivals: nll/weight ({cleaned_by_nll}), residual ({cleaned_by_residual}), "
-            f"cutoff ({cleaned_by_cutoff}), polygons ({cleaned_by_polygon}): "
+            f"cutoff ({cleaned_by_cutoff}), polygons ({cleaned_by_polygon}), MAD ({cleaned_by_mad}): "
             f"{len(arrival_to_delete)} total"
         )
 
@@ -2179,6 +2261,71 @@ class NllLoc(object):
         with open(outfilename, "w") as out_fh:
             out_fh.write(t)
             logger.debug(f"Template {templatefile} rendered as {outfilename}")
+
+    def _detect_mad_outliers(self, event: Event, origin: Origin) -> list:
+        """
+        Detect time_weight outliers using Median Absolute Deviation (MAD).
+
+        Returns list of arrivals whose time_weight is anomalously low.
+        Only active when enable_time_weight_outlier_filter=True and there
+        are at least time_weight_outlier_min_picks arrivals.
+        Manual picks are excluded from the removal candidates when
+        keep_manual_picks=True, but still included in the statistics.
+        """
+        outlier_arrivals = []
+
+        if not self.enable_time_weight_outlier_filter:
+            return outlier_arrivals
+
+        logger.info(f"MAD filter enabled: checking {len(origin.arrivals)} arrivals")
+
+        time_weights = []
+        arrival_list = []
+        for arr in origin.arrivals:
+            pk = next((p for p in event.picks if p.resource_id == arr.pick_id), None)
+            if pk is None:
+                continue
+            time_weights.append(arr.time_weight)
+            if not (self.keep_manual_picks and pk.evaluation_mode == "manual"):
+                arrival_list.append(arr)
+
+        if len(time_weights) < self.time_weight_outlier_min_picks:
+            return outlier_arrivals
+
+        time_weights_array = np.array(time_weights)
+        median_tw = np.median(time_weights_array)
+        mad = np.median(np.abs(time_weights_array - median_tw))
+        logger.info(
+            f"MAD stats: n={len(time_weights)}, median={median_tw:.3f}, MAD={mad:.3f}, "
+            f"weights={sorted(time_weights)[:5]}...{sorted(time_weights)[-3:]}"
+        )
+
+        if mad <= 0:
+            return outlier_arrivals
+
+        mad_threshold = median_tw - self.time_weight_outlier_mad_factor * mad
+        if self.time_weight_outlier_absolute_threshold is not None:
+            threshold = max(mad_threshold, self.time_weight_outlier_absolute_threshold)
+            logger.info(
+                f"MAD outlier detection: median={median_tw:.3f}, MAD={mad:.3f}, "
+                f"mad_threshold={mad_threshold:.3f}, absolute_threshold={self.time_weight_outlier_absolute_threshold:.3f}, "
+                f"final_threshold={threshold:.3f}"
+            )
+        else:
+            threshold = mad_threshold
+            logger.info(
+                f"MAD outlier detection: median={median_tw:.3f}, MAD={mad:.3f}, "
+                f"threshold={threshold:.3f}"
+            )
+
+        for arr in arrival_list:
+            if arr.time_weight < threshold:
+                outlier_arrivals.append(arr)
+
+        if outlier_arrivals:
+            logger.info(f"MAD filter: {len(outlier_arrivals)} outlier(s) flagged")
+
+        return outlier_arrivals
 
     def show_localizations(self, output: str = "stdout", log_level: int = logging.INFO) -> None:
         """Show all localizations in the catalog.
