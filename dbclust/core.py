@@ -254,6 +254,10 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         enable_residual_threshold_with_pick_zone=getattr(cfg.relocation, "enable_residual_threshold_with_pick_zone", False),
         pass2_degradation_factor=getattr(cfg.relocation, "pass2_degradation_factor", None),
         pass2_fallback=getattr(cfg.relocation, "pass2_fallback", False),
+        enable_time_weight_outlier_filter=getattr(cfg.relocation, "enable_time_weight_outlier_filter", False),
+        time_weight_outlier_mad_factor=getattr(cfg.relocation, "time_weight_outlier_mad_factor", 3.0),
+        time_weight_outlier_min_picks=getattr(cfg.relocation, "time_weight_outlier_min_picks", 5),
+        time_weight_outlier_absolute_threshold=getattr(cfg.relocation, "time_weight_outlier_absolute_threshold", None),
         #
         keep_not_existing_event=cfg.catalog.keep_not_existing_event,
     )
