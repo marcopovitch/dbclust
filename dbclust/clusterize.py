@@ -1501,8 +1501,8 @@ class Clusterize(object):
                         rejected_event_ids.update(event_id_counts.keys())
                         continue
 
-            # Pre-NLL filter: min_station_with_P_and_S (only when station_score not used)
-            elif self.min_station_with_P_and_S:
+            # Pre-NLL filter: min_station_with_P_and_S (independent of station_score)
+            if self.min_station_with_P_and_S:
                 if stations_with_both < self.min_station_with_P_and_S:
                     if self.force_keep_catalog_events and event_id_counts:
                         logger.warning(
