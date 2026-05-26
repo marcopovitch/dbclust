@@ -1596,6 +1596,10 @@ class NllLoc(object):
         # Detect time_weight outliers using MAD (Median Absolute Deviation)
         mad_outliers = self._detect_mad_outliers(event, orig)
         arrival_to_delete.extend(mad_outliers)
+        for _a in mad_outliers:
+            _p = get_pick_from_arrival(event, _a)
+            if _p is not None and _p not in pick_to_delete:
+                pick_to_delete.append(_p)
         for arrival in orig.arrivals:
             pick = next(
                 (p for p in event.picks if p.resource_id == arrival.pick_id), None
@@ -1629,8 +1633,10 @@ class NllLoc(object):
                     and arrival.distance > self.dist_km_cutoff / 111.0
                 )
             ):
-                pick_to_delete.append(pick)
-                arrival_to_delete.append(arrival)
+                if pick not in pick_to_delete:
+                    pick_to_delete.append(pick)
+                if arrival not in arrival_to_delete:
+                    arrival_to_delete.append(arrival)
 
         if arrival_to_delete:
             logger.info(
@@ -1645,9 +1651,11 @@ class NllLoc(object):
                     )
 
         for a in arrival_to_delete:
-            orig.arrivals.remove(a)
+            if a in orig.arrivals:
+                orig.arrivals.remove(a)
         for p in pick_to_delete:
-            event.picks.remove(p)
+            if p in event.picks:
+                event.picks.remove(p)
 
         # check duplicated picks
         duplicates_removed = 0
@@ -1758,6 +1766,10 @@ class NllLoc(object):
         cleaned_by_mad = len(mad_outliers)
         logger.info(f"MAD outliers detected: {cleaned_by_mad} arrivals")
         arrival_to_delete.extend(mad_outliers)
+        for _a in mad_outliers:
+            _p = get_pick_from_arrival(event, _a)
+            if _p is not None:
+                pick_to_delete.append(_p)
 
         # Deduplicate arrivals that point to the same station with the same phase
         # before relabeling. This prevents conflicts when two arrivals (e.g., from
@@ -1906,7 +1918,7 @@ class NllLoc(object):
         #   - duplicated phases (remove the one with highest residual)
         #   - distance > dist_km_cutoff (if defined)
         pick_to_delete = []
-        arrival_to_delete = []
+        # arrival_to_delete already initialized above with MAD outliers — do not reset
         relabel = {}
 
         # for arrival in orig.arrivals:
@@ -2171,9 +2183,11 @@ class NllLoc(object):
 
         # remove picks and arrivals
         for a in arrival_to_delete:
-            orig.arrivals.remove(a)
+            if a in orig.arrivals:
+                orig.arrivals.remove(a)
         for p in pick_to_delete:
-            event.picks.remove(p)
+            if p in event.picks:
+                event.picks.remove(p)
 
         logger.info(
             f"Removed arrivals: nll/weight ({cleaned_by_nll}), residual ({cleaned_by_residual}), "

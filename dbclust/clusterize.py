@@ -1215,8 +1215,9 @@ class Clusterize(object):
         n_clusters_ = len(set(labels)) - (1 if -1 in labels else 0)
         n_noise_ = list(labels).count(-1)
 
-        logger.info("Number of clusters: %d" % n_clusters_)
-        logger.info("Number of noise points: %d" % n_noise_)
+        log_fn = logger.debug if n_clusters_ <= 1 and n_noise_ == 0 else logger.info
+        log_fn("Number of clusters: %d" % n_clusters_)
+        log_fn("Number of noise points: %d" % n_noise_)
 
         # only for hdbscan
         # kind of cluster stability measurement [0, 1]
