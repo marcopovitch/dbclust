@@ -294,6 +294,7 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         average_velocity=average_velocity,
         min_station_count=cfg.cluster.min_station_count,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
+        min_station_with_P_and_S_stability_override=cfg.cluster.min_station_with_P_and_S_stability_override,
         min_station_score=cfg.cluster.min_station_score,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
         force_keep_catalog_events=cfg.cluster.force_keep_catalog_events,

@@ -557,6 +557,10 @@ class ClusterConfig:
     # Leiden clusters with stability below this threshold are dissolved into the HDBSCAN pool.
     # 0.0 = only noise goes to HDBSCAN (no unstable cluster dissolution).
     leiden_min_stability: float = 0.0
+    # Stability threshold to override min_station_with_P_and_S rejection.
+    # If cluster stability > this value, the cluster is kept even if it fails
+    # the min_station_with_P_and_S criterion. 0.0 = disabled (strict P+S check always applies).
+    min_station_with_P_and_S_stability_override: float = 0.0
 
     def __post_init__(self) -> None:
         if self.pre_computed_tt_matrix_file:

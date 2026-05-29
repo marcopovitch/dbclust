@@ -50,6 +50,14 @@ reference: https://pyocto.readthedocs.io
 logger = logging.getLogger("dbclust.pyocto")
 
 
+class _SuppressSecondPassWarning(logging.Filter):
+    def filter(self, record):
+        return "Did not associate more events after" not in record.getMessage()
+
+
+logging.getLogger("pyocto").addFilter(_SuppressSecondPassWarning())
+
+
 class MultipleEventIDsWithSameAgencyError(Exception):
     """
     Exception raised when multiple event_ids are associated
@@ -284,7 +292,7 @@ def dbclust2pyocto(
             stations["longitude"].max() + lon_safe_range_deg,
         )
 
-        logger.info(f"range lat: {lat_range}, lon: {lon_range}")
+        logger.debug(f"range lat: {lat_range}, lon: {lon_range}")
 
         try:
             associator = pyocto.OctoAssociator.from_area(
@@ -383,7 +391,8 @@ def dbclust2pyocto(
         )
 
         n_unassigned = len(cluster) - len(assigned_pick_ids)
-        logger.info(
+        log_fn = logger.info if len(events) > 0 else logger.debug
+        log_fn(
             f"\t{len(events)} events found in cluster#{i} with {len(cluster)} picks"
             f" ({n_unassigned} unassigned by PyOcto)"
         )
