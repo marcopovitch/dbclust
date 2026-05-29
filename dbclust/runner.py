@@ -253,6 +253,10 @@ def main():
     logging.basicConfig(stream=sys.stdout, level=numeric_level, force=True)
     # Set level on the dbclust parent logger so all child loggers inherit it
     logging.getLogger("dbclust").setLevel(numeric_level)
+    # Suppress pyocto's routine "Did not associate more events" WARNING — it fires
+    # on every cluster that yields 0 events and is redundant with our own log.
+    if numeric_level > logging.DEBUG:
+        logging.getLogger("pyocto").setLevel(logging.ERROR)
 
     # Load configuration
     cfg = DBClustConfig(args.configfile)

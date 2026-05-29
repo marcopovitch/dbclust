@@ -403,6 +403,7 @@ class Clusterize(object):
         mega_cluster_leiden_resolution=0.1,  # Leiden resolution for mega-cluster fallback
         leiden_hdbscan_fallback=False,       # run HDBSCAN on Leiden noise + unstable clusters
         leiden_min_stability=0.0,            # clusters below this stability go to HDBSCAN pool
+        min_station_with_P_and_S_stability_override=0.0,  # bypass P+S check if stability > this
     ):
         # clusters is a list of cluster :
         # ie. [ [phases, label], ... ]
@@ -460,6 +461,7 @@ class Clusterize(object):
         self.mega_cluster_leiden_resolution = mega_cluster_leiden_resolution
         self.leiden_hdbscan_fallback = leiden_hdbscan_fallback
         self.leiden_min_stability = leiden_min_stability
+        self.min_station_with_P_and_S_stability_override = min_station_with_P_and_S_stability_override
 
         if phases is None:
             # Simple constructor
@@ -1505,16 +1507,26 @@ class Clusterize(object):
             # Pre-NLL filter: min_station_with_P_and_S (independent of station_score)
             if self.min_station_with_P_and_S:
                 if stations_with_both < self.min_station_with_P_and_S:
+                    cluster_stability = float(self.clusters_stability[i])
                     if self.force_keep_catalog_events and event_id_counts:
                         logger.warning(
                             f"Cluster {i} failed min_station_with_P_and_S ({stations_with_both}/{self.min_station_with_P_and_S}) "
                             f"but force_keep_catalog_events=True [event_ids: {dict(event_id_counts)}] — keeping anyway"
                         )
                         forced_catalog_event = True
+                    elif (
+                        self.min_station_with_P_and_S_stability_override > 0.0
+                        and cluster_stability > self.min_station_with_P_and_S_stability_override
+                    ):
+                        logger.warning(
+                            f"Cluster {i} failed min_station_with_P_and_S ({stations_with_both}/{self.min_station_with_P_and_S}) "
+                            f"but kept by stability override (stability={cluster_stability:.3f} > {self.min_station_with_P_and_S_stability_override})"
+                            + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
+                        )
                     else:
                         log_fn = logger.warning if event_id_counts else logger.info
                         log_fn(
-                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
+                            f"Cluster {i}, stability:{cluster_stability:.3f} ignored ... "
                             f"not enough stations with both P and S ({stations_with_both}/{self.min_station_with_P_and_S})"
                             + (
                                 f" [event_ids: {dict(event_id_counts)}]"
@@ -1540,10 +1552,14 @@ class Clusterize(object):
             cat.append(event)
             os.makedirs(OBS_PATH, exist_ok=True)
             obs_file = os.path.join(OBS_PATH, f"cluster-{i}.obs")
+            cluster_stab = float(self.clusters_stability[i])
             logger.debug(
-                f"Cluster {i}, writing {obs_file}, stability:{self.clusters_stability[i]}, n_stations:{len(stations_list)})"
+                f"Cluster {i}, writing {obs_file}, stability:{cluster_stab}, n_stations:{len(stations_list)})"
             )
             cat.write(obs_file, format="NLLOC_OBS")
+            meta_file = obs_file.replace(".obs", ".meta")
+            with open(meta_file, "w") as _mf:
+                json.dump({"cluster_stability": round(cluster_stab, 4)}, _mf)
 
             # use pyocto pre-localization to select velocity model to be used
             # create vel_file with required information

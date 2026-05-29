@@ -211,6 +211,7 @@ class NllLoc(object):
         time_weight_outlier_mad_factor: float = 3.0,  # MAD multiplier for outlier threshold (higher = less aggressive)
         time_weight_outlier_min_picks: int = 5,  # minimum picks needed to compute MAD statistics
         time_weight_outlier_absolute_threshold: Optional[float] = None,  # absolute threshold for time_weight (regardless of MAD)
+        min_station_with_P_and_S_stability_override: float = 0.0,  # bypass P+S check if cluster stability > this
     ):
         # define locator
         self.nll_bin = nll_bin
@@ -257,6 +258,7 @@ class NllLoc(object):
         self.time_weight_outlier_mad_factor = time_weight_outlier_mad_factor
         self.time_weight_outlier_min_picks = time_weight_outlier_min_picks
         self.time_weight_outlier_absolute_threshold = time_weight_outlier_absolute_threshold
+        self.min_station_with_P_and_S_stability_override = min_station_with_P_and_S_stability_override
 
         logger.info(
             f"NllLoc initialized: MAD filter={'enabled' if enable_time_weight_outlier_filter else 'disabled'}, "
@@ -1251,12 +1253,22 @@ class NllLoc(object):
             station_score = self.get_origin_station_score(e, o)
             ps_str = f"ps={ps_with_both}/{ps_total}({ps_ratio:.2f})"
             closest_str = f"closest={closest_km:.1f}km" if closest_km is not None else "closest=N/A"
+            cluster_stability_str = ""
+            for _c in e.comments:
+                try:
+                    _meta = json.loads(_c.text)
+                    if "cluster_stability" in _meta:
+                        cluster_stability_str = f" | stability={_meta['cluster_stability']:.3f}"
+                        break
+                except (ValueError, TypeError):
+                    pass
             summary = (
                 f"score={station_score}/{self.min_station_score} | "
                 f"phases={o.quality.used_phase_count} | "
                 f"stations={o.quality.used_station_count} | "
                 f"{ps_str} | "
                 f"{closest_str}"
+                f"{cluster_stability_str}"
                 f"{event_ids_str}"
             )
 
@@ -1302,9 +1314,29 @@ class NllLoc(object):
 
             ps_station_count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
             if ps_station_count < self.min_station_with_P_and_S:
-                log_fn = logger.warning if event_ids_in_picks else logger.info
-                log_fn(f"Rejected | {summary} | reason: P+S stations={ps_station_count} < {self.min_station_with_P_and_S}")
-                continue
+                cluster_stability = None
+                if self.min_station_with_P_and_S_stability_override > 0.0:
+                    for c in e.comments:
+                        try:
+                            meta = json.loads(c.text)
+                            if "cluster_stability" in meta:
+                                cluster_stability = float(meta["cluster_stability"])
+                                break
+                        except (ValueError, TypeError):
+                            pass
+                if (
+                    cluster_stability is not None
+                    and cluster_stability > self.min_station_with_P_and_S_stability_override
+                ):
+                    logger.warning(
+                        f"Accepted (stability override) | {summary} | "
+                        f"P+S stations={ps_station_count} < {self.min_station_with_P_and_S} "
+                        f"but cluster_stability={cluster_stability:.3f} > {self.min_station_with_P_and_S_stability_override}"
+                    )
+                else:
+                    log_fn = logger.warning if event_ids_in_picks else logger.info
+                    log_fn(f"Rejected | {summary} | reason: P+S stations={ps_station_count} < {self.min_station_with_P_and_S}")
+                    continue
 
             if self.min_ps_ratio is not None:
                 ps_rejected = (
@@ -1404,6 +1436,18 @@ class NllLoc(object):
             if not cat:
                 logger.debug(f"No loc obtained for {nll_obs_file} :/")
                 continue
+
+            # Inject cluster stability from sidecar .meta file into the event comment
+            meta_file = nll_obs_file.replace(".obs", ".meta")
+            if os.path.exists(meta_file):
+                try:
+                    with open(meta_file) as _mf:
+                        _meta = json.load(_mf)
+                    for _e in cat.events:
+                        _e.comments.append(Comment(text=json.dumps(_meta)))
+                except Exception:
+                    pass
+
             cat_results.append(cat)
 
         mycatalog = self.get_catalog_from_results(cat_results)

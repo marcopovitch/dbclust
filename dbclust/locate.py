@@ -158,6 +158,8 @@ def setup_logging(level: str) -> None:
         raise ValueError(f"Invalid log level: {level}")
     logging.basicConfig(stream=sys.stdout, level=numeric_level, force=True)
     LOGGER.setLevel(numeric_level)
+    if numeric_level > logging.DEBUG:
+        logging.getLogger("pyocto").setLevel(logging.ERROR)
 
 
 def read_picks_dataframe(picks_file: str) -> pd.DataFrame:
@@ -330,6 +332,7 @@ def build_locator(
         use_deactivated_arrivals=getattr(cfg_reloc, "use_deactivated_arrivals", False),
         keep_manual_picks=getattr(cfg_reloc, "keep_manual_picks", False),
         min_station_with_P_and_S=getattr(cfg_cluster, "min_station_with_P_and_S", 0),
+        min_station_with_P_and_S_stability_override=getattr(cfg_cluster, "min_station_with_P_and_S_stability_override", 0.0),
         min_station_score=getattr(cfg_cluster, "min_station_score", None),
         quakeml_settings=quakeml_settings,
         keep_scat=getattr(cfg_nll, "enable_scatter", False),
