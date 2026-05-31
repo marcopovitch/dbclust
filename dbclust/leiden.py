@@ -6,7 +6,7 @@ Weights= exp(-d_tt / sigma) * p_i * p_j          for cross-station pairs
          p_i * p_j * ps_boost_factor                for same-station P-S pairs
 
 The Leiden CPM objective finds communities that maximise internal edge density
-minus resolution_parameter × (expected density under a random model).  A higher
+minus resolution_parameter x (expected density under a random model).  A higher
 resolution produces more, smaller communities.
 
 Same-station P-S pairs receive a distance-free weight because the S-P time is a
@@ -19,7 +19,7 @@ gain.  A post-partition union-find step further enforces this constraint in case
 Leiden still splits a pair.
 
 Communities with fewer than min_cluster_size picks are reclassified as noise
-(label −1), preserving the same return contract as get_clusters().
+(label -1), preserving the same return contract as get_clusters().
 
 Pick probabilities enter as multiplicative edge weights: two high-confidence
 picks form a strong edge; a low-confidence pick anchors to a cluster only if

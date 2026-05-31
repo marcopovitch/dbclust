@@ -5,12 +5,14 @@ Imports QuakeML files in parallel into separate temporary databases,
 then merges them into a single final database.
 """
 import argparse
+import json
 import logging
 import os
 import shutil
 import sqlite3
 import sys
 import tempfile
+from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -29,6 +31,174 @@ from dbclust.inject_spatialite import (
 )
 
 logger = logging.getLogger("dbclust.parallel_import")
+
+
+def deduplicate_cross_partition_events(
+    conn: sqlite3.Connection,
+    overlap_window_s: float = 250.0,
+    min_shared_catalog_ids: int = 2,
+    min_shared_auto_picks: int = 3,
+    report_path: str = None,
+) -> list:
+    """Detect and remove cross-partition duplicate events after merge.
+
+    Two events are duplicates if their manual picks share >= min_shared_catalog_ids
+    distinct source_event_id values. The survivor is the event whose first pick is
+    the earliest (i.e. the job that saw the most picks). The loser is deleted via
+    CASCADE.
+
+    When the difference between first picks exceeds overlap_window_s / 2, the
+    survivor's localisation may be sub-optimal (the job that produced it did not
+    see all picks). A WARNING is logged and the event is flagged for re-localisation
+    with a suggested time window.
+
+    Returns a list of dicts describing events recommended for re-localisation:
+      {event_id, origin_time, first_pick, last_pick, suggested_start, suggested_stop}
+    """
+    cursor = conn.cursor()
+
+    # Two events are duplicates if they share manual picks with the same source_event_id
+    # (catalog-based criterion), OR if they share automatic picks on the same station
+    # at the exact same time (pick-identity criterion for events with no manual picks).
+    cursor.execute("""
+        SELECT ev1, ev2, MAX(n_shared) AS n_shared FROM (
+            -- Criterion 1: shared catalog source_event_ids (manual picks)
+            SELECT p1.event_id AS ev1, p2.event_id AS ev2,
+                   COUNT(DISTINCT p1.source_event_id) AS n_shared
+            FROM picks p1
+            JOIN picks p2
+              ON p1.source_event_id = p2.source_event_id
+             AND p1.event_id < p2.event_id
+             AND p1.source_event_id IS NOT NULL
+             AND p1.evaluation_mode = 'manual'
+            WHERE p2.evaluation_mode = 'manual'
+            GROUP BY p1.event_id, p2.event_id
+            HAVING n_shared >= ?
+
+            UNION ALL
+
+            -- Criterion 2: shared automatic picks (same station, phase, time)
+            SELECT p1.event_id AS ev1, p2.event_id AS ev2,
+                   COUNT(*) AS n_shared
+            FROM picks p1
+            JOIN picks p2
+              ON p1.station_name = p2.station_name
+             AND p1.phase_hint = p2.phase_hint
+             AND p1.pick_time = p2.pick_time
+             AND p1.event_id < p2.event_id
+             AND p1.evaluation_mode = 'automatic'
+             AND p2.evaluation_mode = 'automatic'
+            GROUP BY p1.event_id, p2.event_id
+            HAVING n_shared >= ?
+        )
+        GROUP BY ev1, ev2
+    """, (min_shared_catalog_ids, min_shared_auto_picks))
+    pairs = cursor.fetchall()
+
+    logger.info(f"Cross-partition deduplication: {len(pairs)} duplicate pair(s) found.")
+    reloc_needed = []
+    removed_pairs = []
+
+    for ev1, ev2, n_shared in pairs:
+        # Per-event: first_pick, preferred origin time, phase count
+        cursor.execute(
+            "SELECT MIN(pick_time), time, used_phase_count FROM picks "
+            "JOIN origins USING (event_id) WHERE picks.event_id = ? "
+            "ORDER BY used_phase_count DESC LIMIT 1", (ev1,)
+        )
+        row1 = cursor.fetchone() or (None, None, 0)
+        cursor.execute(
+            "SELECT MIN(pick_time), time, used_phase_count FROM picks "
+            "JOIN origins USING (event_id) WHERE picks.event_id = ? "
+            "ORDER BY used_phase_count DESC LIMIT 1", (ev2,)
+        )
+        row2 = cursor.fetchone() or (None, None, 0)
+        fp1, t1, nph1 = row1
+        fp2, t2, nph2 = row2
+
+        # Winner = earliest first_pick; tie-break on most phases
+        if (fp1 or "") <= (fp2 or "") or (fp1 == fp2 and (nph1 or 0) >= (nph2 or 0)):
+            winner, loser = ev1, ev2
+            t_winner, nph_winner, fp_winner = t1, nph1, fp1
+            fp_loser, nph_loser = fp2, nph2
+        else:
+            winner, loser = ev2, ev1
+            t_winner, nph_winner, fp_winner = t2, nph2, fp2
+            fp_loser, nph_loser = fp1, nph1
+
+        # Pick span across both events = last - first over the union of all picks
+        cursor.execute(
+            "SELECT MIN(pick_time), MAX(pick_time) FROM picks WHERE event_id IN (?, ?)",
+            (ev1, ev2),
+        )
+        first_pick_union, last_pick_union = cursor.fetchone()
+
+        logger.info(
+            f"Cross-partition duplicate: keeping {winner} (first_pick={fp_winner}, phases={nph_winner}), "
+            f"removing {loser} (first_pick={fp_loser}, phases={nph_loser}), "
+            f"n_shared_picks={n_shared}"
+        )
+        cursor.execute("DELETE FROM events WHERE event_id = ?", (loser,))
+        removed_pairs.append({
+            "kept": {"event_id": winner, "origin_time": t_winner, "phases": nph_winner, "first_pick": fp_winner},
+            "removed": {"event_id": loser, "phases": nph_loser, "first_pick": fp_loser},
+            "n_shared_picks": n_shared,
+        })
+
+        # If the union of picks spans more than overlap_window_s, neither job could
+        # see all picks — the surviving localisation is sub-optimal.
+        try:
+            t_first = datetime.fromisoformat(first_pick_union.replace("Z", "+00:00"))
+            t_last = datetime.fromisoformat(last_pick_union.replace("Z", "+00:00"))
+            pick_span_s = (t_last - t_first).total_seconds()
+            if pick_span_s > overlap_window_s:
+                margin = timedelta(minutes=5)
+                suggested_start = (t_first - margin).strftime("%Y-%m-%dT%H:%M:%S")
+                suggested_stop = (t_last + margin).strftime("%Y-%m-%dT%H:%M:%S")
+                logger.warning(
+                    f"Sub-optimal localisation: {winner} (origin={t_winner}, phases={nph_winner}) — "
+                    f"pick span={pick_span_s:.0f}s > overlap={overlap_window_s:.0f}s. "
+                    f"Re-localisation recommended on window "
+                    f"[{suggested_start}, {suggested_stop}] with a single job."
+                )
+                reloc_needed.append({
+                    "event_id": winner,
+                    "origin_time": t_winner,
+                    "first_pick": first_pick_union,
+                    "last_pick": last_pick_union,
+                    "suggested_start": suggested_start,
+                    "suggested_stop": suggested_stop,
+                })
+        except Exception as e:
+            logger.warning(f"Could not compute pick span for pair ({winner}, {loser}): {e}")
+
+    conn.commit()
+    n_removed = len(pairs)
+    n_reloc = len(reloc_needed)
+    logger.info(
+        f"Cross-partition deduplication: {n_removed} duplicate(s) removed, "
+        f"{n_reloc} re-run(s) recommended."
+    )
+
+    if report_path:
+        report = {
+            "summary": {
+                "duplicates_removed": n_removed,
+                "rerun_recommended": n_reloc,
+                "overlap_window_s": overlap_window_s,
+                "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+            "duplicates_removed": removed_pairs,
+            "rerun_recommended": reloc_needed,
+        }
+        try:
+            with open(report_path, "w") as f:
+                json.dump(report, f, indent=2, default=str)
+            logger.info(f"Deduplication report written to {report_path}")
+        except OSError as e:
+            logger.warning(f"Could not write deduplication report: {e}")
+
+    return reloc_needed
 
 
 def import_file_to_temp_db(args_tuple):
@@ -104,7 +274,7 @@ def import_file_to_temp_db(args_tuple):
         return (input_file, None, False, str(e))
 
 
-def merge_databases(temp_db_paths, final_db_path, enable_quakeml=False):
+def merge_databases(temp_db_paths, final_db_path, enable_quakeml=False, overlap_window_s=250.0):
     """
     Merge multiple temporary databases into a single final database.
     
@@ -205,7 +375,15 @@ def merge_databases(temp_db_paths, final_db_path, enable_quakeml=False):
         # Add agency names
         logger.info("Adding agency names...")
         add_agency_names(final_conn)
-        
+
+        # Deduplicate cross-partition events (same physical event localised by two jobs)
+        report_path = str(final_db_path).replace(".db", ".dedup_report.json")
+        deduplicate_cross_partition_events(
+            final_conn,
+            overlap_window_s=overlap_window_s,
+            report_path=report_path,
+        )
+
         # Create indexes
         logger.info("Creating indexes...")
         create_indexes_sql(final_cursor)

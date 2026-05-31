@@ -189,7 +189,12 @@ def finalize_sqlite(cfg: DBClustConfig, completed_job_indices=None) -> None:
         f"Merging {len(temp_db_paths)} temp DBs into {cfg.catalog.sqlite_db_fullpath}"
     )
     try:
-        merge_databases(temp_db_paths, cfg.catalog.sqlite_db_fullpath, enable_quakeml=True)
+        merge_databases(
+            temp_db_paths,
+            cfg.catalog.sqlite_db_fullpath,
+            enable_quakeml=True,
+            overlap_window_s=float(cfg.time.overlap_window),
+        )
     except Exception as e:
         logger.error(f"Failed to merge temp databases: {e}")
         return
