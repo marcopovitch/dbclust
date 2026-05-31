@@ -506,13 +506,23 @@ class ParslHTEExecutor(ExecutorBase):
             logger.warning(f"Error killing Parsl processes: {e}")
 
         try:
-            # Stop the job status poller first to prevent "Scaling in executor" hang
+            # Zero out executor blocks before closing the poller: this prevents
+            # scale_in_facade from calling connected_managers() on an already-closed
+            # ZMQ socket, which would trigger a ZMQError logged as ERROR by Parsl.
+            for executor in dfk.executors.values():
+                try:
+                    if hasattr(executor, 'blocks') and executor.blocks:
+                        executor.blocks.clear()
+                except Exception:
+                    pass
+
+            # Stop the job status poller first to prevent "Scaling in executor" hang.
             if hasattr(dfk, '_job_status_poller') and dfk._job_status_poller:
                 logger.info("Stopping Parsl job status poller...")
                 try:
                     dfk._job_status_poller.close()
                 except Exception as e:
-                    logger.warning(f"Error stopping poller: {e}")
+                    logger.debug(f"Error stopping poller (expected if ZMQ socket already closed): {e}")
             # Explicitly shutdown executors
             for executor in dfk.executors.values():
                 logger.info(f"Shutting down executor: {executor.label}")
@@ -522,6 +532,11 @@ class ParslHTEExecutor(ExecutorBase):
                 except Exception as e:
                     logger.warning(f"Error shutting down executor: {e}")
             logger.info("Calling Parsl DFK cleanup...")
+            # Silence Parsl's process_loggers ERROR on ZMQError during scale_in
+            import logging as _logging
+            _parsl_proc_logger = _logging.getLogger("parsl.process_loggers")
+            _saved_level = _parsl_proc_logger.level
+            _parsl_proc_logger.setLevel(_logging.CRITICAL)
             try:
                 dfk.cleanup()
             except Exception as e:
@@ -529,6 +544,8 @@ class ParslHTEExecutor(ExecutorBase):
                     logger.info("DFK already cleaned, skipping")
                 else:
                     raise
+            finally:
+                _parsl_proc_logger.setLevel(_saved_level)
             logger.info("Calling parsl.clear()...")
             parsl.clear()
             # Explicitly mark DFK as cleaned to prevent atexit warning

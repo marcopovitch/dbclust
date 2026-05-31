@@ -178,7 +178,6 @@ class NllLoc(object):
         loc_method="EDT_OT_WT_ML",
         tmpdir="/tmp",
         min_station_score=5.5,
-        min_station_with_P_and_S=0,
         double_pass=False,
         force_uncertainty=False,
         P_uncertainty=0.1,
@@ -211,7 +210,6 @@ class NllLoc(object):
         time_weight_outlier_mad_factor: float = 3.0,  # MAD multiplier for outlier threshold (higher = less aggressive)
         time_weight_outlier_min_picks: int = 5,  # minimum picks needed to compute MAD statistics
         time_weight_outlier_absolute_threshold: Optional[float] = None,  # absolute threshold for time_weight (regardless of MAD)
-        min_station_with_P_and_S_stability_override: float = 0.0,  # bypass P+S check if cluster stability > this
     ):
         # define locator
         self.nll_bin = nll_bin
@@ -225,7 +223,6 @@ class NllLoc(object):
         self.loc_method = loc_method
         self.tmpdir = tmpdir
         self.min_station_score = min_station_score
-        self.min_station_with_P_and_S = min_station_with_P_and_S
         self.double_pass = double_pass
         self.force_uncertainty = force_uncertainty
         self.P_uncertainty = P_uncertainty
@@ -258,7 +255,6 @@ class NllLoc(object):
         self.time_weight_outlier_mad_factor = time_weight_outlier_mad_factor
         self.time_weight_outlier_min_picks = time_weight_outlier_min_picks
         self.time_weight_outlier_absolute_threshold = time_weight_outlier_absolute_threshold
-        self.min_station_with_P_and_S_stability_override = min_station_with_P_and_S_stability_override
 
         logger.info(
             f"NllLoc initialized: MAD filter={'enabled' if enable_time_weight_outlier_filter else 'disabled'}, "
@@ -740,9 +736,9 @@ class NllLoc(object):
         # check from stdout if there is any missing station grid file
         for line in result.stdout.splitlines():
             if "WARNING: cannot open grid buffer file" in line:
-                logger.error(line)
+                logger.warning(line.replace("WARNING: ", "", 1))
             elif "WARNING: too few observations to locate" in line:
-                logger.error(line)
+                logger.warning(line.replace("WARNING: ", "", 1))
                 return Catalog()
             elif any(k in line for k in ("ABORTED", "IGNORED", "REJECTED")):
                 # check if location was rejected
@@ -1205,19 +1201,18 @@ class NllLoc(object):
         margin = z * np.sqrt(p * (1 - p) / n + z ** 2 / (4 * n ** 2))
         return (center + margin) / denom
 
-    def _check_ps_ratio(self, event, origin) -> bool:
-        """Check PS ratio (stations with both P and S / total stations).
-        If min_ps_ratio_wilson_z is set, reject only when the Wilson upper bound
-        of the observed ratio is below min_ps_ratio (adaptive, sample-size aware).
-        Otherwise fall back to a fixed threshold comparison.
-        Returns False (reject) if below threshold.
+    def _ps_ratio_ok(self, ps_with_both: int, ps_total: int) -> bool:
+        """Return True if ps_ratio passes the configured threshold (disabled → always True).
+
+        Uses the Wilson upper-bound test when min_ps_ratio_wilson_z is set,
+        otherwise applies a fixed threshold on ps_with_both / ps_total.
         """
         if self.min_ps_ratio is None:
             return True
-        n_ps, n_total, ps_ratio = self._compute_ps_ratio(event, origin)
         if self.min_ps_ratio_wilson_z is not None:
-            return self._wilson_high(n_ps, n_total, self.min_ps_ratio_wilson_z) >= self.min_ps_ratio
-        return ps_ratio >= self.min_ps_ratio
+            return self._wilson_high(ps_with_both, ps_total, self.min_ps_ratio_wilson_z) >= self.min_ps_ratio
+        ratio = ps_with_both / ps_total if ps_total > 0 else 0.0
+        return ratio >= self.min_ps_ratio
 
     def get_catalog_from_results(self, cat_results: List[Catalog]) -> Catalog:
         """Compute attributes and filter events from catalogs"""
@@ -1254,11 +1249,13 @@ class NllLoc(object):
             ps_str = f"ps={ps_with_both}/{ps_total}({ps_ratio:.2f})"
             closest_str = f"closest={closest_km:.1f}km" if closest_km is not None else "closest=N/A"
             cluster_stability_str = ""
+            cluster_stability = None
             for _c in e.comments:
                 try:
                     _meta = json.loads(_c.text)
                     if "cluster_stability" in _meta:
-                        cluster_stability_str = f" | stability={_meta['cluster_stability']:.3f}"
+                        cluster_stability = float(_meta["cluster_stability"])
+                        cluster_stability_str = f" | stability={cluster_stability:.3f}"
                         break
                 except (ValueError, TypeError):
                     pass
@@ -1274,90 +1271,35 @@ class NllLoc(object):
 
             # reject event if closest station after final relocation is too far
             if self.closest_station_dist_km is not None and closest_km is not None and closest_km > self.closest_station_dist_km:
-                log_fn = logger.warning if event_ids_in_picks else logger.info
-                log_fn(f"Rejected | {summary} | reason: closest={closest_km:.1f}km > {self.closest_station_dist_km}km")
-                continue
+                if event_ids_in_picks:
+                    logger.warning(f"Accepted despite far closest station | {summary} | reason: known event_id support")
+                else:
+                    logger.info(f"Rejected | {summary} | reason: closest={closest_km:.1f}km > {self.closest_station_dist_km}km")
+                    continue
 
             if self.min_station_score is not None:
                 if station_score < self.min_station_score:
-                    log_fn = logger.warning if event_ids_in_picks else logger.info
-                    log_fn(f"Rejected | {summary} | reason: score < {self.min_station_score}")
-                    continue
-                if self.min_ps_ratio is not None:
-                    ps_rejected = (
-                        self._wilson_high(ps_with_both, ps_total, self.min_ps_ratio_wilson_z) < self.min_ps_ratio
-                        if self.min_ps_ratio_wilson_z is not None
-                        else ps_ratio < self.min_ps_ratio
-                    )
-                    if ps_rejected:
-                        if event_ids_in_picks:
-                            logger.warning(
-                                f"Accepted despite low ps_ratio | {summary} | "
-                                f"reason: known event_id support"
-                            )
-                        else:
-                            log_fn = logger.warning if event_ids_in_picks else logger.info
-                            log_fn(
-                                f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}"
-                            )
-                            continue
-                logger.info(f"Accepted | {summary}")
-                accepted_event_ids.update(event_ids_in_picks)
-                final_catalog += cat
-                continue
-
-            # Fallback: use minimum phase and P+S station criteria
-            if o.quality.used_phase_count < self.nll_min_phase:
-                log_fn = logger.warning if event_ids_in_picks else logger.debug
-                log_fn(f"Rejected | {summary} | reason: phases={o.quality.used_phase_count} < {self.nll_min_phase}")
-                continue
-
-            ps_station_count = self.check_stations_with_P_and_S(e, o, self.min_station_with_P_and_S)
-            if ps_station_count < self.min_station_with_P_and_S:
-                cluster_stability = None
-                if self.min_station_with_P_and_S_stability_override > 0.0:
-                    for c in e.comments:
-                        try:
-                            meta = json.loads(c.text)
-                            if "cluster_stability" in meta:
-                                cluster_stability = float(meta["cluster_stability"])
-                                break
-                        except (ValueError, TypeError):
-                            pass
-                if (
-                    cluster_stability is not None
-                    and cluster_stability > self.min_station_with_P_and_S_stability_override
-                ):
-                    logger.warning(
-                        f"Accepted (stability override) | {summary} | "
-                        f"P+S stations={ps_station_count} < {self.min_station_with_P_and_S} "
-                        f"but cluster_stability={cluster_stability:.3f} > {self.min_station_with_P_and_S_stability_override}"
-                    )
-                else:
-                    log_fn = logger.warning if event_ids_in_picks else logger.info
-                    log_fn(f"Rejected | {summary} | reason: P+S stations={ps_station_count} < {self.min_station_with_P_and_S}")
-                    continue
-
-            if self.min_ps_ratio is not None:
-                ps_rejected = (
-                    self._wilson_high(ps_with_both, ps_total, self.min_ps_ratio_wilson_z) < self.min_ps_ratio
-                    if self.min_ps_ratio_wilson_z is not None
-                    else ps_ratio < self.min_ps_ratio
-                )
-                if ps_rejected:
                     if event_ids_in_picks:
-                        logger.warning(
-                            f"Accepted despite low ps_ratio | {summary} | "
-                            f"reason: known event_id support"
-                        )
+                        logger.warning(f"Accepted despite low score | {summary} | reason: known event_id support")
                     else:
-                        log_fn = logger.warning if event_ids_in_picks else logger.info
-                        log_fn(
-                            f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}"
-                        )
+                        logger.info(f"Rejected | {summary} | reason: score < {self.min_station_score}")
                         continue
 
-            logger.info(f"Accepted | {summary}")
+
+            accepted_with_warning = False
+            if not self._ps_ratio_ok(ps_with_both, ps_total):
+                if event_ids_in_picks:
+                    logger.warning(
+                        f"Accepted despite low ps_ratio | {summary} | "
+                        f"reason: known event_id support"
+                    )
+                    accepted_with_warning = True
+                else:
+                    logger.info(f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}")
+                    continue
+
+            if not accepted_with_warning:
+                logger.info(f"Accepted | {summary}")
             accepted_event_ids.update(event_ids_in_picks)
             final_catalog += cat
 

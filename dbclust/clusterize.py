@@ -404,6 +404,7 @@ class Clusterize(object):
         leiden_hdbscan_fallback=False,       # run HDBSCAN on Leiden noise + unstable clusters
         leiden_min_stability=0.0,            # clusters below this stability go to HDBSCAN pool
         min_station_with_P_and_S_stability_override=0.0,  # bypass P+S check if stability > this
+        min_station_with_P_and_S_score_override=0.0,      # bypass P+S check if station_score >= this
     ):
         # clusters is a list of cluster :
         # ie. [ [phases, label], ... ]
@@ -462,6 +463,7 @@ class Clusterize(object):
         self.leiden_hdbscan_fallback = leiden_hdbscan_fallback
         self.leiden_min_stability = leiden_min_stability
         self.min_station_with_P_and_S_stability_override = min_station_with_P_and_S_stability_override
+        self.min_station_with_P_and_S_score_override = min_station_with_P_and_S_score_override
 
         if phases is None:
             # Simple constructor
@@ -1404,6 +1406,79 @@ class Clusterize(object):
         logger.info(f"  Average stability: {avg_stab:.3f}")
         logger.info(f"  Median stability: {med_stab:.3f}")
 
+    def _compute_station_metrics(self, cluster):
+        """Compute per-station phase metrics for a cluster in a single pass.
+
+        Returns (station_phase_sets, stations_with_both, station_score) where:
+          station_phase_sets  dict mapping 'net.sta' -> {'P', 'S'}
+          stations_with_both  number of stations having both P and S
+          station_score       weighted sum: P+S=2.0, P-only=1.0, S-only=0.5
+        """
+        station_phase_sets = defaultdict(set)
+        for p in cluster:
+            if not p.phase:
+                continue
+            station_code = f"{p.network}.{p.station}"
+            if p.is_p():
+                station_phase_sets[station_code].add("P")
+            elif p.is_s():
+                station_phase_sets[station_code].add("S")
+
+        stations_with_both = sum(
+            1 for phases in station_phase_sets.values()
+            if "P" in phases and "S" in phases
+        )
+        station_score = sum(
+            2.0 if ("P" in phases and "S" in phases) else (1.0 if "P" in phases else 0.5)
+            for phases in station_phase_sets.values()
+        )
+        return station_phase_sets, stations_with_both, station_score
+
+    def _check_pre_nll_filter(
+        self, label, criterion_failed, cluster_idx, event_id_counts,
+        override_stability=0.0, override_score=0.0, station_score=None,
+    ):
+        """Decide whether a pre-NLL filter rejects or keeps a cluster.
+
+        Returns (keep: bool, forced: bool).
+        Logs the outcome at the appropriate level.
+        """
+        if not criterion_failed:
+            return True, False
+
+        cluster_stability = float(self.clusters_stability[cluster_idx])
+        ids_str = f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else ""
+
+        if self.force_keep_catalog_events and event_id_counts:
+            logger.warning(
+                f"Cluster {cluster_idx} failed {label} "
+                f"but force_keep_catalog_events=True{ids_str} — keeping anyway"
+            )
+            return True, True
+
+        if override_stability > 0.0 and cluster_stability >= override_stability:
+            logger.warning(
+                f"Cluster {cluster_idx} failed {label} "
+                f"but kept by stability override "
+                f"(stability={cluster_stability:.3f} > {override_stability}){ids_str}"
+            )
+            return True, False
+
+        if override_score > 0.0 and station_score is not None and station_score >= override_score:
+            logger.warning(
+                f"Cluster {cluster_idx} failed {label} "
+                f"but kept by score override "
+                f"(station_score={station_score:.1f} >= {override_score}){ids_str}"
+            )
+            return True, False
+
+        log_fn = logger.warning if event_id_counts else logger.info
+        log_fn(
+            f"Cluster {cluster_idx}, stability:{cluster_stability:.3f} ignored ... "
+            f"{label} check failed{ids_str}"
+        )
+        return False, False
+
     def generate_nllobs(self, OBS_PATH):
         """
         export to obspy/NLL
@@ -1429,114 +1504,66 @@ class Clusterize(object):
                 [p.event_id.split("/")[-1] for p in cluster if p.event_id]
             )
 
+            logger.info(f"--- cluster {i} ---")
             logger.info(
                 f"Generating nllobs for cluster {i} ({len(stations_list)} stations / {len(cluster)} picks, "
                 f"stability={self.clusters_stability[i]:.3f})"
                 + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
             )
 
-            forced_catalog_event = False
-            if self.min_station_count:
-                if len(stations_list) < self.min_station_count:
-                    if self.force_keep_catalog_events and event_id_counts:
-                        logger.warning(
-                            f"Cluster {i} failed min_station_count ({len(stations_list)}/{self.min_station_count}) "
-                            f"but force_keep_catalog_events=True [event_ids: {dict(event_id_counts)}] — keeping anyway"
-                        )
-                        forced_catalog_event = True
-                    else:
-                        logger.info(
-                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored ... "
-                            f"not enough stations ({len(stations_list)}/{self.min_station_count})"
-                            + (
-                                f" [event_ids: {dict(event_id_counts)}]"
-                                if event_id_counts
-                                else ""
-                            )
-                        )
-                        rejected_event_ids.update(event_id_counts.keys())
-                        continue
-
-            # Compute per-station phase sets (P:1.0, S:0.5, P+S:2.0) in a single pass
-            station_phase_sets = defaultdict(set)
-            for p in cluster:
-                if not p.phase:
-                    continue
-                station_code = f"{p.network}.{p.station}"
-                if p.is_p():
-                    station_phase_sets[station_code].add("P")
-                elif p.is_s():
-                    station_phase_sets[station_code].add("S")
-
-            stations_with_both = sum(
-                1
-                for phases in station_phase_sets.values()
-                if "P" in phases and "S" in phases
+            # Compute metrics once for all filters
+            station_phase_sets, stations_with_both, station_score = (
+                self._compute_station_metrics(cluster)
             )
-            total_stations_ps = len(station_phase_sets)
 
-            # Pre-NLL filter: station_score (P:1.0, S:0.5, P+S:2.0)
-            if self.min_station_score is not None:
-                station_score = sum(
-                    2.0
-                    if ("P" in phases and "S" in phases)
-                    else (1.0 if "P" in phases else 0.5)
-                    for phases in station_phase_sets.values()
+            forced_catalog_event = False
+
+            # Pre-NLL filter: min_station_count
+            if self.min_station_count:
+                keep, forced = self._check_pre_nll_filter(
+                    f"min_station_count ({len(stations_list)}/{self.min_station_count})",
+                    len(stations_list) < self.min_station_count,
+                    i, event_id_counts,
                 )
-                if station_score < self.min_station_score:
-                    if self.force_keep_catalog_events and event_id_counts:
-                        logger.warning(
-                            f"Cluster {i} failed min_station_score ({station_score:.1f}/{self.min_station_score}) "
-                            f"but force_keep_catalog_events=True [event_ids: {dict(event_id_counts)}] — keeping anyway"
-                        )
-                        forced_catalog_event = True
-                    else:
-                        log_fn = logger.warning if event_id_counts else logger.info
-                        log_fn(
-                            f"Cluster {i}, stability:{self.clusters_stability[i]} ignored before NLL: "
-                            f"station_score {station_score:.1f} < {self.min_station_score}"
-                            + (
-                                f" [event_ids: {dict(event_id_counts)}]"
-                                if event_id_counts
-                                else ""
-                            )
-                        )
-                        rejected_event_ids.update(event_id_counts.keys())
-                        continue
+                if not keep:
+                    rejected_event_ids.update(event_id_counts.keys())
+                    continue
+                forced_catalog_event = forced_catalog_event or forced
 
-            # Pre-NLL filter: min_station_with_P_and_S (independent of station_score)
+            # Pre-NLL filter: station_score
+            if self.min_station_score is not None:
+                keep, forced = self._check_pre_nll_filter(
+                    f"min_station_score ({station_score:.1f}/{self.min_station_score})",
+                    station_score < self.min_station_score,
+                    i, event_id_counts,
+                )
+                if not keep:
+                    rejected_event_ids.update(event_id_counts.keys())
+                    continue
+                forced_catalog_event = forced_catalog_event or forced
+
+            # Pre-NLL filter: min_station_with_P_and_S (with stability and score overrides)
             if self.min_station_with_P_and_S:
-                if stations_with_both < self.min_station_with_P_and_S:
-                    cluster_stability = float(self.clusters_stability[i])
-                    if self.force_keep_catalog_events and event_id_counts:
-                        logger.warning(
-                            f"Cluster {i} failed min_station_with_P_and_S ({stations_with_both}/{self.min_station_with_P_and_S}) "
-                            f"but force_keep_catalog_events=True [event_ids: {dict(event_id_counts)}] — keeping anyway"
-                        )
-                        forced_catalog_event = True
-                    elif (
-                        self.min_station_with_P_and_S_stability_override > 0.0
-                        and cluster_stability > self.min_station_with_P_and_S_stability_override
-                    ):
-                        logger.warning(
-                            f"Cluster {i} failed min_station_with_P_and_S ({stations_with_both}/{self.min_station_with_P_and_S}) "
-                            f"but kept by stability override (stability={cluster_stability:.3f} > {self.min_station_with_P_and_S_stability_override})"
-                            + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
-                        )
-                    else:
-                        log_fn = logger.warning if event_id_counts else logger.info
-                        log_fn(
-                            f"Cluster {i}, stability:{cluster_stability:.3f} ignored ... "
-                            f"not enough stations with both P and S ({stations_with_both}/{self.min_station_with_P_and_S})"
-                            + (
-                                f" [event_ids: {dict(event_id_counts)}]"
-                                if event_id_counts
-                                else ""
-                            )
-                        )
-                        rejected_event_ids.update(event_id_counts.keys())
-                        continue
+                keep, forced = self._check_pre_nll_filter(
+                    f"min_station_with_P_and_S ({stations_with_both}/{self.min_station_with_P_and_S})",
+                    stations_with_both < self.min_station_with_P_and_S,
+                    i, event_id_counts,
+                    override_stability=self.min_station_with_P_and_S_stability_override,
+                    override_score=self.min_station_with_P_and_S_score_override,
+                    station_score=station_score,
+                )
+                if not keep:
+                    rejected_event_ids.update(event_id_counts.keys())
+                    continue
+                forced_catalog_event = forced_catalog_event or forced
 
+            n_stations = len(stations_list)
+            ids_str = f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else ""
+            logger.info(
+                f"Cluster {i} → sent to NLL "
+                f"(score={station_score:.1f}, ps={stations_with_both}/{n_stations}, "
+                f"stability={self.clusters_stability[i]:.3f}){ids_str}"
+            )
 
             for p in cluster:
                 pick = p.to_pick()

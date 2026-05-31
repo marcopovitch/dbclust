@@ -236,7 +236,6 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,
         keep_manual_picks=cfg.relocation.keep_manual_picks,
         nll_min_phase=nll_min_phase,
-        min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         min_station_score=cfg.cluster.min_station_score,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
         min_ps_ratio_wilson_z=getattr(cfg.cluster, "min_ps_ratio_wilson_z", None),
@@ -295,6 +294,7 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         min_station_count=cfg.cluster.min_station_count,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         min_station_with_P_and_S_stability_override=cfg.cluster.min_station_with_P_and_S_stability_override,
+        min_station_with_P_and_S_score_override=cfg.cluster.min_station_with_P_and_S_score_override,
         min_station_score=cfg.cluster.min_station_score,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
         force_keep_catalog_events=cfg.cluster.force_keep_catalog_events,
@@ -954,6 +954,7 @@ def dbclust(
                         f"stop-overlap={stop - overlap_timedelta}), deferred to next job "
                         f"({event.resource_id.id})"
                     )
+
                     locator.catalog.events.remove(event)
                     locator.nb_events = len(locator.catalog)
                     try:

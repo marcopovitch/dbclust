@@ -113,7 +113,6 @@ def process_file(
                 use_deactivated_arrivals=cfg.relocation.use_deactivated_arrivals,
                 keep_manual_picks=cfg.relocation.keep_manual_picks,
                 nll_min_phase=cfg.nll.min_phase,
-                min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
                 quakeml_settings=asdict(cfg.quakeml),
                 nll_verbose=cfg.nll.verbose,
                 keep_scat=cfg.nll.enable_scatter,
