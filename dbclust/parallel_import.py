@@ -57,43 +57,67 @@ def deduplicate_cross_partition_events(
     """
     cursor = conn.cursor()
 
-    # Two events are duplicates if they share manual picks with the same source_event_id
-    # (catalog-based criterion), OR if they share automatic picks on the same station
-    # at the exact same time (pick-identity criterion for events with no manual picks).
+    # Load per-event pick signatures into memory — much faster than SQL self-joins
+    # on large picks tables. Index: event_id → {source_event_ids}, {(station,phase,time)}
     cursor.execute("""
-        SELECT ev1, ev2, MAX(n_shared) AS n_shared FROM (
-            -- Criterion 1: shared catalog source_event_ids (manual picks)
-            SELECT p1.event_id AS ev1, p2.event_id AS ev2,
-                   COUNT(DISTINCT p1.source_event_id) AS n_shared
-            FROM picks p1
-            JOIN picks p2
-              ON p1.source_event_id = p2.source_event_id
-             AND p1.event_id < p2.event_id
-             AND p1.source_event_id IS NOT NULL
-             AND p1.evaluation_mode = 'manual'
-            WHERE p2.evaluation_mode = 'manual'
-            GROUP BY p1.event_id, p2.event_id
-            HAVING n_shared >= ?
+        SELECT event_id, source_event_id, evaluation_mode, station_name, phase_hint, pick_time
+        FROM picks
+        WHERE source_event_id IS NOT NULL OR evaluation_mode = 'automatic'
+    """)
+    rows = cursor.fetchall()
 
-            UNION ALL
+    from collections import defaultdict
+    ev_catalog_ids: dict = defaultdict(set)   # event_id → set of source_event_ids (manual)
+    ev_auto_picks: dict = defaultdict(set)    # event_id → set of (station, phase[0], time)
 
-            -- Criterion 2: shared automatic picks (same station, phase, time)
-            SELECT p1.event_id AS ev1, p2.event_id AS ev2,
-                   COUNT(*) AS n_shared
-            FROM picks p1
-            JOIN picks p2
-              ON p1.station_name = p2.station_name
-             AND p1.phase_hint = p2.phase_hint
-             AND p1.pick_time = p2.pick_time
-             AND p1.event_id < p2.event_id
-             AND p1.evaluation_mode = 'automatic'
-             AND p2.evaluation_mode = 'automatic'
-            GROUP BY p1.event_id, p2.event_id
-            HAVING n_shared >= ?
-        )
-        GROUP BY ev1, ev2
-    """, (min_shared_catalog_ids, min_shared_auto_picks))
-    pairs = cursor.fetchall()
+    for ev, src, mode, sta, phase, ptime in rows:
+        if mode == 'manual' and src:
+            ev_catalog_ids[ev].add(src)
+        elif mode == 'automatic':
+            ev_auto_picks[ev].add((sta, phase[0] if phase else '', ptime))
+
+    # Find duplicate pairs in Python
+    ev_ids = sorted(set(ev_catalog_ids) | set(ev_auto_picks))
+    pair_shared: dict = {}  # (ev1, ev2) → n_shared
+
+    # Criterion 1: shared source_event_ids (manual)
+    # Build inverted index: source_event_id → list of event_ids
+    src_to_evs: dict = defaultdict(list)
+    for ev, srcs in ev_catalog_ids.items():
+        for src in srcs:
+            src_to_evs[src].append(ev)
+
+    for src, evs in src_to_evs.items():
+        evs_sorted = sorted(evs)
+        for i, ev1 in enumerate(evs_sorted):
+            for ev2 in evs_sorted[i+1:]:
+                key = (ev1, ev2)
+                pair_shared[key] = pair_shared.get(key, 0) + 1
+
+    # Criterion 2: shared automatic picks (exact station+phase+time)
+    auto_key_to_evs: dict = defaultdict(list)
+    for ev, auto_set in ev_auto_picks.items():
+        for key in auto_set:
+            auto_key_to_evs[key].append(ev)
+
+    auto_pair_count: dict = defaultdict(int)
+    for key, evs in auto_key_to_evs.items():
+        evs_sorted = sorted(evs)
+        for i, ev1 in enumerate(evs_sorted):
+            for ev2 in evs_sorted[i+1:]:
+                auto_pair_count[(ev1, ev2)] += 1
+
+    for (ev1, ev2), cnt in auto_pair_count.items():
+        if cnt >= min_shared_auto_picks:
+            existing = pair_shared.get((ev1, ev2), 0)
+            pair_shared[(ev1, ev2)] = max(existing, cnt)
+
+    pairs = [
+        (ev1, ev2, n)
+        for (ev1, ev2), n in pair_shared.items()
+        if (ev1, ev2) in auto_pair_count and auto_pair_count[(ev1,ev2)] >= min_shared_auto_picks
+        or n >= min_shared_catalog_ids
+    ]
 
     logger.info(f"Cross-partition deduplication: {len(pairs)} duplicate pair(s) found.")
     reloc_needed = []
@@ -180,25 +204,128 @@ def deduplicate_cross_partition_events(
         f"{n_reloc} re-run(s) recommended."
     )
 
-    if report_path:
-        report = {
-            "summary": {
-                "duplicates_removed": n_removed,
-                "rerun_recommended": n_reloc,
-                "overlap_window_s": overlap_window_s,
-                "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            },
-            "duplicates_removed": removed_pairs,
-            "rerun_recommended": reloc_needed,
-        }
-        try:
-            with open(report_path, "w") as f:
-                json.dump(report, f, indent=2, default=str)
-            logger.info(f"Deduplication report written to {report_path}")
-        except OSError as e:
-            logger.warning(f"Could not write deduplication report: {e}")
+    return {
+        "n_removed": n_removed,
+        "removed_pairs": removed_pairs,
+        "reloc_needed": reloc_needed,
+    }
 
-    return reloc_needed
+
+def detect_suspicious_duplicates(
+    conn: sqlite3.Connection,
+    max_pick_dt_s: float = 0.5,
+    max_dist_km: float = 15.0,
+    min_conflict_stations: int = 2,
+) -> list:
+    """Detect same-window Leiden fragment duplicates caused by manual/automatic pick conflicts.
+
+    Two events are suspicious if they share >= min_conflict_stations stations where one
+    event has an automatic pick and the other a manual pick on the same phase within
+    max_pick_dt_s seconds, AND their hypocentres are within max_dist_km of each other.
+
+    Unlike cross-partition duplicates these events cannot be safely removed automatically
+    — they require manual review. A WARNING is logged for each suspicious pair.
+
+    Returns a list of dicts describing suspicious pairs.
+    """
+    import math
+
+    cursor = conn.cursor()
+
+    # Load all picks into memory grouped by event_id (fast via index on event_id)
+    cursor.execute("""
+        SELECT event_id, station_name, SUBSTR(phase_hint,1,1), pick_time, evaluation_mode
+        FROM picks
+    """)
+    from collections import defaultdict
+    ev_picks: dict = defaultdict(list)  # event_id → [(station, phase, time, mode)]
+    for ev, sta, phase, ptime, mode in cursor.fetchall():
+        ev_picks[ev].append((sta, phase or '', ptime, mode))
+
+    # Load preferred origins (small table)
+    cursor.execute("""
+        SELECT event_id, time, latitude, longitude, used_phase_count
+        FROM origins WHERE preferred = 1
+    """)
+    origins = {row[0]: row[1:] for row in cursor.fetchall()}
+
+    # Step 1: find candidate pairs from origins — bbox pre-filter then exact distance
+    bbox_deg = max_dist_km / 60.0
+    max_origin_dt_s = 5.0
+    ev_list = sorted(origins.keys())
+    origin_pairs = []
+    for i, ev1 in enumerate(ev_list):
+        t1, lat1, lon1, ph1 = origins[ev1]
+        for ev2 in ev_list[i+1:]:
+            t2, lat2, lon2, ph2 = origins[ev2]
+            if abs(lat1 - lat2) > bbox_deg or abs(lon1 - lon2) > bbox_deg:
+                continue
+            dt_s = abs((datetime.fromisoformat(t1.replace("Z", "+00:00")) -
+                        datetime.fromisoformat(t2.replace("Z", "+00:00"))).total_seconds())
+            if dt_s > max_origin_dt_s:
+                continue
+            R = 6371.0
+            dlat = math.radians(lat2 - lat1)
+            dlon = math.radians(lon2 - lon1)
+            a = (math.sin(dlat/2)**2
+                 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2)
+            dist_km = R * 2 * math.asin(math.sqrt(a))
+            if dist_km <= max_dist_km:
+                origin_pairs.append((ev1, ev2, t1, t2, lat1, lon1, ph1, lat2, lon2, ph2, dt_s, dist_km))
+
+    if not origin_pairs:
+        logger.info("Suspicious duplicate detection: no close origin pairs found.")
+        return []
+
+    # Step 2: for each candidate pair, count stations with auto/manual conflict in memory
+    suspicious = []
+    for ev1, ev2, t1, t2, lat1, lon1, ph1, lat2, lon2, ph2, dt_s, dist_km in origin_pairs:
+        picks1 = ev_picks.get(ev1, [])
+        picks2 = ev_picks.get(ev2, [])
+
+        # Build lookup: (station, phase) → times for auto picks in ev1
+        auto1: dict = defaultdict(list)
+        for sta, phase, ptime, mode in picks1:
+            if mode == 'automatic':
+                auto1[(sta, phase)].append(ptime)
+
+        # Count stations where ev2 has a manual pick close to ev1's auto pick
+        n_conflict = 0
+        seen_stations = set()
+        for sta, phase, ptime, mode in picks2:
+            if mode != 'manual' or sta in seen_stations:
+                continue
+            for t_auto in auto1.get((sta, phase), []):
+                try:
+                    delta = abs((datetime.fromisoformat(ptime.replace("Z", "+00:00")) -
+                                 datetime.fromisoformat(t_auto.replace("Z", "+00:00"))).total_seconds())
+                except Exception:
+                    delta = abs(float(ptime) - float(t_auto)) if ptime and t_auto else 999
+                if delta < max_pick_dt_s:
+                    n_conflict += 1
+                    seen_stations.add(sta)
+                    break
+
+        if n_conflict < min_conflict_stations:
+            continue
+
+        logger.warning(
+            f"Suspicious duplicate (auto/manual pick conflict): "
+            f"{ev1} ({ph1} phases) vs {ev2} ({ph2} phases) — "
+            f"n_conflict_stations={n_conflict}, dist={dist_km:.1f}km, dt={dt_s:.2f}s — "
+            f"manual review recommended"
+        )
+        suspicious.append({
+            "event_id_1": ev1, "origin_time_1": t1, "phases_1": ph1,
+            "event_id_2": ev2, "origin_time_2": t2, "phases_2": ph2,
+            "n_conflict_stations": n_conflict,
+            "dist_km": round(dist_km, 1),
+            "dt_s": round(dt_s, 2),
+            "note": "Auto/manual pick conflict on shared stations — manual review recommended",
+        })
+
+    logger.info(f"Suspicious duplicate detection: {len(suspicious)} pair(s) flagged.")
+    return suspicious
 
 
 def import_file_to_temp_db(args_tuple):
@@ -378,11 +505,34 @@ def merge_databases(temp_db_paths, final_db_path, enable_quakeml=False, overlap_
 
         # Deduplicate cross-partition events (same physical event localised by two jobs)
         report_path = str(final_db_path).replace(".db", ".dedup_report.json")
-        deduplicate_cross_partition_events(
+        dedup = deduplicate_cross_partition_events(
             final_conn,
             overlap_window_s=overlap_window_s,
-            report_path=report_path,
         )
+
+        # Detect suspicious intra-window duplicates (auto/manual pick conflict)
+        suspicious = detect_suspicious_duplicates(final_conn)
+
+        # Write unified report
+        if report_path:
+            report = {
+                "summary": {
+                    "duplicates_removed": dedup["n_removed"],
+                    "rerun_recommended": len(dedup["reloc_needed"]),
+                    "suspicious_duplicates": len(suspicious),
+                    "overlap_window_s": overlap_window_s,
+                    "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                },
+                "duplicates_removed": dedup["removed_pairs"],
+                "rerun_recommended": dedup["reloc_needed"],
+                "suspicious_duplicates": suspicious,
+            }
+            try:
+                with open(report_path, "w") as f:
+                    json.dump(report, f, indent=2, default=str)
+                logger.info(f"Deduplication report written to {report_path}")
+            except OSError as e:
+                logger.warning(f"Could not write deduplication report: {e}")
 
         # Create indexes
         logger.info("Creating indexes...")
