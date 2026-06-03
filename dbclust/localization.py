@@ -1178,7 +1178,7 @@ class NllLoc(object):
                             )
             else:
                 # can't relocate: set it to "not existing"
-                logger.warning("Localization failed: second pass relocation unsuccessful")
+                logger.warning("Localization failed: Pass 2 relocation unsuccessful")
                 e.event_type = "not existing"
                 if not self.keep_not_existing_event:
                     # do not keep "not existing" event

@@ -183,6 +183,8 @@ DBClust provides several command-line tools for different seismic data processin
 |------|-------------|---------|
 | **fdsnws-server** | FDSN Web Service server for event access | `fdsnws-server -d events.db -p 8000` |
 | **csv2parquet** | Convert CSV files to Parquet format | `csv2parquet -i input.csv -o output.parquet` |
+| **detect_operator_duplicates** | Detect events picked independently by two operators on the same earthquake | `python Utils/detect_operator_duplicates.py events.db` |
+| **detect_suspicious_duplicates** | Detect intra-window Leiden fragment duplicates (auto/manual pick conflict) | Called automatically during `merge_databases()` |
 
 ### dbclust - Main Processing Pipeline
 
@@ -342,6 +344,72 @@ csv2parquet -i picks.csv -o picks.parquet
 
 # With compression
 csv2parquet -i picks.csv -o picks.parquet --compression snappy
+```
+
+### detect_operator_duplicates - Operator Duplicate Detection
+
+Detect events that were independently picked by two operators on the same earthquake.
+These events have all-manual picks on the same stations/phases but with slightly
+different timestamps (typically < 1s). They require manual review and correction.
+
+```bash
+# Basic usage — scans full database, writes JSON report
+python Utils/detect_operator_duplicates.py events.db
+
+# Custom thresholds
+python Utils/detect_operator_duplicates.py events.db \
+    --max-origin-dt 5.0 \   # max time between origins (s)
+    --max-dist-km 15.0 \    # max distance between hypocentres (km)
+    --max-pick-dt 1.0 \     # max time diff between matching picks (s)
+    --min-stations 3        # min shared stations to flag
+
+# With CSV output for spreadsheet review
+python Utils/detect_operator_duplicates.py events.db \
+    --output duplicates.json \
+    --csv duplicates.csv
+```
+
+Output JSON structure:
+
+```json
+{
+  "summary": {"n_duplicates": 17, "db": "...", "generated_at": "..."},
+  "duplicates": [
+    {
+      "event_id_1": "...", "origin_time_1": "...", "phases_1": 33,
+      "event_id_2": "...", "origin_time_2": "...", "phases_2": 14,
+      "dt_s": 0.163, "dist_km": 6.5,
+      "n_shared_stations": 9, "max_pick_dt_s": 0.612,
+      "note": "Operator duplicate suspected — manual review recommended"
+    }
+  ]
+}
+```
+
+Detection uses an O(n log n) sliding-window scan on the origins table sorted by time,
+so performance scales well even on large catalogues (15 years / 150K events in ~15s).
+
+### detect_suspicious_duplicates - Intra-window Fragment Detection
+
+Detects same-window Leiden fragment duplicates caused by co-existing automatic DL picks
+and manual picks on the same stations (picks differ by 0.1–0.5s, just above the
+deduplication threshold). Unlike operator duplicates these cannot be safely removed
+automatically — a WARNING is logged and they appear in the merge report.
+
+This function is called automatically at the end of `merge_databases()` and its results
+are included in the `.dedup_report.json` report written alongside the final database.
+
+```json
+{
+  "suspicious_duplicates": [
+    {
+      "event_id_1": "...", "phases_1": 8,
+      "event_id_2": "...", "phases_2": 28,
+      "n_conflict_stations": 5, "dist_km": 4.5, "dt_s": 0.66,
+      "note": "Auto/manual pick conflict on shared stations — manual review recommended"
+    }
+  ]
+}
 ```
 
 ## Performance Optimization

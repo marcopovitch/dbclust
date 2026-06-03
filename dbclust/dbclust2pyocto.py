@@ -204,6 +204,7 @@ def dbclust2pyocto(
         # Extract station and pick data for the cluster
         stations = get_stations_from_cluster(cluster)
         picks = get_picks_from_cluster(cluster)
+        picks["_cluster_idx"] = range(len(cluster))
 
         # Detect multi-event clusters: if multiple distinct event_ids are present,
         # reduce min_pick_fraction to allow PyOcto to find smaller events
@@ -354,7 +355,7 @@ def dbclust2pyocto(
         pyocto_preloc.extend(get_events_list(events, assignments, stations, model_name))
         if associator_cfg.min_ps_ratio is not None:
             filtered_clusters = []
-            for c in get_clusters_from_assignment(cluster, events, assignments):
+            for c in get_clusters_from_assignment(cluster, picks, events, assignments):
                 station_phases = defaultdict(set)
                 for p in c:
                     if not p.phase:
@@ -384,13 +385,17 @@ def dbclust2pyocto(
             pyocto_clusters.extend(filtered_clusters)
         else:
             pyocto_clusters.extend(
-                get_clusters_from_assignment(cluster, events, assignments)
+                get_clusters_from_assignment(cluster, picks, events, assignments)
             )
-        assigned_pick_ids = (
-            set(assignments["pick_idx"].to_list()) if len(assignments) else set()
-        )
+        if len(assignments):
+            assigned_df_indices = set(assignments["pick_idx"].to_list())
+            assigned_cluster_ids = set(
+                picks.loc[picks.index.isin(assigned_df_indices), "_cluster_idx"].tolist()
+            )
+        else:
+            assigned_cluster_ids = set()
 
-        n_unassigned = len(cluster) - len(assigned_pick_ids)
+        n_unassigned = len(cluster) - len(assigned_cluster_ids)
         log_fn = logger.info if len(events) > 0 else logger.debug
         log_fn(
             f"\t{len(events)} events found in cluster#{i} with {len(cluster)} picks"
@@ -398,7 +403,7 @@ def dbclust2pyocto(
         )
 
         if n_unassigned >= myclust.min_cluster_size and i < n_first_pass_clusters:
-            unassigned = [p for j, p in enumerate(cluster) if j not in assigned_pick_ids]
+            unassigned = [p for j, p in enumerate(cluster) if j not in assigned_cluster_ids]
             pseudo_tt2 = myclust.numpy_compute_tt_matrix_vectorized(
                 unassigned, myclust.average_velocity,
                 vp=myclust.apparent_vp,
@@ -772,33 +777,26 @@ def get_events_list(
 
 
 def get_clusters_from_assignment(
-    picks: pd.DataFrame, events: pd.DataFrame, assignments: pd.DataFrame
-) -> List[List[dict]]:
+    cluster: List[Phase], picks: pd.DataFrame, events: pd.DataFrame, assignments: pd.DataFrame
+) -> List[List[Phase]]:
     """
-    Returns a list of clusters, where each cluster contains a list of picks.
+    Returns a list of clusters (Phase objects) from PyOcto assignment results.
 
     Args:
-        picks (pd.DataFrame): DataFrame containing pick information.
-        events (pd.DataFrame): DataFrame containing event information.
-        assignments (pd.DataFrame): DataFrame containing assignment information
-                                    mapping event indices to pick indices.
-
-    Returns:
-        List[List[dict]]:
-            A list of clusters, where each cluster is a list of
-            dictionaries containing pick information.
-        picks: pd.DataFrame, events: pd.DataFrame, assignments: pd.DataFrame
+        cluster: Original list of Phase objects for this cluster.
+        picks: Filtered picks DataFrame (may have fewer rows than cluster if stations
+               were filtered by max_lat_range/max_lon_range). Must have a '_cluster_idx'
+               column mapping each row back to its position in cluster.
+        events: DataFrame of events found by PyOcto.
+        assignments: DataFrame mapping event indices to pick indices (into picks).
     """
-    clusters = []
-    for index, row in events.iterrows():
+    result = []
+    for _, row in events.iterrows():
         event_idx = row["idx"]
-        picks_idx_list = assignments[assignments["event_idx"] == event_idx][
-            "pick_idx"
-        ].to_list()
-        cluster = [picks[i] for i in picks_idx_list]
-        clusters.append(cluster)
-
-    return clusters
+        df_indices = assignments[assignments["event_idx"] == event_idx]["pick_idx"].to_list()
+        cluster_indices = picks.loc[df_indices, "_cluster_idx"].tolist()
+        result.append([cluster[j] for j in cluster_indices])
+    return result
 
 
 def get_stations_from_cluster(cluster: List[Phase]) -> pd.DataFrame:
