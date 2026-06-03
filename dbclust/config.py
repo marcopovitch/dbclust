@@ -1082,6 +1082,7 @@ class ParallelConfig:
     time_partitions: Optional[List] = None
     _temp_dir: Optional[str] = "/tmp/ray"
     executor: Optional[str] = "parsl_thread"  # parsl_thread, parsl_hte, ray, dask
+    dashboard: bool = False
     oversubscription_factor: int = 5  # workers spend ~80% waiting for NLLoc subprocess
     task_profiles_path: Optional[str] = None  # Chemin vers task_profiles.csv
     task_profiles_reference_path: Optional[str] = None  # Référence stable pour tri longest-first

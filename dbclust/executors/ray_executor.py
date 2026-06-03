@@ -144,15 +144,17 @@ class RayExecutor(ExecutorBase):
 
         # Ray uses _temp_dir for AF_UNIX sockets which have a 107-byte path limit.
         # Use /tmp/ray to keep socket paths short regardless of the configured temp dir.
+        include_dashboard = self.cfg.parallel.dashboard
         self.context = ray.init(
             num_cpus=total_cpus,
             _temp_dir="/tmp/ray",
             dashboard_host="0.0.0.0",
             dashboard_port=8265,
-            include_dashboard=True,
+            include_dashboard=include_dashboard,
         )
         logger.info(f"Ray initialized with {total_cpus} CPUs ({cpu_source})")
-        logger.info(f"Dashboard URL: {self.context.dashboard_url}")
+        if include_dashboard:
+            logger.info(f"Dashboard URL: {self.context.dashboard_url}")
 
     def submit_task(self, job_index: int) -> Any:
         """Submit a DBClust task to Ray.
