@@ -1590,7 +1590,7 @@ class Clusterize(object):
 
             # use pyocto pre-localization to select velocity model to be used
             # create vel_file with required information
-            if self.preloc and self.preloc[i]:
+            if self.preloc and len(self.preloc) > i and self.preloc[i]:
                 hypo = self.preloc[i]
                 logger.info(
                     f"Prelocalization is time={hypo['time']}, lat={hypo['latitude']}, "
