@@ -194,14 +194,12 @@ class ParslHTEExecutor(ExecutorBase):
         )
         max_workers = oversubscribed_workers
 
-        # Use multiple blocks (process_worker_pool processes) for better parallelism.
-        # Each block manages workers_per_block workers independently via its own ZMQ manager.
-        workers_per_block = 16  # tunable: 8-32 is a good range
-        n_blocks = max(1, max_workers // workers_per_block)
-        workers_per_block = max_workers // n_blocks  # rebalance evenly
+        # Single block for local HTE: multiple blocks add ZMQ overhead (one interchange
+        # + one process_worker_pool per block) with no benefit on a single machine.
+        n_blocks = 1
         self._n_blocks = n_blocks
         logger.info(
-            f"Using {n_blocks} blocks × {workers_per_block} workers/block"
+            f"Using {n_blocks} block × {max_workers} workers/block"
         )
 
         # Silence all parsl loggers including HTE subloggers
@@ -229,7 +227,7 @@ class ParslHTEExecutor(ExecutorBase):
         run_dir = self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo"
         executor = HighThroughputExecutor(
             label="dbclust_hte",
-            max_workers_per_node=workers_per_block,
+            max_workers_per_node=max_workers,
             cores_per_worker=1,
             provider=self._get_provider(),
             worker_debug=False,
