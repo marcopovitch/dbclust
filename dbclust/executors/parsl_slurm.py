@@ -104,6 +104,12 @@ class ParslSlurmExecutor(ParslHTEExecutor):
         # Cap blocks to the actual number of remaining tasks
         n_remaining = getattr(self, "_n_remaining_tasks", None)
         workers_per_block = slurm.max_workers_per_node or 1
+        if slurm.cores_per_node != slurm.max_workers_per_node:
+            logger.warning(
+                f"cores_per_node ({slurm.cores_per_node}) != "
+                f"max_workers_per_node ({slurm.max_workers_per_node}) — "
+                f"block scaling uses max_workers_per_node"
+            )
         if n_remaining is not None:
             needed_blocks = max(1, (n_remaining + workers_per_block - 1) // workers_per_block)
             actual_blocks = min(slurm.max_blocks, needed_blocks)
@@ -133,8 +139,19 @@ class ParslSlurmExecutor(ParslHTEExecutor):
         import parsl
 
         try:
-            parsl.dfk().cleanup()
+            dfk = parsl.dfk()
+            if dfk is None:
+                logger.info("DFK is None, already cleaned - skipping cleanup")
+                return
+        except Exception:
+            logger.info("DFK not available, skipping cleanup")
+            return
+
+        try:
+            dfk.cleanup()
             parsl.clear()
+            if hasattr(parsl, '_DFK'):
+                parsl._DFK = None
             logger.info("Parsl SLURM executor cleaned up")
         except Exception as e:
             logger.warning(f"Error during Parsl SLURM cleanup: {e}")
