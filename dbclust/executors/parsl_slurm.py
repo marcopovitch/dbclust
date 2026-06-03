@@ -31,6 +31,10 @@ class ParslSlurmExecutor(ParslHTEExecutor):
     def name(self) -> str:
         return "Parsl SLURM (HighThroughputExecutor)"
 
+    @property
+    def _submit_all_upfront(self) -> bool:
+        return True
+
     def _get_provider(self):
         """Get the SLURM provider for HTE.
 
