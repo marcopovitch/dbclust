@@ -101,6 +101,15 @@ class ParslHTEExecutor(ExecutorBase):
     def name(self) -> str:
         return "Parsl HighThroughputExecutor"
 
+    @property
+    def _submit_all_upfront(self) -> bool:
+        """Whether to submit all tasks before collecting results.
+
+        False for local HTE (use sliding window to avoid ZMQ congestion).
+        Slurm subclass overrides this to True so the scheduler sees the full workload.
+        """
+        return False
+
     def _get_provider(self):
         """Get the provider for HTE. Override in subclasses for different providers."""
         n_blocks = getattr(self, "_n_blocks", 1)
@@ -307,16 +316,57 @@ class ParslHTEExecutor(ExecutorBase):
             logger.info("KeyboardInterrupt in wait_for_results, exiting")
             return
 
+    def _sliding_window_results(self, indexed_partitions, n_inflight):
+        """Submit tasks with a sliding window and yield results as they complete.
+
+        Keeps at most n_inflight futures alive at any time, submitting one new
+        task for each completed one. Used for local HTE only.
+        """
+        from concurrent.futures import wait, FIRST_COMPLETED
+        from parsl.executors.high_throughput.errors import ManagerLost, WorkerLost
+
+        submit_iter = iter(indexed_partitions)
+        pending = set()
+
+        def _fill():
+            while len(pending) < n_inflight:
+                try:
+                    idx, _ = next(submit_iter)
+                    f = self.submit_task(idx)
+                    self._future_to_index[f] = idx
+                    pending.add(f)
+                except StopIteration:
+                    break
+
+        _fill()
+        logger.info(f"Initial batch of {len(pending)} tasks submitted.")
+
+        while pending:
+            done, _ = wait(pending, timeout=30, return_when=FIRST_COMPLETED)
+            if not done:
+                logger.warning(f"Timeout waiting for tasks, {len(pending)} still pending")
+                continue
+            for future in done:
+                pending.discard(future)
+                job_index = self._future_to_index.get(future, -1)
+                try:
+                    r = future.result()
+                    yield (r["task_index"], r["result"], r["duration_sec"], r["peak_memory_mb"])
+                except (ManagerLost, WorkerLost) as e:
+                    logger.error(f"Parsl worker/manager lost, task {job_index} skipped: {e}")
+                    yield (job_index, False, 0, 0)
+                except Exception as e:
+                    import traceback
+                    logger.error(f"Task {job_index} failed: {e}\n{traceback.format_exc()}")
+                    yield (job_index, False, 0, 0)
+                _fill()
+
     def run(self) -> List[Any]:
-        """Override run() to submit ALL tasks upfront before collecting results.
+        """Override run() to handle task submission and result collection.
 
-        The base class uses a sliding window which causes Parsl to think execution
-        is finished after the first batch completes (it shuts down its internal
-        thread pool), leading to RuntimeError on subsequent callbacks.
-
-        Parsl has its own internal queue/scheduler, so submitting all futures at
-        once is the correct pattern: workers are throttled by max_workers_per_node,
-        not by the number of submitted futures.
+        For Slurm (submit_all_upfront=True): submits all tasks at once so the
+        scheduler sees the full workload. For local HTE: uses a sliding window
+        to avoid flooding the ZMQ queue with thousands of pending tasks.
         """
         import csv
         import signal
@@ -390,21 +440,33 @@ class ParslHTEExecutor(ExecutorBase):
             if total_tasks == 0:
                 logger.info("No tasks to run - all partitions already completed")
             else:
-                # Submit ALL tasks upfront — Parsl throttles execution via max_workers_per_node.
-                logger.info(f"Submitting all {total_tasks} tasks to Parsl...")
-                futures = []
                 self._future_to_index = {}
-                for idx, _ in indexed_partitions:
-                    f = self.submit_task(idx)
-                    futures.append(f)
-                    self._future_to_index[f] = idx
-                logger.info(f"All {total_tasks} tasks submitted.")
+                if self._submit_all_upfront:
+                    # Slurm: submit everything at once so the scheduler sees the full workload.
+                    logger.info(f"Submitting all {total_tasks} tasks to Parsl...")
+                    futures = []
+                    for idx, _ in indexed_partitions:
+                        f = self.submit_task(idx)
+                        futures.append(f)
+                        self._future_to_index[f] = idx
+                    logger.info(f"All {total_tasks} tasks submitted.")
+                    result_iter = self.wait_for_results(futures)
+                else:
+                    # Local HTE: sliding window — keep at most n_workers futures in flight
+                    # to avoid flooding the ZMQ queue with thousands of pending tasks.
+                    n_inflight = self.cfg.parallel.n_workers or 1
+                    logger.info(
+                        f"Submitting tasks with sliding window (max_inflight={n_inflight})..."
+                    )
+                    result_iter = self._sliding_window_results(
+                        indexed_partitions, n_inflight
+                    )
 
                 # Collect results as they complete.
                 completed_count = 0
                 processing_start = datetime.now()
 
-                for job_index, result, duration, peak_memory_mb in self.wait_for_results(futures):
+                for job_index, result, duration, peak_memory_mb in result_iter:
                     completed_count += 1
                     progress_pct = ((already_done + completed_count) / total_overall) * 100
                     partition_start, partition_end = partition_map.get(job_index, (None, None))
