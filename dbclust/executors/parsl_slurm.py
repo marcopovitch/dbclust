@@ -92,9 +92,12 @@ class ParslSlurmExecutor(ParslHTEExecutor):
             poll_period=100,
         )
 
+        run_dir = self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo"
+        self._warn_if_stale_rundir(run_dir)
+
         config = Config(
             executors=[executor],
-            run_dir=self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo",
+            run_dir=run_dir,
             retries=3,
             strategy="none",  # disable auto scale-in which causes ZMQError mid-run
         )
@@ -103,7 +106,7 @@ class ParslSlurmExecutor(ParslHTEExecutor):
 
         # Cap blocks to the actual number of remaining tasks
         n_remaining = getattr(self, "_n_remaining_tasks", None)
-        workers_per_block = slurm.max_workers_per_node or 1
+        workers_per_block = (slurm.nodes_per_block * slurm.max_workers_per_node) or 1
         if slurm.cores_per_node != slurm.max_workers_per_node:
             logger.warning(
                 f"cores_per_node ({slurm.cores_per_node}) != "

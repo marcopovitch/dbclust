@@ -64,9 +64,8 @@ package = true
 [tool.uv.extra-build-dependencies]
 pyrocko = ["setuptools<71"]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["dbclust", "dbclust.*", "fdsnws", "Utils"]
+[tool.setuptools]
+packages = ["dbclust", "dbclust.executors", "dbclust.db", "Utils"]
 
 [project.scripts]
 fdsnws-server = "fdsnws.server:main"
