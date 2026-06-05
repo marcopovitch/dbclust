@@ -110,6 +110,18 @@ class ParslHTEExecutor(ExecutorBase):
         """
         return False
 
+    def _warn_if_stale_rundir(self, run_dir: str) -> None:
+        """Warn if run_dir contains state from a previous run (causes MISSING task replays)."""
+        import glob
+        stale = glob.glob(os.path.join(run_dir, "*/parsl.log"))
+        if stale:
+            logger.warning(
+                f"Stale Parsl run directory detected: {run_dir} contains {len(stale)} previous run(s). "
+                f"Tasks completed in prior runs may be replayed as MISSING. "
+                f"To avoid this, delete the run directory before starting a new run: "
+                f"rm -rf {run_dir}/[0-9]*"
+            )
+
     def _get_provider(self):
         """Get the provider for HTE. Override in subclasses for different providers."""
         n_blocks = getattr(self, "_n_blocks", 1)
@@ -237,9 +249,12 @@ class ParslHTEExecutor(ExecutorBase):
             heartbeat_period=30,      # s, heartbeat frequency
         )
 
+        run_dir = self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo"
+        self._warn_if_stale_rundir(run_dir)
+
         config = Config(
             executors=[executor],
-            run_dir=self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo",
+            run_dir=run_dir,
             retries=0,  # no silent retries — propagate exceptions immediately for visibility
             strategy="none",  # disable auto scale-in which causes ZMQError mid-run
         )
