@@ -110,6 +110,37 @@ class ParslHTEExecutor(ExecutorBase):
         """
         return False
 
+    def _autoscale_thread(self, executor, stop_event, lock) -> None:
+        """Background thread: submit replacement blocks for dead ones.
+
+        Runs every 5 minutes, counts active SLURM blocks via squeue, and calls
+        scale_out_facade() to fill the deficit up to max_blocks.
+        Only used for SLURM executor (_submit_all_upfront=True).
+        """
+        while not stop_event.wait(timeout=300):
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ['squeue', '-u', os.environ.get('USER', ''), '-h',
+                     '-t', 'RUNNING,PENDING', '-o', '%j'],
+                    capture_output=True, text=True, timeout=30
+                )
+                n_active = sum(
+                    1 for line in result.stdout.strip().split('\n')
+                    if 'parsl.dbclust_slurm' in line
+                )
+                target = self.cfg.slurm.max_blocks
+                deficit = target - n_active
+                if deficit > 0:
+                    logger.info(
+                        f"Autoscale: {n_active}/{target} blocks active, "
+                        f"submitting {deficit} replacement block(s)"
+                    )
+                    with lock:
+                        executor.scale_out_facade(deficit)
+            except Exception as e:
+                logger.warning(f"Autoscale check failed: {e}")
+
     def _warn_if_stale_rundir(self, run_dir: str) -> None:
         """Warn if run_dir contains state from a previous run (causes MISSING task replays)."""
         import glob
@@ -429,6 +460,8 @@ class ParslHTEExecutor(ExecutorBase):
         signal.signal(signal.SIGTERM, _handle_signal)
 
         results: List[Any] = []
+        _stop_autoscale = None
+        _autoscale_t = None
         logger.info("=== run() started ===")
         try:
             indexed_partitions = list(enumerate(self.cfg.parallel.time_partitions or []))
@@ -456,6 +489,19 @@ class ParslHTEExecutor(ExecutorBase):
                 self._future_to_index = {}
                 if self._submit_all_upfront:
                     # Slurm: submit everything at once so the scheduler sees the full workload.
+                    import threading
+                    _autoscale_lock = threading.Lock()
+                    _stop_autoscale = threading.Event()
+                    import parsl as _parsl
+                    _slurm_executor = _parsl.dfk().executors.get("dbclust_slurm")
+                    _autoscale_t = threading.Thread(
+                        target=self._autoscale_thread,
+                        args=(_slurm_executor, _stop_autoscale, _autoscale_lock),
+                        daemon=True,
+                        name="dbclust-autoscale",
+                    )
+                    _autoscale_t.start()
+
                     logger.info(f"Submitting all {total_tasks} tasks to Parsl...")
                     futures = []
                     for idx, _ in indexed_partitions:
@@ -520,10 +566,26 @@ class ParslHTEExecutor(ExecutorBase):
 
                 logger.info(f"Results loop completed - processed {completed_count} tasks")
 
+                if self._submit_all_upfront:
+                    n_done = len(self._load_completed())
+                    n_total = len(self.cfg.parallel.time_partitions)
+                    if n_done < n_total:
+                        logger.warning(
+                            f"{n_total - n_done} tasks incomplete after all blocks finished. "
+                            f"Re-run dbclust to resume (checkpoint will skip completed tasks)."
+                        )
+
         except KeyboardInterrupt:
             logger.info("KeyboardInterrupt caught in run()")
             pass
         finally:
+            # Stop autoscale thread if running (SLURM only)
+            if _stop_autoscale is not None:
+                try:
+                    _stop_autoscale.set()
+                    _autoscale_t.join(timeout=10)
+                except Exception:
+                    pass
             # Unregister atexit handler to avoid double cleanup
             try:
                 atexit.unregister(self.cleanup)
