@@ -87,7 +87,7 @@ class ParslSlurmExecutor(ParslHTEExecutor):
             max_workers_per_node=slurm.max_workers_per_node,
             cores_per_worker=1,
             provider=self._get_provider(),
-            heartbeat_threshold=3600*6,  # 6 hours to accommodate long-running SLURM jobs
+            heartbeat_threshold=600,  # 10 min — detect dead blocks quickly for autoscaling
             heartbeat_period=30,
             poll_period=100,
         )
