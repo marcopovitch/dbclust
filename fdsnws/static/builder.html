@@ -6,6 +6,8 @@
     <link rel="icon" type="image/png" href="/static/images/dbclust-bw-192x192.png">
     <title>FDSN Event Search</title>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script>
         function toggleGeoInputs() {
             const searchType = document.getElementById('geo_search_type').value;
@@ -205,10 +207,10 @@
             <fieldset>
                 <legend>⏱️ Time Constraints</legend>
                 <label for="starttime">Start Date:</label>
-                <input type="datetime-local" id="starttime" name="starttime">
+                <input type="text" id="starttime" name="starttime" placeholder="dd/mm/yyyy hh:mm" autocomplete="off">
 
                 <label for="endtime">End Date:</label>
-                <input type="datetime-local" id="endtime" name="endtime">
+                <input type="text" id="endtime" name="endtime" placeholder="dd/mm/yyyy hh:mm" autocomplete="off">
             </fieldset>
 
             <fieldset>
@@ -324,6 +326,28 @@
             document.getElementById("circle-inputs").classList.toggle("hidden", type !== "circular");
         }
 
+        // Date/time pickers using day/month/year with 24h time, defaulting to 00:00
+        const dateTimeOptions = {
+            enableTime: true,
+            time_24hr: true,
+            dateFormat: "d/m/Y H:i",
+            defaultHour: 0,
+            defaultMinute: 0,
+            onChange: submitSearch,
+        };
+        flatpickr("#starttime", dateTimeOptions);
+        flatpickr("#endtime", dateTimeOptions);
+
+        // Convert a "dd/mm/yyyy HH:MM" value to an ISO 8601 string ("yyyy-mm-ddTHH:MM")
+        function toIsoDateTime(value) {
+            const match = value.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/);
+            if (!match) {
+                return value;
+            }
+            const [, day, month, year, hours, minutes] = match;
+            return `${year}-${month}-${day}T${hours}:${minutes}`;
+        }
+
         function submitSearch() {
             const form = document.getElementById('search-form');
             const formData = new FormData(form);
@@ -332,6 +356,9 @@
             // Add only non-empty parameters
             formData.forEach((value, key) => {
                 if (value.trim() !== "") {
+                    if (key === "starttime" || key === "endtime") {
+                        value = toIsoDateTime(value);
+                    }
                     params.append(key, value);
                 }
             });

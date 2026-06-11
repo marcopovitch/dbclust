@@ -20,18 +20,19 @@ def generate_csv_response(results: list[dict]):
     file_extension = "csv"
 
     output = io.StringIO()
-    # Use DictWriter for robust CSV output with column names
-    fieldnames = list(results[0].keys())
-    writer = csv.DictWriter(
-        output,
-        fieldnames=fieldnames,
-        delimiter=",",
-        quotechar='"',
-        quoting=csv.QUOTE_MINIMAL,
-    )
-    writer.writeheader()
-    for event in results:
-        writer.writerow(event)
+    if results:
+        # Use DictWriter for robust CSV output with column names
+        fieldnames = list(results[0].keys())
+        writer = csv.DictWriter(
+            output,
+            fieldnames=fieldnames,
+            delimiter=",",
+            quotechar='"',
+            quoting=csv.QUOTE_MINIMAL,
+        )
+        writer.writeheader()
+        for event in results:
+            writer.writerow(event)
 
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     filename = f"events-{timestamp}.csv"
