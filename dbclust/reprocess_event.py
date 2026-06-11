@@ -538,7 +538,8 @@ def main():
         else:  # args.event_id
             # Create a temporary directory for the event
             with MyTemporaryDirectory(dir=cfg.file.tmp_path, delete=True) as tmp_path:
-                filename = os.path.join(tmp_path, f"{args.event_id}.xml")
+                safe_event_id = args.event_id.replace("/", "_")
+                filename = os.path.join(tmp_path, f"{safe_event_id}.xml")
                 try:
                     fetch_event_from_fdsn(
                         args.event_id, cfg.fdsnws_event.get_url(), filename
