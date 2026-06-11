@@ -11,8 +11,23 @@
   <link href="https://unpkg.com/tabulator-tables@5.5.2/dist/css/tabulator.min.css" rel="stylesheet">
   <script type="text/javascript" src="https://unpkg.com/tabulator-tables@5.5.2/dist/js/tabulator.min.js"></script>
 
+  <!-- Leaflet (for the events map) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
+
   <style>
     *, *::before, *::after { box-sizing: border-box; }
+
+    /* Leaflet relies on content-box sizing for its tile images;
+       the global border-box reset above shrinks/misaligns tiles. */
+    .leaflet-container img,
+    .leaflet-container img.leaflet-tile {
+      box-sizing: content-box;
+    }
 
     body {
       font-family: Arial, sans-serif;
@@ -181,6 +196,58 @@
       background-color: #f8f9fa;
       border-top: 2px solid #e3f2fd;
     }
+
+    /* Map section */
+    .map-section {
+      margin-bottom: 20px;
+      border: 1px solid #e3f2fd;
+      border-radius: 8px;
+      background-color: #f5f9ff;
+      overflow: hidden;
+    }
+
+    .map-summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 10px 15px;
+      font-weight: bold;
+      color: #1976d2;
+      background-color: #e3f2fd;
+      user-select: none;
+      display: flex;
+      align-items: center;
+    }
+
+    .map-summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .map-summary::before {
+      content: '\25B6';
+      display: inline-block;
+      margin-right: 8px;
+      font-size: 11px;
+      transition: transform 0.15s ease;
+    }
+
+    .map-section[open] .map-summary::before {
+      transform: rotate(90deg);
+    }
+
+    .map-summary i {
+      margin-right: 8px;
+    }
+
+    .map-container {
+      padding: 15px;
+    }
+
+    #eventsMap {
+      height: 400px;
+      width: 100%;
+      border: 2px solid #42a5f5;
+      border-radius: 8px;
+    }
   </style>
 </head>
 
@@ -208,6 +275,15 @@
       </div>
       <div class="event-count">Events: <span id="event-count">Loading...</span></div>
     </div>
+
+    <details class="map-section" id="mapSection">
+      <summary class="map-summary">
+        <i class="fa fa-map-marker"></i> Show events map
+      </summary>
+      <div class="map-container">
+        <div id="eventsMap"></div>
+      </div>
+    </details>
 
     <div class="table-container">
       <div id="eventsTable"></div>
@@ -252,8 +328,8 @@
           scatter_volume: {{ event.scatter_volume if event.scatter_volume is not none else 'null' }},
           dist_from_preloc_km: {{ event.dist_from_preloc_km if event.dist_from_preloc_km is not none else 'null' }},
           nb_agencies: {{ event.nb_agencies }},
-          agencies_list: "{{ event.agencies_list or '' }}",
-          agency_names: "{{ event.agency_names or '' }}",
+          agencies_list: {{ event.agencies_list | tojson }},
+          agency_names: {{ event.agency_names | tojson }},
           multiple_same_agencies: {{ 1 if event.multiple_same_agencies else 0 }},
           evaluation_mode: "{{ event.evaluation_mode or '' }}",
           event_type: "{{ event.event_type or '' }}",
@@ -275,6 +351,15 @@
       document.getElementById('event-count').textContent = tableData.length;
 
       // Top pagination control removed as requested
+
+      // Render an array value (e.g. ["LED","RENASS"]) as a comma-separated list
+      function formatJsonArray(cell) {
+        const value = cell.getValue();
+        if (Array.isArray(value)) {
+          return value.join(', ');
+        }
+        return value || '';
+      }
 
       // Initialize Tabulator
       const table = new Tabulator("#eventsTable", {
@@ -340,8 +425,8 @@
           {title: "<span title='Scatter Volume (km³)'>Scatter<br>Volume</span>", field: "scatter_volume", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Distance from Preliminary Location (km)'>Dist from<br>Preloc (km)</span>", field: "dist_from_preloc_km", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Number of Reporting Agencies'>Num. of<br>Agencies</span>", field: "nb_agencies", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='List of Reporting Agency Codes'>Agencies</span>", field: "agencies_list", headerSort: true, width: 150},
-          {title: "<span title='Full Names of Reporting Agencies'>Agency<br>Names</span>", field: "agency_names", headerSort: true, width: 150},
+          {title: "<span title='List of Reporting Agency Codes'>Agencies</span>", field: "agencies_list", formatter: formatJsonArray, headerSort: true, width: 150},
+          {title: "<span title='Full Names of Reporting Agencies'>Agency<br>Names</span>", field: "agency_names", formatter: formatJsonArray, headerSort: true, width: 150},
           {title: "<span title='Multiple Solutions from Same Agency'>Multiple<br>Same Agencies</span>", field: "multiple_same_agencies", headerSort: true, formatter: "tickCross", formatterParams: {allowTruthy: true}, width: 170},
           {title: "<span title='Evaluation Mode (Automatic/Manual)'>Evaluation<br>Mode</span>", field: "evaluation_mode", headerSort: true, width: 150},
           {title: "<span title='Type of Seismic Event'>Event<br>Type</span>", field: "event_type", headerSort: true, width: 150},
@@ -364,6 +449,102 @@
         ],
         initialSort: [],
         // We're updating the counter directly after data parsing, so no need for these callbacks
+      });
+
+      // --- Events map (Leaflet) ---
+      const mapState = {
+        map: null,
+        markersLayer: null,
+        initialized: false,
+      };
+
+      function initMap() {
+        mapState.map = L.map('eventsMap');
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        }).addTo(mapState.map);
+        mapState.markersLayer = L.layerGroup().addTo(mapState.map);
+        mapState.initialized = true;
+      }
+
+      // Map event_type to a marker color
+      function eventTypeColor(eventType) {
+        switch ((eventType || '').toLowerCase()) {
+          case '':
+            return '#9e9e9e'; // gray: no event_type
+          case 'earthquake':
+            return '#1976d2'; // blue
+          case 'quarry blast':
+            return '#e53935'; // red
+          default:
+            return '#fbc02d'; // yellow: other types
+        }
+      }
+
+      function updateMapMarkers(pageData) {
+        mapState.markersLayer.clearLayers();
+
+        const points = [];
+        pageData.forEach(event => {
+          const lat = event.latitude;
+          const lon = event.longitude;
+          if (lat === null || lat === undefined || lon === null || lon === undefined ||
+              isNaN(lat) || isNaN(lon)) {
+            return;
+          }
+
+          const eventIdShort = event.event_id.split('/').pop();
+          const popupHtml = `
+            <strong><a href="${event.event_id_link}" target="_blank">${eventIdShort}</a></strong><br>
+            Time: ${event.time}<br>
+            Magnitude: ${event.magnitude} ${event.magnitude_type || ''}<br>
+            Depth: ${event.depth_km} km<br>
+            Type: ${event.event_type || ''}
+          `;
+
+          const marker = L.circleMarker([lat, lon], {
+            radius: 6,
+            color: '#333',
+            weight: 1,
+            fillColor: eventTypeColor(event.event_type),
+            fillOpacity: 0.8,
+          }).bindPopup(popupHtml);
+          mapState.markersLayer.addLayer(marker);
+          points.push([lat, lon]);
+        });
+
+        if (points.length > 1) {
+          mapState.map.fitBounds(points, {padding: [20, 20]});
+        } else if (points.length === 1) {
+          mapState.map.setView(points[0], 8);
+        } else {
+          mapState.map.setView([0, 0], 2);
+        }
+      }
+
+      const mapSection = document.getElementById('mapSection');
+      mapSection.addEventListener('toggle', function() {
+        if (!mapSection.open) {
+          return;
+        }
+        // Defer until the browser has finished applying the <details>
+        // open layout, otherwise Leaflet measures the container as 0x0
+        // and the tile grid ends up misaligned/mis-sized.
+        setTimeout(function() {
+          if (!mapState.initialized) {
+            initMap();
+          } else {
+            mapState.map.invalidateSize();
+          }
+          updateMapMarkers(table.getData("active"));
+        }, 0);
+      });
+
+      table.on("pageLoaded", function() {
+        if (mapState.initialized) {
+          updateMapMarkers(table.getData("active"));
+        }
       });
     });
 
