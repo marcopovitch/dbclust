@@ -1,0 +1,71 @@
+# Configuration for add_event_type_columns.py / add-event-types
+#
+# input_file: path to the main alceste CSV (must have agency_names and
+#             agencies_list columns), relative to this config file.
+# output_file: path for the enriched output CSV, relative to this config file.
+# agencies: list of agency configurations
+#
+# Two modes, mutually exclusive:
+#   - file: path to a source CSV with event_id and event_type columns
+#            the join is done by matching event_ids between agencies_list and
+#            the source file
+#   - fixed_event_type: a fixed value assigned whenever the agency appears in
+#                       agency_names (for agencies that only contribute one
+#                       event type, e.g. earthquake)
+#
+# Agency bulletin CSVs (agencies_bulletins/*.csv) are run-specific data and
+# are not versioned in this repo: place them next to this config file on the
+# HPC run directory.
+#
+# event_type_groups: optional mapping of event_type label -> canonical group
+# name, used when computing event_type_consensus/event_type_final so that
+# equivalent labels from different agencies (e.g. "explosion" and
+# "controlled explosion") are not reported as a conflict. Labels not listed
+# here are left unchanged (each is its own group).
+
+input_file:  /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023.csv
+output_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023_with_event_types.csv
+
+event_type_groups:
+  controlled explosion: explosion
+  accidental explosion: explosion
+  mining explosion: explosion
+  experimental explosion: explosion
+  rockslide: landslide
+  rock burst: landslide
+  mine collapse: landslide
+
+agencies:
+  - agency_name: LDG
+    file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/agencies_bulletins/ldg_2010-2018_01.03.2026.csv
+
+  - agency_name: RENASS
+    file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/agencies_bulletins/renass-2010_2023-2026.06.04.csv
+
+  - agency_name: OMP
+    file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/agencies_bulletins/OMP_2010-2019.csv
+
+  - agency_name: BGS
+    file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/agencies_bulletins/BGS_2010-2023.csv
+
+  - agency_name: ICGC
+    file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/agencies_bulletins/ICGC_2010-2023.csv
+
+  - agency_name: IGN
+    file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/agencies_bulletins/IGN_2010-2023.csv
+
+  - agency_name: ORB
+    file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/agencies_bulletins/ORB_2010-2023.csv
+
+  - agency_name: LED
+    file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/agencies_bulletins/LED_2010-2023.csv
+
+  - agency_name: INGV
+    file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/agencies_bulletins/INGV_2010-2023.csv
+
+  - agency_name: SED
+    file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/agencies_bulletins/SED_2010-2023.csv
+
+  # Agencies that classify all events as earthquakes — no source file needed
+  - agency_name: ISTERRE
+    fixed_event_type: earthquake
