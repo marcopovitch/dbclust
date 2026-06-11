@@ -6,12 +6,14 @@ from datetime import datetime
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 
-def generate_text_response(results: list[dict]):
+def generate_text_response(results: list[dict], catalog: str = ""):
     """
     Export results to text format.
 
     Args:
         results (list of dict): List of event results as dictionaries.
+        catalog (str): Catalog name to report in the Catalog column
+            (typically the database file name).
 
     Returns:
         StreamingResponse: Response streaming text data.
@@ -53,10 +55,10 @@ def generate_text_response(results: list[dict]):
                 event.get("longitude", ""),
                 event.get("depth_km", ""),
                 event.get("author", ""),
-                event.get("catalog", ""),
+                catalog,
                 event.get("contributor", ""),
                 event.get("contributor_id", ""),
-                event.get("mag_type", ""),
+                event.get("magnitude_type", ""),
                 event.get("magnitude", ""),
                 event.get("mag_author", ""),
                 event.get("event_location_name", ""),

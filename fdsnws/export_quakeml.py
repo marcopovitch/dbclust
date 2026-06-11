@@ -28,6 +28,7 @@ MAX_EVENT_BUFF = 500
 def generate_quake_response(event_ids, db_path):
     def quake_generator():
         yield QUAKEML_HEADER
+        conn = None
         try:
             conn = create_safe_connection(f"file:{db_path}?mode=ro", uri=True)
             # Process event_ids in chunks
@@ -60,7 +61,8 @@ def generate_quake_response(event_ids, db_path):
                 for missing_id in missing_ids:
                     yield f"    <!-- No QuakeML found for event_id: {missing_id} -->\n"
         finally:
-            conn.close()
+            if conn:
+                conn.close()
         yield QUAKEML_FOOTER
 
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")

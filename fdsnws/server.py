@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import logging
 import os
 import re
@@ -121,22 +122,27 @@ def create_app(db_path: str, debug=False):
     def root_redirect(request: Request):
         return RedirectResponse(url="/static/builder.html")
 
+    wadl_dir = base_dir / "config" / "wadl" / "event"
+
+    def _wadl_file_response(filename: str):
+        file_path = wadl_dir / filename
+        if not file_path.is_file():
+            raise HTTPException(
+                status_code=404, detail=f"Resource not found: {filename}"
+            )
+        return FileResponse(file_path, media_type="application/xml")
+
     @app.get("/fdsnws/event/1/application.wadl")
     async def get_event_application_wadl():
-        file_path = os.path.join(
-            os.getcwd(), "config", "wadl", "event", "application.wadl"
-        )
-        return FileResponse(file_path, media_type="application/xml")
+        return _wadl_file_response("application.wadl")
 
     @app.get("/fdsnws/event/1/catalogs")
     async def get_event_catalogs():
-        file_path = os.path.join(os.getcwd(), "config", "wadl", "event", "catalogs")
-        return FileResponse(file_path, media_type="application/xml")
+        return _wadl_file_response("catalogs")
 
     @app.get("/fdsnws/event/1/contributors")
     async def get_event_contributors():
-        file_path = os.path.join(os.getcwd(), "config", "wadl", "event", "contributors")
-        return FileResponse(file_path, media_type="application/xml")
+        return _wadl_file_response("contributors")
 
     @app.get("/fdsnws/event/1/version")
     async def get_event_version():
@@ -243,9 +249,14 @@ def create_app(db_path: str, debug=False):
             sql = f"SELECT * FROM event_coordinates WHERE {' AND '.join(where)}"
             if orderby == "time-asc":
                 sql += " ORDER BY time ASC"
-            elif orderby == "time":
-                sql += " ORDER BY time DESC"
+            elif orderby == "magnitude":
+                sql += " ORDER BY magnitude DESC"
+            elif orderby == "magnitude-asc":
+                sql += " ORDER BY magnitude ASC"
+            elif orderby == "magnitude-desc":
+                sql += " ORDER BY magnitude DESC"
             else:
+                # Default and "time"/"time-desc"
                 sql += " ORDER BY time DESC"
 
             if limit:
@@ -272,7 +283,7 @@ def create_app(db_path: str, debug=False):
             elif format.lower() == "csv":
                 return generate_csv_response(results)
             elif format.lower() == "text":
-                return generate_text_response(results)
+                return generate_text_response(results, catalog=app.state.db_name)
             elif format.lower() == "geojson":
                 return generate_geojson_response(results)
             elif format.lower() == "quakeml" or format.lower() == "xml":
@@ -280,8 +291,23 @@ def create_app(db_path: str, debug=False):
                 event_ids = [r["event_id"] for r in results if "event_id" in r]
                 return generate_quake_response(event_ids, db_path)
             elif format.lower() == "html":
+                # Decode JSON-encoded list columns so the template can embed
+                # them as proper JS arrays instead of raw JSON strings.
+                html_results = []
+                for row in results:
+                    html_row = dict(row)
+                    for key in ("agencies_list", "agency_names"):
+                        raw_value = html_row.get(key)
+                        if raw_value:
+                            try:
+                                html_row[key] = json.loads(raw_value)
+                            except (TypeError, ValueError):
+                                html_row[key] = []
+                        else:
+                            html_row[key] = []
+                    html_results.append(html_row)
                 return templates.TemplateResponse(
-                    "table.html", {"request": request, "events": results}
+                    "table.html", {"request": request, "events": html_results}
                 )
             else:
                 raise HTTPException(
