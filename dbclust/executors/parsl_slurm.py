@@ -70,13 +70,14 @@ class ParslSlurmExecutor(ParslHTEExecutor):
 
         for logger_name in [
             "parsl",
-            "parsl.dataflow.dflow",
             "parsl.dataflow.memoization",
             "parsl.process_loggers",
             "parsl.jobs.strategy",
             "parsl.usage_tracking.usage",
         ]:
             logging.getLogger(logger_name).setLevel(logging.WARNING)
+        # Keep dflow at INFO to log task retries with task_id and hostname
+        logging.getLogger("parsl.dataflow.dflow").setLevel(logging.INFO)
 
         slurm = self.cfg.slurm
 

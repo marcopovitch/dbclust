@@ -39,6 +39,7 @@ def deduplicate_cross_partition_events(
     min_shared_catalog_ids: int = 2,
     min_shared_auto_picks: int = 3,
     report_path: str = None,
+    dry_run: bool = False,
 ) -> list:
     """Detect and remove cross-partition duplicate events after merge.
 
@@ -123,24 +124,44 @@ def deduplicate_cross_partition_events(
     reloc_needed = []
     removed_pairs = []
 
-    for ev1, ev2, n_shared in pairs:
-        # Per-event: first_pick, preferred origin time, phase count
-        cursor.execute(
-            "SELECT MIN(pick_time), time, used_phase_count FROM picks "
-            "JOIN origins USING (event_id) WHERE picks.event_id = ? "
-            "ORDER BY used_phase_count DESC LIMIT 1", (ev1,)
-        )
-        row1 = cursor.fetchone() or (None, None, 0)
-        cursor.execute(
-            "SELECT MIN(pick_time), time, used_phase_count FROM picks "
-            "JOIN origins USING (event_id) WHERE picks.event_id = ? "
-            "ORDER BY used_phase_count DESC LIMIT 1", (ev2,)
-        )
-        row2 = cursor.fetchone() or (None, None, 0)
-        fp1, t1, nph1 = row1
-        fp2, t2, nph2 = row2
+    if not pairs:
+        conn.commit()
+        return {"n_removed": 0, "removed_pairs": [], "reloc_needed": []}
 
-        # Winner = earliest first_pick; tie-break on most phases
+    # Pre-load per-event info in 2 bulk SQL queries instead of 3 queries per pair.
+    event_ids_involved = sorted({ev for ev1, ev2, _ in pairs for ev in (ev1, ev2)})
+    placeholders = ",".join("?" * len(event_ids_involved))
+
+    # Query 1: first_pick, origin_time, used_phase_count for all involved events
+    cursor.execute(f"""
+        SELECT picks.event_id,
+               MIN(picks.pick_time)      AS first_pick,
+               origins.time             AS origin_time,
+               origins.used_phase_count
+        FROM picks
+        JOIN origins USING (event_id)
+        WHERE picks.event_id IN ({placeholders})
+        GROUP BY picks.event_id
+        ORDER BY origins.used_phase_count DESC
+    """, event_ids_involved)
+    ev_info = {row[0]: (row[1], row[2], row[3]) for row in cursor.fetchall()}
+    # ev_info[event_id] = (first_pick, origin_time, used_phase_count)
+
+    # Query 2: min/max pick_time per event (for pick-span calculation)
+    cursor.execute(f"""
+        SELECT event_id, MIN(pick_time), MAX(pick_time)
+        FROM picks
+        WHERE event_id IN ({placeholders})
+        GROUP BY event_id
+    """, event_ids_involved)
+    ev_pickspan = {row[0]: (row[1], row[2]) for row in cursor.fetchall()}
+
+    # Pure-Python loop: winner/loser selection + span check
+    losers = []
+    for ev1, ev2, n_shared in pairs:
+        fp1, t1, nph1 = ev_info.get(ev1, (None, None, 0))
+        fp2, t2, nph2 = ev_info.get(ev2, (None, None, 0))
+
         if (fp1 or "") <= (fp2 or "") or (fp1 == fp2 and (nph1 or 0) >= (nph2 or 0)):
             winner, loser = ev1, ev2
             t_winner, nph_winner, fp_winner = t1, nph1, fp1
@@ -150,27 +171,23 @@ def deduplicate_cross_partition_events(
             t_winner, nph_winner, fp_winner = t2, nph2, fp2
             fp_loser, nph_loser = fp1, nph1
 
-        # Pick span across both events = last - first over the union of all picks
-        cursor.execute(
-            "SELECT MIN(pick_time), MAX(pick_time) FROM picks WHERE event_id IN (?, ?)",
-            (ev1, ev2),
-        )
-        first_pick_union, last_pick_union = cursor.fetchone()
+        min1, max1 = ev_pickspan.get(ev1, (None, None))
+        min2, max2 = ev_pickspan.get(ev2, (None, None))
+        first_pick_union = min(filter(None, [min1, min2]), default=None)
+        last_pick_union  = max(filter(None, [max1, max2]), default=None)
 
         logger.info(
             f"Cross-partition duplicate: keeping {winner} (first_pick={fp_winner}, phases={nph_winner}), "
             f"removing {loser} (first_pick={fp_loser}, phases={nph_loser}), "
             f"n_shared_picks={n_shared}"
         )
-        cursor.execute("DELETE FROM events WHERE event_id = ?", (loser,))
+        losers.append(loser)
         removed_pairs.append({
             "kept": {"event_id": winner, "origin_time": t_winner, "phases": nph_winner, "first_pick": fp_winner},
             "removed": {"event_id": loser, "phases": nph_loser, "first_pick": fp_loser},
             "n_shared_picks": n_shared,
         })
 
-        # If the union of picks spans more than overlap_window_s, neither job could
-        # see all picks — the surviving localisation is sub-optimal.
         try:
             t_first = datetime.fromisoformat(first_pick_union.replace("Z", "+00:00"))
             t_last = datetime.fromisoformat(last_pick_union.replace("Z", "+00:00"))
@@ -196,7 +213,11 @@ def deduplicate_cross_partition_events(
         except Exception as e:
             logger.warning(f"Could not compute pick span for pair ({winner}, {loser}): {e}")
 
-    conn.commit()
+    # Batch DELETEs in a single transaction (skipped in dry-run mode)
+    if not dry_run:
+        for loser in losers:
+            cursor.execute("DELETE FROM events WHERE event_id = ?", (loser,))
+        conn.commit()
     n_removed = len(pairs)
     n_reloc = len(reloc_needed)
     logger.info(
