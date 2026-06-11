@@ -2423,7 +2423,7 @@ def format_event(event: Event, txt: str = "", header: bool = False) -> List[str]
     lines = []
     if header:
         lines.append(
-            "Text, T0, lat, lon, depth, RMS, sta_count, phase_count, gap1, gap2, model, locator"
+            "Text, T0, lat, lon, depth, RMS, erh, erz, sta_count, phase_count, gap1, gap2, model, locator"
         )
 
     o_pref = event.preferred_origin()
@@ -2483,6 +2483,24 @@ def format_origin(o: Origin, txt: str) -> str:
     else:
         secondary_azimuthal_gap = f"{secondary_azimuthal_gap:.1f}"
 
+    horizontal_uncertainty = None
+    if o.origin_uncertainty:
+        horizontal_uncertainty = (
+            o.origin_uncertainty.horizontal_uncertainty
+            if o.origin_uncertainty.horizontal_uncertainty is not None
+            else o.origin_uncertainty.max_horizontal_uncertainty
+        )
+    erh = (
+        f"{horizontal_uncertainty / 1000:.1f}"
+        if horizontal_uncertainty is not None
+        else "-"
+    )
+    erz = (
+        f"{o.depth_errors.uncertainty / 1000:.1f}"
+        if o.depth_errors and o.depth_errors.uncertainty is not None
+        else "-"
+    )
+
     return ", ".join(
         map(
             str,
@@ -2497,6 +2515,8 @@ def format_origin(o: Origin, txt: str) -> str:
                     if o.quality.standard_error
                     else "-"
                 ),
+                erh,
+                erz,
                 o.quality.used_station_count,
                 o.quality.used_phase_count,
                 azimuthal_gap,
