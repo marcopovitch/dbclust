@@ -22,9 +22,53 @@
 # equivalent labels from different agencies (e.g. "explosion" and
 # "controlled explosion") are not reported as a conflict. Labels not listed
 # here are left unchanged (each is its own group).
+#
+# agency_priority: optional ordered list of agency_name values used to
+# resolve event_type_consensus == "conflict" (agencies disagree on the
+# normalized event_type). The normalized value from the highest-priority
+# agency that has one is used as the agency-derived event_type. Agencies
+# not listed here are considered last, in the order they appear in
+# 'agencies'. event_type_consensus itself is left untouched ("conflict"
+# still means the agencies disagreed).
+#
+# spectrocnn_column: optional name of a column already present in the input
+# file holding an automatic event_type prediction from the spectrocnn CNN
+# (spectrogram-based discrimination). When present, a derived column
+# event_type_SPECTROCNN is filled only for the trusted predictions
+# ("earthquake" / "quarry blast" -- "unknown" is ignored). This column is
+# not used for event_type_consensus/conflict (agency-only), but it takes
+# priority over the agency-derived value (consensus, or conflict resolved
+# via agency_priority) for event_type_final:
+#   - if the agency-derived value (normalized via event_type_groups) is a
+#     more precise label compatible with the spectrocnn category (per
+#     spectrocnn_compatibility below), that precise label is used as
+#     event_type_final and event_type_final_source is set to
+#     "spectrocnn+agencies"
+#   - otherwise event_type_final is the spectrocnn value and
+#     event_type_final_source is "spectrocnn"
+# When spectrocnn has no trusted value, the agency-derived value is used as
+# before (source "consensus_agencies") or event_type_final stays empty.
+#
+# spectrocnn_compatibility: mapping of spectrocnn category -> list of
+# normalized agency labels considered as a compatible refinement of that
+# category (used as described above).
 
-input_file:  /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023.csv
-output_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023_with_event_types.csv
+input_file:  /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023-2.csv
+output_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023-2-with_event_types.csv
+
+agency_priority:
+  - RENASS
+  - LDG
+
+spectrocnn_column: event_type
+
+spectrocnn_compatibility:
+  earthquake:
+    - earthquake
+    - induced or triggered event
+  quarry blast:
+    - quarry blast
+    - explosion
 
 event_type_groups:
   controlled explosion: explosion

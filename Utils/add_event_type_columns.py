@@ -9,6 +9,11 @@ For each configured agency, the column event_type_<AGENCY> is populated when:
 A consensus column (event_type_consensus) and a final value
 (event_type_final) are then derived across all agency columns.
 
+If spectrocnn_column is configured, a trusted CNN-based prediction
+(earthquake / quarry blast) takes priority over the agency consensus
+for event_type_final, and event_type_final_source records which one
+was used ("spectrocnn" or "consensus_agencies").
+
 Usage:
     add-event-types -c add_event_types.yml
     python Utils/add_event_type_columns.py -c add_event_types.yml
@@ -121,17 +126,78 @@ def resolve_event_type(
     return None
 
 
-def compute_final_event_type(row: pd.Series, et_cols: list, event_type_groups: dict):
+def compute_final_event_type(
+    row: pd.Series, et_cols: list, event_type_groups: dict, priority_cols: list
+):
     """
     Return a single event_type value derived from all agency columns:
       - consensus or single agency filled : return the canonical (normalized)
                                               value for that group
-      - conflict or no_data              : return None
+      - conflict : return the normalized value from the highest-priority
+                    agency that has one (per priority_cols, an ordered list
+                    of event_type_<AGENCY> column names)
+      - no_data : return None
     """
-    if row["event_type_consensus"] != "consensus":
+    if row["event_type_consensus"] == "no_data":
         return None
-    filled = row[et_cols].dropna()
-    return normalize_event_type(filled.iloc[0], event_type_groups)
+    if row["event_type_consensus"] == "consensus":
+        filled = row[et_cols].dropna()
+        return normalize_event_type(filled.iloc[0], event_type_groups)
+    # conflict: resolve by agency priority
+    for col in priority_cols:
+        value = row[col]
+        if pd.notna(value):
+            return normalize_event_type(value, event_type_groups)
+    return None
+
+
+def resolve_spectrocnn_event_type(value):
+    """
+    Return value if it is one of the trusted spectrocnn predictions
+    (earthquake, quarry blast), else None. Other values (e.g. "unknown")
+    are not informative enough to be used as a reference.
+    """
+    if value in ("earthquake", "quarry blast"):
+        return value
+    return None
+
+
+def compute_final_event_type_and_source(
+    row: pd.Series,
+    et_cols: list,
+    event_type_groups: dict,
+    priority_cols: list,
+    spectrocnn_col: str | None,
+    spectrocnn_compatibility: dict,
+):
+    """
+    Return (event_type_final, event_type_final_source) for a row.
+
+    - The agency value is derived from event_type_consensus: on consensus,
+      the shared (normalized) value; on conflict, the normalized value from
+      the highest-priority agency (per priority_cols); on no_data, None.
+    - If a trusted spectrocnn prediction is available, it takes priority
+      over the agency value, unless the agency value is a more precise
+      label compatible with the spectrocnn category (per
+      spectrocnn_compatibility): in that case the agency value is used
+      (source = "spectrocnn+agencies"). Otherwise the spectrocnn value is
+      used as-is (source = "spectrocnn").
+    - Otherwise, fall back to the agency value (source =
+      "consensus_agencies" when a value is derived, else None).
+    """
+    agency_value = compute_final_event_type(row, et_cols, event_type_groups, priority_cols)
+
+    if spectrocnn_col is not None:
+        spectrocnn_value = row[spectrocnn_col]
+        if pd.notna(spectrocnn_value):
+            compatible = spectrocnn_compatibility.get(spectrocnn_value, [])
+            if agency_value is not None and agency_value in compatible:
+                return agency_value, "spectrocnn+agencies"
+            return normalize_event_type(spectrocnn_value, event_type_groups), "spectrocnn"
+
+    if agency_value is None:
+        return None, None
+    return agency_value, "consensus_agencies"
 
 
 def add_event_type_columns(config_path: Path) -> None:
@@ -141,6 +207,8 @@ def add_event_type_columns(config_path: Path) -> None:
     input_path = base_dir / config["input_file"]
     output_path = base_dir / config["output_file"]
     event_type_groups = config.get("event_type_groups", {}) or {}
+    spectrocnn_column = config.get("spectrocnn_column")
+    spectrocnn_compatibility = config.get("spectrocnn_compatibility", {}) or {}
 
     # Validate config: each agency must have exactly one of 'file' or 'fixed_event_type'
     for agency_cfg in config["agencies"]:
@@ -155,6 +223,23 @@ def add_event_type_columns(config_path: Path) -> None:
     print(f"Reading input file: {input_path}")
     alceste = pd.read_csv(input_path, low_memory=False)
     print(f"  {len(alceste):,} rows loaded")
+
+    spectrocnn_col = None
+    if spectrocnn_column:
+        if spectrocnn_column not in alceste.columns:
+            raise ValueError(
+                f"spectrocnn_column '{spectrocnn_column}' not found in input file columns."
+            )
+        spectrocnn_col = "event_type_SPECTROCNN"
+        print(f"\nProcessing spectrocnn reference column: {spectrocnn_column}")
+        alceste[spectrocnn_col] = alceste[spectrocnn_column].apply(
+            resolve_spectrocnn_event_type
+        )
+        filled = alceste[spectrocnn_col].notna().sum()
+        print(
+            f"  Column '{spectrocnn_col}' filled for {filled:,} rows "
+            f"({100 * filled / len(alceste):.1f}%)"
+        )
 
     for agency_cfg in config["agencies"]:
         agency_name = agency_cfg["agency_name"]
@@ -189,6 +274,15 @@ def add_event_type_columns(config_path: Path) -> None:
         )
 
     et_cols = [f"event_type_{cfg['agency_name']}" for cfg in config["agencies"]]
+
+    agency_priority = config.get("agency_priority", []) or []
+    agency_names = [cfg["agency_name"] for cfg in config["agencies"]]
+    for name in agency_priority:
+        if name not in agency_names:
+            raise ValueError(f"agency_priority: unknown agency '{name}'")
+    ordered_names = agency_priority + [n for n in agency_names if n not in agency_priority]
+    priority_cols = [f"event_type_{name}" for name in ordered_names]
+
     alceste["event_type_consensus"] = alceste.apply(
         compute_consensus, axis=1, et_cols=et_cols, event_type_groups=event_type_groups
     )
@@ -208,15 +302,26 @@ def add_event_type_columns(config_path: Path) -> None:
         f"  ({100 * renass_phasenet_only / len(alceste):.1f}%)"
     )
 
-    alceste["event_type_final"] = alceste.apply(
-        compute_final_event_type, axis=1, et_cols=et_cols, event_type_groups=event_type_groups
+    final_results = alceste.apply(
+        compute_final_event_type_and_source,
+        axis=1,
+        et_cols=et_cols,
+        event_type_groups=event_type_groups,
+        priority_cols=priority_cols,
+        spectrocnn_col=spectrocnn_col,
+        spectrocnn_compatibility=spectrocnn_compatibility,
     )
+    alceste["event_type_final"] = final_results.apply(lambda r: r[0])
+    alceste["event_type_final_source"] = final_results.apply(lambda r: r[1])
+
     filled_final = alceste["event_type_final"].notna().sum()
     print(
         f"\n  event_type_final filled: {filled_final:,}  ({100 * filled_final / len(alceste):.1f}%)"
     )
     print("  Distribution:")
     print(alceste["event_type_final"].value_counts().to_string(max_rows=10))
+    print("\n  Source distribution:")
+    print(alceste["event_type_final_source"].value_counts(dropna=False).to_string(max_rows=10))
 
     print(f"\nWriting output file: {output_path}")
     alceste.to_csv(output_path, index=False)
