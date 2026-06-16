@@ -183,6 +183,8 @@ DBClust provides several command-line tools for different seismic data processin
 |------|-------------|---------|
 | **fdsnws-server** | FDSN Web Service server for event access | `fdsnws-server -d events.db -p 8000` |
 | **csv2parquet** | Convert CSV files to Parquet format | `csv2parquet -i input.csv -o output.parquet` |
+| **add-event-types** | Enrich the catalog with per-agency event_type columns and a consensus | `add-event-types -c add_event_types.yml` |
+| **pick_stats_from_config** | Pick statistics (manual/auto counts, stations) from a YAML config | `python Utils/pick_stats_from_config.py -c config.yml` |
 | **detect_operator_duplicates** | Detect events picked independently by two operators on the same earthquake | `python Utils/detect_operator_duplicates.py events.db` |
 | **detect_suspicious_duplicates** | Detect intra-window Leiden fragment duplicates (auto/manual pick conflict) | Called automatically during `merge_databases()` |
 
@@ -344,6 +346,56 @@ csv2parquet -i picks.csv -o picks.parquet
 
 # With compression
 csv2parquet -i picks.csv -o picks.parquet --compression snappy
+```
+
+### add-event-types - Per-Agency Event Type Consensus
+
+Enrich the catalog with per-agency `event_type_<AGENCY>` columns, derived from each
+agency's bulletin CSV (joined on `agencies_list`/`agency_names`) or from a fixed value for
+agencies that only contribute one event type (e.g. `earthquake` for ISTERRE).
+
+It also computes:
+
+- `event_type_consensus`: `consensus`, `conflict`, or `no_data` across all agency columns
+- `event_type_final`: the agreed-upon event type when there is a consensus, otherwise empty
+
+```bash
+add-event-types -c add_event_types.yml
+```
+
+The configuration file lists `input_file`, `output_file` (both relative to the config file),
+and the `agencies` to process — see `Utils/add_event_types.yml.example` for the full format
+and the list of supported agencies.
+
+### pick_stats_from_config - Pick Statistics
+
+Compute pick statistics from the parquet pick files declared in a DBClust YAML config,
+applying the same P/S probability thresholds, station blacklist, and rename rules as the pipeline.
+
+```bash
+python Utils/pick_stats_from_config.py -c config.yml \
+    --stations-csv stations.csv \
+    --missing-stations-csv missing.csv \
+    --suggest-rename-yaml suggested_renames.yml
+```
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `-c` | Path to DBClust YAML config (required) |
+| `--stations-csv FILE` | Export stations with coordinates, `manual_picks`, and `auto_picks` columns |
+| `--missing-stations-csv FILE` | Export stations found in picks but absent from inventory/fallback, with `pick_count`, `agencies`, and `suggested_rename` columns |
+| `--suggest-rename-yaml FILE` | Write suggested `!extend`-ready rename rules for missing stations that exist under a different network code |
+
+The suggested rename YAML can be included directly in the config via `!extend`:
+
+```yaml
+station:
+  rename:
+    before:
+      - ^(FR\..*?\..*?)\.XXZ: \1.SH
+      - !extend suggested_renames.yml   # merged inline
 ```
 
 ### detect_operator_duplicates - Operator Duplicate Detection

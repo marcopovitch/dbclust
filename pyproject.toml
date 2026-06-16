@@ -26,6 +26,7 @@ dependencies = [
     "prettytable",
     "pyocto>=0.1.9",
     "pyproj",
+    "pyyaml",
     "ray[default]",
     "rich",
     "scikit-learn",
@@ -74,6 +75,7 @@ dbclust-parsl = "dbclust.runner_parsl:main"
 injectdb = "dbclust.inject_spatialite:main"
 relocate = "dbclust.reprocess_event:main"
 csv2parquet = "Utils.csv2parquet:main"
+add-event-types = "Utils.add_event_type_columns:main"
 nll-locate = "dbclust.locate:main"
 
 [project.urls]
