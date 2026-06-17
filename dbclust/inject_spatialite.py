@@ -2644,18 +2644,33 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
         # Perform batch update
         if updates:
             try:
-                cursor.executemany(
-                    """
-                    UPDATE events
-                    SET event_type = ?,
-                        discrimination_probability = ?,
-                        discrimination_station_count = ?,
-                        discrimination_certainty = ?
-                    WHERE event_id = ?
-                    """,
-                    updates,
+                updated_count = 0
+                for row_args in updates:
+                    cursor.execute(
+                        """
+                        UPDATE events
+                        SET event_type = ?,
+                            discrimination_probability = ?,
+                            discrimination_station_count = ?,
+                            discrimination_certainty = ?
+                        WHERE event_id = ?
+                        """,
+                        row_args,
+                    )
+                    if cursor.rowcount == 0:
+                        logger.warning(
+                            f"Discrimination CSV: event_id '{row_args[-1]}' not found in DB, skipped"
+                        )
+                    else:
+                        updated_count += 1
+                logger.info(
+                    f"Updated {updated_count}/{len(updates)} events with discrimination info"
+                    + (
+                        f" ({len(updates) - updated_count} not found in DB)"
+                        if updated_count < len(updates)
+                        else ""
+                    )
                 )
-                logger.info(f"Updated {len(updates)} events with discrimination info")
                 conn.commit()
 
             except Exception as e:
@@ -3105,6 +3120,26 @@ def compute_gallacher_gt5_score(conn: sqlite3.Connection) -> None:
     logger.info("Gallacher GT5 metrics computation completed")
 
 
+def print_discrimination_stats(conn: sqlite3.Connection) -> None:
+    """Print a breakdown of event types after discrimination info has been applied."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            COALESCE(event_type, 'NULL') AS event_type,
+            COUNT(*) AS count
+        FROM events
+        GROUP BY event_type
+        ORDER BY count DESC;
+        """
+    )
+    rows = cursor.fetchall()
+    total = sum(r[1] for r in rows)
+    print(f"  Discrimination stats ({total} total events):")
+    for event_type, count in rows:
+        print(f"    {event_type}: {count} ({100.0 * count / total:.1f}%)")
+
+
 def apply_database_enhancements(args) -> None:
     """Apply database enhancements based on the provided arguments."""
     print("Applying database enhancements...")
@@ -3139,6 +3174,7 @@ def apply_database_enhancements(args) -> None:
             if args.add_discrimination:
                 print("Adding discrimination info...")
                 add_discrimination_info(conn, args.add_discrimination)
+                print_discrimination_stats(conn)
 
             if args.add_localization_quality:
                 print("Computing localization quality...")
