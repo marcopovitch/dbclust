@@ -305,11 +305,11 @@
           magnitude: {% if event.magnitude is float %}{{ event.magnitude }}{% else %}"{{ event.magnitude }}"{% endif %},
           magnitude_type: "{{ event.magnitude_type }}",
           magnitude_uncertainty: {{ event.magnitude_uncertainty if event.magnitude_uncertainty is not none else 'null' }},
-          rms: {{ event.rms }},
+          rms: {{ event.rms if event.rms is not none else 'null' }},
           used_station_count: {{ event.used_station_count }},
           used_phase_count: {{ event.used_phase_count }},
-          erh_km: {{ event.erh_km }},
-          erz_km: {{ event.erz_km }},
+          erh_km: {{ event.erh_km if event.erh_km is not none else 'null' }},
+          erz_km: {{ event.erz_km if event.erz_km is not none else 'null' }},
           er_method: "{{ event.er_method or '' }}",
           location_method_id: "{{ event.location_method_id or '' }}",
           earth_model_id: "{{ event.earth_model_id or '' }}",
@@ -317,10 +317,10 @@
           nb_magnitudes: {{ event.nb_magnitudes or 0 }},
           P_count: {{ event.P_count }},
           S_count: {{ event.S_count }},
-          minimum_distance_deg: {{ event.minimum_distance_deg }},
-          maximum_distance_deg: {{ event.maximum_distance_deg }},
+          minimum_distance_deg: {{ event.minimum_distance_deg if event.minimum_distance_deg is not none else 'null' }},
+          maximum_distance_deg: {{ event.maximum_distance_deg if event.maximum_distance_deg is not none else 'null' }},
           median_distance_deg: {{ event.median_distance_deg if event.median_distance_deg is not none else 'null' }},
-          azimuthal_gap: {{ event.azimuthal_gap }},
+          azimuthal_gap: {{ event.azimuthal_gap if event.azimuthal_gap is not none else 'null' }},
           secondary_azimuthal_gap: {{ event.secondary_azimuthal_gap if event.secondary_azimuthal_gap is not none else 'null' }},
           expectation_latitude: {{ event.expectation_latitude if event.expectation_latitude is not none else 'null' }},
           expectation_longitude: {{ event.expectation_longitude if event.expectation_longitude is not none else 'null' }},
@@ -365,14 +365,13 @@
       // Initialize Tabulator
       const table = new Tabulator("#eventsTable", {
         data: tableData,
-        layout: "fitDataTable",
+        layout: "fitDataStretch",
         pagination: true,
         paginationSize: 20,
         paginationSizeSelector: [10, 20, 30, 40, 50, 100, true],
-        paginationButtonCount: 7,  // Show more page buttons
-        paginationCounter: "rows", // Show row count in footer
+        paginationButtonCount: 7,
+        paginationCounter: "rows",
         paginationLayout: "bottom",
-        layout: "fitDataStretch",  // Better table layout
         movableColumns: false,
         tooltipsHeader: true,  // Enable tooltips on column headers for Safari users
         columns: [
@@ -390,7 +389,10 @@
             }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Magnitude'>Magnitude</span>", field: "magnitude", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Magnitude Type'>Type</span>", field: "magnitude_type", headerSort: true},
-          {title: "<span title='Magnitude Uncertainty'>Mag<br>Uncertainty</span>", field: "magnitude_uncertainty", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Magnitude Uncertainty'>Mag<br>Uncertainty</span>", field: "magnitude_uncertainty", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Root Mean Square of travel time residuals'>RMS</span>", field: "rms", formatter: function(cell) {
               const value = cell.getValue();
               return value === null || value === undefined ? '' : Number(value).toFixed(2);
@@ -424,23 +426,38 @@
               const value = cell.getValue();
               return value === null || value === undefined ? '' : Number(value).toFixed(3);
             }, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Azimuthal Gap (degrees)'>Az<br>Gap</span>", field: "azimuthal_gap", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Secondary Azimuthal Gap (degrees)'>2nd Az<br>Gap</span>", field: "secondary_azimuthal_gap", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell", width: 120},
+          {title: "<span title='Azimuthal Gap (degrees)'>Az<br>Gap</span>", field: "azimuthal_gap", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(1);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Secondary Azimuthal Gap (degrees)'>2nd Az<br>Gap</span>", field: "secondary_azimuthal_gap", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(1);
+            }, headerSort: true, cssClass: "numeric-cell", width: 120},
           {title: "<span title='Expected Latitude'>Exp<br>Lat</span>", field: "expectation_latitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Expected Longitude'>Exp<br>Lon</span>", field: "expectation_longitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Expected Depth (km)'>Exp<br>Depth (km)</span>", field: "expectation_depth_km", formatter: function(cell) {
               const value = cell.getValue();
               return value === null || value === undefined ? '' : Number(value).toFixed(2);
             }, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Scatter Volume (km³)'>Scatter<br>Volume</span>", field: "scatter_volume", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Distance from Preliminary Location (km)'>Dist from<br>Preloc (km)</span>", field: "dist_from_preloc_km", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Scatter Volume (km³)'>Scatter<br>Volume</span>", field: "scatter_volume", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(3);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Distance from Preliminary Location (km)'>Dist from<br>Preloc (km)</span>", field: "dist_from_preloc_km", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Number of Reporting Agencies'>Num. of<br>Agencies</span>", field: "nb_agencies", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='List of Reporting Agency Codes'>Agencies</span>", field: "agencies_list", formatter: formatJsonArray, headerSort: true, width: 150},
           {title: "<span title='Full Names of Reporting Agencies'>Agency<br>Names</span>", field: "agency_names", formatter: formatJsonArray, headerSort: true, width: 150},
           {title: "<span title='Multiple Solutions from Same Agency'>Multiple<br>Same Agencies</span>", field: "multiple_same_agencies", headerSort: true, formatter: "tickCross", formatterParams: {allowTruthy: true}, width: 170},
           {title: "<span title='Evaluation Mode (Automatic/Manual)'>Evaluation<br>Mode</span>", field: "evaluation_mode", headerSort: true, width: 150},
           {title: "<span title='Type of Seismic Event'>Event<br>Type</span>", field: "event_type", headerSort: true, width: 150},
-          {title: "<span title='Discrimination Probability (0-1)'>Discrim.<br>Probability</span>", field: "discrimination_probability", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Discrimination Probability (0-1)'>Discrim.<br>Probability</span>", field: "discrimination_probability", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(3);
+            }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Number of Stations Used for Discrimination'>Discrim.<br>Station Count</span>", field: "discrimination_station_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Discrimination Certainty Level'>Discrim.<br>Certainty</span>", field: "discrimination_certainty", headerSort: true, width: 150},
           {title: "<span title='Event Quality Indicator'>Quality</span>", field: "quality", headerSort: true, width: 150},
