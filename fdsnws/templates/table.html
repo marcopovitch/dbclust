@@ -384,11 +384,17 @@
           {title: "<span title='Time'>Time</span>", field: "time", headerSort: true},
           {title: "<span title='Latitude'>Latitude</span>", field: "latitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Longitude'>Longitude</span>", field: "longitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Depth in kilometers'>Depth<br>(km)</span>", field: "depth_km", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Depth in kilometers'>Depth<br>(km)</span>", field: "depth_km", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Magnitude'>Magnitude</span>", field: "magnitude", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Magnitude Type'>Type</span>", field: "magnitude_type", headerSort: true},
           {title: "<span title='Magnitude Uncertainty'>Mag<br>Uncertainty</span>", field: "magnitude_uncertainty", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Root Mean Square of travel time residuals'>RMS</span>", field: "rms", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Root Mean Square of travel time residuals'>RMS</span>", field: "rms", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Number of Stations Used'>Stations</span>", field: "used_station_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Number of Phases Used'>Phases</span>", field: "used_phase_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Error in Horizontal (km)'>ERH<br>(km)</span>", field: "erh_km", formatter: function(cell) {
@@ -422,7 +428,10 @@
           {title: "<span title='Secondary Azimuthal Gap (degrees)'>2nd Az<br>Gap</span>", field: "secondary_azimuthal_gap", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell", width: 120},
           {title: "<span title='Expected Latitude'>Exp<br>Lat</span>", field: "expectation_latitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Expected Longitude'>Exp<br>Lon</span>", field: "expectation_longitude", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Expected Depth (km)'>Exp<br>Depth (km)</span>", field: "expectation_depth_km", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Expected Depth (km)'>Exp<br>Depth (km)</span>", field: "expectation_depth_km", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Scatter Volume (km³)'>Scatter<br>Volume</span>", field: "scatter_volume", formatter: "number", formatterParams: {precision: 3}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Distance from Preliminary Location (km)'>Dist from<br>Preloc (km)</span>", field: "dist_from_preloc_km", formatter: "number", formatterParams: {precision: 2}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Number of Reporting Agencies'>Num. of<br>Agencies</span>", field: "nb_agencies", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
@@ -461,6 +470,7 @@
         map: null,
         markersLayer: null,
         initialized: false,
+        markersByEventId: new Map(),
       };
 
       function initMap() {
@@ -489,6 +499,7 @@
 
       function updateMapMarkers(pageData) {
         mapState.markersLayer.clearLayers();
+        mapState.markersByEventId.clear();
 
         const points = [];
         pageData.forEach(event => {
@@ -508,14 +519,18 @@
             Type: ${event.event_type || ''}
           `;
 
+          const fillColor = eventTypeColor(event.event_type);
           const marker = L.circleMarker([lat, lon], {
             radius: 6,
             color: '#333',
             weight: 1,
-            fillColor: eventTypeColor(event.event_type),
+            fillColor: fillColor,
             fillOpacity: 0.8,
           }).bindPopup(popupHtml);
+          marker._normalStyle = { radius: 6, color: '#333', weight: 1, fillColor, fillOpacity: 0.8 };
+          marker._highlightStyle = { radius: 10, color: '#e53935', weight: 2, fillColor: '#e53935', fillOpacity: 1.0 };
           mapState.markersLayer.addLayer(marker);
+          mapState.markersByEventId.set(event.event_id, marker);
           points.push([lat, lon]);
         });
 
@@ -549,6 +564,24 @@
       table.on("pageLoaded", function() {
         if (mapState.initialized) {
           updateMapMarkers(table.getData("active"));
+        }
+      });
+
+      table.on("rowMouseOver", function(e, row) {
+        if (!mapState.initialized) return;
+        const marker = mapState.markersByEventId.get(row.getData().event_id);
+        if (marker) {
+          marker.setStyle(marker._highlightStyle);
+          marker.setRadius(marker._highlightStyle.radius);
+        }
+      });
+
+      table.on("rowMouseOut", function(e, row) {
+        if (!mapState.initialized) return;
+        const marker = mapState.markersByEventId.get(row.getData().event_id);
+        if (marker) {
+          marker.setStyle(marker._normalStyle);
+          marker.setRadius(marker._normalStyle.radius);
         }
       });
     });
