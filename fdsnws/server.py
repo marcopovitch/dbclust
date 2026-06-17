@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from dbclust.inject_spatialite import create_safe_connection
+from dbclust.inject_spatialite import create_safe_connection, load_spatialite
 
 from fdsnws.export_csv import generate_csv_response
 from fdsnws.export_geojson import generate_geojson_response
@@ -192,6 +192,7 @@ def create_app(db_path: str, debug=False):
 
         #conn = get_db_connection()
         conn = create_safe_connection(f"file:{db_path}?mode=ro", uri=True)
+        load_spatialite(conn)
         try:
             where = ["1=1"]
             params = []
