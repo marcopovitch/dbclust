@@ -141,11 +141,13 @@ EVENT_COORDINATES_VIEW = """
         COALESCE(o.median_prob_p, 0.0) AS median_prob_p,
         COALESCE(o.median_prob_s, 0.0) AS median_prob_s,
         COALESCE(o.median_prob_total, 0.0) AS median_prob_total,
+        ss.score AS silence_score,
         o.geometry
     FROM
         events AS e
         JOIN origins AS o ON e.event_id = o.event_id AND o.preferred = 1
         LEFT JOIN magnitudes AS m ON o.id = m.origin_id AND m.preferred = 1
+        LEFT JOIN silence_scores AS ss ON ss.origin_id = o.id
     WHERE
         COALESCE(e.event_type, '') NOT IN ('not existing', 'not locatable');
 """
@@ -1832,6 +1834,26 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 PRIMARY KEY (id, magnitude_id)
             );
             """,
+            """
+            CREATE TABLE IF NOT EXISTS silence_scores (
+                origin_id TEXT PRIMARY KEY REFERENCES origins(id) ON DELETE CASCADE,
+                event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
+                score DOUBLE,
+                n_candidates INTEGER,
+                n_excluded INTEGER,
+                n_used INTEGER,
+                n_used_outside_radius INTEGER,
+                n_active INTEGER,
+                n_active_missing INTEGER,
+                expected_weight DOUBLE,
+                missing_weight DOUBLE,
+                effective_radius_km DOUBLE,
+                reason TEXT,
+                radius_km DOUBLE,
+                threshold DOUBLE,
+                decay_factor DOUBLE
+            );
+            """,
         ]
 
         for sql in tables_sql:
@@ -2690,6 +2712,133 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
         raise
 
 
+def add_silence_score(conn: sqlite3.Connection, csv_file: str) -> None:
+    """
+    Import silence scores from a CSV file into the silence_scores table.
+
+    The CSV is the output of the silence-score tool. Each row is matched to an
+    origin via the optional `origin_id` column; when absent, the preferred origin
+    for the event is used.
+
+    Args:
+        conn: SQLite database connection
+        csv_file: Path to the silence score CSV file
+    """
+    try:
+        df = pd.read_csv(csv_file, low_memory=False)
+    except Exception as e:
+        logger.error(f"Error reading CSV file '{csv_file}': {e}")
+        return
+
+    required_columns = [
+        "event_id",
+        "score",
+        "n_candidates",
+        "n_excluded",
+        "n_used",
+        "n_used_outside_radius",
+        "n_active",
+        "n_active_missing",
+        "expected_weight",
+        "missing_weight",
+        "effective_radius_km",
+        "reason",
+        "radius_km",
+        "threshold",
+        "decay_factor",
+    ]
+    missing_columns = [c for c in required_columns if c not in df.columns]
+    if missing_columns:
+        logger.error(
+            f"CSV file '{csv_file}' is missing required columns: {', '.join(missing_columns)}"
+        )
+        return
+
+    # Load preferred origins from DB into memory for fast lookup (event_id → origin_id)
+    cursor = conn.cursor()
+    has_origin_id_col = "origin_id" in df.columns
+
+    if has_origin_id_col:
+        # Build set of known origin ids for validation
+        cursor.execute("SELECT id FROM origins")
+        known_origins = {r[0] for r in cursor.fetchall()}
+        df_matched = df[df["origin_id"].notna()].copy()
+        skipped_no_origin = int((~df_matched["origin_id"].isin(known_origins)).sum())
+        df_matched = df_matched[df_matched["origin_id"].isin(known_origins)]
+        skipped_no_event = 0
+    else:
+        cursor.execute("SELECT event_id, id FROM origins WHERE preferred = 1")
+        preferred = {r[0]: r[1] for r in cursor.fetchall()}
+        df_matched = df.copy()
+        df_matched["origin_id"] = df_matched["event_id"].map(preferred)
+        skipped_no_event = int(df_matched["origin_id"].isna().sum())
+        skipped_no_origin = 0
+        df_matched = df_matched[df_matched["origin_id"].notna()]
+
+    score_cols = [
+        "score", "n_candidates", "n_excluded", "n_used", "n_used_outside_radius",
+        "n_active", "n_active_missing", "expected_weight", "missing_weight",
+        "effective_radius_km", "reason", "radius_km", "threshold", "decay_factor",
+    ]
+    # Replace NaN with None for SQLite
+    df_matched = df_matched.where(pd.notna(df_matched), None)
+
+    rows = [
+        (
+            row["origin_id"],
+            row["event_id"],
+            row["score"],
+            row["n_candidates"],
+            row["n_excluded"],
+            row["n_used"],
+            row["n_used_outside_radius"],
+            row["n_active"],
+            row["n_active_missing"],
+            row["expected_weight"],
+            row["missing_weight"],
+            row["effective_radius_km"],
+            row["reason"],
+            row["radius_km"],
+            row["threshold"],
+            row["decay_factor"],
+        )
+        for _, row in df_matched[["origin_id", "event_id"] + score_cols].iterrows()
+    ]
+
+    try:
+        cursor.execute("BEGIN TRANSACTION")
+        cursor.executemany(
+            """
+            INSERT OR REPLACE INTO silence_scores (
+                origin_id, event_id,
+                score, n_candidates, n_excluded, n_used, n_used_outside_radius,
+                n_active, n_active_missing, expected_weight, missing_weight,
+                effective_radius_km, reason, radius_km, threshold, decay_factor
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+
+        total = len(df)
+        inserted_count = len(rows)
+        msg = (
+            f"Silence scores: {inserted_count}/{total} inserted"
+            + (f", {skipped_no_event} event not found" if skipped_no_event else "")
+            + (f", {skipped_no_origin} origin not found" if skipped_no_origin else "")
+        )
+        logger.info(msg)
+        print(f"  {msg}")
+
+    except Exception as e:
+        logger.error(f"Unexpected error in add_silence_score: {e}")
+        try:
+            conn.rollback()
+        except Exception as rollback_error:
+            logger.error(f"Error during rollback: {rollback_error}")
+        raise
+
+
 def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
     """
     Compute localization quality info and add it to the event table.
@@ -3155,6 +3304,7 @@ def apply_database_enhancements(args) -> None:
                 args.gt5,
                 args.gallacher_gt5,
                 args.compute_prob_median,
+                args.add_silence_score,
                 args.refresh_view,
             ]
         ):
@@ -3196,6 +3346,10 @@ def apply_database_enhancements(args) -> None:
                 print("Computing Gallacher GT5 metrics (cpq + gallacher_gt5_status)...")
                 compute_gallacher_gt5_score(conn)
 
+            if args.add_silence_score:
+                print("Adding silence scores...")
+                add_silence_score(conn, args.add_silence_score)
+
             if any(
                 [
                     args.compute_station_scores,
@@ -3206,6 +3360,7 @@ def apply_database_enhancements(args) -> None:
                     args.gt5,
                     args.gallacher_gt5,
                     args.compute_prob_median,
+                    args.add_silence_score,
                     args.refresh_view,
                 ]
             ):
@@ -3579,6 +3734,11 @@ def parse_arguments() -> argparse.Namespace:
         help="Compute median probabilities for P, S and total picks.",
     )
     enhancement_group.add_argument(
+        "--add-silence-score",
+        type=validate_file_exists,
+        help="Import silence scores from CSV file (output of silence-score tool).",
+    )
+    enhancement_group.add_argument(
         "--refresh-view",
         action="store_true",
         help="Refresh the event_coordinates view.",
@@ -3629,6 +3789,7 @@ def parse_arguments() -> argparse.Namespace:
                 args.compute_prob_median,
                 args.compute_station_scores,
                 args.compute_ps_ratio,
+                args.add_silence_score,
                 args.refresh_view,
             ]
         )
@@ -3831,6 +3992,7 @@ def main():
             args.compute_prob_median,
             args.compute_station_scores,
             args.compute_ps_ratio,
+            args.add_silence_score,
             args.refresh_view,
         ]
 
@@ -3882,6 +4044,7 @@ def main():
             "compute_station_scores": args.compute_station_scores,
             "compute_ps_ratio": args.compute_ps_ratio,
             "gallacher_gt5": args.gallacher_gt5,
+            "add_silence_score": args.add_silence_score,
             "refresh_view": args.refresh_view,
         }
         print(

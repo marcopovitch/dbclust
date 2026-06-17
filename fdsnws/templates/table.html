@@ -342,7 +342,8 @@
           delta_U: {{ event.delta_U if event.delta_U is not none else 'null' }},
           num_stations_10km: {{ event.num_stations_10km or 0 }},
           num_stations_30km: {{ event.num_stations_30km or 0 }},
-          num_stations_150km: {{ event.num_stations_150km or 0 }}
+          num_stations_150km: {{ event.num_stations_150km or 0 }},
+          silence_score: {{ event.silence_score if event.silence_score is not none else 'null' }}
         }{% if not loop.last %},{% endif %}
         {% endfor %}
       ];
@@ -445,7 +446,11 @@
             }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Number of Stations within 10km'>Num Stations<br>within 10km</span>", field: "num_stations_10km", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Number of Stations within 30km'>Num Stations<br>within 30km</span>", field: "num_stations_30km", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Number of Stations within 150km'>Num Stations<br>within 150km</span>", field: "num_stations_150km", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"}
+          {title: "<span title='Number of Stations within 150km'>Num Stations<br>within 150km</span>", field: "num_stations_150km", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Silence Score: fraction of active nearby stations that did not contribute (0=good, 1=suspicious)'>Silence<br>Score</span>", field: "silence_score", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(3);
+            }, headerSort: true, cssClass: "numeric-cell"}
         ],
         initialSort: [],
         // We're updating the counter directly after data parsing, so no need for these callbacks
