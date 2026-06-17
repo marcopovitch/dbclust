@@ -326,6 +326,7 @@
           expectation_longitude: {{ event.expectation_longitude if event.expectation_longitude is not none else 'null' }},
           expectation_depth_km: {{ event.expectation_depth_km if event.expectation_depth_km is not none else 'null' }},
           scatter_volume: {{ event.scatter_volume if event.scatter_volume is not none else 'null' }},
+          nll_epicenters_diff_km: {{ event.nll_epicenters_diff_km if event.nll_epicenters_diff_km is not none else 'null' }},
           dist_from_preloc_km: {{ event.dist_from_preloc_km if event.dist_from_preloc_km is not none else 'null' }},
           nb_agencies: {{ event.nb_agencies }},
           agencies_list: {{ event.agencies_list | tojson }},
@@ -443,6 +444,10 @@
           {title: "<span title='Scatter Volume (km³)'>Scatter<br>Volume</span>", field: "scatter_volume", formatter: function(cell) {
               const value = cell.getValue();
               return value === null || value === undefined ? '' : Number(value).toFixed(3);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Distance horizontale entre les deux épicentres NonLinLoc : scatter centroid et maximum de densité PDF (km)'>NLL<br>Offset (km)</span>", field: "nll_epicenters_diff_km", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
             }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Distance from Preliminary Location (km)'>Dist from<br>Preloc (km)</span>", field: "dist_from_preloc_km", formatter: function(cell) {
               const value = cell.getValue();
