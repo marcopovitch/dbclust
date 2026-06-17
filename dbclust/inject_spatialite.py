@@ -125,6 +125,7 @@ EVENT_COORDINATES_VIEW = """
         o.expectation_latitude, o.expectation_longitude,
         o.expectation_depth / 1000.0 AS expectation_depth_km,
         o.scatter_volume,
+        ROUND(o.nll_epicenters_diff_km, 2) AS nll_epicenters_diff_km,
         e.dist_km_from_preloc AS dist_from_preloc_km,
         e.nb_agencies, e.agencies_list, e.agency_names, e.agency_ai_contributors, e.multiple_same_agencies,
         o.evaluation_mode,
@@ -141,7 +142,7 @@ EVENT_COORDINATES_VIEW = """
         COALESCE(o.median_prob_p, 0.0) AS median_prob_p,
         COALESCE(o.median_prob_s, 0.0) AS median_prob_s,
         COALESCE(o.median_prob_total, 0.0) AS median_prob_total,
-        ss.score AS silence_score,
+        ROUND(ss.score, 2) AS silence_score,
         o.geometry
     FROM
         events AS e
@@ -1255,13 +1256,15 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             gt5_status,
             cpq,
             gallacher_gt5_status,
-            evaluation_mode, preferred, ps_ratio, ps_station_count, station_score, geometry
+            evaluation_mode, preferred, ps_ratio, ps_station_count, station_score,
+            nll_epicenters_diff_km, geometry
         )
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?,
             ST_GeomFromText(?, 4326)
         )
         """,
@@ -1312,6 +1315,7 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             ps_ratio,
             ps_station_count,
             station_score,
+            dloch,
             f"POINT({origin.longitude} {origin.latitude})",
         ),
     )
@@ -1780,7 +1784,8 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 ps_station_count INTEGER,
                 median_prob_p DOUBLE,
                 median_prob_s DOUBLE,
-                median_prob_total DOUBLE
+                median_prob_total DOUBLE,
+                nll_epicenters_diff_km DOUBLE
             );
             """,
             """
@@ -2929,10 +2934,10 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
         cursor.execute(
             """
             UPDATE origins
-            SET quality = ?, quality_factor = ?
+            SET quality = ?, quality_factor = ?, nll_epicenters_diff_km = ?
             WHERE id = ?;
             """,
-            (quality, quality_factor, origin_id),
+            (quality, quality_factor, dloch, origin_id),
         )
     conn.commit()
 
@@ -3148,6 +3153,7 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
         _ensure_column(cursor, "origins", "median_prob_total", "DOUBLE DEFAULT 0.0")
         _ensure_column(cursor, "origins", "cpq", "DOUBLE")
         _ensure_column(cursor, "origins", "gallacher_gt5_status", "BOOLEAN")
+        _ensure_column(cursor, "origins", "nll_epicenters_diff_km", "DOUBLE")
 
         conn.commit()
         logger.info("All required columns verified/added successfully.")
