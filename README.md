@@ -269,8 +269,11 @@ injectdb -d events.db --compute-station-scores --compute-ps-ratio
 # Add discrimination info from CSV
 injectdb -d events.db --add-discrimination discrimination.csv
 
-# Compute localization quality metrics
+# Compute localization quality metrics (also populates nll_epicenters_diff_km)
 injectdb -d events.db --add-localization-quality
+
+# Import silence scores from a silence-score CSV
+injectdb -d events.db --add-silence-score silence.csv
 
 # Add agency names
 injectdb -d events.db --add-agency-names
@@ -284,6 +287,36 @@ injectdb -d events.db --compute-prob-median
 # Refresh views
 injectdb -d events.db --refresh-view
 ```
+
+#### silence score (`--add-silence-score`)
+
+Imports pre-computed silence scores from the output CSV of the
+[silence-score](https://gitlab.com/marcopovitch/silence_score) tool.
+The silence score measures the fraction of active nearby stations that did not
+contribute to the event detection (0 = all active stations contributed,
+1 = none did). High values indicate suspicious or poorly located events.
+
+The CSV must contain at least: `event_id`, `score`, `n_candidates`, `n_excluded`,
+`n_used`, `n_used_outside_radius`, `n_active`, `n_active_missing`,
+`expected_weight`, `missing_weight`, `effective_radius_km`, `reason`,
+`radius_km`, `threshold`, `decay_factor`.
+
+When `origin_id` is absent from the CSV, the preferred origin of each event is
+used. Results are stored in a dedicated `silence_scores` table (keyed on
+`origin_id`) and exposed as `silence_score` in `event_coordinates`.
+
+#### NLL epicenters offset (`nll_epicenters_diff_km`)
+
+Populated automatically during `--add-localization-quality` (and at injection
+time for new imports). Stores the horizontal distance (km) between the two
+NonLinLoc localizations produced for each origin:
+
+- **scatter centroid** — location derived from the scatter cloud ellipse
+- **PDF maximum** — location at the maximum of the probability density function
+
+A large offset indicates an asymmetric or multimodal location PDF. The column
+is stored in the `origins` table and exposed in `event_coordinates` just after
+`scatter_volume`.
 
 #### Export Options
 
