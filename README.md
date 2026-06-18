@@ -185,8 +185,15 @@ DBClust provides several command-line tools for different seismic data processin
 | **csv2parquet** | Convert CSV files to Parquet format | `csv2parquet -i input.csv -o output.parquet` |
 | **add-event-types** | Enrich the catalog with per-agency event_type columns and a consensus | `add-event-types -c add_event_types.yml` |
 | **pick_stats_from_config** | Pick statistics (manual/auto counts, stations) from a YAML config | `python Utils/pick_stats_from_config.py -c config.yml` |
-| **detect_operator_duplicates** | Detect events picked independently by two operators on the same earthquake | `python Utils/detect_operator_duplicates.py events.db` |
-| **detect_suspicious_duplicates** | Detect intra-window Leiden fragment duplicates (auto/manual pick conflict) | Called automatically during `merge_databases()` |
+
+### Utility Scripts
+
+Scripts run directly with `python Utils/...` (not installed as CLI entry points):
+
+| Script                           | Description                                                                | Command                                                |
+| -------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------ |
+| **detect_operator_duplicates**   | Detect events picked independently by two operators on the same earthquake | `python Utils/detect_operator_duplicates.py events.db` |
+| **detect_suspicious_duplicates** | Detect intra-window Leiden fragment duplicates (auto/manual pick conflict) | Called automatically during `merge_databases()`        |
 
 ### dbclust - Main Processing Pipeline
 
@@ -266,8 +273,11 @@ The `injectdb` tool supports various database enhancement options:
 # Compute station scores and ps_ratio
 injectdb -d events.db --compute-station-scores --compute-ps-ratio
 
-# Add discrimination info from CSV
-injectdb -d events.db --add-discrimination discrimination.csv
+# Add spectrocnn discrimination info from predictions CSV
+injectdb -d events.db --add-discrimination event-predictions.csv
+
+# Add full multi-agency event_type enrichment from enriched alceste CSV
+injectdb -d events.db --add-event-type-enrichment alceste-with_event_types.csv
 
 # Compute localization quality metrics (also populates nll_epicenters_diff_km)
 injectdb -d events.db --add-localization-quality
@@ -287,6 +297,28 @@ injectdb -d events.db --compute-prob-median
 # Refresh views
 injectdb -d events.db --refresh-view
 ```
+
+#### Recommended order for full event_type enrichment
+
+```bash
+# 1. Spectrocnn quantitative metrics + event_type when NULL
+injectdb -d events.db --add-discrimination event-predictions.csv
+
+# 2. Generate enriched CSV (spectrocnn + agency bulletins)
+add-event-types -c add_event_types.yml
+
+# 3. Overwrite event_type with multi-source final classification
+injectdb -d events.db --add-event-type-enrichment alceste-with_event_types.csv
+```
+
+`--add-discrimination` can be used alone (without agency bulletins) to populate
+`spectrocnn_probability`, `spectrocnn_station_count`, `spectrocnn_certainty`, and
+`event_type` (when NULL) from the spectrocnn predictions CSV. It does not overwrite
+an `event_type` already set by `--add-event-type-enrichment`.
+
+`--add-event-type-enrichment` always overwrites `event_type`, `event_type_source`,
+`event_type_consensus`, and `event_type_agencies_json`. It requires the enriched
+alceste CSV produced by `add-event-types`.
 
 #### silence score (`--add-silence-score`)
 
@@ -381,24 +413,62 @@ csv2parquet -i picks.csv -o picks.parquet
 csv2parquet -i picks.csv -o picks.parquet --compression snappy
 ```
 
-### add-event-types - Per-Agency Event Type Consensus
+### add-event-types - Multi-source Event Type Enrichment
 
-Enrich the catalog with per-agency `event_type_<AGENCY>` columns, derived from each
-agency's bulletin CSV (joined on `agencies_list`/`agency_names`) or from a fixed value for
-agencies that only contribute one event type (e.g. `earthquake` for ISTERRE).
-
-It also computes:
-
-- `event_type_consensus`: `consensus`, `conflict`, or `no_data` across all agency columns
-- `event_type_final`: the agreed-upon event type when there is a consensus, otherwise empty
+Produce an enriched catalog CSV with per-agency and spectrocnn `event_type` columns,
+a consensus, and a final canonical value with full provenance tracking.
 
 ```bash
 add-event-types -c add_event_types.yml
 ```
 
-The configuration file lists `input_file`, `output_file` (both relative to the config file),
-and the `agencies` to process — see `Utils/add_event_types.yml.example` for the full format
-and the list of supported agencies.
+**Per-agency columns** (`event_type_<AGENCY>`) are derived from each agency's bulletin
+CSV (joined via `agencies_list`/`agency_names`) or from a fixed value for agencies that
+only contribute one event type (e.g. `earthquake` for ISTERRE).
+
+**Spectrocnn column** (`event_type_SPECTROCNN`) is populated directly from the raw
+predictions file (`spectrocnn_predictions_file` in the config: `predhdq50` 0=earthquake,
+1=quarry blast). This avoids contamination from a previously enriched `event_type` column
+in the catalog CSV.
+
+**Output CSV columns** (produced by `add-event-types`, consumed by `--add-event-type-enrichment`):
+
+| CSV column               | DB column (after enrichment) | Description                                                                                                     |
+| ------------------------ | ---------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `event_type_<AGENCY>`    | `event_type_agencies` table  | Per-agency classification                                                                                       |
+| `event_type_SPECTROCNN`  | `event_type_agencies` table  | Spectrocnn classification (earthquake / quarry blast)                                                           |
+| `event_type_consensus`   | `event_type_consensus`       | Inter-agency agreement: `consensus` / `conflict` / `no_data` / `NULL` (NULL = spectrocnn-only, no agency data) |
+| `event_type_final`       | `event_type`                 | Canonical QuakeML event type — final value combining all sources                                                |
+| `event_type_final_source` | `event_type_source`          | Provenance of the final value (see table below)                                                                 |
+
+> Note: `event_type_final` in the CSV becomes `event_type` in the database (QuakeML field name).
+> Similarly `event_type_final_source` → `event_type_source`.
+
+**`event_type_source` provenance values:**
+
+| Value | Meaning |
+| ----- | ------- |
+| `spectrocnn` | spectrocnn only, no compatible agency refinement |
+| `spectrocnn+consensus` | spectrocnn category, refined by agency consensus |
+| `spectrocnn+single:<AGENCY>` | spectrocnn category, refined by single agency |
+| `spectrocnn+conflict:<AGENCY>` | spectrocnn category, refined after conflict resolution |
+| `consensus` | multiple agencies agreed, no spectrocnn |
+| `single:<AGENCY>` | only one agency had a value, no spectrocnn |
+| `conflict:<AGENCY>` | agencies disagreed, `<AGENCY>` resolved it |
+
+**Priority rules:**
+
+- spectrocnn always takes priority over agency values
+- when the agency value is a compatible refinement of the spectrocnn category (e.g.
+  `induced or triggered event` is a refinement of `earthquake`), the more precise
+  agency label is used
+- inter-agency conflicts are resolved by `agency_priority` (config key: ordered list,
+  e.g. `[RENASS, LDG]`, then config order)
+
+The config file (`add_event_types.yml`) specifies `input_file`, `output_file`,
+`spectrocnn_predictions_file`, `agency_priority`, `spectrocnn_compatibility`,
+`event_type_groups` (normalization map), and the `agencies` list.
+See `Utils/add_event_types.yml` for a full example.
 
 ### pick_stats_from_config - Pick Statistics
 
