@@ -130,9 +130,12 @@ EVENT_COORDINATES_VIEW = """
         e.nb_agencies, e.agencies_list, e.agency_names, e.agency_ai_contributors, e.multiple_same_agencies,
         o.evaluation_mode,
         e.event_type,
-        e.discrimination_probability,
-        e.discrimination_station_count,
-        e.discrimination_certainty,
+        e.event_type_source,
+        e.event_type_consensus,
+        e.event_type_agencies_json,
+        e.spectrocnn_probability,
+        e.spectrocnn_station_count,
+        e.spectrocnn_certainty,
         o.quality, o.quality_factor,
         o.gt5_status, o.delta_U, o.num_stations_10km, o.num_stations_30km, o.num_stations_150km,
         o.cpq, o.gallacher_gt5_status,
@@ -1709,10 +1712,13 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
             CREATE TABLE IF NOT EXISTS events (
                 event_id TEXT PRIMARY KEY REFERENCES quakeml(event_id) ON DELETE CASCADE,
                 event_type TEXT,
+                event_type_source TEXT,
+                event_type_consensus TEXT,
+                event_type_agencies_json JSON,
                 dist_km_from_preloc DOUBLE,
-                discrimination_probability DOUBLE,
-                discrimination_station_count INTEGER,
-                discrimination_certainty DOUBLE,
+                spectrocnn_probability DOUBLE,
+                spectrocnn_station_count INTEGER,
+                spectrocnn_certainty DOUBLE,
                 nb_agencies INTEGER,
                 agencies_list JSON,
                 agency_names TEXT,
@@ -1720,6 +1726,14 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 multiple_same_agencies BOOLEAN,
                 nb_origins INTEGER,
                 nb_magnitudes INTEGER
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS event_type_agencies (
+                event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
+                agency_name TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                PRIMARY KEY (event_id, agency_name)
             );
             """,
             """
@@ -2599,12 +2613,18 @@ def add_agency_names(conn: sqlite3.Connection) -> None:
 
 def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
     """
-    Add discrimination info to the event table from a CSV file.
+    Add spectrocnn discrimination info to the events table from a CSV file.
+
+    Writes spectrocnn_probability, spectrocnn_station_count, spectrocnn_certainty.
+    Also writes event_type, event_type_source = 'spectrocnn', and
+    event_type_agencies_json = '{"SPECTROCNN": "<value>"}' — but only for rows
+    where event_type is currently NULL (does not overwrite agency-enriched values).
 
     Args:
         conn: SQLite database connection
         csv_file (str): Path to the CSV file containing discrimination info.
     """
+    import json as _json
 
     try:
         discrimination_df = pd.read_csv(csv_file)
@@ -2614,18 +2634,15 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
 
     cursor = conn.cursor()
     try:
-        # Start transaction
         cursor.execute("BEGIN TRANSACTION")
 
-        # Check if the columns exist
         required_columns = [
-            "event_id",  # event_id
-            "predhdq50",  # event_type
-            "EqProbaPred hdq50",  # discrimination_probability
-            "proba_count",  # discrimination_station_count
-            "hdq50mad",  # discrimination_certainty
+            "event_id",
+            "predhdq50",            # 0 = earthquake, 1 = quarry blast
+            "EqProbaPred hdq50",    # spectrocnn_probability (raw)
+            "proba_count",          # spectrocnn_station_count
+            "hdq50mad",             # spectrocnn_certainty
         ]
-
         missing_columns = [
             col for col in required_columns if col not in discrimination_df.columns
         ]
@@ -2637,38 +2654,32 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
             cursor.execute("ROLLBACK")
             return
 
-        logger.info(f"Adding discrimination info from '{csv_file}'...")
+        logger.info(f"Adding spectrocnn discrimination info from '{csv_file}'...")
 
-        # Prepare data for batch update
         updates = []
         for _, row in discrimination_df.iterrows():
             try:
                 event_id = row["event_id"]
                 certainty = row["hdq50mad"]
-                probability = (
-                    row["EqProbaPred hdq50"]
-                    if row["EqProbaPred hdq50"] > 0.5
-                    else 1 - row["EqProbaPred hdq50"]
-                )
+                raw_proba = row["EqProbaPred hdq50"]
+                probability = raw_proba if raw_proba > 0.5 else 1 - raw_proba
                 station_count = row["proba_count"]
                 predhdq50 = row["predhdq50"]
 
-                # Determine event type
                 event_type = "unknown"
                 if predhdq50 == 0:
                     event_type = "earthquake"
                 elif predhdq50 == 1:
                     event_type = "quarry blast"
 
+                agencies_json = _json.dumps({"SPECTROCNN": event_type})
                 updates.append(
-                    (event_type, probability, station_count, certainty, event_id)
+                    (event_type, agencies_json, probability, station_count, certainty, event_id)
                 )
-
             except Exception as e:
                 logger.warning(f"Error processing row {_}: {e}")
                 continue
 
-        # Perform batch update
         if updates:
             try:
                 updated_count = 0
@@ -2677,29 +2688,50 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
                         """
                         UPDATE events
                         SET event_type = ?,
-                            discrimination_probability = ?,
-                            discrimination_station_count = ?,
-                            discrimination_certainty = ?
-                        WHERE event_id = ?
+                            event_type_source = 'spectrocnn',
+                            event_type_agencies_json = ?,
+                            spectrocnn_probability = ?,
+                            spectrocnn_station_count = ?,
+                            spectrocnn_certainty = ?
+                        WHERE event_id = ? AND event_type IS NULL
                         """,
                         row_args,
                     )
-                    if cursor.rowcount == 0:
-                        logger.warning(
-                            f"Discrimination CSV: event_id '{row_args[-1]}' not found in DB, skipped"
-                        )
-                    else:
+                    if cursor.rowcount > 0:
                         updated_count += 1
                 logger.info(
-                    f"Updated {updated_count}/{len(updates)} events with discrimination info"
+                    f"Updated {updated_count}/{len(updates)} events with spectrocnn discrimination info"
                     + (
-                        f" ({len(updates) - updated_count} not found in DB)"
+                        f" ({len(updates) - updated_count} already had event_type set, skipped)"
                         if updated_count < len(updates)
                         else ""
                     )
                 )
-                conn.commit()
 
+                # Second pass: backfill event_type_source / event_type_agencies_json
+                # for rows that already had event_type (written by an older version of this
+                # function) but are missing event_type_source.
+                backfill = [
+                    (row_args[1], row_args[0], row_args[-1])   # (agencies_json, event_type_for_json_key, event_id)
+                    for row_args in updates
+                ]
+                backfill_count = 0
+                for agencies_json, _et, event_id in backfill:
+                    cursor.execute(
+                        """
+                        UPDATE events
+                        SET event_type_source = 'spectrocnn',
+                            event_type_agencies_json = ?
+                        WHERE event_id = ? AND event_type_source IS NULL
+                        """,
+                        (agencies_json, event_id),
+                    )
+                    if cursor.rowcount > 0:
+                        backfill_count += 1
+                if backfill_count:
+                    logger.info(f"Backfilled event_type_source for {backfill_count} existing events")
+
+                conn.commit()
             except Exception as e:
                 conn.rollback()
                 logger.error(f"Error updating events: {e}")
@@ -2714,6 +2746,110 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
             conn.rollback()
         except Exception as rollback_error:
             logger.error(f"Error during rollback: {rollback_error}")
+        raise
+
+
+def add_event_type_enrichment(conn: sqlite3.Connection, csv_file: str) -> None:
+    """
+    Enrich events with multi-agency event_type information from the alceste
+    enriched CSV produced by Utils/add_event_type_columns.py.
+
+    Writes to events table:
+      - event_type          ← event_type_final (always overwrites)
+      - event_type_source   ← event_type_final_source
+      - event_type_consensus
+      - event_type_agencies_json  ← dict {agency: event_type} for non-null agency cols
+
+    Writes to event_type_agencies table:
+      - one row per (event_id, agency_name) with non-null event_type
+        (includes SPECTROCNN from event_type_SPECTROCNN column)
+
+    Args:
+        conn: SQLite database connection
+        csv_file: Path to the enriched alceste CSV file.
+    """
+    import json as _json
+
+    try:
+        df = pd.read_csv(csv_file, low_memory=False)
+    except Exception as e:
+        logger.error(f"Error reading CSV file '{csv_file}': {e}")
+        return
+
+    required_columns = ["event_id", "event_type_final", "event_type_final_source", "event_type_consensus"]
+    missing = [c for c in required_columns if c not in df.columns]
+    if missing:
+        logger.error(f"CSV file '{csv_file}' is missing required columns: {', '.join(missing)}")
+        return
+
+    # Detect all event_type_<AGENCY> columns (includes event_type_SPECTROCNN).
+    # Agency names are upper-case (e.g. RENASS, LDG, SPECTROCNN); columns whose
+    # suffix contains lower-case letters are computed/metadata columns (source,
+    # consensus, agencies_json, final, final_source) and must be excluded.
+    agency_cols = [
+        c for c in df.columns
+        if c.startswith("event_type_") and c[len("event_type_"):].isupper()
+    ]
+
+    logger.info(
+        f"Adding event_type enrichment from '{csv_file}' "
+        f"({len(df):,} rows, {len(agency_cols)} agency columns)..."
+    )
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute("BEGIN TRANSACTION")
+
+        events_updates = []
+        agency_rows = []
+        for _, row in df.iterrows():
+            event_id = row["event_id"]
+            event_type = row["event_type_final"] if pd.notna(row["event_type_final"]) else None
+            source = row["event_type_final_source"] if pd.notna(row["event_type_final_source"]) else None
+            consensus = row["event_type_consensus"] if pd.notna(row["event_type_consensus"]) else None
+
+            # Build per-agency dict (strip "event_type_" prefix for key; SPECTROCNN stays as-is)
+            agencies_dict = {}
+            for col in agency_cols:
+                val = row[col]
+                if pd.notna(val) and str(val).strip():
+                    agency_name = col[len("event_type_"):]
+                    agencies_dict[agency_name] = str(val).strip()
+                    agency_rows.append((event_id, agency_name, str(val).strip()))
+
+            agencies_json = _json.dumps(agencies_dict) if agencies_dict else None
+            events_updates.append((event_type, source, consensus, agencies_json, event_id))
+
+        # Batch UPDATE events
+        updated_count = 0
+        for args in events_updates:
+            cursor.execute(
+                """
+                UPDATE events
+                SET event_type = ?,
+                    event_type_source = ?,
+                    event_type_consensus = ?,
+                    event_type_agencies_json = ?
+                WHERE event_id = ?
+                """,
+                args,
+            )
+            if cursor.rowcount > 0:
+                updated_count += 1
+        logger.info(f"  events: updated {updated_count:,}/{len(events_updates):,} rows")
+
+        # Batch INSERT OR REPLACE into event_type_agencies
+        cursor.executemany(
+            "INSERT OR REPLACE INTO event_type_agencies (event_id, agency_name, event_type) VALUES (?, ?, ?)",
+            agency_rows,
+        )
+        logger.info(f"  event_type_agencies: inserted/replaced {len(agency_rows):,} rows")
+
+        conn.commit()
+
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error in add_event_type_enrichment: {e}")
         raise
 
 
@@ -3155,6 +3291,31 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
         _ensure_column(cursor, "origins", "gallacher_gt5_status", "BOOLEAN")
         _ensure_column(cursor, "origins", "nll_epicenters_diff_km", "DOUBLE")
 
+        # event_type enrichment columns (multi-agency + spectrocnn)
+        _ensure_column(cursor, "events", "event_type_source", "TEXT")
+        _ensure_column(cursor, "events", "event_type_consensus", "TEXT")
+        _ensure_column(cursor, "events", "event_type_agencies_json", "JSON")
+        _ensure_column(cursor, "events", "spectrocnn_probability", "DOUBLE")
+        _ensure_column(cursor, "events", "spectrocnn_station_count", "INTEGER")
+        _ensure_column(cursor, "events", "spectrocnn_certainty", "DOUBLE")
+        # Migrate old discrimination_* values → spectrocnn_* if they exist
+        if "discrimination_probability" in _get_table_columns(cursor, "events"):
+            cursor.execute("""
+                UPDATE events SET
+                    spectrocnn_probability = discrimination_probability,
+                    spectrocnn_station_count = discrimination_station_count,
+                    spectrocnn_certainty = discrimination_certainty
+                WHERE spectrocnn_probability IS NULL AND discrimination_probability IS NOT NULL
+            """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS event_type_agencies (
+                event_id TEXT REFERENCES events(event_id) ON DELETE CASCADE,
+                agency_name TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                PRIMARY KEY (event_id, agency_name)
+            )
+        """)
+
         conn.commit()
         logger.info("All required columns verified/added successfully.")
 
@@ -3305,6 +3466,7 @@ def apply_database_enhancements(args) -> None:
                 args.compute_station_scores,
                 args.compute_ps_ratio,
                 args.add_discrimination,
+                args.add_event_type_enrichment,
                 args.add_localization_quality,
                 args.add_agency_names,
                 args.gt5,
@@ -3331,6 +3493,10 @@ def apply_database_enhancements(args) -> None:
                 print("Adding discrimination info...")
                 add_discrimination_info(conn, args.add_discrimination)
                 print_discrimination_stats(conn)
+
+            if args.add_event_type_enrichment:
+                print("Adding event_type enrichment from alceste CSV...")
+                add_event_type_enrichment(conn, args.add_event_type_enrichment)
 
             if args.add_localization_quality:
                 print("Computing localization quality...")
@@ -3361,6 +3527,7 @@ def apply_database_enhancements(args) -> None:
                     args.compute_station_scores,
                     args.compute_ps_ratio,
                     args.add_discrimination,
+                    args.add_event_type_enrichment,
                     args.add_localization_quality,
                     args.add_agency_names,
                     args.gt5,
@@ -3712,7 +3879,12 @@ def parse_arguments() -> argparse.Namespace:
     enhancement_group.add_argument(
         "--add-discrimination",
         type=validate_file_exists,
-        help="Add discrimination info from CSV file to events.",
+        help="Add spectrocnn discrimination info from CSV file to events.",
+    )
+    enhancement_group.add_argument(
+        "--add-event-type-enrichment",
+        type=validate_file_exists,
+        help="Enrich events with multi-agency event_type from alceste enriched CSV (produced by Utils/add_event_type_columns.py).",
     )
     enhancement_group.add_argument(
         "--add-localization-quality",
@@ -3788,6 +3960,7 @@ def parse_arguments() -> argparse.Namespace:
                 args.csv_output,
                 args.export_quakeml,
                 args.add_discrimination,
+                args.add_event_type_enrichment,
                 args.add_localization_quality,
                 args.add_agency_names,
                 args.gt5,
@@ -3992,6 +4165,7 @@ def main():
             args.csv_output,
             args.export_quakeml,
             args.add_discrimination,
+            args.add_event_type_enrichment,
             args.add_localization_quality,
             args.add_agency_names,
             args.gt5,
@@ -4043,6 +4217,7 @@ def main():
         # Apply database enhancements if any enhancement option is specified
         enhancement_options = {
             "add_discrimination": args.add_discrimination,
+            "add_event_type_enrichment": args.add_event_type_enrichment,
             "add_localization_quality": args.add_localization_quality,
             "add_agency_names": args.add_agency_names,
             "gt5": args.gt5,

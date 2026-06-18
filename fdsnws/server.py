@@ -306,6 +306,15 @@ def create_app(db_path: str, debug=False):
                                 html_row[key] = []
                         else:
                             html_row[key] = []
+                    # event_type_agencies_json is a dict {agency: event_type}, not a list
+                    raw_eta = html_row.get("event_type_agencies_json")
+                    if raw_eta:
+                        try:
+                            html_row["event_type_agencies_json"] = json.loads(raw_eta)
+                        except (TypeError, ValueError):
+                            html_row["event_type_agencies_json"] = {}
+                    else:
+                        html_row["event_type_agencies_json"] = {}
                     html_results.append(html_row)
                 return templates.TemplateResponse(
                     "table.html", {"request": request, "events": html_results}

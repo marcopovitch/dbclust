@@ -334,16 +334,27 @@
           multiple_same_agencies: {{ 1 if event.multiple_same_agencies else 0 }},
           evaluation_mode: "{{ event.evaluation_mode or '' }}",
           event_type: "{{ event.event_type or '' }}",
-          discrimination_probability: {{ event.discrimination_probability if event.discrimination_probability is not none else 'null' }},
-          discrimination_station_count: {{ event.discrimination_station_count or 0 }},
-          discrimination_certainty: "{{ event.discrimination_certainty or '' }}",
+          event_type_source: "{{ event.event_type_source or '' }}",
+          event_type_consensus: "{{ event.event_type_consensus or '' }}",
+          event_type_agencies_json: {{ event.event_type_agencies_json | tojson }},
+          spectrocnn_probability: {{ event.spectrocnn_probability if event.spectrocnn_probability is not none else 'null' }},
+          spectrocnn_station_count: {{ event.spectrocnn_station_count or 0 }},
+          spectrocnn_certainty: "{{ event.spectrocnn_certainty or '' }}",
           quality: "{{ event.quality or '' }}",
           quality_factor: {{ event.quality_factor if event.quality_factor is not none else 'null' }},
           gt5_status: "{{ event.gt5_status or '' }}",
           delta_U: {{ event.delta_U if event.delta_U is not none else 'null' }},
+          cpq: {{ event.cpq if event.cpq is not none else 'null' }},
+          gallacher_gt5_status: "{{ event.gallacher_gt5_status or '' }}",
           num_stations_10km: {{ event.num_stations_10km or 0 }},
           num_stations_30km: {{ event.num_stations_30km or 0 }},
           num_stations_150km: {{ event.num_stations_150km or 0 }},
+          station_score: {{ event.station_score if event.station_score is not none else 'null' }},
+          ps_ratio: {{ event.ps_ratio if event.ps_ratio is not none else 'null' }},
+          ps_station_count: {{ event.ps_station_count or 0 }},
+          median_prob_p: {{ event.median_prob_p if event.median_prob_p is not none else 'null' }},
+          median_prob_s: {{ event.median_prob_s if event.median_prob_s is not none else 'null' }},
+          median_prob_total: {{ event.median_prob_total if event.median_prob_total is not none else 'null' }},
           silence_score: {{ event.silence_score if event.silence_score is not none else 'null' }}
         }{% if not loop.last %},{% endif %}
         {% endfor %}
@@ -361,6 +372,14 @@
           return value.join(', ');
         }
         return value || '';
+      }
+
+      function formatJsonDict(cell) {
+        const value = cell.getValue();
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          return Object.entries(value).map(([k, v]) => `${k}: ${v}`).join(', ');
+        }
+        return '';
       }
 
       // Initialize Tabulator
@@ -389,7 +408,7 @@
               return value === null || value === undefined ? '' : Number(value).toFixed(2);
             }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Magnitude'>Magnitude</span>", field: "magnitude", formatter: "number", formatterParams: {precision: 1}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Magnitude Type'>Type</span>", field: "magnitude_type", headerSort: true},
+          {title: "<span title='Magnitude Type'>Mag<br>Type</span>", field: "magnitude_type", headerSort: true},
           {title: "<span title='Magnitude Uncertainty'>Mag<br>Uncertainty</span>", field: "magnitude_uncertainty", formatter: function(cell) {
               const value = cell.getValue();
               return value === null || value === undefined ? '' : Number(value).toFixed(2);
@@ -408,7 +427,7 @@
               const value = cell.getValue();
               return value === null || value === undefined ? '' : Number(value).toFixed(1);
             }, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Error Method'>Method</span>", field: "er_method", headerSort: true, width: 120},
+          {title: "<span title='Error Method (e.g. NonLinLoc, LOCSAT)'>Error<br>Method</span>", field: "er_method", headerSort: true, width: 120},
           {title: "<span title='Location Method'>Loc<br>Method</span>", field: "location_method_id", headerSort: true, width: 120},
           {title: "<span title='Earth Model'>Earth<br>Model</span>", field: "earth_model_id", headerSort: true, width: 120},
           {title: "<span title='Number of Origins'>Origins</span>", field: "nb_origins", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
@@ -458,26 +477,55 @@
           {title: "<span title='Full Names of Reporting Agencies'>Agency<br>Names</span>", field: "agency_names", formatter: formatJsonArray, headerSort: true, width: 150},
           {title: "<span title='Multiple Solutions from Same Agency'>Multiple<br>Same Agencies</span>", field: "multiple_same_agencies", headerSort: true, formatter: "tickCross", formatterParams: {allowTruthy: true}, width: 170},
           {title: "<span title='Evaluation Mode (Automatic/Manual)'>Evaluation<br>Mode</span>", field: "evaluation_mode", headerSort: true, width: 150},
-          {title: "<span title='Type of Seismic Event'>Event<br>Type</span>", field: "event_type", headerSort: true, width: 150},
-          {title: "<span title='Discrimination Probability (0-1)'>Discrim.<br>Probability</span>", field: "discrimination_probability", formatter: function(cell) {
+          {title: "<span title='Type of Seismic Event (final value)'>Event<br>Type</span>", field: "event_type", headerSort: true, width: 150},
+          {title: "<span title='Source of event_type: spectrocnn / spectrocnn+agencies / consensus / single:AGENCY / conflict:AGENCY'>Event Type<br>Source</span>", field: "event_type_source", headerSort: true, width: 160},
+          {title: "<span title='Inter-agency agreement: consensus / conflict / no_data'>Event Type Agency<br>Consensus</span>", field: "event_type_consensus", headerSort: true, width: 150},
+          {title: "<span title='Event type per agency (from agency bulletins)'>Event Type<br>Agency</span>", field: "event_type_agencies_json", formatter: formatJsonDict, headerSort: false, width: 220},
+          {title: "<span title='SpectroCNN Discrimination Probability (0-1)'>SpectroCNN<br>Probability</span>", field: "spectrocnn_probability", formatter: function(cell) {
               const value = cell.getValue();
               return value === null || value === undefined ? '' : Number(value).toFixed(3);
             }, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Number of Stations Used for Discrimination'>Discrim.<br>Station Count</span>", field: "discrimination_station_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
-          {title: "<span title='Discrimination Certainty Level'>Discrim.<br>Certainty</span>", field: "discrimination_certainty", headerSort: true, width: 150},
-          {title: "<span title='Event Quality Indicator'>Quality</span>", field: "quality", headerSort: true, width: 150},
+          {title: "<span title='Number of Stations Used for SpectroCNN Discrimination'>SpectroCNN<br>Station Count</span>", field: "spectrocnn_station_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='SpectroCNN Discrimination Certainty Level'>SpectroCNN<br>Certainty</span>", field: "spectrocnn_certainty", headerSort: true, width: 150},
+          {title: "<span title='Event Quality Indicator (A/B/C/D)'>Event<br>Quality</span>", field: "quality", headerSort: true, width: 110},
           {title: "<span title='Quality Factor (0-1)'>Quality<br>Factor</span>", field: "quality_factor", formatter: function(cell) {
               const value = cell.getValue();
               return value === null || value === undefined ? '' : Number(value).toFixed(2);
             }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='GT5 Processing Status'>GT5<br>Status</span>", field: "gt5_status", headerSort: true, width: 120},
-          {title: "<span title='Delta U (Uncertainty Parameter)'>DeltaU</span>", field: "delta_U", formatter: function(cell) {
+          {title: "<span title='Delta U (NLL uncertainty parameter)'>Delta U</span>", field: "delta_U", formatter: function(cell) {
               const value = cell.getValue();
               return value === null || value === undefined ? '' : Number(value).toFixed(2);
             }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Circular P-wave Quality index (Gallacher et al.)'>CPQ</span>", field: "cpq", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Gallacher et al. (2025) revised GT5 status'>Gallacher<br>GT5</span>", field: "gallacher_gt5_status", headerSort: true, width: 120},
           {title: "<span title='Number of Stations within 10km'>Num Stations<br>within 10km</span>", field: "num_stations_10km", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Number of Stations within 30km'>Num Stations<br>within 30km</span>", field: "num_stations_30km", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Number of Stations within 150km'>Num Stations<br>within 150km</span>", field: "num_stations_150km", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Station coverage score (0-1)'>Station<br>Score</span>", field: "station_score", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='P/S phase ratio'>P/S<br>Ratio</span>", field: "ps_ratio", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Number of stations with both P and S picks'>P/S<br>Stations</span>", field: "ps_station_count", formatter: "number", formatterParams: {precision: 0}, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Median probability of P picks'>Median<br>Prob P</span>", field: "median_prob_p", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Median probability of S picks'>Median<br>Prob S</span>", field: "median_prob_s", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
+          {title: "<span title='Median probability of all picks'>Median<br>Prob Total</span>", field: "median_prob_total", formatter: function(cell) {
+              const value = cell.getValue();
+              return value === null || value === undefined ? '' : Number(value).toFixed(2);
+            }, headerSort: true, cssClass: "numeric-cell"},
           {title: "<span title='Silence Score: fraction of active nearby stations that did not contribute (0=good, 1=suspicious)'>Silence<br>Score</span>", field: "silence_score", formatter: function(cell) {
               const value = cell.getValue();
               return value === null || value === undefined ? '' : Number(value).toFixed(3);
