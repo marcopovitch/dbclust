@@ -4,7 +4,7 @@ DBClust is a powerful tool for seismic phase association and event localization.
 
 ## Features
 
-- **Advanced Clustering**: Utilizes HDBSCAN and PyOcto (OPTICS, DBSCAN can be used as well) algorithm for robust phase association.
+- **Advanced Clustering**: Utilizes HDBSCAN, Leiden and PyOcto (OPTICS, DBSCAN can be used as well) algorithms for robust phase association.
 - **Seismic Event Localization**: Uses NonLinLoc for precise earthquake localization
 - **Flexible Configuration**: Highly configurable through YAML configuration files
 - **Parallel Processing**: Supports multiple parallel execution backends (Dask, Ray, Parsl)
