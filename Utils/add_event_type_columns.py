@@ -130,25 +130,28 @@ def compute_final_event_type(
     row: pd.Series, et_cols: list, event_type_groups: dict, priority_cols: list
 ):
     """
-    Return a single event_type value derived from all agency columns:
-      - consensus or single agency filled : return the canonical (normalized)
-                                              value for that group
-      - conflict : return the normalized value from the highest-priority
-                    agency that has one (per priority_cols, an ordered list
-                    of event_type_<AGENCY> column names)
-      - no_data : return None
+    Return (value, source_detail) derived from all agency columns:
+      - no_data  : (None, None)
+      - single   : (normalized value, "single:<AGENCY>")
+      - consensus: (normalized value, "consensus")
+      - conflict : (normalized value from highest-priority agency,
+                    "conflict:<AGENCY>")
     """
     if row["event_type_consensus"] == "no_data":
-        return None
+        return None, None
     if row["event_type_consensus"] == "consensus":
         filled = row[et_cols].dropna()
-        return normalize_event_type(filled.iloc[0], event_type_groups)
+        if len(filled) == 1:
+            agency_name = filled.index[0].removeprefix("event_type_")
+            return normalize_event_type(filled.iloc[0], event_type_groups), f"single:{agency_name}"
+        return normalize_event_type(filled.iloc[0], event_type_groups), "consensus"
     # conflict: resolve by agency priority
     for col in priority_cols:
         value = row[col]
         if pd.notna(value):
-            return normalize_event_type(value, event_type_groups)
-    return None
+            agency_name = col.removeprefix("event_type_")
+            return normalize_event_type(value, event_type_groups), f"conflict:{agency_name}"
+    return None, None
 
 
 def resolve_spectrocnn_event_type(value):
@@ -173,31 +176,31 @@ def compute_final_event_type_and_source(
     """
     Return (event_type_final, event_type_final_source) for a row.
 
-    - The agency value is derived from event_type_consensus: on consensus,
-      the shared (normalized) value; on conflict, the normalized value from
-      the highest-priority agency (per priority_cols); on no_data, None.
-    - If a trusted spectrocnn prediction is available, it takes priority
-      over the agency value, unless the agency value is a more precise
-      label compatible with the spectrocnn category (per
-      spectrocnn_compatibility): in that case the agency value is used
-      (source = "spectrocnn+agencies"). Otherwise the spectrocnn value is
-      used as-is (source = "spectrocnn").
-    - Otherwise, fall back to the agency value (source =
-      "consensus_agencies" when a value is derived, else None).
+    Sources (event_type_final_source values):
+      "spectrocnn"             — spectrocnn only, no compatible agency refinement
+      "spectrocnn+<src>"       — spectrocnn category, refined by agency label;
+                                 <src> is one of: consensus, single:<AGENCY>,
+                                 conflict:<AGENCY>
+      "consensus"              — multiple agencies agreed, no spectrocnn
+      "single:<AGENCY>"        — only one agency had a value, no spectrocnn
+      "conflict:<AGENCY>"      — agencies disagreed, <AGENCY> resolved it, no spectrocnn
+      None                     — no information available
     """
-    agency_value = compute_final_event_type(row, et_cols, event_type_groups, priority_cols)
+    agency_value, agency_source = compute_final_event_type(
+        row, et_cols, event_type_groups, priority_cols
+    )
 
     if spectrocnn_col is not None:
         spectrocnn_value = row[spectrocnn_col]
         if pd.notna(spectrocnn_value):
             compatible = spectrocnn_compatibility.get(spectrocnn_value, [])
             if agency_value is not None and agency_value in compatible:
-                return agency_value, "spectrocnn+agencies"
+                return agency_value, f"spectrocnn+{agency_source}"
             return normalize_event_type(spectrocnn_value, event_type_groups), "spectrocnn"
 
     if agency_value is None:
         return None, None
-    return agency_value, "consensus_agencies"
+    return agency_value, agency_source
 
 
 def add_event_type_columns(config_path: Path) -> None:
@@ -207,7 +210,7 @@ def add_event_type_columns(config_path: Path) -> None:
     input_path = base_dir / config["input_file"]
     output_path = base_dir / config["output_file"]
     event_type_groups = config.get("event_type_groups", {}) or {}
-    spectrocnn_column = config.get("spectrocnn_column")
+    spectrocnn_predictions_file = config.get("spectrocnn_predictions_file")
     spectrocnn_compatibility = config.get("spectrocnn_compatibility", {}) or {}
 
     # Validate config: each agency must have exactly one of 'file' or 'fixed_event_type'
@@ -225,16 +228,21 @@ def add_event_type_columns(config_path: Path) -> None:
     print(f"  {len(alceste):,} rows loaded")
 
     spectrocnn_col = None
-    if spectrocnn_column:
-        if spectrocnn_column not in alceste.columns:
+    if spectrocnn_predictions_file:
+        pred_path = Path(spectrocnn_predictions_file)
+        if not pred_path.exists():
             raise ValueError(
-                f"spectrocnn_column '{spectrocnn_column}' not found in input file columns."
+                f"spectrocnn_predictions_file not found: {pred_path}"
             )
+        print(f"\nProcessing spectrocnn predictions file: {pred_path}")
+        pred_df = pd.read_csv(pred_path, usecols=["event_id", "predhdq50"], low_memory=False)
+        print(f"  {len(pred_df):,} predictions loaded")
+        # predhdq50: 0=earthquake, 1=quarry blast, other=unknown
+        label_map = {0: "earthquake", 1: "quarry blast"}
+        pred_df = pred_df[pred_df["predhdq50"].isin(label_map)]
+        pred_map = dict(zip(pred_df["event_id"], pred_df["predhdq50"].map(label_map)))
         spectrocnn_col = "event_type_SPECTROCNN"
-        print(f"\nProcessing spectrocnn reference column: {spectrocnn_column}")
-        alceste[spectrocnn_col] = alceste[spectrocnn_column].apply(
-            resolve_spectrocnn_event_type
-        )
+        alceste[spectrocnn_col] = alceste["event_id"].map(pred_map)
         filled = alceste[spectrocnn_col].notna().sum()
         print(
             f"  Column '{spectrocnn_col}' filled for {filled:,} rows "
@@ -286,11 +294,21 @@ def add_event_type_columns(config_path: Path) -> None:
     alceste["event_type_consensus"] = alceste.apply(
         compute_consensus, axis=1, et_cols=et_cols, event_type_groups=event_type_groups
     )
-    counts = alceste["event_type_consensus"].value_counts()
+    # no_data + spectrocnn present → NULL (consensus is agency-only; spectrocnn
+    # is not an agency, so the question of inter-agency agreement doesn't arise)
+    if spectrocnn_col is not None:
+        mask_no_data_with_spectrocnn = (
+            (alceste["event_type_consensus"] == "no_data") &
+            alceste[spectrocnn_col].notna()
+        )
+        alceste.loc[mask_no_data_with_spectrocnn, "event_type_consensus"] = None
+
+    counts = alceste["event_type_consensus"].value_counts(dropna=False)
     print("\nConsensus summary:")
-    for label in ("consensus", "conflict", "no_data"):
+    for label in ("consensus", "conflict", "no_data", None):
         n = counts.get(label, 0)
-        print(f"  {label:10s}: {n:>7,}  ({100 * n / len(alceste):.1f}%)")
+        label_str = "NULL" if label is None else label
+        print(f"  {label_str:10s}: {n:>7,}  ({100 * n / len(alceste):.1f}%)")
 
     renass_phasenet_only = (
         alceste["agencies_list"]

@@ -31,36 +31,33 @@
 # 'agencies'. event_type_consensus itself is left untouched ("conflict"
 # still means the agencies disagreed).
 #
-# spectrocnn_column: optional name of a column already present in the input
-# file holding an automatic event_type prediction from the spectrocnn CNN
-# (spectrogram-based discrimination). When present, a derived column
-# event_type_SPECTROCNN is filled only for the trusted predictions
-# ("earthquake" / "quarry blast" -- "unknown" is ignored). This column is
-# not used for event_type_consensus/conflict (agency-only), but it takes
-# priority over the agency-derived value (consensus, or conflict resolved
-# via agency_priority) for event_type_final:
-#   - if the agency-derived value (normalized via event_type_groups) is a
-#     more precise label compatible with the spectrocnn category (per
-#     spectrocnn_compatibility below), that precise label is used as
-#     event_type_final and event_type_final_source is set to
-#     "spectrocnn+agencies"
-#   - otherwise event_type_final is the spectrocnn value and
-#     event_type_final_source is "spectrocnn"
-# When spectrocnn has no trusted value, the agency-derived value is used as
-# before (source "consensus_agencies") or event_type_final stays empty.
+# spectrocnn_predictions_file: optional path to the spectrocnn predictions CSV
+# (produced by the spectrocnn discrimination pipeline). The file must contain
+# columns event_id and predhdq50 (0=earthquake, 1=quarry blast, other=unknown).
+# When present, a column event_type_SPECTROCNN is filled for each alceste event
+# whose event_id appears in the predictions file with a trusted prediction
+# (predhdq50 == 0 or 1). This column is not used for event_type_consensus
+# (agency-only), but takes priority over the agency-derived value for
+# event_type_final:
+#   - if the agency-derived value is a more precise label compatible with the
+#     spectrocnn category (per spectrocnn_compatibility below), that precise
+#     label is used as event_type_final (source "spectrocnn+<agency_source>")
+#   - otherwise event_type_final is the spectrocnn value (source "spectrocnn")
+# When spectrocnn has no trusted value, the agency-derived value is used
+# (source = consensus / single:<AGENCY> / conflict:<AGENCY>).
 #
 # spectrocnn_compatibility: mapping of spectrocnn category -> list of
 # normalized agency labels considered as a compatible refinement of that
 # category (used as described above).
 
-input_file:  /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023-2.csv
-output_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023-2-with_event_types.csv
+input_file:  /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023.csv
+output_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023-with_event_types.csv
 
 agency_priority:
   - RENASS
   - LDG
 
-spectrocnn_column: event_type
+spectrocnn_predictions_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023_without_discri_qf0.75_silence0.7_stations5min_noSNR/predictions/event-predictions.csv
 
 spectrocnn_compatibility:
   earthquake:
