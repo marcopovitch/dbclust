@@ -34,6 +34,7 @@ if sys.platform == "darwin_disable":
 from dbclust.config import DBClustConfig
 from dbclust.core import dbclust
 from dbclust.executors import get_executor
+from dbclust.executors.base import config_fingerprint
 from dbclust.parallel_import import merge_databases
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -116,7 +117,12 @@ def run_parallel(cfg: DBClustConfig) -> list:
 
 
 def _load_completed_indices(cfg: DBClustConfig):
-    """Load the set of successfully completed job indices from the checkpoint file."""
+    """Load the set of successfully completed job indices from the checkpoint file.
+
+    The checkpoint also stores a fingerprint of the temporal config; if it doesn't
+    match the current config, the checkpoint is stale and is ignored so that all
+    tasks are reprocessed instead of merging results from incompatible runs.
+    """
     import json
     profiles_path = cfg.parallel.task_profiles_path or os.path.join(
         cfg.catalog.qml_path, "task_profiles.csv"
@@ -128,7 +134,16 @@ def _load_completed_indices(cfg: DBClustConfig):
         with open(checkpoint_path) as f:
             data = json.load(f)
         if isinstance(data, list):
-            return set(data)
+            logger.info(
+                "Obsolete checkpoint format (list), ignored — all tasks will be reprocessed."
+            )
+            return None
+        if data.get("fingerprint") != config_fingerprint(cfg):
+            logger.info(
+                "Temporal parameters changed since the last run, "
+                "checkpoint invalidated — all tasks will be reprocessed."
+            )
+            return None
         return set(data.get("done", []))
     except Exception:
         return None

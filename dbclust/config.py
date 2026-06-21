@@ -252,20 +252,20 @@ class RenameConfig:
     example:
 
         rename:
-            # Transformation à appliquer systématiquement avant les autres
+            # Transformation applied systematically before the others
             before:
             - r"^([^\.]+\.[^\.]+\.[^\.]+)\.[^\.]*ZNE$": r"\1.Z"
 
-            # Transformation à appliquer systématiquement après les autres
+            # Transformation applied systematically after the others
             after:
             - r"^([^\.]+\.[^\.]+\.[^\.]+)\.[^\.]*XXZ$": r"\1.SHZ"
 
-            # Transformations conditionnelles avec intervalles de dates
+            # Conditional transformations with date ranges
             time_windows:
             - time_window: "1970-01-01/2016-01-01"
                 regex:
                 - r"FR\.LBL\.00\.[H]SH.*": "FR.LBL..SH"
-            - time_window: null  # Transformation sans restriction temporelle
+            - time_window: null  # Transformation with no time restriction
                 regex:
                 - r"FR\.AGO\.00\.[SE]H[ZNE]": "FR.AGO..SH"
                 - ...
@@ -273,7 +273,9 @@ class RenameConfig:
 
     before: Optional[List[Dict[str, str]]] = None  # List of regex pattern: replacement
     after: Optional[List[Dict[str, str]]] = None  # Same for transformations after
-    time_windows: List[Dict[str, Union[str, Optional[List[Dict[str, str]]]]]] = None
+    time_windows: List[Dict[str, Union[str, Optional[List[Dict[str, str]]]]]] = field(
+        default_factory=list
+    )
 
     def __post_init__(self):
         # Ensures structure is validated if needed
@@ -647,7 +649,6 @@ class RelocationConfig:
     double_pass: bool
     keep_manual_picks: bool
     use_deactivated_arrivals: bool
-    use_pick_zone: bool
     gap_dist_max_km: Optional[float] = None
     closest_station_dist_km: Optional[float] = None
     dist_km_cutoff: Optional[float] = None
@@ -884,12 +885,12 @@ class Zones:
                 # convert wgs84 coord to lambert II (metric)
                 transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:27572")
                 x_point, y_point = transformer.transform(longitude, latitude)
-                sommets_lambert = [
+                lambert_vertices = [
                     transformer.transform(lon, lat)
                     for lon, lat in polygon.exterior.coords
                 ]
 
-                polygon = Polygon(sommets_lambert)
+                polygon = Polygon(lambert_vertices)
                 point_shapely = Point(x_point, y_point)
 
                 lines = [
@@ -1084,9 +1085,9 @@ class ParallelConfig:
     executor: Optional[str] = "parsl_thread"  # parsl_thread, parsl_hte, ray, dask
     dashboard: bool = False
     oversubscription_factor: int = 5  # workers spend ~80% waiting for NLLoc subprocess
-    task_profiles_path: Optional[str] = None  # Chemin vers task_profiles.csv
-    task_profiles_reference_path: Optional[str] = None  # Référence stable pour tri longest-first
-    execution_summary_path: Optional[str] = None  # Chemin vers execution_summary.csv
+    task_profiles_path: Optional[str] = None  # Path to task_profiles.csv
+    task_profiles_reference_path: Optional[str] = None  # Stable reference for longest-first sort
+    execution_summary_path: Optional[str] = None  # Path to execution_summary.csv
 
     def __post_init__(self):
         if not self.n_workers:
@@ -1095,7 +1096,7 @@ class ParallelConfig:
     def get_time_partitions(
         self, time_cfg: "TimeConfig", pick_cfg: "PickConfig"
     ) -> List:
-        # Convertir proprement en Timestamp et arrondir
+        # Convert cleanly to Timestamp and round
         start = pd.to_datetime(pick_cfg.start).replace(second=0, microsecond=0)
         original_end = pd.to_datetime(pick_cfg.end)
 

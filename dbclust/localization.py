@@ -286,12 +286,11 @@ class NllLoc(object):
         event: Event, origin: Origin, min_count: int
     ) -> int:
         """
-        Ensures that the number of stations with both P and S phases (count)
-        is greater than or equal to the threshold (min_count).
+        Counts the number of stations that have both a P and an S phase.
 
-        Returns count
+        Returns that count (min_count is unused but kept for API compatibility).
         """
-        count = {}
+        phase_types = {}
         for arrival in origin.arrivals:
             if hasattr(arrival, "time_weight") and isclose(
                 arrival.time_weight, 0, abs_tol=time_weight_tolerance
@@ -302,15 +301,11 @@ class NllLoc(object):
                 continue
             wfid = pick.waveform_id
             station_name = f"{wfid.network_code}.{wfid.station_code}"
-            phase_name = arrival.phase
+            phase_type = arrival.phase[0]  # first letter: P or S
 
-            if station_name in count.keys():
-                count[station_name].append(phase_name)
-            else:
-                count[station_name] = [phase_name]
+            phase_types.setdefault(station_name, set()).add(phase_type)
 
-        count = [len(count[k]) for k in count.keys()]
-        return np.array([np.count_nonzero(x >= min_count) for x in count]).sum()
+        return sum(1 for types in phase_types.values() if {"P", "S"} <= types)
 
     @staticmethod
     def get_origin_station_score(event: Event, origin: Origin) -> float:

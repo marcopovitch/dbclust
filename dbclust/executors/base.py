@@ -21,6 +21,24 @@ from dbclust.core import CSV_FIELDNAMES
 logger = logging.getLogger("dbclust")
 
 
+def config_fingerprint(cfg: DBClustConfig) -> str:
+    """Compute a short hash of the temporal config parameters that define partitions.
+
+    If any of these parameters change (start, end, partition_duration,
+    time_window, overlap_window), the checkpoint is automatically invalidated.
+    """
+    import hashlib
+
+    key = "|".join([
+        str(cfg.pick.start),
+        str(cfg.pick.end),
+        str(cfg.parallel.partition_duration),
+        str(cfg.time.time_window),
+        str(cfg.time.overlap_window),
+    ])
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
 class ExecutorBase(ABC):
     """Abstract base class for parallel execution backends.
 
@@ -219,16 +237,7 @@ class ExecutorBase(ABC):
         If any of these parameters change (start, end, partition_duration,
         time_window, overlap_window), the checkpoint is automatically invalidated.
         """
-        import hashlib
-
-        key = "|".join([
-            str(self.cfg.pick.start),
-            str(self.cfg.pick.end),
-            str(self.cfg.parallel.partition_duration),
-            str(self.cfg.time.time_window),
-            str(self.cfg.time.overlap_window),
-        ])
-        return hashlib.sha256(key.encode()).hexdigest()[:16]
+        return config_fingerprint(self.cfg)
 
     def _load_completed(self) -> Set[int]:
         """Load set of already-completed task indices from checkpoint file.
@@ -246,14 +255,14 @@ class ExecutorBase(ABC):
             # Old format was a plain list — treat as invalid to force re-run.
             if isinstance(data, list):
                 logger.info(
-                    "Checkpoint format obsolète (liste), ignoré — toutes les tâches seront retraitées."
+                    "Obsolete checkpoint format (list), ignored — all tasks will be reprocessed."
                 )
                 return set()
             # New format: {"fingerprint": "...", "done": [...]}
             if data.get("fingerprint") != self._config_fingerprint():
                 logger.info(
-                    "Paramètres temporels modifiés depuis le dernier run, "
-                    "checkpoint invalidé — toutes les tâches seront retraitées."
+                    "Temporal parameters changed since the last run, "
+                    "checkpoint invalidated — all tasks will be reprocessed."
                 )
                 return set()
             return set(data.get("done", []))

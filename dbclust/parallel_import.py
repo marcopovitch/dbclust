@@ -40,7 +40,7 @@ def deduplicate_cross_partition_events(
     min_shared_auto_picks: int = 3,
     report_path: str = None,
     dry_run: bool = False,
-) -> list:
+) -> dict:
     """Detect and remove cross-partition duplicate events after merge.
 
     Two events are duplicates if their manual picks share >= min_shared_catalog_ids
@@ -218,7 +218,7 @@ def deduplicate_cross_partition_events(
         for loser in losers:
             cursor.execute("DELETE FROM events WHERE event_id = ?", (loser,))
         conn.commit()
-    n_removed = len(pairs)
+    n_removed = len(set(losers)) if not dry_run else 0
     n_reloc = len(reloc_needed)
     logger.info(
         f"Cross-partition deduplication: {n_removed} duplicate(s) removed, "
