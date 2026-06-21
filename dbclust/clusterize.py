@@ -121,31 +121,37 @@ def get_picks_from_event(event: Event, origin: Origin, time) -> List:
 
 
 def feed_picks_probabilities(cat: Catalog, clusters: List[List[Phase]]) -> None:
+    """Attach a {"probability": {...}} comment to each obspy Pick matching a clustered Phase.
+
+    A Phase from `clusters` matches a Pick when they share the same station code and
+    pick time (network and phase_hint are intentionally not compared, since relabelling
+    e.g. P -> Pg changes pick.phase_hint but not the clustered Phase's .phase). Matching
+    is done via a (station, time) -> [Phase, ...] index built once up front, instead of
+    rescanning every clustered Phase for every pick (previously O(n_picks * n_phases)).
+    """
+    phases_by_station_time = defaultdict(list)
+    for p in set(chain(*clusters)):
+        phases_by_station_time[(p.station, p.time)].append(p)
+
     for event in cat:
         for pick in event.picks:
-            for p in set(chain(*clusters)):
-                # We don't check phase_hint because after relabelling
-                # (ex: P -> Pg), pick.phase_hint is modified but not p.phase
-                if (
-                    pick.waveform_id["station_code"] == p.station
-                    and pick.time == p.time
-                    # and pick.phase_hint == p.phase
-                ):
-                    if pick.waveform_id["network_code"] != p.network:
-                        logger.warning(
-                            f"Check your inventory for station {p.station}, 2 networks defined : "
-                            f"[{pick.waveform_id['network_code']},{p.network}] "
-                        )
-                    if p.agency:
-                        agency = p.agency
-                    else:
-                        agency = "undefined"
-                    pick.comments.append(
-                        Comment(
-                            text='{"probability": {"name": "%s", "value": %.2f}}'
-                            % (agency, p.proba)
-                        )
+            key = (pick.waveform_id["station_code"], pick.time)
+            for p in phases_by_station_time.get(key, []):
+                if pick.waveform_id["network_code"] != p.network:
+                    logger.warning(
+                        f"Check your inventory for station {p.station}, 2 networks defined : "
+                        f"[{pick.waveform_id['network_code']},{p.network}] "
                     )
+                if p.agency:
+                    agency = p.agency
+                else:
+                    agency = "undefined"
+                pick.comments.append(
+                    Comment(
+                        text='{"probability": {"name": "%s", "value": %.2f}}'
+                        % (agency, p.proba)
+                    )
+                )
 
 
 def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
@@ -745,7 +751,9 @@ class Clusterize(object):
 
         if len(all_phases) >= self.min_cluster_size:
             pseudo_tt = self.numpy_compute_tt_matrix_vectorized(
-                all_phases, self.average_velocity, vp=6.0 if self.clustering_method != "leiden" else None, vs=3.5 if self.clustering_method != "leiden" else None
+                all_phases, self.average_velocity,
+                vp=self.apparent_vp if self.clustering_method != "leiden" else None,
+                vs=self.apparent_vs if self.clustering_method != "leiden" else None,
             )
             self.clusters, stab, self.noise = self.get_clusters(
                 all_phases, pseudo_tt, self.max_search_dist,
