@@ -131,11 +131,11 @@ def feed_picks_probabilities(cat: Catalog, clusters: List[List[Phase]]) -> None:
     """
     phases_by_station_time = defaultdict(list)
     for p in set(chain(*clusters)):
-        phases_by_station_time[(p.station, p.time)].append(p)
+        phases_by_station_time[(p.station, p.time.datetime)].append(p)
 
     for event in cat:
         for pick in event.picks:
-            key = (pick.waveform_id["station_code"], pick.time)
+            key = (pick.waveform_id["station_code"], pick.time.datetime)
             for p in phases_by_station_time.get(key, []):
                 if pick.waveform_id["network_code"] != p.network:
                     logger.warning(
