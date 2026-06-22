@@ -2395,8 +2395,8 @@ def export_view_to_csv_exclude_geometry(
             "uncertainty": 2,
             "dist_km_from_preloc": 2,
             "dist_from_preloc_km": 2,
-            "discrimination_probability": 2,
-            "discrimination_certainty": 2,
+            "spectrocnn_probability": 2,
+            "spectrocnn_certainty": 2,
             "delta_U": 2,
             "cpq": 3,
         }
@@ -2656,29 +2656,23 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
 
         logger.info(f"Adding spectrocnn discrimination info from '{csv_file}'...")
 
-        updates = []
-        for _, row in discrimination_df.iterrows():
-            try:
-                event_id = row["event_id"]
-                certainty = row["hdq50mad"]
-                raw_proba = row["EqProbaPred hdq50"]
-                probability = raw_proba if raw_proba > 0.5 else 1 - raw_proba
-                station_count = row["proba_count"]
-                predhdq50 = row["predhdq50"]
+        label_map = {0: "earthquake", 1: "quarry blast"}
+        df = discrimination_df.copy()
+        df["_event_type"] = df["predhdq50"].map(label_map).fillna("unknown")
+        df["_agencies_json"] = df["_event_type"].apply(
+            lambda et: _json.dumps({"SPECTROCNN": et})
+        )
+        raw = df["EqProbaPred hdq50"]
+        df["_probability"] = raw.where(raw > 0.5, 1 - raw)
 
-                event_type = "unknown"
-                if predhdq50 == 0:
-                    event_type = "earthquake"
-                elif predhdq50 == 1:
-                    event_type = "quarry blast"
-
-                agencies_json = _json.dumps({"SPECTROCNN": event_type})
-                updates.append(
-                    (event_type, agencies_json, probability, station_count, certainty, event_id)
-                )
-            except Exception as e:
-                logger.warning(f"Error processing row {_}: {e}")
-                continue
+        updates = list(zip(
+            df["_event_type"],
+            df["_agencies_json"],
+            df["_probability"],
+            df["proba_count"],
+            df["hdq50mad"],
+            df["event_id"],
+        ))
 
         if updates:
             try:
@@ -2800,25 +2794,33 @@ def add_event_type_enrichment(conn: sqlite3.Connection, csv_file: str) -> None:
     try:
         cursor.execute("BEGIN TRANSACTION")
 
-        events_updates = []
-        agency_rows = []
-        for _, row in df.iterrows():
-            event_id = row["event_id"]
-            event_type = row["event_type_final"] if pd.notna(row["event_type_final"]) else None
-            source = row["event_type_final_source"] if pd.notna(row["event_type_final_source"]) else None
-            consensus = row["event_type_consensus"] if pd.notna(row["event_type_consensus"]) else None
+        # Vectorised build of events_updates
+        agency_prefix = len("event_type_")
+        agency_name_map = {col: col[agency_prefix:] for col in agency_cols}
 
-            # Build per-agency dict (strip "event_type_" prefix for key; SPECTROCNN stays as-is)
-            agencies_dict = {}
-            for col in agency_cols:
-                val = row[col]
-                if pd.notna(val) and str(val).strip():
-                    agency_name = col[len("event_type_"):]
-                    agencies_dict[agency_name] = str(val).strip()
-                    agency_rows.append((event_id, agency_name, str(val).strip()))
+        def _build_agencies_json(row):
+            d = {agency_name_map[c]: str(row[c]).strip()
+                 for c in agency_cols if pd.notna(row[c]) and str(row[c]).strip()}
+            return _json.dumps(d) if d else None
 
-            agencies_json = _json.dumps(agencies_dict) if agencies_dict else None
-            events_updates.append((event_type, source, consensus, agencies_json, event_id))
+        df["_agencies_json"] = df.apply(_build_agencies_json, axis=1)
+
+        events_updates = list(zip(
+            df["event_type_final"].where(df["event_type_final"].notna(), None),
+            df["event_type_final_source"].where(df["event_type_final_source"].notna(), None),
+            df["event_type_consensus"].where(df["event_type_consensus"].notna(), None),
+            df["_agencies_json"],
+            df["event_id"],
+        ))
+
+        # Build agency_rows from long-format melt (fast, no iterrows)
+        melted = df[["event_id"] + agency_cols].melt(
+            id_vars="event_id", value_vars=agency_cols,
+            var_name="col", value_name="val"
+        )
+        melted = melted[melted["val"].notna() & (melted["val"].str.strip() != "")]
+        melted["agency_name"] = melted["col"].str[agency_prefix:]
+        agency_rows = list(zip(melted["event_id"], melted["agency_name"], melted["val"].str.strip()))
 
         # Batch UPDATE events
         updated_count = 0
