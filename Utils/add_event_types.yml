@@ -1,8 +1,21 @@
 # Configuration for add_event_type_columns.py / add-event-types
 #
-# input_file: path to the main alceste CSV (must have agency_names and
+# input_file: path to the main catalog CSV (must have agency_names and
 #             agencies_list columns), relative to this config file.
 # output_file: path for the enriched output CSV, relative to this config file.
+# event_type_final_distribution_file: optional path (relative to this config
+#             file) for a CSV with the event_type_final value counts
+#             (columns: event_type_final, count).
+# event_type_final_source_distribution_file: optional path (relative to this
+#             config file) for a CSV with the event_type_final_source value
+#             counts (columns: event_type_final_source, count).
+# event_type_final_distribution_plot_file: optional path (relative to this
+#             config file) for an interactive HTML bar chart of the
+#             event_type_final distribution.
+# event_type_final_source_distribution_plot_file: optional path (relative to
+#             this config file) for an interactive HTML bar chart of the
+#             event_type_final_source distribution. Includes an explanation
+#             of the consensus/single/conflict/spectrocnn labels.
 # agencies: list of agency configurations
 #
 # Two modes, mutually exclusive:
@@ -31,10 +44,13 @@
 # 'agencies'. event_type_consensus itself is left untouched ("conflict"
 # still means the agencies disagreed).
 #
-# spectrocnn_predictions_file: optional path to the spectrocnn predictions CSV
-# (produced by the spectrocnn discrimination pipeline). The file must contain
-# columns event_id and predhdq50 (0=earthquake, 1=quarry blast, other=unknown).
-# When present, a column event_type_SPECTROCNN is filled for each alceste event
+# spectrocnn_predictions_file: optional path (or list of paths) to the
+# spectrocnn predictions CSV(s) (produced by the spectrocnn discrimination
+# pipeline). Each file must contain columns event_id and predhdq50
+# (0=earthquake, 1=quarry blast, other=unknown). When a list is given, the
+# files are concatenated and deduplicated by event_id (first file in the list
+# wins on duplicates).
+# When present, a column event_type_SPECTROCNN is filled for each input event
 # whose event_id appears in the predictions file with a trusted prediction
 # (predhdq50 == 0 or 1). This column is not used for event_type_consensus
 # (agency-only), but takes priority over the agency-derived value for
@@ -52,12 +68,18 @@
 
 input_file:  /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023.csv
 output_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023-with_event_types.csv
+event_type_final_distribution_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/event_type_final_distribution.csv
+event_type_final_source_distribution_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/event_type_final_source_distribution.csv
+event_type_final_distribution_plot_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/event_type_final_distribution.html
+event_type_final_source_distribution_plot_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/event_type_final_source_distribution.html
 
 agency_priority:
   - RENASS
   - LDG
 
-spectrocnn_predictions_file: /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023_without_discri_qf0.75_silence0.7_stations5min_noSNR/predictions/event-predictions.csv
+spectrocnn_predictions_file: 
+  - /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023_without_discri_qf0.75_silence0.7_stations5min_noSNR/predictions/event-predictions.csv
+  - /Users/marc/Data/DBClust/Alceste/db-2010_2023/novelty_spectrocnn_candidates_641k/event-predictions.csv
 
 spectrocnn_compatibility:
   earthquake:
