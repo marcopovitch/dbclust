@@ -364,8 +364,10 @@ def add_event_type_columns(config_path: Path) -> None:
     spectrocnn_predictions_file = config.get("spectrocnn_predictions_file")
     spectrocnn_compatibility = config.get("spectrocnn_compatibility", {}) or {}
 
+    agencies = config.get("agencies") or []
+
     # Validate config: each agency must have exactly one of 'file' or 'fixed_event_type'
-    for agency_cfg in config["agencies"]:
+    for agency_cfg in agencies:
         has_file = "file" in agency_cfg
         has_fixed = "fixed_event_type" in agency_cfg
         if has_file == has_fixed:
@@ -430,7 +432,7 @@ def add_event_type_columns(config_path: Path) -> None:
             f"({100 * filled / len(catalog):.1f}%)"
         )
 
-    for agency_cfg in config["agencies"]:
+    for agency_cfg in agencies:
         agency_name = agency_cfg["agency_name"]
         col_name = f"event_type_{agency_name}"
 
@@ -462,10 +464,10 @@ def add_event_type_columns(config_path: Path) -> None:
             f"({100 * filled / len(catalog):.1f}%)"
         )
 
-    et_cols = [f"event_type_{cfg['agency_name']}" for cfg in config["agencies"]]
+    et_cols = [f"event_type_{cfg['agency_name']}" for cfg in agencies]
 
     agency_priority = config.get("agency_priority", []) or []
-    agency_names = [cfg["agency_name"] for cfg in config["agencies"]]
+    agency_names = [cfg["agency_name"] for cfg in agencies]
     for name in agency_priority:
         if name not in agency_names:
             raise ValueError(f"agency_priority: unknown agency '{name}'")

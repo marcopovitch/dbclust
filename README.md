@@ -300,25 +300,43 @@ injectdb -d events.db --refresh-view
 
 #### Recommended order for full event_type enrichment
 
-```bash
-# 1. Spectrocnn quantitative metrics + event_type when NULL
-injectdb -d events.db --add-discrimination event-predictions.csv
+Both enhancement steps are required and **neither is optional or obsolete**:
+`--add-discrimination` is the only step that populates the quantitative
+spectrocnn columns (`spectrocnn_probability`, `spectrocnn_station_count`,
+`spectrocnn_certainty`). These are essential to assess discrimination quality
+for PHASENET-only events (no contributing agency bulletin), since for those
+events spectrocnn is the only source of an `event_type` classification.
 
-# 2. Generate enriched CSV (spectrocnn + agency bulletins)
+```bash
+# 1. Generate enriched CSV (spectrocnn + agency bulletins)
 add-event-types -c add_event_types.yml
 
-# 3. Overwrite event_type with multi-source final classification
+# 2. Multi-source final classification (event_type, event_type_source,
+#    event_type_consensus, event_type_agencies_json) — does not touch the
+#    spectrocnn_* columns.
 injectdb -d events.db --add-event-type-enrichment alceste-with_event_types.csv
+
+# 3. Spectrocnn quantitative metrics (spectrocnn_probability,
+#    spectrocnn_station_count, spectrocnn_certainty) — always written,
+#    regardless of whether event_type was already set in step 2.
+injectdb -d events.db --add-discrimination event-predictions.csv
 ```
 
-`--add-discrimination` can be used alone (without agency bulletins) to populate
-`spectrocnn_probability`, `spectrocnn_station_count`, `spectrocnn_certainty`, and
-`event_type` (when NULL) from the spectrocnn predictions CSV. It does not overwrite
-an `event_type` already set by `--add-event-type-enrichment`.
+The two `injectdb` calls can be run in either order: each one only ever writes
+its own set of columns and never re-reads the other's output.
 
-`--add-event-type-enrichment` always overwrites `event_type`, `event_type_source`,
-`event_type_consensus`, and `event_type_agencies_json`. It requires the enriched
-alceste CSV produced by `add-event-types`.
+- `--add-discrimination` always populates `spectrocnn_probability`,
+  `spectrocnn_station_count`, and `spectrocnn_certainty` from the spectrocnn
+  predictions CSV, for every event present in that CSV — whether or not
+  `event_type` is already set. It additionally sets `event_type` (and
+  `event_type_source = 'spectrocnn'`, `event_type_agencies_json`) but **only**
+  when `event_type` is still NULL, so it never overwrites a value already set
+  by `--add-event-type-enrichment`.
+
+- `--add-event-type-enrichment` always overwrites `event_type`,
+  `event_type_source`, `event_type_consensus`, and `event_type_agencies_json`.
+  It requires the enriched alceste CSV produced by `add-event-types` and never
+  touches the `spectrocnn_*` columns.
 
 #### silence score (`--add-silence-score`)
 
