@@ -2369,7 +2369,7 @@ def export_view_to_csv_exclude_geometry(
             "time_errors": 2,
             "depth": 1,
             "depth_km": 1,
-            "quality_factor": 2,
+            "quality_factor": 3,
             "scatter_volume": 2,
             "azimuthal_gap": 2,
             "secondary_azimuthal_gap": 2,
@@ -2395,7 +2395,7 @@ def export_view_to_csv_exclude_geometry(
             "uncertainty": 2,
             "dist_km_from_preloc": 2,
             "dist_from_preloc_km": 2,
-            "spectrocnn_probability": 2,
+            "spectrocnn_probability": 3,
             "spectrocnn_certainty": 2,
             "delta_U": 2,
             "cpq": 3,
@@ -2678,18 +2678,35 @@ def add_discrimination_info(conn: sqlite3.Connection, csv_file: str) -> None:
             try:
                 updated_count = 0
                 for row_args in updates:
+                    _event_type, _agencies_json, _probability, _station_count, _certainty, _event_id = row_args
+
+                    # spectrocnn_* columns are always written: they record the
+                    # CNN prediction for this event regardless of which source
+                    # (agency consensus or spectrocnn) ended up as event_type.
+                    cursor.execute(
+                        """
+                        UPDATE events
+                        SET spectrocnn_probability = ?,
+                            spectrocnn_station_count = ?,
+                            spectrocnn_certainty = ?
+                        WHERE event_id = ?
+                        """,
+                        (_probability, _station_count, _certainty, _event_id),
+                    )
+
+                    # event_type / event_type_source / event_type_agencies_json
+                    # must not overwrite values already set by agency-based
+                    # enrichment (add_event_type_enrichment), hence the
+                    # event_type IS NULL guard.
                     cursor.execute(
                         """
                         UPDATE events
                         SET event_type = ?,
                             event_type_source = 'spectrocnn',
-                            event_type_agencies_json = ?,
-                            spectrocnn_probability = ?,
-                            spectrocnn_station_count = ?,
-                            spectrocnn_certainty = ?
+                            event_type_agencies_json = ?
                         WHERE event_id = ? AND event_type IS NULL
                         """,
-                        row_args,
+                        (_event_type, _agencies_json, _event_id),
                     )
                     if cursor.rowcount > 0:
                         updated_count += 1

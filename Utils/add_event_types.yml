@@ -80,6 +80,7 @@ agency_priority:
 spectrocnn_predictions_file: 
   - /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023_without_discri_qf0.75_silence0.7_stations5min_noSNR/predictions/event-predictions.csv
   - /Users/marc/Data/DBClust/Alceste/db-2010_2023/novelty_spectrocnn_candidates_641k/event-predictions.csv
+  - /Users/marc/Data/DBClust/Alceste/db-2010_2023/alceste-2010_2023-spectrocnn_undone/predictions/event-predictions.csv
 
 spectrocnn_compatibility:
   earthquake:
