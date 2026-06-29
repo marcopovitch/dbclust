@@ -205,8 +205,8 @@ def _patch_obspy_event_types():
             if event_type not in EventType.keys():
                 # Access internal OrderedDict to add new types
                 EventType._Enum__enums[event_type.lower()] = event_type
-    except Exception:
-        pass  # Silently fail if ObsPy structure changes
+    except Exception as e:
+        logger.debug(f"Could not patch ObsPy EventType enum: {e}")
 
 
 _patch_obspy_event_types()
@@ -357,10 +357,10 @@ def create_safe_connection(db_path: str, uri=False, logger=None):
         for pragma, value in pragmas_outside_transaction:
             try:
                 conn.execute(f"PRAGMA {pragma}={value};")
-                conn.commit()  # Ensure pragma is applied
             except Exception as e:
                 if logger:
                     logger.warning(f"Could not set PRAGMA {pragma}: {e}")
+        conn.commit()  # Ensure pragmas are applied
 
         # Set other pragmas
         for pragma, value in pragmas_anytime:
@@ -535,7 +535,12 @@ def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
     """
     for comment in origin.comments:
         text = comment.text
-        match = re.search(r"CovXX (\d+\.\d+) .* YY (\d+\.\d+) .* ZZ (\d+\.\d+)", text)
+        match = re.search(
+            r"CovXX (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?) .* "
+            r"YY (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?) .* "
+            r"ZZ (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)",
+            text,
+        )
         if text and match:
             CovXX = float(match.group(1))
             CovYY = float(match.group(2))
@@ -654,7 +659,7 @@ def phase_count(event: Event, origin: Origin, phase_type: str) -> int:
             logger.debug(f"  event: {event.resource_id.id}")
             logger.debug(f"  origin: {origin.resource_id.id}")
             logger.debug(f"  arrival: {arrival.resource_id.id}")
-            return None
+            continue
 
         if pick.phase_hint and phase_type in pick.phase_hint.upper():
             count += 1
@@ -1001,7 +1006,6 @@ def inject_event(
 
         # Insert picks
         logger.debug(f"Inserting picks for event {event.resource_id.id}.")
-        cursor = conn.cursor()
         for pick in event.picks:
             agency_id = (
                 pick.creation_info.agency_id
@@ -1065,15 +1069,6 @@ def inject_event(
                 )
                 if pick is None:
                     continue
-                prob = (
-                    1.0
-                    if pick.evaluation_mode == "manual"
-                    else (
-                        pick.time_errors.uncertainty
-                        if pick.time_errors and pick.time_errors.uncertainty is not None
-                        else 0.0
-                    )
-                )
                 # Use pick probability if available, otherwise fallback
                 pick_prob = get_pick_probability(pick)
                 prob = (
@@ -1092,7 +1087,7 @@ def inject_event(
             median_prob_s = float(np.median(probs_s)) if probs_s else 0.0
             median_prob_total = float(np.median(probs_all)) if probs_all else 0.0
 
-            cursor.execute(
+            conn.execute(
                 "UPDATE origins SET median_prob_p = ?, median_prob_s = ?, median_prob_total = ? WHERE id = ?",
                 (
                     median_prob_p,
@@ -1134,7 +1129,7 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
     rms = getattr(quality, "standard_error", None)
     P_count = phase_count(event, origin, "P")
     S_count = phase_count(event, origin, "S")
-    erz, erh, err_method = get_erh_erz(origin)
+    erh, erz, err_method = get_erh_erz(origin)
 
     # Recalculate used_phase_count and used_station_count from arrivals with non-zero weight
     # This is more reliable than using quality.used_phase_count/used_station_count
@@ -1151,11 +1146,28 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
     ]
 
     if valid_arrivals:
-        num_stations_10km = sum(1 for a in valid_arrivals if a.distance * 111.11 <= 10)
-        num_stations_30km = sum(1 for a in valid_arrivals if a.distance * 111.11 <= 30)
-        num_stations_150km = sum(
-            1 for a in valid_arrivals if a.distance * 111.11 <= 150
-        )
+        stations_10km = set()
+        stations_30km = set()
+        stations_150km = set()
+        for arrival in valid_arrivals:
+            pick = next(
+                (p for p in event.picks if p.resource_id == arrival.pick_id), None
+            )
+            if pick is None or pick.waveform_id is None:
+                continue
+            station_id = (
+                f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
+            )
+            distance_km = arrival.distance * 111.11
+            if distance_km <= 10:
+                stations_10km.add(station_id)
+            if distance_km <= 30:
+                stations_30km.add(station_id)
+            if distance_km <= 150:
+                stations_150km.add(station_id)
+        num_stations_10km = len(stations_10km)
+        num_stations_30km = len(stations_30km)
+        num_stations_150km = len(stations_150km)
     else:
         num_stations_10km = None
         num_stations_30km = None
@@ -1202,11 +1214,9 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
     cpq = None
     gallacher_gt5_status = None
     try:
-        result = compute_gallacher_gt5_score_obspy(origin)
-        if result and result is not False:
-            gallacher_gt5_bool, gallacher_details = result
-            cpq = gallacher_details.get("cpq")
-            gallacher_gt5_status = gallacher_gt5_bool
+        gallacher_gt5_bool, gallacher_details = compute_gallacher_gt5_score_obspy(origin)
+        cpq = gallacher_details.get("cpq")
+        gallacher_gt5_status = gallacher_gt5_bool
     except Exception as e:
         logger.debug(f"Could not compute Gallacher GT5 score for origin {origin.resource_id.id}: {e}")
 
@@ -1305,9 +1315,9 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             num_stations_30km,
             num_stations_150km,
             delta_U,
-            1 if gt5_status else 0,
+            None if gt5_status is None else (1 if gt5_status else 0),
             cpq,
-            1 if gallacher_gt5_status else 0,
+            None if gallacher_gt5_status is None else (1 if gallacher_gt5_status else 0),
             origin.evaluation_mode,
             (
                 1
@@ -1350,7 +1360,7 @@ def insert_magnitudes(
                 origin_id,
                 event.resource_id.id,
                 magnitude.mag,
-                magnitude.mag_errors.uncertainty,
+                magnitude.mag_errors.uncertainty if magnitude.mag_errors else None,
                 magnitude.station_count,
                 magnitude.magnitude_type,
                 magnitude.evaluation_mode,

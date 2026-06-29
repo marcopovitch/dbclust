@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from typing import List, Union
+from typing import List, Tuple, Union
 import sqlite3
 import logging
 import numpy as np
@@ -124,7 +124,7 @@ def compute_gt5_score_obspy(origin: Origin) -> Union[bool, dict]:
     return gt5_criteria, details
 
 
-def compute_gallacher_gt5_score_obspy(origin: Origin) -> Union[bool, dict]:
+def compute_gallacher_gt5_score_obspy(origin: Origin) -> Tuple[bool, dict]:
     """
     Determine if an event meets the revised GT5 criteria from Gallacher et al. (2025).
 
