@@ -35,6 +35,8 @@ import warnings
 import xml.etree.ElementTree as ET
 import zlib
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import as_completed
 from datetime import datetime
 from io import BytesIO
 from typing import Dict
@@ -126,6 +128,7 @@ EVENT_COORDINATES_VIEW = """
         o.expectation_depth / 1000.0 AS expectation_depth_km,
         o.scatter_volume,
         ROUND(o.nll_epicenters_diff_km, 2) AS nll_epicenters_diff_km,
+        ROUND(o.nll_hypocenters_diff_km, 2) AS nll_hypocenters_diff_km,
         e.dist_km_from_preloc AS dist_from_preloc_km,
         e.nb_agencies, e.agencies_list, e.agency_names, e.agency_ai_contributors, e.multiple_same_agencies,
         o.evaluation_mode,
@@ -584,6 +587,126 @@ def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
             method = "unknown"
 
     return erh, erz, method
+
+
+def _recompute_event_from_quakeml(compressed_quakeml: bytes) -> dict:
+    """
+    Decompress and parse a single event's QuakeML, recomputing erh/erz/er_method
+    for every origin and uncertainty for every magnitude.
+
+    Runs in a worker process (no DB connection): must only take/return picklable
+    primitives, not ObsPy objects.
+
+    Returns:
+        dict with "origin_updates": list of (erh, erz, er_method, origin_id) and
+        "magnitude_updates": list of (uncertainty, magnitude_id), or an "error" key
+        if the QuakeML could not be parsed.
+    """
+    try:
+        quakeml_data = zlib.decompress(compressed_quakeml)
+        catalog = read_events(BytesIO(quakeml_data))
+    except Exception as e:
+        return {"origin_updates": [], "magnitude_updates": [], "error": str(e)}
+
+    origin_updates = []
+    magnitude_updates = []
+    for event in catalog:
+        for origin in event.origins:
+            erh, erz, er_method = get_erh_erz(origin)
+            origin_updates.append((erh, erz, er_method, origin.resource_id.id))
+        for magnitude in event.magnitudes:
+            uncertainty = (
+                magnitude.mag_errors.uncertainty if magnitude.mag_errors else None
+            )
+            magnitude_updates.append((uncertainty, magnitude.resource_id.id))
+
+    return {"origin_updates": origin_updates, "magnitude_updates": magnitude_updates}
+
+
+def recompute_erh_erz_and_mag_uncertainty(
+    conn: sqlite3.Connection, max_workers: Optional[int] = None, chunk_size: int = 2000
+) -> None:
+    """
+    Recompute origins.erh/erz/er_method and magnitudes.uncertainty for every event
+    by reparsing the QuakeML stored in the `quakeml` table.
+
+    This is only needed for columns whose source data (origin.comments,
+    origin.origin_uncertainty, origin.*_errors, magnitude.mag_errors) is not stored
+    in any relational table, unlike num_stations_*/P_count/S_count which can be
+    recomputed from arrivals/picks alone (see recompute_station_and_phase_counts).
+
+    Parsing QuakeML is CPU-bound, so it is parallelized across worker processes.
+    All SQLite writes happen on the single connection passed in, from the calling
+    process only, to avoid concurrent writers on the same database file.
+    """
+    logger.info("Recomputing erh/erz and magnitude uncertainty from QuakeML...")
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM quakeml")
+    (total,) = cursor.fetchone()
+
+    error_count = 0
+    update_batch_size = 5000
+    pending_origin_updates = []
+    pending_magnitude_updates = []
+
+    def flush():
+        if pending_origin_updates:
+            cursor.executemany(
+                "UPDATE origins SET erh = ?, erz = ?, er_method = ? WHERE id = ?",
+                pending_origin_updates,
+            )
+            pending_origin_updates.clear()
+        if pending_magnitude_updates:
+            cursor.executemany(
+                "UPDATE magnitudes SET uncertainty = ? WHERE id = ?",
+                pending_magnitude_updates,
+            )
+            pending_magnitude_updates.clear()
+        conn.commit()
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        with tqdm(total=total, desc="Recomputing from QuakeML", unit="event") as pbar:
+            offset = 0
+            while True:
+                cursor.execute(
+                    "SELECT event_id, data FROM quakeml LIMIT ? OFFSET ?",
+                    (chunk_size, offset),
+                )
+                rows = cursor.fetchall()
+                if not rows:
+                    break
+                offset += chunk_size
+
+                futures = {
+                    executor.submit(_recompute_event_from_quakeml, data): event_id
+                    for event_id, data in rows
+                    if data is not None
+                }
+                for future in as_completed(futures):
+                    event_id = futures[future]
+                    result = future.result()
+                    if result.get("error"):
+                        error_count += 1
+                        logger.error(
+                            f"Could not recompute event {event_id} from QuakeML: {result['error']}"
+                        )
+                        pbar.update(1)
+                        continue
+
+                    pending_origin_updates.extend(result["origin_updates"])
+                    pending_magnitude_updates.extend(result["magnitude_updates"])
+                    if (
+                        len(pending_origin_updates) + len(pending_magnitude_updates)
+                        >= update_batch_size
+                    ):
+                        flush()
+                    pbar.update(1)
+
+    flush()
+    logger.info(
+        f"erh/erz/magnitude uncertainty recomputation completed "
+        f"({total - error_count} events processed, {error_count} errors)"
+    )
 
 
 def get_relabel_info(
@@ -1197,6 +1320,11 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
         else None
     )
 
+    # 3D distance in km between the origin hypocenter and the expectation hypocenter
+    dloc_hypo = (
+        math.sqrt(dloch**2 + dz**2) if dloch is not None and dz is not None else None
+    )
+
     # Get only the relevant info from the origin method ID
     origin_method_id = getattr(getattr(origin, "method_id", None), "id", "unknown")
     if isinstance(origin_method_id, str) and "/" in origin_method_id:
@@ -1270,14 +1398,14 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             cpq,
             gallacher_gt5_status,
             evaluation_mode, preferred, ps_ratio, ps_station_count, station_score,
-            nll_epicenters_diff_km, geometry
+            nll_epicenters_diff_km, nll_hypocenters_diff_km, geometry
         )
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?,
+            ?, ?,
             ST_GeomFromText(?, 4326)
         )
         """,
@@ -1329,6 +1457,7 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             ps_station_count,
             station_score,
             dloch,
+            dloc_hypo,
             f"POINT({origin.longitude} {origin.latitude})",
         ),
     )
@@ -1809,7 +1938,8 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 median_prob_p DOUBLE,
                 median_prob_s DOUBLE,
                 median_prob_total DOUBLE,
-                nll_epicenters_diff_km DOUBLE
+                nll_epicenters_diff_km DOUBLE,
+                nll_hypocenters_diff_km DOUBLE
             );
             """,
             """
@@ -3081,6 +3211,8 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
 
         dz = abs(origin_depth - expectation_depth) / 1000.0
 
+        dloc_hypo = math.sqrt(dloch**2 + dz**2)
+
         quality_factor, quality = classify_Michele_mod2(
             rms,
             erh,
@@ -3099,10 +3231,10 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
         cursor.execute(
             """
             UPDATE origins
-            SET quality = ?, quality_factor = ?, nll_epicenters_diff_km = ?
+            SET quality = ?, quality_factor = ?, nll_epicenters_diff_km = ?, nll_hypocenters_diff_km = ?
             WHERE id = ?;
             """,
-            (quality, quality_factor, dloch, origin_id),
+            (quality, quality_factor, dloch, dloc_hypo, origin_id),
         )
     conn.commit()
 
@@ -3223,6 +3355,81 @@ def recompute_ps_ratio(conn: sqlite3.Connection) -> None:
     logger.info("ps_ratio and ps_station_count recomputation completed")
 
 
+def recompute_station_and_phase_counts(conn: sqlite3.Connection) -> None:
+    """
+    Recompute num_stations_10km/30km/150km and P_count/S_count for all preferred
+    origins from the arrivals/picks tables already in the database.
+
+    Fixes two bugs from the original injection code:
+    - num_stations_* counted arrivals instead of distinct stations, so a station
+      with both P and S phases was counted twice.
+    - P_count/S_count could be None if a single arrival had no matching pick,
+      discarding the count for the whole origin instead of skipping that arrival.
+    """
+    logger.info("Recomputing station/phase counts for all preferred origins...")
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id FROM origins WHERE preferred = 1")
+    origins = cursor.fetchall()
+
+    for (origin_id,) in origins:
+        cursor.execute(
+            """
+            SELECT p.station_name, a.distance, p.phase_hint
+            FROM arrivals a
+            JOIN picks p ON a.pick_id = p.id
+            WHERE a.origin_id = ?
+              AND a.time_weight IS NOT NULL AND a.time_weight != 0
+              AND a.distance IS NOT NULL
+            """,
+            (origin_id,),
+        )
+        rows = cursor.fetchall()
+
+        stations_10km, stations_30km, stations_150km = set(), set(), set()
+        p_count, s_count = 0, 0
+        for station_name, distance_deg, phase_hint in rows:
+            if station_name is not None:
+                distance_km = distance_deg * 111.11
+                if distance_km <= 10:
+                    stations_10km.add(station_name)
+                if distance_km <= 30:
+                    stations_30km.add(station_name)
+                if distance_km <= 150:
+                    stations_150km.add(station_name)
+
+            if phase_hint:
+                phase_upper = phase_hint.upper()
+                if "P" in phase_upper:
+                    p_count += 1
+                if "S" in phase_upper:
+                    s_count += 1
+
+        num_stations_10km = len(stations_10km) if rows else None
+        num_stations_30km = len(stations_30km) if rows else None
+        num_stations_150km = len(stations_150km) if rows else None
+
+        cursor.execute(
+            """
+            UPDATE origins
+            SET num_stations_10km = ?, num_stations_30km = ?, num_stations_150km = ?,
+                P_count = ?, S_count = ?
+            WHERE id = ?
+            """,
+            (
+                num_stations_10km,
+                num_stations_30km,
+                num_stations_150km,
+                p_count,
+                s_count,
+                origin_id,
+            ),
+        )
+
+    conn.commit()
+    logger.info("Station/phase counts recomputation completed")
+
+
 def compute_median_probabilities(conn):
     """Compute and store median probabilities for P, S and all picks."""
     logger.info("Computing median probabilities for all origins...")
@@ -3319,6 +3526,7 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
         _ensure_column(cursor, "origins", "cpq", "DOUBLE")
         _ensure_column(cursor, "origins", "gallacher_gt5_status", "BOOLEAN")
         _ensure_column(cursor, "origins", "nll_epicenters_diff_km", "DOUBLE")
+        _ensure_column(cursor, "origins", "nll_hypocenters_diff_km", "DOUBLE")
 
         # event_type enrichment columns (multi-agency + spectrocnn)
         _ensure_column(cursor, "events", "event_type_source", "TEXT")
@@ -3494,6 +3702,8 @@ def apply_database_enhancements(args) -> None:
             [
                 args.compute_station_scores,
                 args.compute_ps_ratio,
+                args.recompute_counts,
+                args.recompute_from_quakeml,
                 args.add_discrimination,
                 args.add_event_type_enrichment,
                 args.add_localization_quality,
@@ -3509,6 +3719,17 @@ def apply_database_enhancements(args) -> None:
 
             # Always ensure all supplemental columns exist
             ensure_required_columns_exist(conn)
+
+            # erh/erz and station/phase counts must be recomputed before
+            # --gallacher-gt5, which reads the erh column already stored in
+            # the database (it does not reparse QuakeML).
+            if args.recompute_from_quakeml:
+                print("Recomputing erh/erz and magnitude uncertainty from QuakeML...")
+                recompute_erh_erz_and_mag_uncertainty(conn, max_workers=args.workers)
+
+            if args.recompute_counts:
+                print("Recomputing station/phase counts...")
+                recompute_station_and_phase_counts(conn)
 
             if args.compute_station_scores:
                 print("Computing station scores...")
@@ -3555,6 +3776,8 @@ def apply_database_enhancements(args) -> None:
                 [
                     args.compute_station_scores,
                     args.compute_ps_ratio,
+                    args.recompute_counts,
+                    args.recompute_from_quakeml,
                     args.add_discrimination,
                     args.add_event_type_enrichment,
                     args.add_localization_quality,
@@ -3951,6 +4174,29 @@ def parse_arguments() -> argparse.Namespace:
         help="Refresh the event_coordinates view.",
     )
 
+    # Retroactive column repair: recompute columns affected by past bugs in
+    # erh/erz, station/phase counts and magnitude uncertainty for events
+    # already in the database (see CHANGELOG / bug fix history).
+    repair_group = parser.add_argument_group("Retroactive Column Repair")
+    repair_group.add_argument(
+        "--recompute-counts",
+        action="store_true",
+        help="Recompute num_stations_10km/30km/150km (deduplicated by station) and "
+        "P_count/S_count for all preferred origins from arrivals/picks already in the database.",
+    )
+    repair_group.add_argument(
+        "--recompute-from-quakeml",
+        action="store_true",
+        help="Recompute origins.erh/erz/er_method and magnitudes.uncertainty for all "
+        "events by reparsing the stored QuakeML. CPU-bound, parallelized via --workers.",
+    )
+    repair_group.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of worker processes for --recompute-from-quakeml (default: CPU count).",
+    )
+
     # Parse known arguments first to check for help
     args, remaining = parser.parse_known_args()
 
@@ -3997,6 +4243,8 @@ def parse_arguments() -> argparse.Namespace:
                 args.compute_prob_median,
                 args.compute_station_scores,
                 args.compute_ps_ratio,
+                args.recompute_counts,
+                args.recompute_from_quakeml,
                 args.add_silence_score,
                 args.refresh_view,
             ]
@@ -4201,6 +4449,8 @@ def main():
             args.compute_prob_median,
             args.compute_station_scores,
             args.compute_ps_ratio,
+            args.recompute_counts,
+            args.recompute_from_quakeml,
             args.add_silence_score,
             args.refresh_view,
         ]
@@ -4253,6 +4503,8 @@ def main():
             "compute_prob_median": args.compute_prob_median,
             "compute_station_scores": args.compute_station_scores,
             "compute_ps_ratio": args.compute_ps_ratio,
+            "recompute_counts": args.recompute_counts,
+            "recompute_from_quakeml": args.recompute_from_quakeml,
             "gallacher_gt5": args.gallacher_gt5,
             "add_silence_score": args.add_silence_score,
             "refresh_view": args.refresh_view,
