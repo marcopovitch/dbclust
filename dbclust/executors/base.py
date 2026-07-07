@@ -365,19 +365,41 @@ class ExecutorBase(ABC):
 
         return results
 
+    def _inject_future(self, pending, new_future: Any) -> None:
+        """Add a refill future to the live wait set so it is actually collected.
+
+        _stream_results() below calls wait_for_results(list(pending)) ONCE on
+        a snapshot; appending to `pending` after that point would never be
+        seen again by that call. Executors whose wait_for_results() consumes
+        a live, mutable wait set (e.g. Dask's as_completed, Ray's wait list)
+        must override this to inject into that same live set — see
+        DaskExecutor / RayExecutor. Executors that override run() with their
+        own sliding-window collection (ParslHTEExecutor, ParslSlurmExecutor)
+        or that never exceed max_inflight in practice (ParslThreadExecutor)
+        never reach this method. The base implementation raises loudly
+        instead of silently dropping refill futures.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} uses the generic ExecutorBase._stream_results() "
+            "sliding window but does not implement _inject_future(): refill "
+            "futures submitted after the initial batch would never be "
+            "collected. Implement _inject_future() (see DaskExecutor/"
+            "RayExecutor) or override run() with an executor-specific "
+            "collection loop (see ParslHTEExecutor)."
+        )
+
     def _stream_results(self, pending, submit_iter, submitted_box, total_tasks, log_every):
         """Yield results as futures complete, refilling the window one-for-one.
 
-        Uses as_completed.add() if the executor exposes self._as_completed,
-        so all in-flight futures are processed in a single streaming pass with
-        no artificial serialisation.
+        Uses _inject_future() so all in-flight futures are processed in a
+        single streaming pass with no artificial serialisation.
 
         submitted_box is a one-element list so the counter is passed by reference.
         """
         for job_index, result, duration, peak_memory_mb in self.wait_for_results(list(pending)):
             pending.clear()
             yield job_index, result, duration, peak_memory_mb
-            # Submit one replacement and inject it into the live as_completed iterator
+            # Submit one replacement and inject it into the live wait set
             if submitted_box[0] < total_tasks:
                 try:
                     idx, _ = next(submit_iter)
@@ -388,14 +410,7 @@ class ExecutorBase(ABC):
                             f"Submitted {submitted_box[0]}/{total_tasks} tasks "
                             f"({submitted_box[0] / total_tasks * 100:.0f}%)"
                         )
-                    ac = getattr(self, "_as_completed", None)
-                    pf = getattr(self, "_pending_futures", None)
-                    if ac is not None:
-                        ac.add(new_future)       # Dask: inject into live as_completed
-                    elif pf is not None:
-                        pf.append(new_future)    # Ray: inject into live ray.wait list
-                    else:
-                        pending.append(new_future)  # fallback
+                    self._inject_future(pending, new_future)
                 except StopIteration:
                     pass
 

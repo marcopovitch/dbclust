@@ -99,53 +99,59 @@ def adjust_associator_tolerance(
                             otherwise returns None.
     """
     associator = cfg.pyocto.current_model.associator
-    tolerance = associator.pick_match_tolerance
+    original_tolerance = associator.pick_match_tolerance
+    tolerance = original_tolerance
     best_result = None
     best_n_clusters = 0
 
-    logger.info(f"Starting linear decay for pick_match_tolerance: {tolerance}")
-    while tolerance >= min_tolerance:
-        logger.info(f"Trying pick_match_tolerance: {tolerance:.2f}")
-        associator.pick_match_tolerance = tolerance
-        try:
-            result_myclust = dbclust2pyocto(
-                myclust,
-                cfg.pyocto.default_model_name,
-                associator,
-                cfg.pyocto.velocity_model,
-                cfg.cluster.min_picks_common,
-                delegate_dbclust=cfg.pyocto.delegate_dbclust,
-                include_noise_in_aggregation=include_noise_in_aggregation,
-                log_level=log_level,
-            )
-            logger.info(f"Success with pick_match_tolerance: {tolerance:.2f}")
-            return result_myclust
-        except pyproj.exceptions.ProjError as e:
-            logger.error(f"Projection error, skipping dbclust2pyocto() processing: {e}")
-            raise
-        except MultipleEventIDsWithSameAgencyError as e:
-            logger.warning(f"Unsuccessful with pick_match_tolerance: {tolerance:.2f}.")
-            logger.warning(f"{e}")
-            if e.partial_result is not None:
-                n = e.partial_result.n_clusters
-                if n > best_n_clusters:
-                    best_n_clusters = n
-                    best_result = e.partial_result
-                    logger.info(
-                        f"New best partial result: {n} clusters at tolerance {tolerance:.2f}"
-                    )
-            step = next((s for t, s in tolerance_steps.items() if tolerance > t), 0.5)
-            tolerance -= step
+    try:
+        logger.info(f"Starting linear decay for pick_match_tolerance: {tolerance}")
+        while tolerance >= min_tolerance:
+            logger.info(f"Trying pick_match_tolerance: {tolerance:.2f}")
+            associator.pick_match_tolerance = tolerance
+            try:
+                result_myclust = dbclust2pyocto(
+                    myclust,
+                    cfg.pyocto.default_model_name,
+                    associator,
+                    cfg.pyocto.velocity_model,
+                    cfg.cluster.min_picks_common,
+                    delegate_dbclust=cfg.pyocto.delegate_dbclust,
+                    include_noise_in_aggregation=include_noise_in_aggregation,
+                    log_level=log_level,
+                )
+                logger.info(f"Success with pick_match_tolerance: {tolerance:.2f}")
+                return result_myclust
+            except pyproj.exceptions.ProjError as e:
+                logger.error(f"Projection error, skipping dbclust2pyocto() processing: {e}")
+                raise
+            except MultipleEventIDsWithSameAgencyError as e:
+                logger.warning(f"Unsuccessful with pick_match_tolerance: {tolerance:.2f}.")
+                logger.warning(f"{e}")
+                if e.partial_result is not None:
+                    n = e.partial_result.n_clusters
+                    if n > best_n_clusters:
+                        best_n_clusters = n
+                        best_result = e.partial_result
+                        logger.info(
+                            f"New best partial result: {n} clusters at tolerance {tolerance:.2f}"
+                        )
+                step = next((s for t, s in tolerance_steps.items() if tolerance > t), 0.5)
+                tolerance -= step
 
-    logger.error("Exhausted all tolerances.")
-    if best_result is not None:
-        logger.warning(
-            f"Returning best partial result with {best_n_clusters} clusters "
-            f"despite unresolved agency conflict."
-        )
-        return best_result
-    logger.error("No partial result available. Skipping pyocto processing.")
-    return None
+        logger.error("Exhausted all tolerances.")
+        if best_result is not None:
+            logger.warning(
+                f"Returning best partial result with {best_n_clusters} clusters "
+                f"despite unresolved agency conflict."
+            )
+            return best_result
+        logger.error("No partial result available. Skipping pyocto processing.")
+        return None
+    finally:
+        # Never leak a decayed tolerance into subsequent time windows: this
+        # associator object is shared for the whole run (cfg.pyocto.current_model).
+        associator.pick_match_tolerance = original_tolerance
 
 
 def dbclust2pyocto(
@@ -406,8 +412,12 @@ def dbclust2pyocto(
             unassigned = [p for j, p in enumerate(cluster) if j not in assigned_cluster_ids]
             pseudo_tt2 = myclust.numpy_compute_tt_matrix_vectorized(
                 unassigned, myclust.average_velocity,
-                vp=myclust.apparent_vp,
-                vs=myclust.apparent_vs,
+                # Same-station P-S cap: enabled for HDBSCAN, disabled for Leiden
+                # (Leiden uses PS-boost instead; the cap alters cluster
+                # composition adversely — see numpy_compute_tt_matrix_vectorized
+                # docstring and the equivalent guard in clusterize.py).
+                vp=myclust.apparent_vp if myclust.clustering_method != "leiden" else None,
+                vs=myclust.apparent_vs if myclust.clustering_method != "leiden" else None,
             )
             sp_epsilon = (
                 myclust.max_search_dist
@@ -672,7 +682,7 @@ def aggregate_pick_to_cluster_with_common_event_id(
     logger.info(
         f"aggregate_pick_to_cluster_with_common_event_id(): {len(clusters)} clusters"
     )
-    for cluster in clusters:
+    for cluster_idx, cluster in enumerate(clusters):
         # Count the occurrences of event_id in the cluster
         event_id_counts = Counter([p.event_id for p in cluster if p.event_id])
         if event_id_counts:
@@ -716,20 +726,23 @@ def aggregate_pick_to_cluster_with_common_event_id(
         if not any(count > pick_count_threshold for count in event_id_counts.values()):
             continue
 
-        # Partition picks into those added to cluster and those remaining
+        # Partition picks into those added to cluster and those remaining.
+        # Exclude picks already in the cluster up front so extend() below
+        # cannot introduce duplicates (picks_to_add is drawn from the full
+        # `picks` pool, which includes picks already assigned to clusters).
+        existing_ids = set(id(p) for p in cluster)
         picks_to_add = [
             p
             for p in picks
             if p.event_id
             and p.event_id in event_id_counts
             and event_id_counts[p.event_id] > pick_count_threshold
+            and id(p) not in existing_ids
         ]
         cluster.extend(picks_to_add)
+        clusters[cluster_idx] = cluster
         added = set(id(p) for p in picks_to_add)
         picks = [p for p in picks if id(p) not in added]
-
-        # Remove duplicates in the cluster
-        cluster = list(set(cluster))
 
     return clusters
 

@@ -170,12 +170,16 @@ class RayExecutor(ExecutorBase):
         num_cpus = 1.0 / self.cfg.parallel.oversubscription_factor
         return _run_dbclust_task.options(num_cpus=num_cpus).remote(self.cfg, job_index)  # type: ignore[union-attr]
 
+    def _inject_future(self, pending, new_future: Any) -> None:
+        """Inject a refill future into the live ray.wait() list."""
+        self._pending_futures.append(new_future)
+
     def wait_for_results(self, futures: List[Any]) -> Generator:
         """Wait for Ray futures and yield results as they complete.
 
         Uses ray.wait() to process tasks as they complete for progressive
         memory release.  New futures can be injected mid-iteration via
-        self._pending_futures (set by _stream_results).
+        self._pending_futures (set here, appended to by _inject_future).
 
         Args:
             futures: List of Ray ObjectRef objects.

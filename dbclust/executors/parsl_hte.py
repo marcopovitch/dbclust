@@ -8,7 +8,6 @@ better CPU utilization for CPU-bound tasks.
 import atexit
 import logging
 import os
-import random
 from datetime import datetime
 from typing import Any, Generator, List, Dict
 
@@ -476,7 +475,7 @@ class ParslHTEExecutor(ExecutorBase):
                     f"Resuming: {already_done} tasks already done, {len(indexed_partitions)} remaining"
                 )
 
-            random.shuffle(indexed_partitions)
+            indexed_partitions = self._sort_longest_first(indexed_partitions)
 
             if not done:
                 self._init_csv()

@@ -27,7 +27,6 @@ import logging
 import math
 import os
 import random
-import re
 import sqlite3
 import sys
 import time
@@ -62,6 +61,7 @@ from dbclust.gap import compute_secondary_azimuthal_gap
 from dbclust.gt5 import compute_cpq
 from dbclust.gt5 import compute_gallacher_gt5_score_obspy
 from dbclust.gt5 import compute_gt5_score
+from dbclust.localization_error import get_erh_erz
 from dbclust.localization_quality import classify_Michele_mod2
 from dbclust.localization_quality import haversine_distance
 
@@ -524,69 +524,6 @@ def get_pick_probability(pick):
             probability = info["probability"]["value"]
             break
     return probability
-
-
-def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
-    """
-    Calculate the values of erh (horizontal uncertainty) and erz (vertical uncertainty) in km.
-
-    Parameters:
-        origin (Origin): The origin.
-
-    Returns:
-        Tuple[float, float, str]: The values of erh and erz, and the method used to compute them.
-    """
-    for comment in origin.comments:
-        text = comment.text
-        match = re.search(
-            r"CovXX (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?) .* "
-            r"YY (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?) .* "
-            r"ZZ (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)",
-            text,
-        )
-        if text and match:
-            CovXX = float(match.group(1))
-            CovYY = float(match.group(2))
-            ZZ = float(match.group(3))
-
-            erz = np.sqrt(ZZ)
-            erh = np.sqrt(CovXX + CovYY)
-            method = "covariance"
-            return erh, erz, method
-
-    # compute erh and erz from origin errors
-    earth_radius = 6371.0
-    deg_latitude_km = earth_radius * math.pi / 180.0
-    deg_longitude_km = (
-        earth_radius * math.pi / 180.0 * math.cos(math.radians(origin.latitude))
-    )
-
-    try:
-        erh = np.sqrt(
-            (origin.latitude_errors.uncertainty * deg_latitude_km) ** 2
-            + (origin.longitude_errors.uncertainty * deg_longitude_km) ** 2
-        )
-        method = "origin_errors"
-    except (AttributeError, TypeError):
-        try:
-            erh = origin.origin_uncertainty.horizontal_uncertainty / 1000.0
-            method = "origin_uncertainty"
-        except (AttributeError, TypeError):
-            erh = None
-            method = "unknown"
-
-    try:
-        erz = origin.depth_errors.uncertainty / 1000.0
-        method = "origin_errors"
-    except (AttributeError, TypeError):
-        try:
-            erz = origin.origin_uncertainty.depth_uncertainty / 1000.0
-            method = "origin_uncertainty"
-        except (AttributeError, TypeError):
-            erz = None
-            method = "unknown"
-
-    return erh, erz, method
 
 
 def _recompute_event_from_quakeml(compressed_quakeml: bytes) -> dict:

@@ -20,7 +20,12 @@ def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
     """
     for comment in origin.comments:
         text = comment.text
-        match = re.search(r"CovXX (\d+\.\d+) .* YY (\d+\.\d+) .* ZZ (\d+\.\d+)", text)
+        match = re.search(
+            r"CovXX (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?) .* "
+            r"YY (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?) .* "
+            r"ZZ (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)",
+            text,
+        )
         if text and match:
             CovXX = float(match.group(1))
             CovYY = float(match.group(2))

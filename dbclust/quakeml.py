@@ -5,6 +5,7 @@ import logging
 import os
 import warnings
 from datetime import datetime
+from datetime import timezone
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -35,8 +36,11 @@ def safe_creation_time(origin):
 
 
 def datetime_to_base64_timestamp(dt, precision="microsecond"):
-    # Convert the datetime object to a timestamp in seconds
-    timestamp = dt.timestamp()  # Returns the seconds with decimals
+    # dt is a naive datetime whose fields are already in UTC (from
+    # UTCDateTime.datetime); .timestamp() on a naive datetime interprets it
+    # as local time, so force UTC explicitly to avoid machine-timezone-
+    # dependent event IDs.
+    timestamp = dt.replace(tzinfo=timezone.utc).timestamp()
     if precision == "microsecond":
         fractional_part = int(dt.microsecond)
     elif precision == "millisecond":

@@ -263,6 +263,8 @@ def create_app(db_path: str, debug=False):
             if limit:
                 sql += " LIMIT ?"
                 params.append(limit)
+            elif offset:
+                sql += " LIMIT -1"  # SQLite requires LIMIT before OFFSET; -1 = unlimited
             if offset:
                 sql += " OFFSET ?"
                 params.append(offset)
