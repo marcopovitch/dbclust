@@ -125,6 +125,14 @@ nll:
   # produce scatter file
   enable_scatter: False
 
+  # NLL discards any location with fewer phases than this. Defaults to 4.
+  # Older configs relied on this being auto-derived as
+  # cluster.min_station_count + cluster.min_station_with_P_and_S (often > 4) —
+  # that auto-derivation is no longer active, so set this explicitly if you
+  # need the stricter behavior. The post-localization
+  # cluster.min_station_with_P_and_S check still applies independently.
+  # min_phase: 4
+
 # enable a nll relocation (ie. double pass) with pick filtering
 # based on pick's time residual threshold
 relocation:

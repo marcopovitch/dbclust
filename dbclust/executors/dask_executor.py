@@ -184,6 +184,10 @@ class DaskExecutor(ExecutorBase):
             retries=1,
         )
 
+    def _inject_future(self, pending, new_future: Any) -> None:
+        """Inject a refill future into the live as_completed iterator."""
+        self._as_completed.add(new_future)
+
     def wait_for_results(self, futures: List[Any]) -> Generator:
         from dask.distributed import as_completed
 

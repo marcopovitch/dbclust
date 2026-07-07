@@ -13,7 +13,7 @@ import shutil
 import tempfile
 import time
 from dataclasses import asdict
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -82,6 +82,38 @@ class MyTemporaryDirectory:
             shutil.rmtree(self.tmp_dir)
         elif self.tmp_dir:
             logger.info(f"Warning undeleted directory: {self.tmp_dir}")
+
+
+def apply_station_filters(
+    df: pd.DataFrame,
+    blacklist: Optional[List[str]],
+    frequency_threshold: Optional[float],
+    window_duration_minutes: float,
+    rename: Optional[Any],
+) -> pd.DataFrame:
+    """Apply the station-level filters (blacklist, frequency, rename) to a picks DataFrame.
+
+    Shared between the forward window (df_subset) and the backward-overlap
+    window (df_backward_overlap) so both see the same station configuration.
+    """
+    if blacklist:
+        for b in blacklist:
+            df = df[~df["station_id"].str.contains(b, regex=True)]
+
+    if frequency_threshold:
+        total_duration_in_minutes = window_duration_minutes
+        if total_duration_in_minutes == 0:
+            total_duration_in_minutes = 1.0  # Avoid division by zero
+        grouped = df.groupby("station_id")
+        station_counts = grouped.size()
+        frequencies = station_counts / total_duration_in_minutes
+        station_ids_to_keep = frequencies[frequencies < frequency_threshold].index
+        df = df[df["station_id"].isin(station_ids_to_keep)]
+
+    if rename is not None:
+        df = rename_waveform_id(df, rename)
+
+    return df
 
 
 def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
@@ -237,6 +269,7 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         keep_manual_picks=cfg.relocation.keep_manual_picks,
         nll_min_phase=nll_min_phase,
         min_station_score=cfg.cluster.min_station_score,
+        min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
         min_ps_ratio_wilson_z=getattr(cfg.cluster, "min_ps_ratio_wilson_z", None),
         quakeml_settings=asdict(cfg.quakeml),
@@ -575,6 +608,18 @@ def dbclust(
                     ~df_subset["station_id"].str.contains(b, regex=True)
                 ]
 
+        # remove picks from backward-overlap window that are not part of df_subset's
+        # station filtering (blacklist/frequency/rename), so both windows are
+        # subject to the same station configuration.
+        if df_backward_overlap is not None and not df_backward_overlap.empty:
+            df_backward_overlap = apply_station_filters(
+                df_backward_overlap,
+                cfg.station.blacklist,
+                cfg.station.frequency_threshold,
+                (end - begin).total_seconds() / 60,
+                cfg.station.rename,
+            )
+
         # starting pick preprocessing to get rid of too close picks
         logger.info(
             f"[{job_index}] Starting pick preprocessing with {len(df_subset)} phases."
@@ -602,22 +647,14 @@ def dbclust(
             picks_to_remove = []
         logger.info(f"After unload_picks_list() len(df_subset) = {len(df_subset)}")
 
-        # remove picks based on station frequency threshold
-        if cfg.station.frequency_threshold:
-            total_duration_in_minutes = (end - begin).total_seconds() / 60
-            if total_duration_in_minutes == 0:
-                total_duration_in_minutes = 1.0  # Avoid division by zero
-            grouped = df_subset.groupby("station_id")
-            station_counts = grouped.size()
-            frequencies = station_counts / total_duration_in_minutes
-            station_ids_to_keep = frequencies[
-                frequencies < cfg.station.frequency_threshold
-            ].index
-            df_subset = df_subset[df_subset["station_id"].isin(station_ids_to_keep)]
-
-        # Rename station_id.channel by user request
-        if cfg.station.rename is not None:
-            df_subset = rename_waveform_id(df_subset, cfg.station.rename)
+        # remove picks based on station frequency threshold, then rename stations
+        df_subset = apply_station_filters(
+            df_subset,
+            blacklist=None,  # already applied above, before unload_picks_list
+            frequency_threshold=cfg.station.frequency_threshold,
+            window_duration_minutes=(end - begin).total_seconds() / 60,
+            rename=cfg.station.rename,
+        )
 
         # Import forward picks and get coordinates
         forward_phases = import_phases(

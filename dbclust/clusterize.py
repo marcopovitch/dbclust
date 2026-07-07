@@ -1086,34 +1086,48 @@ class Clusterize(object):
 
     @staticmethod
     def _absorb_noise_s_picks(
-        clusters: list, noise: list
+        clusters: list, noise: list,
+        phases: list, pseudo_tt: np.ndarray, max_search_dist: float,
     ) -> tuple[list, list]:
         """Absorb noise S picks whose same-station P partner is in a cluster.
 
         HDBSCAN may classify an S pick as noise while keeping its P in a cluster,
         degrading ps_ratio and station_score.  This mirrors the Leiden union-find
-        P-S enforcement and restores coherent P-S pairs.
+        P-S enforcement and restores coherent P-S pairs, subject to the same
+        guards as _merge_ps_split_clusters():
+          - t_S > t_P  (causal ordering)
+          - pseudo_tt[i_p, i_s] <= max_search_dist  (physically compatible)
 
         Returns updated (clusters, noise).
         """
+        phase_to_idx = {id(p): i for i, p in enumerate(phases)}
         recovered = 0
         remaining_noise = []
         for s_pick in noise:
             if not s_pick.is_s():
                 remaining_noise.append(s_pick)
                 continue
+            i_s = phase_to_idx.get(id(s_pick))
             absorbed = False
             for cluster in clusters:
                 for p_pick in cluster:
-                    if (
+                    if not (
                         p_pick.is_p()
                         and p_pick.network == s_pick.network
                         and p_pick.station == s_pick.station
                     ):
-                        cluster.append(s_pick)
-                        recovered += 1
-                        absorbed = True
-                        break
+                        continue
+                    if s_pick.time <= p_pick.time:
+                        continue
+                    i_p = phase_to_idx.get(id(p_pick))
+                    if i_s is None or i_p is None:
+                        continue
+                    if pseudo_tt[i_p, i_s] > max_search_dist:
+                        continue
+                    cluster.append(s_pick)
+                    recovered += 1
+                    absorbed = True
+                    break
                 if absorbed:
                     break
             if not absorbed:
@@ -1295,7 +1309,9 @@ class Clusterize(object):
         clusters, clusters_stability = Clusterize._merge_ps_split_clusters(
             clusters, clusters_stability, phases, pseudo_tt, max_search_dist
         )
-        clusters, noise = Clusterize._absorb_noise_s_picks(clusters, noise)
+        clusters, noise = Clusterize._absorb_noise_s_picks(
+            clusters, noise, phases, pseudo_tt, max_search_dist
+        )
 
         return clusters, clusters_stability, noise
 

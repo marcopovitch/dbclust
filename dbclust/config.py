@@ -607,6 +607,13 @@ class NonLinLocConfig:
     verbose: bool
     enable_scatter: bool
     default_template_file: Optional[str] = None
+    # NLL discards any location with fewer phases than this. Defaults to a flat
+    # 4 regardless of cluster.min_station_count / min_station_with_P_and_S — on
+    # the pre-refactor pipeline this was auto-derived as
+    # min_station_count + min_station_with_P_and_S (often >4). Set this
+    # explicitly in your config if you rely on that stricter behavior; the
+    # post-localization min_station_with_P_and_S check (NllLoc) still applies
+    # independently of this NLL-level cutoff.
     min_phase: Optional[int] = 4
 
     def __post_init__(self) -> None:

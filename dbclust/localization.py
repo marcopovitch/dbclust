@@ -164,6 +164,30 @@ def sort_by_cluster_file(filename: str) -> float:
         return float("inf")
 
 
+def _station_phase_sets(event: Event, arrivals) -> dict:
+    """Tally station -> {'P','S'} phases actually used (time_weight != 0) among arrivals.
+
+    Shared by get_origin_station_score() and _compute_ps_ratio() so both
+    metrics are derived from the same set of "used" arrivals.
+    """
+    station_phases = defaultdict(set)
+    for arrival in arrivals:
+        if arrival.time_weight is None or arrival.time_weight == 0:
+            continue
+        pick = next(
+            (p for p in event.picks if p.resource_id == arrival.pick_id), None
+        )
+        if pick is None or pick.waveform_id is None:
+            continue
+        station_code = f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
+        phase = arrival.phase.lower() if arrival.phase else ""
+        if phase.startswith("p"):
+            station_phases[station_code].add("P")
+        elif phase.startswith("s"):
+            station_phases[station_code].add("S")
+    return station_phases
+
+
 class NllLoc(object):
     def __init__(
         self,
@@ -199,6 +223,7 @@ class NllLoc(object):
         enable_cleanup_pick_zone: bool = True,  # clean up pick outside of zone
         enable_relabel_pick_zone: bool = False,  # relabel pick within zone
         keep_not_existing_event: bool = False,  # keep "not existing" event, or not
+        min_station_with_P_and_S: int = 0,  # minimum number of stations with both P and S among arrivals used by NLL (0 = disabled)
         min_ps_ratio: Optional[float] = None,  # Minimum S/P pick ratio (None = disabled)
         min_ps_ratio_wilson_z: Optional[float] = None,  # Wilson z for adaptive threshold (None = fixed)
         min_dist_relabel_deg: float = 0.0,  # minimum distance (degrees) to epicenter to allow relabeling
@@ -223,6 +248,7 @@ class NllLoc(object):
         self.loc_method = loc_method
         self.tmpdir = tmpdir
         self.min_station_score = min_station_score
+        self.min_station_with_P_and_S = min_station_with_P_and_S
         self.double_pass = double_pass
         self.force_uncertainty = force_uncertainty
         self.P_uncertainty = P_uncertainty
@@ -292,7 +318,7 @@ class NllLoc(object):
         """
         phase_types = {}
         for arrival in origin.arrivals:
-            if hasattr(arrival, "time_weight") and isclose(
+            if arrival.time_weight is not None and isclose(
                 arrival.time_weight, 0, abs_tol=time_weight_tolerance
             ):
                 continue
@@ -313,24 +339,7 @@ class NllLoc(object):
         if not arrivals:
             return 0.0
 
-        station_phases = defaultdict(set)
-
-        for arrival in arrivals:
-            if arrival.time_weight is None or arrival.time_weight == 0:
-                continue
-            pick_id = arrival.pick_id
-            pick = next((p for p in event.picks if p.resource_id == pick_id), None)
-            if pick is None or pick.waveform_id is None:
-                continue
-            net = pick.waveform_id.network_code
-            sta = pick.waveform_id.station_code
-            station_code = f"{net}.{sta}"
-
-            phase = arrival.phase.lower()
-            if phase.startswith("p"):
-                station_phases[station_code].add("P")
-            elif phase.startswith("s"):
-                station_phases[station_code].add("S")
+        station_phases = _station_phase_sets(event, arrivals)
 
         score = 0.0
         for phases in station_phases.values():
@@ -431,7 +440,9 @@ class NllLoc(object):
                     pick.time_errors.uncertainty = self.S_uncertainty
 
             # Remove picks associated with deactivated arrivals unless explicitly allowed.
-            if not self.use_deactivated_arrivals and isclose(
+            # arrival.time_weight can be None for arrivals from external/agency
+            # QuakeML that never went through NLL (isclose() would raise on None).
+            if not self.use_deactivated_arrivals and arrival.time_weight is not None and isclose(
                 arrival.time_weight, 0, abs_tol=time_weight_tolerance
             ):
                 continue
@@ -823,7 +834,7 @@ class NllLoc(object):
         zero_weight_arrivals = sum(
             1
             for a in o.arrivals
-            if hasattr(a, "time_weight")
+            if a.time_weight is not None
             and isclose(a.time_weight, 0, abs_tol=time_weight_tolerance)
         )
         if zero_weight_arrivals > 0:
@@ -856,7 +867,7 @@ class NllLoc(object):
         # set time_weight to 0 for arrival if time_weight < time_weight_tolerance
         # to avoid any issue with seiscomp
         for arrival in o.arrivals:
-            if hasattr(arrival, "time_weight") and isclose(
+            if arrival.time_weight is not None and isclose(
                 arrival.time_weight, 0, abs_tol=time_weight_tolerance
             ):
                 arrival.time_weight = 0
@@ -1199,23 +1210,7 @@ class NllLoc(object):
     def _compute_ps_ratio(self, event, origin) -> tuple:
         """Compute PS ratio (stations with both P and S / total stations).
         Returns (stations_with_both, total_stations, ps_ratio)."""
-        station_phases = defaultdict(set)
-        for arrival in origin.arrivals:
-            if arrival.time_weight is None or arrival.time_weight == 0:
-                continue
-            pick = next(
-                (p for p in event.picks if p.resource_id == arrival.pick_id), None
-            )
-            if pick is None or pick.waveform_id is None:
-                continue
-            station_code = (
-                f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
-            )
-            phase = arrival.phase.lower() if arrival.phase else ""
-            if phase.startswith("p"):
-                station_phases[station_code].add("P")
-            elif phase.startswith("s"):
-                station_phases[station_code].add("S")
+        station_phases = _station_phase_sets(event, origin.arrivals)
 
         total_stations = len(station_phases)
         stations_with_both = sum(
@@ -1323,6 +1318,20 @@ class NllLoc(object):
 
 
             accepted_with_warning = False
+            if self.min_station_with_P_and_S and ps_with_both < self.min_station_with_P_and_S:
+                if event_ids_in_picks:
+                    logger.warning(
+                        f"Accepted despite too few P+S stations | {summary} | "
+                        f"reason: known event_id support"
+                    )
+                    accepted_with_warning = True
+                else:
+                    logger.info(
+                        f"Rejected | {summary} | reason: stations with P and S "
+                        f"({ps_with_both}) < {self.min_station_with_P_and_S}"
+                    )
+                    continue
+
             if not self._ps_ratio_ok(ps_with_both, ps_total):
                 if event_ids_in_picks:
                     logger.warning(
@@ -1951,7 +1960,9 @@ class NllLoc(object):
                 continue
 
             # remove pick with time_weight set to 0
-            if isclose(arrival.time_weight, 0, abs_tol=time_weight_tolerance):
+            if arrival.time_weight is not None and isclose(
+                arrival.time_weight, 0, abs_tol=time_weight_tolerance
+            ):
                 logger.debug(
                     f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
                     f"with time_weight set to 0"
@@ -2237,7 +2248,7 @@ class NllLoc(object):
         station_list = []
         for arrival in origin.arrivals:
             # if arrival.time_weight and arrival.time_residual:
-            if hasattr(arrival, "time_weight") and not isclose(
+            if arrival.time_weight is not None and not isclose(
                 arrival.time_weight, 0, abs_tol=time_weight_tolerance
             ):
                 pick = get_pick_from_arrival(event, arrival)
@@ -2263,7 +2274,7 @@ class NllLoc(object):
         nb_phase_used = 0
         for arrival in origin.arrivals:
             # if arrival.time_weight and arrival.time_residual:
-            if hasattr(arrival, "time_weight") and not isclose(
+            if arrival.time_weight is not None and not isclose(
                 arrival.time_weight, 0, abs_tol=time_weight_tolerance
             ):
                 pick = get_pick_from_arrival(event, arrival)
@@ -2584,7 +2595,7 @@ def show_bulletin(
             logger.debug(f"arrival: {arrival}")
             continue
 
-        if hasattr(arrival, "time_weight") and isclose(
+        if arrival.time_weight is not None and isclose(
             arrival.time_weight, 0, abs_tol=time_weight_tolerance
         ):
             used = False
