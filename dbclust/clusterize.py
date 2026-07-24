@@ -327,13 +327,15 @@ def merge_cluster_with_common_phases(
                         seen[key].event_id is None and p.event_id is not None
                     ):
                         seen[key] = p
+                # Capture pre-merge size before mutating c1 in place, otherwise
+                # c1_size would already include c2's contribution.
+                c1_size = len(c1)
                 c1[:] = list(seen.values())  # Update in place
                 if (
                     len(clusters1.clusters_stability) > i
                     and len(clusters2.clusters_stability) > j
                 ):
                     # Use size-weighted average for consistency with cluster_merge_based_on_eventid()
-                    c1_size = len(c1)
                     c2_size = len(c2)
                     total_size = c1_size + c2_size
                     clusters1.clusters_stability[i] = (
@@ -511,8 +513,8 @@ class Clusterize(object):
             # vectorized haversine: ~20-100x faster than per-pair gps2dist_azimuth
             pseudo_tt = self.numpy_compute_tt_matrix_vectorized(
                 phases, average_velocity,
-                vp=6.0 if self.clustering_method != "leiden" else None,
-                vs=3.5 if self.clustering_method != "leiden" else None,
+                vp=self.apparent_vp if self.clustering_method != "leiden" else None,
+                vs=self.apparent_vs if self.clustering_method != "leiden" else None,
             )
             # Optional UMAP dimensionality reduction: embed the TT distance matrix
             # into a low-dimensional Euclidean space before HDBSCAN. This separates
@@ -682,10 +684,11 @@ class Clusterize(object):
                 for p in cluster
                 if _is_candidate(p) and _tt_to_cluster(p) <= self.max_search_dist
             ]
-            for p in to_move:
-                cluster.remove(p)
-                self.clusters[cluster_idx].append(p)
-                n_from_clusters += 1
+            if to_move:
+                moved_ids = {id(p) for p in to_move}
+                cluster[:] = [p for p in cluster if id(p) not in moved_ids]
+                self.clusters[cluster_idx].extend(to_move)
+                n_from_clusters += len(to_move)
 
         logger.info(
             f"[deferred] Enriched cluster #{cluster_idx}:"
@@ -708,18 +711,20 @@ class Clusterize(object):
                 if ci == cluster_idx or ci in self._deferred_cluster_indices:
                     continue
                 to_move = [p for p in cluster if p.event_id in known_event_ids]
-                for p in to_move:
-                    cluster.remove(p)
-                    self.clusters[cluster_idx].append(p)
-                    n_from_event_id += 1
+                if to_move:
+                    moved_ids = {id(p) for p in to_move}
+                    cluster[:] = [p for p in cluster if id(p) not in moved_ids]
+                    self.clusters[cluster_idx].extend(to_move)
+                    n_from_event_id += len(to_move)
             # Pull from noise: catalog picks landing in noise also belong to
             # the same physical event and would otherwise re-appear as a
             # duplicate in the next window.
             to_move = [p for p in self.noise if p.event_id in known_event_ids]
-            for p in to_move:
-                self.noise.remove(p)
-                self.clusters[cluster_idx].append(p)
-                n_from_event_id += 1
+            if to_move:
+                moved_ids = {id(p) for p in to_move}
+                self.noise = [p for p in self.noise if id(p) not in moved_ids]
+                self.clusters[cluster_idx].extend(to_move)
+                n_from_event_id += len(to_move)
             if n_from_event_id:
                 logger.info(
                     f"[deferred] Pulled {n_from_event_id} picks by event_id"
@@ -755,10 +760,28 @@ class Clusterize(object):
                 vp=self.apparent_vp if self.clustering_method != "leiden" else None,
                 vs=self.apparent_vs if self.clustering_method != "leiden" else None,
             )
+            if self.tt_clip_seconds > 0:
+                pseudo_tt = np.clip(pseudo_tt, 0.0, self.tt_clip_seconds)
+                logger.info(f"TT matrix clipped to {self.tt_clip_seconds}s.")
+
+            max_search_dist = self.max_search_dist
+            if self.use_umap:
+                pseudo_tt, max_search_dist = self.build_umap_embedding(
+                    all_phases,
+                    pseudo_tt,
+                    min_cluster_size=self.min_cluster_size,
+                    umap_clip_seconds=self.umap_clip_seconds,
+                    aot_tt_blend_alpha=self.umap_aot_tt_blend_alpha,
+                    vp=self.apparent_vp,
+                    vs=self.apparent_vs,
+                )
+                self.max_search_dist = max_search_dist  # persist post-UMAP value
+
             self.clusters, stab, self.noise = self.get_clusters(
-                all_phases, pseudo_tt, self.max_search_dist,
+                all_phases, pseudo_tt, max_search_dist,
                 self.min_cluster_size, average_velocity=self.average_velocity,
-                metric="precomputed",
+                metric="euclidean" if self.use_umap else "precomputed",
+                cluster_selection_method=self.cluster_selection_method,
                 clustering_method=self.clustering_method,
                 allow_single_cluster=self.allow_single_cluster,
                 leiden_resolution=self.leiden_resolution,
@@ -1074,8 +1097,11 @@ class Clusterize(object):
             for ci in members:
                 merged.extend(clusters[ci])
             new_clusters.append(merged)
+            # Size-weighted average for consistency with cluster_merge_based_on_eventid()
+            total = sum(len(clusters[ci]) for ci in members)
             new_stability.append(
-                sum(clusters_stability[ci] for ci in members) / len(members)
+                sum(clusters_stability[ci] * len(clusters[ci]) for ci in members) / total
+                if total > 0 else 1.0
             )
 
         logger.info(
@@ -1304,6 +1330,7 @@ class Clusterize(object):
                     phases, pseudo_tt, max_search_dist, min_cluster_size,
                     mega_cluster_leiden_resolution, leiden_edge_weight_scale,
                     leiden_ps_boost_factor, leiden_min_edge_weight,
+                    vp=leiden_vp, vs=leiden_vs,
                 )
 
         clusters, clusters_stability = Clusterize._merge_ps_split_clusters(
