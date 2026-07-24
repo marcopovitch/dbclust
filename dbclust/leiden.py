@@ -267,7 +267,7 @@ def _compute_stabilities(
         in_comm = np.isin(rows, members) & np.isin(cols, members)
         max_possible = n_m * (n_m - 1) // 2
         w_internal = float(np.sum(weights_no_boost[in_comm]))
-        stabilities.append(w_internal / max_possible)
+        stabilities.append(w_internal / max_possible if max_possible > 0 else 1.0)
     return stabilities
 
 
@@ -460,6 +460,7 @@ def recluster_mega_with_leiden(
     min_cluster_size: int,
     leiden_resolution: float, leiden_edge_weight_scale,
     leiden_ps_boost_factor: float, leiden_min_edge_weight: float,
+    vp: float = 6.0, vs: float = 3.5,
 ) -> tuple[list, list, list]:
     """Replace a mega-cluster with Leiden sub-communities.
 
@@ -481,6 +482,7 @@ def recluster_mega_with_leiden(
         edge_weight_scale=leiden_edge_weight_scale,
         ps_boost_factor=leiden_ps_boost_factor,
         min_edge_weight=leiden_min_edge_weight,
+        vp=vp, vs=vs,
     )
 
     logger.info(
