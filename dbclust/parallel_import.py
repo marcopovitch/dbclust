@@ -21,6 +21,7 @@ from tqdm import tqdm  # Used only in parallel_import(), not in merge_databases(
 
 from dbclust.inject_spatialite import (
     create_schema,
+    ensure_required_columns_exist,
     import_catalog_to_sqlite,
     add_agency_names,
     create_indexes_sql,
@@ -435,6 +436,9 @@ def merge_databases(temp_db_paths, final_db_path, enable_quakeml=False, overlap_
     
     # Create final database schema (spatial index created after data merge)
     final_conn = create_schema(final_db_path, create_spatial_index=False)
+    # Migrate schema in case final_db_path already existed with an older
+    # events/origins schema (CREATE TABLE IF NOT EXISTS above is a no-op then).
+    ensure_required_columns_exist(final_conn)
     final_cursor = final_conn.cursor()
     
     # Tables to merge (in dependency order)
