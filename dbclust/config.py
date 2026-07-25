@@ -142,11 +142,11 @@ class PickConfig:
                 except Exception as e:
                     raise ValueError(f"{f} is not parquet formated: {e}")
 
-            # add all parquet files in the directory and subdirectories for duckdb
+            # expand directories to glob patterns for duckdb; keep individual
+            # files as-is instead of silently dropping them
             self.filenames = [
-                os.path.join(f, "**", "*.parquet")
+                os.path.join(f, "**", "*.parquet") if os.path.isdir(f) else f
                 for f in self.filenames
-                if os.path.isdir(f)
             ]
         else:
             # CSV columns (9) are:
@@ -347,6 +347,10 @@ class StationConfig:
             raise ValueError("fetch_method None requires at least one fallback CSV file !")
 
         if self.fetch_method == "inventory":
+            if not self.inventory_files:
+                raise ValueError(
+                    "fetch_method 'inventory' requires at least one file in inventory_files !"
+                )
             self.inventory = Inventory()
             for f in self.inventory_files:
                 logger.info(f"Reading inventory file {f}")

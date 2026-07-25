@@ -122,15 +122,14 @@ def import_shapefile_to_db(conn: sqlite3.Connection, shapefile_path: str, table_
 
     # Insert the data
     for idx, row in gdf.iterrows():
-        geom_wkb = row.geometry.wkb_hex
+        geom_wkb = row.geometry.wkb
         name = f"Zone {idx}" if "name" not in row else row["name"]
         conn.execute(
             f"""
             INSERT INTO {table_name} (id, name, geometry)
-            VALUES (?, ?, ST_GeomFromWKB(X'%s', 4326))
-        """
-            % geom_wkb,
-            (idx, name),
+            VALUES (?, ?, ST_GeomFromWKB(?, 4326))
+        """,
+            (idx, name, geom_wkb),
         )
 
     conn.commit()

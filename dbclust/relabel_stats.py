@@ -8,7 +8,6 @@ from math import isclose
 from pathlib import Path
 
 import pandas as pd
-from icecream import ic
 from obspy import Catalog
 from obspy import read_events
 
@@ -60,9 +59,11 @@ def export_phase_relabeling(cat: Catalog = None) -> pd.DataFrame:
 
     for event in cat:
         origin = event.preferred_origin()
+        if origin is None:
+            continue
 
         for arrival in origin.arrivals:
-            if hasattr(arrival, "time_weight") and isclose(
+            if getattr(arrival, "time_weight", None) is not None and isclose(
                 arrival.time_weight, 0, abs_tol=time_weight_tolerance
             ):
                 used = False
@@ -158,7 +159,7 @@ if __name__ == "__main__":
     # Get event recursively from the directory
     for event in find_qml_files(args.directory):
         cat = read_events(event)
-        ic(cat.events[0].resource_id.id)
+        print(f"Processing event: {cat.events[0].resource_id.id}")
         tmp = export_phase_relabeling(cat)
         df = pd.concat([df, tmp], ignore_index=True)
 

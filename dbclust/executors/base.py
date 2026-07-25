@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import random
+import tempfile
 import time
 from pathlib import Path
 from abc import ABC, abstractmethod
@@ -65,6 +66,8 @@ class ExecutorBase(ABC):
         )
         self.run_start_time = None
         self.on_initialized: Optional[Callable] = None
+        self._completed_cache: Optional[Set[int]] = None
+        self._completed_fingerprint_written = False
 
     @property
     @abstractmethod
@@ -246,35 +249,126 @@ class ExecutorBase(ABC):
         the completed indices. If the fingerprint doesn't match the current config
         (i.e. start/end/partition_duration changed), the checkpoint is invalidated
         and an empty set is returned so all tasks are re-processed.
+
+        Populates ``self._completed_cache`` and ``self._completed_fingerprint_written``
+        so that subsequent ``_mark_completed`` calls can append to disk without
+        re-reading/re-writing the whole file each time.
         """
+        current_fp = self._config_fingerprint()
+        self._completed_cache = set()
+        self._completed_fingerprint_written = False
+
         if not os.path.exists(self._completed_path):
             return set()
+
         try:
             with open(self._completed_path) as f:
-                data = json.load(f)
-            # Old format was a plain list — treat as invalid to force re-run.
-            if isinstance(data, list):
+                first_line = f.readline()
+                if not first_line:
+                    return set()
+
+                # JSON-lines format: first line is {"fingerprint": "..."},
+                # each following line is {"done": <job_index>}.
+                try:
+                    header = json.loads(first_line)
+                except json.JSONDecodeError:
+                    header = None
+
+                if isinstance(header, dict) and "fingerprint" in header and "done" not in header:
+                    if header.get("fingerprint") != current_fp:
+                        logger.info(
+                            "Temporal parameters changed since the last run, "
+                            "checkpoint invalidated — all tasks will be reprocessed."
+                        )
+                        return set()
+                    done: Set[int] = set()
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            done.add(entry["done"])
+                        except (json.JSONDecodeError, KeyError):
+                            continue
+                    self._completed_cache = done
+                    self._completed_fingerprint_written = True
+                    return set(done)
+
+                # Legacy single-object format: {"fingerprint": "...", "done": [...]}
+                if isinstance(header, dict) and "done" in header:
+                    if header.get("fingerprint") != current_fp:
+                        logger.info(
+                            "Temporal parameters changed since the last run, "
+                            "checkpoint invalidated — all tasks will be reprocessed."
+                        )
+                        return set()
+                    done = set(header.get("done", []))
+                    self._completed_cache = done
+                    # Migrate to the new JSON-lines format immediately: truncate
+                    # and rewrite, so the legacy single-object line is not left
+                    # mixed with future appended lines.
+                    self._rewrite_completed_as_jsonl(done, current_fp)
+                    self._completed_fingerprint_written = True
+                    return set(done)
+
+                # Old format was a plain list — treat as invalid to force re-run.
                 logger.info(
-                    "Obsolete checkpoint format (list), ignored — all tasks will be reprocessed."
+                    "Obsolete checkpoint format, ignored — all tasks will be reprocessed."
                 )
                 return set()
-            # New format: {"fingerprint": "...", "done": [...]}
-            if data.get("fingerprint") != self._config_fingerprint():
-                logger.info(
-                    "Temporal parameters changed since the last run, "
-                    "checkpoint invalidated — all tasks will be reprocessed."
-                )
-                return set()
-            return set(data.get("done", []))
         except Exception:
+            self._completed_cache = set()
+            self._completed_fingerprint_written = False
             return set()
 
+    def _rewrite_completed_as_jsonl(self, done: Set[int], fingerprint: str) -> None:
+        """Atomically rewrite the checkpoint file in JSON-lines format.
+
+        Used once when migrating from the legacy single-JSON-object checkpoint
+        format. Writes to a temp file and renames it into place so a crash
+        mid-write cannot corrupt the existing checkpoint.
+        """
+        directory = os.path.dirname(self._completed_path) or "."
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".completed_", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(json.dumps({"fingerprint": fingerprint}) + "\n")
+                for idx in sorted(done):
+                    f.write(json.dumps({"done": idx}) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._completed_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+
     def _mark_completed(self, job_index: int) -> None:
-        """Append a task index to the checkpoint file."""
-        done = self._load_completed()
-        done.add(job_index)
-        with open(self._completed_path, "w") as f:
-            json.dump({"fingerprint": self._config_fingerprint(), "done": list(done)}, f)
+        """Durably record a completed task index, appending to the checkpoint file.
+
+        Uses an in-memory cache to avoid re-reading the whole file on every call
+        (unlike the old read-modify-write scheme), while still persisting each
+        completion to disk immediately (one JSON object per line) so no progress
+        is lost if the process crashes before the run finishes.
+        """
+        if self._completed_cache is None:
+            self._load_completed()
+
+        if job_index in self._completed_cache:
+            return
+
+        os.makedirs(os.path.dirname(self._completed_path) or ".", exist_ok=True)
+        with open(self._completed_path, "a") as f:
+            if not self._completed_fingerprint_written:
+                f.write(json.dumps({"fingerprint": self._config_fingerprint()}) + "\n")
+                self._completed_fingerprint_written = True
+            f.write(json.dumps({"done": job_index}) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+        self._completed_cache.add(job_index)
 
     def _init_csv(self) -> None:
         """Initialize the CSV file for progress tracking."""

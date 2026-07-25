@@ -83,7 +83,7 @@ def compute_cpq(azimuths: List[float]) -> Union[float, None]:
 def compute_gt5_score_obspy(origin: Origin) -> Union[bool, dict]:
     """Determine if an event meets the GT5 criteria."""
 
-    arrivals = [a for a in origin.arrivals if a.time_weight > 0]
+    arrivals = [a for a in origin.arrivals if a.time_weight and a.time_weight > 0]
     azimuths = []
     distances = []
 
@@ -279,7 +279,9 @@ def compute_gt5_score(conn: sqlite3.Connection) -> None:
     cursor.execute("SELECT id, event_id FROM origins WHERE preferred = 1")
     origins = cursor.fetchall()
 
-    for origin_id, event_id in origins:
+    commit_every = 500
+
+    for i, (origin_id, event_id) in enumerate(origins, start=1):
         # Get arrivals for this origin
         cursor.execute(
             """
@@ -361,6 +363,10 @@ def compute_gt5_score(conn: sqlite3.Connection) -> None:
                 origin_id,
             ),
         )
+
+        if i % commit_every == 0:
+            conn.commit()
+            logger.info(f"GT5 metrics: committed progress after {i}/{len(origins)} origins")
 
     conn.commit()
     logger.info("GT5 metrics computation completed")

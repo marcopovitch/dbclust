@@ -180,6 +180,7 @@ def process_file(
                 output_dir = os.path.dirname(output_path)
                 if output_dir:
                     os.makedirs(output_dir, exist_ok=True)
+                basename = os.path.splitext(os.path.basename(output_path))[0]
             else:
                 # Extract the basename from the input file (without path and extension)
                 input_basename = os.path.basename(f)
