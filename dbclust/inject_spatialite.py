@@ -3490,6 +3490,38 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
             )
         """)
 
+        # Check and add columns to picks
+        _ensure_column(cursor, "picks", "location_code", "TEXT")
+        _ensure_column(cursor, "picks", "channel_code", "TEXT")
+        _ensure_column(cursor, "picks", "source_event_id", "TEXT")
+        _ensure_column(cursor, "picks", "method_id", "TEXT")
+
+        # Check and add columns to origins
+        _ensure_column(cursor, "origins", "ps_station_count", "INTEGER")
+
+        # magnitude_id is part of the composite primary key of
+        # station_magnitude_contributions, so ALTER TABLE ADD COLUMN cannot add
+        # it correctly. Recreate the table if it is still empty (older schemas
+        # only ever populated it once magnitude support was added).
+        if "magnitude_id" not in _get_table_columns(cursor, "station_magnitude_contributions"):
+            cursor.execute("SELECT COUNT(*) FROM station_magnitude_contributions")
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("DROP TABLE station_magnitude_contributions")
+                cursor.execute("""
+                    CREATE TABLE station_magnitude_contributions (
+                        id TEXT NOT NULL,
+                        magnitude_id TEXT NOT NULL,
+                        residual DOUBLE,
+                        weight DOUBLE,
+                        PRIMARY KEY (id, magnitude_id)
+                    )
+                """)
+            else:
+                logger.warning(
+                    "station_magnitude_contributions is missing 'magnitude_id' "
+                    "but already has rows; skipping automatic migration."
+                )
+
         conn.commit()
         logger.info("All required columns verified/added successfully.")
 
