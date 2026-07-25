@@ -206,7 +206,10 @@ def _patch_obspy_event_types():
 
         for event_type in NON_STANDARD_EVENT_TYPES:
             if event_type not in EventType.keys():
-                # Access internal OrderedDict to add new types
+                # Access internal, name-mangled OrderedDict to add new types.
+                # Fragile: relies on ObsPy's Enum internals (_Enum__enums),
+                # which could change without notice in a future ObsPy release.
+                # Failure degrades silently via the except clause below.
                 EventType._Enum__enums[event_type.lower()] = event_type
     except Exception as e:
         logger.debug(f"Could not patch ObsPy EventType enum: {e}")
@@ -396,6 +399,7 @@ def create_safe_connection(db_path: str, uri=False, logger=None):
 
 def _get_table_columns(cursor: sqlite3.Cursor, table: str) -> list:
     """Return the list of column names for a given table."""
+    table = validate_sql_identifier(table)
     cursor.execute(f"PRAGMA table_info({table});")
     return [row[1] for row in cursor.fetchall()]
 
@@ -404,6 +408,8 @@ def _ensure_column(
     cursor: sqlite3.Cursor, table: str, column: str, col_type: str
 ) -> None:
     """Add *column* to *table* if it does not already exist."""
+    table = validate_sql_identifier(table)
+    column = validate_sql_identifier(column)
     if column not in _get_table_columns(cursor, table):
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type};")
 

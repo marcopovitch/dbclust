@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 import numpy as np
 from geopy.distance import geodesic
 from obspy.core.event import Event
+from scipy.special import erf
 from scipy.special import expit
 
 from dbclust.localization_error import get_erh_erz
@@ -62,7 +63,7 @@ def chauvenet_filter(data) -> np.ndarray:
     z_scores = np.abs(data - mean) / std_dev
 
     # Calculate the two-tailed probability for each Z-score
-    probs = 1 - (np.erf(z_scores / np.sqrt(2)))
+    probs = 1 - (erf(z_scores / np.sqrt(2)))
 
     # Apply Chauvenet's criterion
     filtered_data = data[probs >= threshold_prob]
@@ -632,13 +633,14 @@ def classify_Michele_mod2(
         "dloch": dloch,
         "dz": np.abs(dz),
     }
+    # Keys in params2b are already bounded in [0,1] by construction (sigmoid)
+    # and are used raw in the qf sum below, without dividing by normvals2mad.
     params2b = ["nbpha_sigmoid"]
 
     normvals2mad = {
         "rms": 1.0,
         "erh": 10.5,
         "erz": 9.5,
-        "used_phase_count": 17.0,
         "min_dist": 0.8,
         "med_dist": 2.4,
         "azgap": 360.0,

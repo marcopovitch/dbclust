@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_arrival_with_distance_gap_greater_than(
-    event: Event, dist_max_km: float, apply_to_evaluation_mode: list = ["automatic", None]
+    event: Event, dist_max_km: float, apply_to_evaluation_mode: Optional[list] = None
 ) -> List:
     """Get arrival with distance greater than dist_max
 
@@ -19,17 +19,24 @@ def get_arrival_with_distance_gap_greater_than(
         event (Event): event to work on
         dist_max_km (float): max distance in km allowed
         apply_to_evaluation_mode (list, optional): list of evaluation mode to apply the selection.
+            Defaults to ["automatic", None].
 
     Returns:
         Union[float, None]: arrivals with distance greater than dist_max_km
     """
+    if apply_to_evaluation_mode is None:
+        apply_to_evaluation_mode = ["automatic", None]
+
     origin = event.preferred_origin()
 
     if not origin:
         return []
 
     # sort arrival by distance
-    sorted_arrivals = sorted(origin.arrivals, key=lambda x: x.distance)
+    sorted_arrivals = sorted(
+        [a for a in origin.arrivals if a.distance is not None],
+        key=lambda x: x.distance,
+    )
 
     # compute distance (in degrees) between consecutive arrivals
     dist_list = [
@@ -68,7 +75,7 @@ def get_arrival_with_distance_gap_greater_than(
 def get_station_count_before_distance_gap(
     event: Event,
     dist_max_km: float,
-    apply_to_evaluation_mode: list = ["automatic", None],
+    apply_to_evaluation_mode: Optional[list] = None,
 ) -> Optional[int]:
     """Return number of unique stations before the first distance gap > dist_max_km.
 
@@ -89,6 +96,9 @@ def get_station_count_before_distance_gap(
         evaluation_mode is not in apply_to_evaluation_mode.
         int: number of unique stations before the gap if a gap is found.
     """
+    if apply_to_evaluation_mode is None:
+        apply_to_evaluation_mode = ["automatic", None]
+
     if dist_max_km is None:
         return None
 
@@ -182,7 +192,6 @@ def compute_azimuthal_gap(azimuths: List[float]) -> Union[float, None]:
 
     # exclude None values
     azimuths = [az for az in azimuths if az is not None]
-    logger
     if len(azimuths) < 2:
         return None
 

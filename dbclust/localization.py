@@ -56,7 +56,7 @@ from dbclust.gap import get_arrival_with_distance_gap_greater_than
 from dbclust.gap import get_closest_station_dist_km
 from dbclust.gap import get_station_count_before_distance_gap
 from dbclust.gt5 import compute_gallacher_gt5_score_obspy
-from dbclust.localization_quality import classify_event, classify_event_michele_mod2    
+from dbclust.localization_quality import classify_event, classify_event_michele_mod2
 from dbclust.plot import plot_arrival_time
 from dbclust.quakeml import deduplicate_picks
 from dbclust.relabel import get_best_polygon_for_point
@@ -97,32 +97,39 @@ def safe_subprocess_run(args, *, env=None, cwd=None, text=True):
         (os.POSIX_SPAWN_DUP2, fd_out, 2),  # stderr
     ]
 
-    # Temporarily change working directory if requested
-    old_cwd = None
-    if cwd:
-        old_cwd = os.getcwd()
-        os.chdir(cwd)
-
     try:
-        pid = os.posix_spawnp(
-            args[0],
-            args,
-            env,
-            file_actions=file_actions,
-        )
+        # Temporarily change working directory if requested
+        old_cwd = None
+        if cwd:
+            old_cwd = os.getcwd()
+            os.chdir(cwd)
+
+        try:
+            pid = os.posix_spawnp(
+                args[0],
+                args,
+                env,
+                file_actions=file_actions,
+            )
+        finally:
+            if cwd and old_cwd:
+                os.chdir(old_cwd)
+            os.close(fd_out)
+
+        # Wait for process to finish (retry if interrupted by a signal)
+        while True:
+            try:
+                _, status = os.waitpid(pid, 0)
+                break
+            except InterruptedError:
+                continue
+        returncode = os.waitstatus_to_exitcode(status)
+
+        # Read output
+        with open(tmpfile, "r", errors="replace") as f:
+            output = f.read()
     finally:
-        if cwd and old_cwd:
-            os.chdir(old_cwd)
-        os.close(fd_out)
-
-    # Wait for process to finish
-    _, status = os.waitpid(pid, 0)
-    returncode = os.waitstatus_to_exitcode(status)
-
-    # Read output
-    with open(tmpfile, "r", errors="replace") as f:
-        output = f.read()
-    os.unlink(tmpfile)
+        os.unlink(tmpfile)
 
     # Result object similar to subprocess
     class Result:

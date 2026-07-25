@@ -192,8 +192,8 @@ def create_app(db_path: str, debug=False):
 
         #conn = get_db_connection()
         conn = create_safe_connection(f"file:{db_path}?mode=ro", uri=True)
-        load_spatialite(conn)
         try:
+            load_spatialite(conn)
             where = ["1=1"]
             params = []
             # Time constraints
@@ -404,13 +404,21 @@ def main():
     # Create and start the application
     app = create_app(db_path=str(db_path), debug=args.debug)
 
+    if args.debug:
+        logging.warning(
+            "--debug requests uvicorn auto-reload, but the app is built from "
+            "CLI args via a factory (create_app), which reload's import-string "
+            "mechanism cannot re-invoke. Auto-reload is disabled; restart the "
+            "server manually to pick up code changes."
+        )
+
     # Uvicorn server configuration
     uvicorn.run(
         app,
         host=args.host,
         port=args.port,
         log_level="debug" if args.debug else "info",
-        reload=args.debug,
+        reload=False,
     )
 
 

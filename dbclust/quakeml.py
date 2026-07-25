@@ -553,6 +553,7 @@ def feed_distance_from_preloc_to_pref_origin(cat: Catalog) -> Catalog:
         for origin in event.origins:
             if (
                 origin.resource_id != pref_origin.resource_id
+                and origin.method_id is not None
                 and "PyOcto" in origin.method_id.id
             ):
                 distance, _, _ = gps2dist_azimuth(
