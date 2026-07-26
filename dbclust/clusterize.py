@@ -165,6 +165,13 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
     for event in cat:
         o = event.preferred_origin()
         event_ids = []
+        if o is None:
+            logger.warning(
+                f"feed_picks_event_ids: event {event.resource_id.id if event.resource_id else '?'} "
+                "has no preferred_origin(), skipping event_id lookup."
+            )
+            event.comments.append(Comment(text='{"event_ids": %s}' % json.dumps(event_ids)))
+            continue
         for a in o.arrivals:
             if a.time_weight is None or a.time_residual is None:
                 continue
@@ -1392,8 +1399,22 @@ class Clusterize(object):
                     self.clusters.pop(i)
                     stabs.pop(i)
 
-                new_cluster = list(chain(*clusters_to_merge))
-                # Stability = size-weighted average of merged clusters
+                # Deduplicate by physical pick identity (network, station, phase, time),
+                # preferring picks with an event_id over those without. This mirrors
+                # merge_cluster_with_common_phases(): two clusters merged here because
+                # they share an event_id may *also* share physical picks (e.g. HDBSCAN
+                # fragments of the same event), which would otherwise be duplicated in
+                # the merged cluster and sent twice to NLL.
+                seen: dict = {}
+                for p in chain(*clusters_to_merge):
+                    key = (p.network, p.station, p.phase[0].upper(), p.time.datetime)
+                    if key not in seen or (
+                        seen[key].event_id is None and p.event_id is not None
+                    ):
+                        seen[key] = p
+                new_cluster = list(seen.values())
+                # Stability = size-weighted average of merged clusters (weights use
+                # pre-dedup sizes, consistent with merge_cluster_with_common_phases()).
                 total = sum(len(c) for c in clusters_to_merge)
                 new_stab = (
                     sum(s * len(c) for s, c in zip(stabs_to_merge, clusters_to_merge))
@@ -1485,6 +1506,22 @@ class Clusterize(object):
         )
         return station_phase_sets, stations_with_both, station_score
 
+    def _stability_at(self, cluster_idx: int) -> float:
+        """Bounds-safe accessor for self.clusters_stability[cluster_idx].
+
+        clusters_stability can become momentarily shorter than self.clusters if
+        some code path mutates one without the other (already guarded against in
+        cluster_merge_based_on_eventid()/merge(), but this is a last line of
+        defense to avoid an IndexError crashing NLL export over a stale value).
+        """
+        if cluster_idx < len(self.clusters_stability):
+            return float(self.clusters_stability[cluster_idx])
+        logger.warning(
+            f"clusters_stability desync: no stability for cluster {cluster_idx} "
+            f"(len={len(self.clusters_stability)}) — defaulting to 1.0"
+        )
+        return 1.0
+
     def _check_pre_nll_filter(
         self, label, criterion_failed, cluster_idx, event_id_counts,
         override_stability=0.0, override_score=0.0, station_score=None,
@@ -1497,7 +1534,7 @@ class Clusterize(object):
         if not criterion_failed:
             return True, False
 
-        cluster_stability = float(self.clusters_stability[cluster_idx])
+        cluster_stability = self._stability_at(cluster_idx)
         ids_str = f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else ""
 
         if self.force_keep_catalog_events and event_id_counts:
@@ -1558,7 +1595,7 @@ class Clusterize(object):
             logger.info(f"--- cluster {i} ---")
             logger.info(
                 f"Generating nllobs for cluster {i} ({len(stations_list)} stations / {len(cluster)} picks, "
-                f"stability={self.clusters_stability[i]:.3f})"
+                f"stability={self._stability_at(i):.3f})"
                 + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
             )
 
@@ -1613,7 +1650,7 @@ class Clusterize(object):
             logger.info(
                 f"Cluster {i} → sent to NLL "
                 f"(score={station_score:.1f}, ps={stations_with_both}/{n_stations}, "
-                f"stability={self.clusters_stability[i]:.3f}){ids_str}"
+                f"stability={self._stability_at(i):.3f}){ids_str}"
             )
 
             for p in cluster:
@@ -1630,7 +1667,7 @@ class Clusterize(object):
             cat.append(event)
             os.makedirs(OBS_PATH, exist_ok=True)
             obs_file = os.path.join(OBS_PATH, f"cluster-{i}.obs")
-            cluster_stab = float(self.clusters_stability[i])
+            cluster_stab = self._stability_at(i)
             logger.debug(
                 f"Cluster {i}, writing {obs_file}, stability:{cluster_stab}, n_stations:{len(stations_list)})"
             )
@@ -1746,6 +1783,16 @@ class Clusterize(object):
         )
         # self.show_clusters()
 
+        # Consume clusters2: its cluster/stability/noise lists are now owned by
+        # self (appended above, same underlying list objects). Clearing them here
+        # prevents a caller from accidentally re-submitting clusters2's content a
+        # second time if it forgets to discard/replace clusters2 after merging.
+        clusters2.clusters = []
+        clusters2.n_clusters = 0
+        clusters2.noise = []
+        clusters2.n_noise = 0
+        clusters2.clusters_stability = np.ones(0, dtype=float)
+
     def show_clusters(self):
         print(f"Clusters: number of clusters = {self.n_clusters}")
         for i, cluster in enumerate(self.clusters):
@@ -1754,7 +1801,7 @@ class Clusterize(object):
             print(
                 f"\tcluster {i}: stability=%.2f, %d picks / %d stations, eventids: %s"
                 % (
-                    self.clusters_stability[i],
+                    self._stability_at(i),
                     len(self.clusters[i]),
                     len(stations_list),
                     evtids,
