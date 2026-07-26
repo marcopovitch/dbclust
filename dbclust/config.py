@@ -3,6 +3,7 @@ import argparse
 import logging
 import math
 import os
+import shutil
 import sys
 import warnings
 from dataclasses import dataclass
@@ -765,6 +766,22 @@ class CatalogConfig:
                 self.sqlite_db_path, self.sqlite_db_filename
             )
 
+        if self.temp_db_dir is not None:
+            if not os.path.exists(self.temp_db_dir) or not os.path.isdir(
+                self.temp_db_dir
+            ):
+                try:
+                    os.makedirs(self.temp_db_dir)
+                except OSError as e:
+                    raise OSError(
+                        f"Can't create directory {self.temp_db_dir}: {e}"
+                    ) from e
+
+            if not os.access(self.temp_db_dir, os.W_OK):
+                raise PermissionError(
+                    f"Can't write in {self.temp_db_dir} directory."
+                )
+
 
 @dataclass
 class Zone:
@@ -1234,6 +1251,19 @@ class DBClustConfig:
                 self.time, self.pick
             )
             assert len(self.parallel.time_partitions)
+
+            # Copy the config file alongside this run's state files so a past
+            # run's exact parameters can always be traced back later.
+            run_dir = os.path.dirname(
+                self.parallel.task_profiles_path or self.catalog.qml_path
+            )
+            try:
+                os.makedirs(run_dir, exist_ok=True)
+                shutil.copy2(
+                    self.filename, os.path.join(run_dir, "dbclust-config.yml")
+                )
+            except OSError as e:
+                logger.warning(f"Could not copy config file to {run_dir}: {e}")
 
             # Apply geographic filtering on stations if bbox is defined
             if self.pick.bbox:
