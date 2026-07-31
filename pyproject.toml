@@ -75,6 +75,7 @@ dbclust-parsl = "dbclust.runner_parsl:main"
 injectdb = "dbclust.inject_spatialite:main"
 relocate = "dbclust.reprocess_event:main"
 csv2parquet = "Utils.csv2parquet:main"
+csv2parquet-sync = "Utils.csv2parquet_sync:main"
 add-event-types = "Utils.add_event_type_columns:main"
 nll-locate = "dbclust.locate:main"
 
