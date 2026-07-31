@@ -44,7 +44,7 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int) -> Dict:
     from dbclust.core import dbclust
 
     # Configure logging to file
-    log_dir = cfg.parallel._temp_dir if cfg.parallel._temp_dir else "runinfo"
+    log_dir = cfg.parallel.worker_log_dir if cfg.parallel.worker_log_dir else "runinfo"
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"dbclust_task_{job_index}.log")
 
@@ -151,9 +151,11 @@ class ParslThreadExecutor(ExecutorBase):
             max_threads=max_threads,
         )
 
+        # run_dir holds Parsl's own state (no IPC sockets for ThreadPoolExecutor,
+        # but kept consistent with parsl_hte.py's use of parsl_run_dir).
         config = Config(
             executors=[executor],
-            run_dir=self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo",
+            run_dir=self.cfg.parallel.parsl_run_dir or "runinfo",
             retries=3,
         )
 

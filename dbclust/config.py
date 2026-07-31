@@ -1109,7 +1109,19 @@ class ParallelConfig:
     partition_duration: str = "1D"
     nb_partitions: Optional[int] = None
     time_partitions: Optional[List] = None
-    _temp_dir: Optional[str] = "/tmp/ray"
+    # Per-task application log directory (dbclust_task_*.log). Can be long/nested
+    # (e.g. under a per-run directory) since it's a plain directory, not used for
+    # IPC sockets. Used by every executor (ray, dask, parsl_thread, parsl_hte).
+    worker_log_dir: Optional[str] = "/tmp/dbclust_logs"
+    # Ray's own _temp_dir (ray.init(_temp_dir=...)), used for AF_UNIX sockets
+    # (~107-byte path length limit). Keep short and stable — do NOT point this
+    # under a long/nested per-run path, or Ray init can fail on socket errors.
+    ray_temp_dir: Optional[str] = "/tmp/ray"
+    # Directory used by Parsl's HighThroughputExecutor/ThreadPoolExecutor for
+    # its own run_dir (state files + ZMQ IPC Unix-domain sockets for HTE,
+    # ~107-byte path length limit). Same constraint as ray_temp_dir above —
+    # keep short and stable.
+    parsl_run_dir: Optional[str] = "/tmp/parsl"
     executor: Optional[str] = "parsl_thread"  # parsl_thread, parsl_hte, ray, dask
     dashboard: bool = False
     oversubscription_factor: int = 5  # workers spend ~80% waiting for NLLoc subprocess

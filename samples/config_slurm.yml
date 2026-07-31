@@ -1,0 +1,177 @@
+# DBClust configuration for SLURM HPC cluster execution
+# This example extends config.yml with SLURM-specific settings
+
+file:
+  # root Data path
+  data_path: &DATA /datadir
+
+  #temporary directory
+  tmp_path: "/tmp/nll"
+  obs_path: "/tmp/obs"
+
+pick:
+  # path to phaseNet/EQT picks file
+  path: !join &PICK_PATH [*DATA, "/", "picks"]
+  filename: !join [ *PICK_PATH, "/", "picks.csv", ]
+  type: phasenetsds
+
+  # force pick uncertainty
+  P_uncertainty: 0.1
+  S_uncertainty: 0.2
+
+  # import only phase with proba >= phase_proba_threshold
+  P_proba_threshold: 0.3
+  S_proba_threshold: 0.3
+
+  # use only picks in this time window
+  start: 2022-01-01T00:00:00.000Z
+  end:   2023-01-01T00:00:00.000Z
+
+station:
+  fetch_method: fdsnws
+  inventory_files:
+  fdsnws_url: http://10.0.1.36:8080
+  blacklist:
+
+time:
+  time_window: 15 # minutes
+  overlap_window: 30 # seconds
+
+cluster:
+  min_cluster_size: &MIN_CLUSTER_SISE 3
+  min_station_count: &CLUSTER_MIN_STATION_COUNT 5
+  min_station_with_P_and_S: 2
+  average_velocity: 5
+  max_search_dist: 8.0
+  min_picks_common: 3
+  eventid_shared_min_picks_per_cluster: null
+  eventid_shared_min_distinct_ids: 2
+  # Sub-windowed HDBSCAN: set to ~300s when backward injection creates mega-clusters.
+  # clustering_time_window: null
+  use_umap: false
+
+nll:
+  nlloc_bin: /opt/nll/bin/NLLoc
+  scat2latlon_bin: /opt/nll/bin/scat2latlon
+  time_path: /nll/times
+  template_path: /nll/nll_template
+  default_velocity_profile: haslach-0.2
+  velocity_profiles:
+    - name: haslach-0.2
+      template: nll_haslach-0.2_template.conf
+  channel_hint: !join [*DATA, "/", "chan.txt"]
+  verbose: False
+  enable_scatter: False
+
+relocation:
+  dist_km_cutoff: null
+  double_pass: True
+  P_time_residual_threshold: 0.50
+  S_time_residual_threshold: 1.00
+
+quakeml:
+  event_prefix: eost
+  smi_base: smi:franceseisme.fr
+  agency_id: RENASS
+  author: DBClust
+  evaluation_mode: automatic
+  method_id: NonLinLoc
+
+catalog:
+  path: !join &QML_PATH [*DATA, "/", "qml"]
+  qml_base_filename: catalog
+  event_flush_count: 100
+
+pyocto:
+  default_model_name: haslach
+  path: !join [*DATA, "/", "vmodels"]
+  models:
+    - name: haslach
+      associator:
+        time_before: 0
+        max_pick_overlap: 0
+        min_pick_fraction: 0.35
+        zlim: [0, 40]
+        min_node_size: 5
+        min_node_size_location: 1.5
+        pick_match_tolerance: 5
+        n_picks: 5
+        n_p_picks: 3
+        n_s_picks: 2
+        n_p_and_s_picks: 0
+        # Adaptive min_pick_fraction based on median DL pick probability
+        # adaptive_min_pick_fraction: true
+        # min_pick_fraction_floor: 0.10
+        # dl_method_ids: ["PHASENET"]
+      velocity_model:
+        depth: [0.0, 2.4, 20.1, 30.2]
+        vp: [5.63, 5.97, 6.54, 8.15]
+        vs: [3.41, 3.45, 3.65, 4.4]
+        tolerance: 2.0
+        grid_spacing_km: 1
+        max_horizontal_dist_km: 1500
+        max_vertical_dist_km: 35
+
+zones:
+  zones:
+    - name: world
+      velocity_profile: haslach-0.2
+      polygone: [[-180, 90], [180, 90], [180, -90], [-180, -90]]
+
+# Parallel execution configuration
+parallel:
+  # Number of workers (ignored when SLURM is enabled)
+  n_workers: 32
+  # Duration of each time partition
+  partition_duration: "1D"
+  # Per-task application log directory (dbclust_task_*.log)
+  worker_log_dir: "/tmp/dbclust_logs"
+  # Parsl's own run_dir (state + IPC sockets) — keep short, ~107-byte path limit
+  parsl_run_dir: "/tmp/parsl"
+
+# FDSN web service for fetching existing events
+fdsnws_event:
+  default: renass
+  hosts:
+    renass: http://renass-sc1.u-strasbg.fr:8080
+
+# ============================================
+# SLURM HPC CLUSTER CONFIGURATION
+# ============================================
+slurm:
+  # Enable SLURM execution (set to false for local execution)
+  enabled: true
+
+  # SLURM partition name
+  partition: "grant"
+
+  # SLURM account for billing (-A option)
+  # Set to null if not required
+  account: "my_project"
+
+  # Number of nodes per SLURM job block
+  nodes_per_block: 1
+
+  # Number of CPU cores per node
+  cores_per_node: 32
+
+  # Maximum workers per node (typically = cores_per_node for CPU tasks)
+  max_workers_per_node: 32
+
+  # Maximum walltime (HH:MM:SS format)
+  walltime: "72:00:00"
+
+  # Command to initialize the Python environment on compute nodes
+  # This is executed before any task runs
+  worker_init: "module load python; conda activate dbclust"
+
+  # Additional SBATCH options (optional)
+  # Example: "#SBATCH --mem=128G\n#SBATCH --exclusive"
+  scheduler_options: ""
+
+  # Maximum number of concurrent SLURM job blocks
+  # Higher = more parallelism but more resource usage
+  max_blocks: 10
+
+  # Minimum blocks to keep alive (0 = scale down to zero when idle)
+  min_blocks: 0
