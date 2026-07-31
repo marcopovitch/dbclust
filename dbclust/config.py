@@ -3,7 +3,6 @@ import argparse
 import logging
 import math
 import os
-import shutil
 import sys
 import warnings
 from dataclasses import dataclass
@@ -23,6 +22,7 @@ import fastparquet
 import geopandas as gpd
 import pandas as pd
 import pyproj
+import yaml
 from dacite import from_dict
 from icecream import ic
 from obspy import Inventory
@@ -1213,6 +1213,9 @@ class DBClustConfig:
         self.log_level = logging.INFO
 
         self.filename = filename
+        # Overwritten below (config_type != "reloc") once yaml_data (with CLI
+        # overrides baked in) has been written to a resolved config file.
+        self.resolved_config_path = filename
         logger.info(filename)
         self.config_type = config_type
 
@@ -1286,18 +1289,30 @@ class DBClustConfig:
             )
             assert len(self.parallel.time_partitions)
 
-            # Copy the config file alongside this run's state files so a past
-            # run's exact parameters can always be traced back later.
+            # Write the fully-resolved config (yaml_data, including any CLI
+            # overrides like --pick-start/--pick-end already applied above)
+            # alongside this run's state files, instead of copying the
+            # original file verbatim — otherwise a run driven by CLI overrides
+            # would leave behind a trace that doesn't match what actually ran.
+            # This resolved file is also what Parsl HTE workers load (see
+            # self.resolved_config_path below): they run in separate processes
+            # and reconstruct DBClustConfig from a file path rather than
+            # receiving the in-memory object, so CLI overrides must be baked
+            # into the file they read or they'd silently fall back to the
+            # unmodified pick.start/end (or the full pick data range).
             run_dir = os.path.dirname(
                 self.parallel.task_profiles_path or self.catalog.qml_path
             )
+            self.resolved_config_path = os.path.join(run_dir, "dbclust-config.yml")
             try:
                 os.makedirs(run_dir, exist_ok=True)
-                shutil.copy2(
-                    self.filename, os.path.join(run_dir, "dbclust-config.yml")
-                )
+                with open(self.resolved_config_path, "w") as f:
+                    yaml.safe_dump(self.yaml_data, f)
             except OSError as e:
-                logger.warning(f"Could not copy config file to {run_dir}: {e}")
+                logger.warning(
+                    f"Could not write resolved config to {run_dir}: {e}"
+                )
+                self.resolved_config_path = self.filename
 
             # Apply geographic filtering on stations if bbox is defined
             if self.pick.bbox:

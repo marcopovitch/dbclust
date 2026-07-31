@@ -308,7 +308,15 @@ class ParslHTEExecutor(ExecutorBase):
         """
         start, end = self.cfg.parallel.time_partitions[job_index]
         logger.debug(f"Submitting task {job_index} [{start} -- {end}]")
-        return _run_dbclust_task(self.cfg.filename, self.cfg.log_level, job_index)
+        # Workers reconstruct DBClustConfig from a file path (not the in-memory
+        # object) to avoid serializing large objects over ZMQ — must be the
+        # resolved config (CLI overrides like --pick-start/--pick-end already
+        # baked in), not self.cfg.filename, or workers would recompute their
+        # own time_partitions from the unmodified pick.start/end and end up
+        # processing a different time range than what was actually dispatched.
+        return _run_dbclust_task(
+            self.cfg.resolved_config_path, self.cfg.log_level, job_index
+        )
 
     def wait_for_results(self, futures: List[Any]) -> Generator:
         """Wait for Parsl futures and yield results as they complete.
