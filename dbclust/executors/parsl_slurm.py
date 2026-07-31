@@ -93,7 +93,9 @@ class ParslSlurmExecutor(ParslHTEExecutor):
             poll_period=100,
         )
 
-        run_dir = self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo"
+        # run_dir holds Parsl's own state + ZMQ IPC Unix-domain sockets
+        # (~107-byte path length limit) — use parsl_run_dir, same as parsl_hte.py.
+        run_dir = self.cfg.parallel.parsl_run_dir or "runinfo"
         self._warn_if_stale_rundir(run_dir)
 
         config = Config(

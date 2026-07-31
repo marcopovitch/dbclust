@@ -28,7 +28,7 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int):
 
     from dbclust.core import dbclust
 
-    log_dir = cfg.parallel._temp_dir or "runinfo"
+    log_dir = cfg.parallel.worker_log_dir or "runinfo"
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"dbclust_task_{job_index}.log")
 

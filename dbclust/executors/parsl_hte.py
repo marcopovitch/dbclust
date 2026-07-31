@@ -50,7 +50,7 @@ def _run_dbclust_task(cfg_file: str, log_level: int, job_index: int) -> Dict:
     cfg = DBClustConfig(cfg_file)
     cfg.log_level = log_level
 
-    log_dir = cfg.parallel._temp_dir if cfg.parallel._temp_dir else "runinfo"
+    log_dir = cfg.parallel.worker_log_dir if cfg.parallel.worker_log_dir else "runinfo"
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"dbclust_task_{job_index}.log")
 
@@ -265,8 +265,11 @@ class ParslHTEExecutor(ExecutorBase):
         ]:
             logging.getLogger(logger_name).setLevel(logging.WARNING)
 
-        # Configure HighThroughputExecutor for true multi-process parallelism
-        run_dir = self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo"
+        # Configure HighThroughputExecutor for true multi-process parallelism.
+        # run_dir/worker_logdir_root hold Parsl's own state + ZMQ IPC Unix-domain
+        # sockets (~107-byte path length limit) — use parsl_run_dir, NOT the
+        # (possibly long, per-run) application log dir in worker_log_dir.
+        run_dir = self.cfg.parallel.parsl_run_dir or "runinfo"
         executor = HighThroughputExecutor(
             label="dbclust_hte",
             max_workers_per_node=max_workers,
@@ -279,7 +282,6 @@ class ParslHTEExecutor(ExecutorBase):
             heartbeat_period=30,      # s, heartbeat frequency
         )
 
-        run_dir = self.cfg.parallel._temp_dir if self.cfg.parallel._temp_dir else "runinfo"
         self._warn_if_stale_rundir(run_dir)
 
         config = Config(

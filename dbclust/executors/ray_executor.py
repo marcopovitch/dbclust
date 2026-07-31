@@ -43,7 +43,7 @@ def _run_dbclust_task(cfg, job_index):
     from dbclust.core import dbclust
 
     # Configure file logging for this worker task
-    log_dir = cfg.parallel._temp_dir if cfg.parallel._temp_dir else "runinfo"
+    log_dir = cfg.parallel.worker_log_dir if cfg.parallel.worker_log_dir else "runinfo"
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"dbclust_task_{job_index}.log")
 
@@ -142,12 +142,13 @@ class RayExecutor(ExecutorBase):
             total_cpus = os.cpu_count() or 1
             cpu_source = "auto-detected"
 
-        # Ray uses _temp_dir for AF_UNIX sockets which have a 107-byte path limit.
-        # Use /tmp/ray to keep socket paths short regardless of the configured temp dir.
+        # Ray's _temp_dir is used for AF_UNIX sockets (~107-byte path length
+        # limit) — keep it short via ray_temp_dir, independent of worker_log_dir
+        # which can be long/nested (e.g. under a per-run directory).
         include_dashboard = self.cfg.parallel.dashboard
         self.context = ray.init(
             num_cpus=total_cpus,
-            _temp_dir="/tmp/ray",
+            _temp_dir=self.cfg.parallel.ray_temp_dir or "/tmp/ray",
             dashboard_host="0.0.0.0",
             dashboard_port=8265,
             include_dashboard=include_dashboard,
