@@ -1274,7 +1274,10 @@ class Clusterize(object):
         n_clusters_ = len(set(labels)) - (1 if -1 in labels else 0)
         n_noise_ = list(labels).count(-1)
 
-        log_fn = logger.debug if n_clusters_ <= 1 and n_noise_ == 0 else logger.info
+        # No cluster found is the routine/uninteresting outcome (happens for most
+        # time-windows) -> keep it at debug level regardless of leftover noise picks,
+        # to avoid flooding the log. Only log at info when at least one cluster was found.
+        log_fn = logger.debug if n_clusters_ == 0 else logger.info
         log_fn("Number of clusters: %d" % n_clusters_)
         log_fn("Number of noise points: %d" % n_noise_)
 

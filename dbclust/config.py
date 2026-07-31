@@ -1178,7 +1178,13 @@ class DBClustConfig:
     fdsnws_event: FdsnConfig
     slurm: Optional[SlurmConfig] = None
 
-    def __init__(self, filename, config_type="std") -> None:
+    def __init__(
+        self,
+        filename,
+        config_type="std",
+        pick_start_override: Optional[str] = None,
+        pick_end_override: Optional[str] = None,
+    ) -> None:
         # config_type can be "std" or "reloc"
         # reloc is used for relocation only
         # std is used for standard processing
@@ -1201,6 +1207,22 @@ class DBClustConfig:
         if not os.path.exists(self.filename):
             raise FileNotFoundError(f"File {self.filename} does not exist !")
         self.yaml_data = read_config(self.filename)
+
+        # CLI overrides take precedence over whatever start/end is in the YAML
+        # (or its absence, which normally makes PickConfig derive them from
+        # the min/max phase_time found in the pick data itself). PyYAML parses
+        # start/end from the file straight into datetime objects (implicit ISO
+        # 8601 resolver), so a raw CLI string must go through the same
+        # conversion before landing in yaml_data, or dacite's Union[datetime,
+        # Timestamp, None] match fails.
+        if pick_start_override is not None:
+            self.yaml_data.setdefault("pick", {})["start"] = pd.to_datetime(
+                pick_start_override, utc=True
+            ).to_pydatetime()
+        if pick_end_override is not None:
+            self.yaml_data.setdefault("pick", {})["end"] = pd.to_datetime(
+                pick_end_override, utc=True
+            ).to_pydatetime()
 
         for key, data_class in self.__annotations__.items():
             if self.config_type == "reloc" and key in self.reloc_no_required_keys:

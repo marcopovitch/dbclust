@@ -260,6 +260,20 @@ def main():
         help="Log level (debug, warning, info, error).",
         type=str,
     )
+    parser.add_argument(
+        "--pick-start",
+        default=None,
+        dest="pick_start",
+        help="Override pick.start from the config file (ISO 8601, e.g. 2026-07-30T00:00:00).",
+        type=str,
+    )
+    parser.add_argument(
+        "--pick-end",
+        default=None,
+        dest="pick_end",
+        help="Override pick.end from the config file (ISO 8601, e.g. 2026-07-31T00:00:00).",
+        type=str,
+    )
 
     args = parser.parse_args()
 
@@ -279,7 +293,11 @@ def main():
         logging.getLogger("pyocto").setLevel(logging.ERROR)
 
     # Load configuration
-    cfg = DBClustConfig(args.configfile)
+    cfg = DBClustConfig(
+        args.configfile,
+        pick_start_override=args.pick_start,
+        pick_end_override=args.pick_end,
+    )
     cfg.log_level = numeric_level
     cfg.show()
 
