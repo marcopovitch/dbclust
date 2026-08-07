@@ -274,6 +274,7 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         min_ps_ratio_wilson_z=getattr(cfg.cluster, "min_ps_ratio_wilson_z", None),
         quakeml_settings=asdict(cfg.quakeml),
         keep_scat=cfg.nll.enable_scatter,
+        cleanup_tmp_on_error=cfg.file.automatic_cleanup_tmp,
         #
         zones=cfg.zones,
         force_zone_name="",
