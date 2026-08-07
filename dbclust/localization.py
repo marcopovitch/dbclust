@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import sys
 import tempfile
 import traceback
@@ -242,6 +243,7 @@ class NllLoc(object):
         time_weight_outlier_mad_factor: float = 3.0,  # MAD multiplier for outlier threshold (higher = less aggressive)
         time_weight_outlier_min_picks: int = 5,  # minimum picks needed to compute MAD statistics
         time_weight_outlier_absolute_threshold: Optional[float] = None,  # absolute threshold for time_weight (regardless of MAD)
+        cleanup_tmp_on_error: bool = True,  # remove per-cluster NLL tmp dir on early-return/error paths
     ):
         # define locator
         self.nll_bin = nll_bin
@@ -279,6 +281,7 @@ class NllLoc(object):
         self.enable_cleanup_pick_zone = enable_cleanup_pick_zone
         self.enable_relabel_pick_zone = enable_relabel_pick_zone
         self.keep_not_existing_event = keep_not_existing_event
+        self.cleanup_tmp_on_error = cleanup_tmp_on_error
         self.min_dist_relabel_deg = min_dist_relabel_deg
         self.min_time_weight = min_time_weight
         self.enable_residual_threshold_with_pick_zone = enable_residual_threshold_with_pick_zone
@@ -691,6 +694,16 @@ class NllLoc(object):
         tmp_path = tempfile.mkdtemp(dir=self.tmpdir)
         logger.debug(f"Temporary directory created: {tmp_path}")
 
+        def _abort_localization(cat: Catalog) -> Catalog:
+            # Early-return helper: this per-cluster tmp dir is otherwise never
+            # removed on error paths (only a successful run's scat file, if
+            # kept, is read later by the caller before the parent tmpdir is
+            # cleaned up). Respect cleanup_tmp_on_error so debug runs that
+            # want to inspect failed NLL runs can still opt out.
+            if self.cleanup_tmp_on_error:
+                shutil.rmtree(tmp_path, ignore_errors=True)
+            return cat
+
         conf_file = os.path.join(tmp_path, f"{nll_obs_file_basename}.conf")
 
         # path + root filename
@@ -738,7 +751,7 @@ class NllLoc(object):
             )
             for p in picks if picks else []:
                 logger.error(p)
-            return Catalog()
+            return _abort_localization(Catalog())
 
         # Initialize variables that may be set conditionally in the loop
         scatter_volume = None
@@ -752,7 +765,7 @@ class NllLoc(object):
                 logger.warning(line.replace("WARNING: ", "", 1))
             elif "WARNING: too few observations to locate" in line:
                 logger.warning(line.replace("WARNING: ", "", 1))
-                return Catalog()
+                return _abort_localization(Catalog())
             elif any(k in line for k in ("ABORTED", "IGNORED", "REJECTED")):
                 # check if location was rejected
                 why = (
@@ -761,7 +774,7 @@ class NllLoc(object):
                 logger.warning(f"Localization was ABORTED|IGNORED|REJECTED: {why}")
                 if self.nll_verbose:
                     print(result.stdout)
-                return Catalog()
+                return _abort_localization(Catalog())
             elif any(
                 k in line
                 for k in (
@@ -779,7 +792,7 @@ class NllLoc(object):
                 )
                 if self.nll_verbose:
                     print(result.stdout)
-                return Catalog()
+                return _abort_localization(Catalog())
             elif "ERROR: calc_maximum_likelihood_ot:" in line:
                 # localization failed. It happens when using EDT_OT_WT
                 # raise an exception to try relocation with another method
@@ -791,7 +804,7 @@ class NllLoc(object):
                 logger.error(line)
                 if self.nll_verbose:
                     print(result.stdout)
-                return Catalog()
+                return _abort_localization(Catalog())
             elif "scatter_volume" in line:
                 l = line.split("scatter_volume")
                 if len(l) > 1:
@@ -813,7 +826,7 @@ class NllLoc(object):
         nll_output = os.path.join(tmp_path, "last.hyp")
         cat = self._load_nll_event(nll_output, tmp_path, picks, result.stdout)
         if cat is None:
-            return Catalog()
+            return _abort_localization(Catalog())
 
         ####################
         # handle scat file #
