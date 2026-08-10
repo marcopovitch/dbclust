@@ -547,9 +547,8 @@ def get_station_info_from_fdsnws(
 
     try:
         df = pd.read_csv(url, sep="|", skipinitialspace=True, dtype=str)
-    except Exception:
-        # logger.error("The exception: {}".format(e))
-        # logger.debug(url)
+    except Exception as e:
+        logger.warning(f"Failed to load station map from {url}: {e}", exc_info=True)
         return (None, None, None, None, None)
 
     # Network|Station|Location|Channel|Latitude|Longitude|Elevation|Depth|
