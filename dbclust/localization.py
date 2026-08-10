@@ -1429,7 +1429,7 @@ class NllLoc(object):
         nll_obs_files = sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file)
         n_total = len(nll_obs_files)
         for i, nll_obs_file in enumerate(nll_obs_files):
-            picks_set = picks[i] if picks else None
+            picks_set = picks[i] if picks and i < len(picks) else None
             logger.info(f"--- Event #{i + 1}/{n_total} [{os.path.basename(nll_obs_file)}] ---")
 
             try:
@@ -1477,7 +1477,10 @@ class NllLoc(object):
                     for _e in cat.events:
                         _e.comments.append(Comment(text=json.dumps(_meta)))
                 except Exception:
-                    pass
+                    logger.debug(
+                        f"Failed to inject meta file {meta_file} into event comments",
+                        exc_info=True,
+                    )
 
             cat_results.append(cat)
 
