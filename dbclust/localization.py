@@ -20,6 +20,7 @@ from collections import defaultdict
 from itertools import combinations
 from math import fabs
 from math import isclose
+from math import isinf
 from math import isnan
 from typing import List
 from typing import Optional
@@ -78,15 +79,23 @@ phase_order = ["Pg", "Sg", "Pn", "Sn", "P", "S"]
 time_weight_tolerance = 0.01
 
 
-def safe_subprocess_run(args, *, env=None, cwd=None, text=True):
+def safe_subprocess_run(args, *, env=None, text=True):
     """
     Simplified replacement for subprocess.run(..., stdout=PIPE, stderr=STDOUT, text=True)
     using posix_spawnp (safe for macOS).
+
+    No cwd parameter: os.posix_spawn's file_actions has no thread-safe way to
+    set a child's working directory before Python 3.13 (POSIX_SPAWN_SETCWD),
+    and os.chdir() mutates the whole process, which is unsafe under the
+    ThreadPoolExecutor-based parallelism this function runs under.
     """
     if isinstance(args, str):
         args = shlex.split(args)
 
-    env = env or os.environ.copy()
+    # Merge on top of the current environment: callers pass a handful of
+    # overrides (e.g. OMP_NUM_THREADS) and expect PATH/LD_LIBRARY_PATH/etc.
+    # to still reach the child process.
+    env = {**os.environ, **env} if env else os.environ.copy()
 
     # Temporary file to capture stdout/stderr
     fd, tmpfile = tempfile.mkstemp()
@@ -99,12 +108,6 @@ def safe_subprocess_run(args, *, env=None, cwd=None, text=True):
     ]
 
     try:
-        # Temporarily change working directory if requested
-        old_cwd = None
-        if cwd:
-            old_cwd = os.getcwd()
-            os.chdir(cwd)
-
         try:
             pid = os.posix_spawnp(
                 args[0],
@@ -113,8 +116,6 @@ def safe_subprocess_run(args, *, env=None, cwd=None, text=True):
                 file_actions=file_actions,
             )
         finally:
-            if cwd and old_cwd:
-                os.chdir(old_cwd)
             os.close(fd_out)
 
         # Wait for process to finish (retry if interrupted by a signal)
@@ -837,12 +838,18 @@ class NllLoc(object):
             cmde = f"{self.scat2latlon_bin} {decim_factor} {tmp_path} {tmp_path}/last"
             logger.debug(cmde)
             try:
-                result = safe_subprocess_run(shlex.split(cmde))
+                safe_subprocess_run(shlex.split(cmde))
             except Exception as e:
-                logger.error(e)
+                logger.warning(f"scat2latlon failed to run: {e}")
 
-            self.scat_file = os.path.join(tmp_path, "last.hyp.scat.xyz")
-            logger.debug("nll scat file is %s", self.scat_file)
+            scat_path = os.path.join(tmp_path, "last.hyp.scat.xyz")
+            if os.path.exists(scat_path):
+                self.scat_file = scat_path
+                logger.debug("nll scat file is %s", self.scat_file)
+            else:
+                logger.warning(
+                    f"scat2latlon did not produce expected output: {scat_path}"
+                )
 
         # there is always only one event in the catalog
         # fixme: use resource_id to forge *better* eventid and originid
@@ -892,14 +899,31 @@ class NllLoc(object):
             ):
                 arrival.time_weight = 0
 
-        # check for nan value in uncertainty
-        if "nan" in [
-            str(o.latitude_errors.uncertainty),
-            str(o.longitude_errors.uncertainty),
-            str(o.depth_errors.uncertainty),
-        ]:
-            logger.warning("Found NaN value in uncertainty. Ignoring event !")
-            return Catalog()
+        # check for missing/nan/inf value in uncertainty (can happen when
+        # NLLoc's covariance matrix is degenerate: ObsPy leaves uncertainty
+        # as None on a caught negative covariance, or nan/inf propagates
+        # straight through sqrt()/kilometer2degrees() otherwise). uncertainty
+        # is normally a float (or None), but is coerced via float() first as
+        # a defensive fallback in case it ever comes through as a "nan"/"inf"
+        # string (e.g. from a QuakeML source parsed less strictly than
+        # obspy.read_events).
+        for field, val in (
+            ("latitude", o.latitude_errors.uncertainty),
+            ("longitude", o.longitude_errors.uncertainty),
+            ("depth", o.depth_errors.uncertainty),
+        ):
+            if val is None:
+                invalid = True
+            else:
+                try:
+                    invalid = isnan(float(val)) or isinf(float(val))
+                except (TypeError, ValueError):
+                    invalid = True
+            if invalid:
+                logger.warning(
+                    f"Found invalid {field} uncertainty value ({val!r}). Ignoring event !"
+                )
+                return Catalog()
 
         if not self.quakeml_settings:
             o.creation_info.agency_id = "MyAgencyId"
