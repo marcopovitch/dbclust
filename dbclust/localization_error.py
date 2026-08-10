@@ -1,10 +1,13 @@
 #!/usr/bin/env python
+import logging
 import math
 import re
 from typing import Tuple
 
 import numpy as np
 from obspy.core.event import Origin
+
+logger = logging.getLogger("dbclust.localization_error")
 
 
 def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
@@ -30,6 +33,21 @@ def get_erh_erz(origin: Origin) -> Tuple[float, float, str]:
             CovXX = float(match.group(1))
             CovYY = float(match.group(2))
             ZZ = float(match.group(3))
+
+            # NLLoc can produce negative diagonal covariance values due to a
+            # known precision issue; np.sqrt() of a negative silently
+            # returns nan instead of raising, so log the cause here rather
+            # than letting a bare nan reach the caller untraced.
+            if ZZ < 0:
+                logger.warning(
+                    f"Negative ZZ covariance ({ZZ}) for origin "
+                    f"{origin.resource_id.id}: erz will be nan."
+                )
+            if CovXX + CovYY < 0:
+                logger.warning(
+                    f"Negative CovXX+CovYY ({CovXX + CovYY}) for origin "
+                    f"{origin.resource_id.id}: erh will be nan."
+                )
 
             erz = np.sqrt(ZZ)
             erh = np.sqrt(CovXX + CovYY)
