@@ -89,6 +89,12 @@ def safe_subprocess_run(args, *, env=None, text=True):
     and os.chdir() mutates the whole process, which is unsafe under the
     ThreadPoolExecutor-based parallelism this function runs under.
     """
+    if os.name != "posix":
+        raise OSError(
+            "safe_subprocess_run requires a POSIX platform. "
+            "On Windows, run DBClust inside Docker."
+        )
+
     if isinstance(args, str):
         args = shlex.split(args)
 
@@ -1476,9 +1482,9 @@ class NllLoc(object):
                         _meta = json.load(_mf)
                     for _e in cat.events:
                         _e.comments.append(Comment(text=json.dumps(_meta)))
-                except Exception:
-                    logger.debug(
-                        f"Failed to inject meta file {meta_file} into event comments",
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to inject meta file {meta_file} into event comments: {e}",
                         exc_info=True,
                     )
 
