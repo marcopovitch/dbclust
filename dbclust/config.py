@@ -155,21 +155,17 @@ class PickConfig:
             #   phase_evaluation, phase_method, event_id, agency
             # optional columns:
             #   month,year
-            try:
-                for f in self.filenames:
-                    with open(f, "r", encoding="utf-8") as file:
-                        first_line = file.readline().strip()
-                        nbcol = len(first_line.split(","))
-                        if nbcol != 9 and nbcol != 11:
-                            raise ValueError(
-                                f"{f} is not a csv file or some columns are missing ({nbcol}) !\n"
-                                f"{first_line}"
-                            )
-            except Exception:
-                raise
+            for f in self.filenames:
+                with open(f, "r", encoding="utf-8") as file:
+                    first_line = file.readline().strip()
+                    nbcol = len(first_line.split(","))
+                    if nbcol != 9 and nbcol != 11:
+                        raise ValueError(
+                            f"{f} is not a csv file or some columns are missing ({nbcol}) !\n"
+                            f"{first_line}"
+                        )
 
         # set min, max time from data
-        ic(self.filenames, self.type)
 
         if self.type == "parquet":
             conn = duckdb_init_parquet(self.filenames)
@@ -187,8 +183,6 @@ class PickConfig:
         # check min, max time exists
         if not min or not max:  # pragma: no cover
             raise ValueError(f"Can't find min, max time in {self.filenames}, no data ?")
-
-        ic(min, max)
 
         if not self.start:
             self.start = min
@@ -425,8 +419,6 @@ class StationConfig:
                         "columns contain numeric values only."
                         f" File '{f}' raised: {err}"
                     ) from err
-                except Exception:
-                    raise
 
                 missing_required = required_columns - set(df.columns)
                 if missing_required:
