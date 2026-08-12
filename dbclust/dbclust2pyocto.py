@@ -639,7 +639,21 @@ def cluster_merge_one_pass(
 
         # Merge the clusters
         c1, c2 = clusters[c1_idx], clusters[c2_idx]
-        merged_cluster = list(set(c1 + c2))
+        # Deduplicate by physical pick identity (network, station, phase family,
+        # time), preferring picks with an event_id over those without. Do NOT use
+        # set(c1 + c2): even though Phase.__hash__ intentionally ignores
+        # channel/location (see Phase.__hash__ docstring), set() picks an
+        # arbitrary survivor per hash bucket instead of preferring the pick with
+        # an event_id, and there is no guarantee the dropped pick was truly
+        # redundant across e.g. differing agency provenance.
+        seen: dict = {}
+        for p in chain(c1, c2):
+            key = (p.network, p.station, p.phase[0].upper(), p.time.datetime)
+            if key not in seen or (
+                seen[key].event_id is None and p.event_id is not None
+            ):
+                seen[key] = p
+        merged_cluster = list(seen.values())
         clusters[c1_idx] = merged_cluster
 
         # Update prelocation data
