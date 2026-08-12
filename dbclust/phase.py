@@ -236,6 +236,37 @@ class Phase:
 
         return pick
 
+    # __eq__/__hash__ deliberately treat two picks as the "same physical pick"
+    # when they share (network, station, phase family, time), ignoring
+    # `location`/`channel` and the exact phase label (P vs Pg vs Pn, S vs Sg
+    # vs Sn):
+    #
+    # - location/channel are ignored so cluster-merging code can tell whether
+    #   a *station* contributed to an event regardless of which sensor fired,
+    #   enabling broader merges than a strict channel match (see
+    #   clusterize.merge_cluster_with_common_phases,
+    #   clusterize.Clusterize.cluster_merge_based_on_eventid,
+    #   dbclust2pyocto.cluster_merge_one_pass).
+    # - the exact phase label is reduced to its family (first letter, P or S)
+    #   because different agencies routinely disagree on the specific label
+    #   for the same arrival (e.g. "P" vs "Pg" vs "Pn") without ever emitting
+    #   two different specific labels for the same physical arrival themselves
+    #   — confirmed on production data (2138 exact station+time collisions
+    #   across the P family, >99.6% involving distinct agencies). This mirrors
+    #   the fallback keys already used manually in clusterize.py.
+    #
+    # Time is still compared exactly: near-duplicate picks a few tens/hundreds
+    # of ms apart across agencies are deduplicated upstream by
+    # preprocessing_picks.deduplicate_picks_by_time() (DBSCAN with a
+    # configurable time tolerance), before Phase objects are even created —
+    # this hash is not the place to add time tolerance.
+    #
+    # Pitfall: this hash is safe for *counting/matching* shared picks (Counter
+    # intersections) but NOT for deduplicating a merged pick list via set() —
+    # doing so silently drops a physically distinct pick on another
+    # channel/location. Use an explicit dict keyed on
+    # (network, station, phase_family, time), preferring the pick with an
+    # event_id, instead (see clusterize.py for the established pattern).
     def __eq__(self, obj: object) -> bool:
         return isinstance(obj, Phase) and hash(self) == hash(obj)
 
@@ -245,7 +276,7 @@ class Phase:
                 (
                     self.network,
                     self.station,
-                    self.phase,
+                    self.phase[0].upper(),
                     self.time.datetime,
                 )
             )

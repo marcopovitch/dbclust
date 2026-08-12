@@ -129,9 +129,21 @@ def feed_picks_probabilities(cat: Catalog, clusters: List[List[Phase]]) -> None:
     is done via a (station, time) -> [Phase, ...] index built once up front, instead of
     rescanning every clustered Phase for every pick (previously O(n_picks * n_phases)).
     """
+    # Do NOT dedupe via set(chain(*clusters)): Phase.__hash__/__eq__
+    # intentionally ignore location/channel and reduce the phase label to its
+    # family (see Phase.__hash__ docstring), so two physically distinct picks
+    # (different channel/location, or different exact phase label from
+    # different agencies) sharing (network, station, phase family, time) would
+    # collapse into one, silently dropping a probability annotation on the
+    # other pick. Dedupe explicitly on the same key used for the lookup below
+    # instead.
     phases_by_station_time = defaultdict(list)
-    for p in set(chain(*clusters)):
-        phases_by_station_time[(p.station, p.time.datetime)].append(p)
+    seen: dict = {}
+    for p in chain(*clusters):
+        key = (p.network, p.station, p.phase[0].upper(), p.time.datetime)
+        if key not in seen:
+            seen[key] = p
+            phases_by_station_time[(p.station, p.time.datetime)].append(p)
 
     for event in cat:
         for pick in event.picks:
