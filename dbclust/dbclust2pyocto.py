@@ -707,9 +707,13 @@ def aggregate_pick_to_cluster_with_common_event_id(
             logger.info(f"Cluster has picks from known event(s): {counts_str}")
 
         # count the number of agency in each event_id in event_id_counts
+        # (only for event_ids that actually exceed the threshold and are
+        # therefore candidates for aggregation — otherwise a benign trace of
+        # picks from an unrelated event_id below the threshold would wrongly
+        # trigger a MultipleEventIDsWithSameAgencyError)
         event_id_agency = {}
         for p in picks:
-            if p.event_id in event_id_counts:
+            if p.event_id in event_id_counts and event_id_counts[p.event_id] > pick_count_threshold:
                 if p.event_id not in event_id_agency:
                     event_id_agency[p.event_id] = set()
                 event_id_agency[p.event_id].add(p.agency)
