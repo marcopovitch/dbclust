@@ -523,7 +523,17 @@ def merge_databases(temp_db_paths, final_db_path, enable_quakeml=False, overlap_
         
         # Post-merge operations
         logger.info("Running post-merge operations...")
-        
+
+        # Create indexes right after the data merge, before the dedup steps
+        # below (which query event_id/time/etc. and benefit from them too).
+        # If dedup or reporting raises, the caller (runner.py) logs and
+        # swallows the exception rather than propagating it, so a final DB
+        # with all its data but no indexes would otherwise go unnoticed -
+        # every query against it then falls back to full table scans.
+        logger.info("Creating indexes...")
+        create_indexes_sql(final_cursor)
+        final_conn.commit()
+
         # Add agency names
         logger.info("Adding agency names...")
         add_agency_names(final_conn)
@@ -558,10 +568,6 @@ def merge_databases(temp_db_paths, final_db_path, enable_quakeml=False, overlap_
                 logger.info(f"Deduplication report written to {report_path}")
             except OSError as e:
                 logger.warning(f"Could not write deduplication report: {e}")
-
-        # Create indexes
-        logger.info("Creating indexes...")
-        create_indexes_sql(final_cursor)
 
         # Create spatial index on final merged DB (skipped during schema creation
         # to avoid segfaults in parallel worker subprocesses on macOS ARM)

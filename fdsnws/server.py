@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import io
 import json
 import logging
 import os
@@ -9,12 +10,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
 from fastapi import Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
@@ -47,7 +50,12 @@ def iso_to_sqlite(dtstr):
     return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
-def create_app(db_path: str, debug=False):
+def create_app(
+    db_path: str,
+    debug=False,
+    spectrocnn_url: Optional[str] = None,
+    waveforms_window_s: float = 60.0,
+):
     app = FastAPI(
         debug=debug,
         title="FDSN Web Service (Spatialite)",
@@ -57,6 +65,8 @@ def create_app(db_path: str, debug=False):
 
     # Store the database path in the app's state
     app.state.db_name = os.path.basename(db_path)
+    app.state.spectrocnn_url = spectrocnn_url
+    app.state.waveforms_window_s = waveforms_window_s
 
     app.add_middleware(NormalizeSlashesMiddleware)
 
@@ -150,7 +160,134 @@ def create_app(db_path: str, debug=False):
 
     @app.get("/api/db-info")
     async def get_db_info():
-        return {"db_name": app.state.db_name}
+        return {"db_name": app.state.db_name, "spectrocnn_url": app.state.spectrocnn_url}
+
+    @app.get("/api/picks")
+    async def get_picks(eventid: str = Query(...)):
+        """P/S arrival picks for one event, keyed by NET.STA.
+
+        Used by the Waveforms modal to mark phase arrivals on the seismogram
+        plot. station_name in `picks` is "NET.STA" (e.g. "FR.WALT"), so the
+        client matches on the NET.STA prefix of spectrocnn's NET.STA.LOC.CHAN
+        trace_id. Only arrivals from the event's preferred origin are
+        returned - an event can have several origins (e.g. re-locations),
+        each with its own arrival set, and mixing them produces duplicate/
+        inconsistent picks for the same station.
+        """
+        conn = create_safe_connection(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            cursor = conn.execute(
+                """
+                SELECT p.station_name, a.name AS phase, p.pick_time
+                FROM picks p
+                JOIN arrivals a ON a.pick_id = p.id
+                JOIN origins o ON o.id = a.origin_id
+                WHERE p.event_id = ? AND o.preferred = 1
+                """,
+                (eventid,),
+            )
+            # pick_time is stored as naive UTC (SQLite convention, see
+            # iso_to_sqlite() above); append "Z" so clients parse it as UTC
+            # rather than local time.
+            picks = [
+                {
+                    "station": row[0],
+                    "phase": row[1],
+                    "time": row[2].replace(" ", "T") + "Z",
+                }
+                for row in cursor.fetchall()
+            ]
+            return {"picks": picks}
+        finally:
+            conn.close()
+
+    # (freqmin, freqmax) per allowed filter key; "none" is the passthrough.
+    WAVEFORM_FILTERS = {
+        "none": None,
+        "4-20": (4.0, 20.0),
+        "8-32": (8.0, 32.0),
+    }
+
+    @app.get("/api/waveforms")
+    async def get_waveforms(
+        eventid: str = Query(...),
+        window_s: Optional[float] = Query(None),
+        filter: str = Query("none", pattern="^(none|4-20|8-32)$"),
+    ):
+        """Raw per-trace waveforms for one event, decoded from spectrocnn's
+        miniSEED export rather than its JSON /seismogram endpoint.
+
+        The JSON endpoint is meant for spectrocnn's own CNN/spectrogram
+        pipeline and returns samples that are not reliably aligned with
+        origin_time/picks (observed several-second offsets between the
+        JSON's reported start_time and where the actual signal sits). The
+        miniSEED export doesn't have that problem - its start_time matches
+        origin_time - offset_before_P as expected - so this proxies that
+        instead and decodes it server-side with obspy (already a dbclust
+        dependency).
+
+        window_s caps how much of the (up to 120s) miniSEED is returned,
+        keeping the response light for the waveforms modal's canvas plot.
+        Defaults to the --waveforms-window CLI setting when not given.
+        filter optionally applies a zero-phase Butterworth bandpass (on the
+        full trace, before truncating to window_s, to avoid filter edge
+        transients showing up inside the displayed window).
+        """
+        if window_s is None:
+            window_s = app.state.waveforms_window_s
+
+        if not app.state.spectrocnn_url:
+            raise HTTPException(status_code=503, detail="spectrocnn webservice not configured")
+
+        import obspy
+        import requests
+
+        mseed_url = f"{app.state.spectrocnn_url}/api/v1/events/{quote(eventid, safe='')}/waveforms.mseed"
+        try:
+            resp = await run_in_threadpool(requests.get, mseed_url, timeout=60)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            raise HTTPException(status_code=502, detail=f"Could not fetch waveforms from spectrocnn: {e}")
+
+        try:
+            st = obspy.read(io.BytesIO(resp.content))
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Could not parse miniSEED from spectrocnn: {e}")
+
+        band = WAVEFORM_FILTERS[filter]
+        if band is not None:
+            st.detrend("demean")
+            st.taper(max_percentage=0.05)
+            st.filter("bandpass", freqmin=band[0], freqmax=band[1], corners=4, zerophase=True)
+
+        traces = []
+        for tr in st:
+            n_keep = min(tr.stats.npts, max(1, int(window_s * tr.stats.sampling_rate)))
+            data = tr.data[:n_keep].astype(float)
+            if band is None:
+                # Remove DC offset using the pre-event portion of the trace
+                # (the offset_before_P noise window) so unfiltered waveforms
+                # are centered like the previous JSON endpoint's output.
+                # Filtered traces are already demeaned above.
+                noise_samples = min(n_keep, max(1, int(15 * tr.stats.sampling_rate)))
+                data -= data[:noise_samples].mean()
+            # NET.STA.LOC.BANDINST (band+instrument code, no component
+            # letter) - matches spectrocnn's discriminate trace_id format
+            # (e.g. "FR.CREF.00.EH"), not the full 4-char SEED channel.
+            net, sta, loc, chan = tr.id.split(".")
+            traces.append(
+                {
+                    "trace_id": f"{net}.{sta}.{loc}.{chan[:2]}",
+                    "component": chan[-1],
+                    "data": data.tolist(),
+                    "sampling_rate": tr.stats.sampling_rate,
+                    "start_time": tr.stats.starttime.isoformat() + "Z",
+                    "duration": n_keep / tr.stats.sampling_rate,
+                    "n_samples": n_keep,
+                }
+            )
+
+        return {"traces": traces}
 
     @app.get("/fdsnws/event/1/query")
     def query_events(
@@ -365,6 +502,20 @@ def main():
         "--debug", action="store_true", help="Enable debug mode (more logs)"
     )
 
+    parser.add_argument(
+        "--spectrocnn-url",
+        default="http://127.0.0.1:9000",
+        help="Base URL of the spectrocnn webservice used to display waveforms "
+        "(set to an empty string to disable the Waveforms button)",
+    )
+
+    parser.add_argument(
+        "--waveforms-window",
+        type=float,
+        default=60.0,
+        help="Duration in seconds of the waveform window shown in the Waveforms modal",
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -402,7 +553,12 @@ def main():
     logging.info(f"Starting server on {args.host}:{args.port}...")
 
     # Create and start the application
-    app = create_app(db_path=str(db_path), debug=args.debug)
+    app = create_app(
+        db_path=str(db_path),
+        debug=args.debug,
+        spectrocnn_url=args.spectrocnn_url or None,
+        waveforms_window_s=args.waveforms_window,
+    )
 
     if args.debug:
         logging.warning(
