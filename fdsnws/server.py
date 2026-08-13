@@ -50,6 +50,75 @@ def iso_to_sqlite(dtstr):
     return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
+# (freqmin, freqmax) per allowed /api/waveforms filter key; "none" is the passthrough.
+WAVEFORM_FILTERS = {
+    "none": None,
+    "4-20": (4.0, 20.0),
+    "8-32": (8.0, 32.0),
+}
+
+
+def _decode_and_filter_waveforms(mseed_content: bytes, filter: str, window_s: float) -> list:
+    """Parse a spectrocnn miniSEED payload into the JSON shape /api/waveforms
+    returns: optionally bandpass-filter, truncate to window_s, and build one
+    dict per trace. Pure CPU/numpy work - kept synchronous so the caller can
+    run it via run_in_threadpool instead of blocking the event loop.
+
+    A trace whose id doesn't split into the expected NET.STA.LOC.CHAN is
+    skipped (logged) rather than aborting the whole response - one malformed
+    station shouldn't take down every other station's waveforms.
+    """
+    import obspy
+
+    st = obspy.read(io.BytesIO(mseed_content))
+
+    band = WAVEFORM_FILTERS[filter]
+    if band is not None:
+        st.detrend("demean")
+        st.taper(max_percentage=0.05)
+        st.filter("bandpass", freqmin=band[0], freqmax=band[1], corners=4, zerophase=True)
+
+    traces = []
+    for tr in st:
+        try:
+            # NET.STA.LOC.BANDINST (band+instrument code, no component
+            # letter) - matches spectrocnn's discriminate trace_id format
+            # (e.g. "FR.CREF.00.EH"), not the full 4-char SEED channel.
+            net, sta, loc, chan = tr.id.split(".")
+            if not chan:
+                raise ValueError(f"empty channel code in trace id {tr.id!r}")
+            sampling_rate = tr.stats.sampling_rate
+            if not sampling_rate:
+                raise ValueError(f"zero/invalid sampling_rate for trace {tr.id!r}")
+
+            n_keep = min(tr.stats.npts, max(1, int(window_s * sampling_rate)))
+            data = tr.data[:n_keep].astype(float)
+            if band is None:
+                # Remove DC offset using the pre-event portion of the trace
+                # (the offset_before_P noise window) so unfiltered waveforms
+                # are centered like the previous JSON endpoint's output.
+                # Filtered traces are already demeaned above.
+                noise_samples = min(n_keep, max(1, int(15 * sampling_rate)))
+                data -= data[:noise_samples].mean()
+
+            traces.append(
+                {
+                    "trace_id": f"{net}.{sta}.{loc}.{chan[:2]}",
+                    "component": chan[-1],
+                    "data": data.tolist(),
+                    "sampling_rate": sampling_rate,
+                    "start_time": tr.stats.starttime.isoformat() + "Z",
+                    "duration": n_keep / sampling_rate,
+                    "n_samples": n_keep,
+                }
+            )
+        except Exception as e:
+            logging.warning(f"Skipping malformed trace {tr.id!r} in waveforms response: {e}")
+            continue
+
+    return traces
+
+
 def create_app(
     db_path: str,
     debug=False,
@@ -163,7 +232,7 @@ def create_app(
         return {"db_name": app.state.db_name, "spectrocnn_url": app.state.spectrocnn_url}
 
     @app.get("/api/picks")
-    async def get_picks(eventid: str = Query(...)):
+    def get_picks(eventid: str = Query(...)):
         """P/S arrival picks for one event, keyed by NET.STA.
 
         Used by the Waveforms modal to mark phase arrivals on the seismogram
@@ -173,6 +242,12 @@ def create_app(
         returned - an event can have several origins (e.g. re-locations),
         each with its own arrival set, and mixing them produces duplicate/
         inconsistent picks for the same station.
+
+        Declared as a plain (sync) function rather than async def, like
+        query_events below: create_safe_connection/conn.execute are blocking
+        SQLite calls, and a sync def route lets Starlette run them in its
+        threadpool instead of stalling the single asyncio event loop that
+        every other request (including unrelated ones) shares.
         """
         conn = create_safe_connection(f"file:{db_path}?mode=ro", uri=True)
         try:
@@ -182,7 +257,7 @@ def create_app(
                 FROM picks p
                 JOIN arrivals a ON a.pick_id = p.id
                 JOIN origins o ON o.id = a.origin_id
-                WHERE p.event_id = ? AND o.preferred = 1
+                WHERE p.event_id = ? AND o.preferred = 1 AND p.pick_time IS NOT NULL
                 """,
                 (eventid,),
             )
@@ -201,17 +276,10 @@ def create_app(
         finally:
             conn.close()
 
-    # (freqmin, freqmax) per allowed filter key; "none" is the passthrough.
-    WAVEFORM_FILTERS = {
-        "none": None,
-        "4-20": (4.0, 20.0),
-        "8-32": (8.0, 32.0),
-    }
-
     @app.get("/api/waveforms")
     async def get_waveforms(
         eventid: str = Query(...),
-        window_s: Optional[float] = Query(None),
+        window_s: Optional[float] = Query(None, gt=0, le=120),
         filter: str = Query("none", pattern="^(none|4-20|8-32)$"),
     ):
         """Raw per-trace waveforms for one event, decoded from spectrocnn's
@@ -233,13 +301,11 @@ def create_app(
         full trace, before truncating to window_s, to avoid filter edge
         transients showing up inside the displayed window).
         """
-        if window_s is None:
-            window_s = app.state.waveforms_window_s
+        effective_window_s: float = window_s if window_s is not None else app.state.waveforms_window_s
 
         if not app.state.spectrocnn_url:
             raise HTTPException(status_code=503, detail="spectrocnn webservice not configured")
 
-        import obspy
         import requests
 
         mseed_url = f"{app.state.spectrocnn_url}/api/v1/events/{quote(eventid, safe='')}/waveforms.mseed"
@@ -250,42 +316,17 @@ def create_app(
             raise HTTPException(status_code=502, detail=f"Could not fetch waveforms from spectrocnn: {e}")
 
         try:
-            st = obspy.read(io.BytesIO(resp.content))
+            # obspy.read/detrend/taper/filter and the per-trace slicing below
+            # are CPU-bound (a zero-phase Butterworth bandpass over a
+            # multi-station, up-to-120s miniSEED stream is tens to hundreds
+            # of ms of pure numpy/scipy work) - threadpooled like the fetch
+            # above so it doesn't stall the event loop for concurrent
+            # requests (including unrelated ones like /api/db-info).
+            traces = await run_in_threadpool(
+                _decode_and_filter_waveforms, resp.content, filter, effective_window_s
+            )
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Could not parse miniSEED from spectrocnn: {e}")
-
-        band = WAVEFORM_FILTERS[filter]
-        if band is not None:
-            st.detrend("demean")
-            st.taper(max_percentage=0.05)
-            st.filter("bandpass", freqmin=band[0], freqmax=band[1], corners=4, zerophase=True)
-
-        traces = []
-        for tr in st:
-            n_keep = min(tr.stats.npts, max(1, int(window_s * tr.stats.sampling_rate)))
-            data = tr.data[:n_keep].astype(float)
-            if band is None:
-                # Remove DC offset using the pre-event portion of the trace
-                # (the offset_before_P noise window) so unfiltered waveforms
-                # are centered like the previous JSON endpoint's output.
-                # Filtered traces are already demeaned above.
-                noise_samples = min(n_keep, max(1, int(15 * tr.stats.sampling_rate)))
-                data -= data[:noise_samples].mean()
-            # NET.STA.LOC.BANDINST (band+instrument code, no component
-            # letter) - matches spectrocnn's discriminate trace_id format
-            # (e.g. "FR.CREF.00.EH"), not the full 4-char SEED channel.
-            net, sta, loc, chan = tr.id.split(".")
-            traces.append(
-                {
-                    "trace_id": f"{net}.{sta}.{loc}.{chan[:2]}",
-                    "component": chan[-1],
-                    "data": data.tolist(),
-                    "sampling_rate": tr.stats.sampling_rate,
-                    "start_time": tr.stats.starttime.isoformat() + "Z",
-                    "duration": n_keep / tr.stats.sampling_rate,
-                    "n_samples": n_keep,
-                }
-            )
 
         return {"traces": traces}
 
