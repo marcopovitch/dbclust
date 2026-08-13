@@ -21,6 +21,7 @@ dependencies = [
     "numpy",
     "obspy==1.4.2",
     "pandas",
+    "requests",
     "plotly",
     "plotext",
     "prettytable",
