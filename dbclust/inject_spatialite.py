@@ -1995,6 +1995,14 @@ def create_indexes_sql(cursor: sqlite3.Cursor) -> None:
             "CREATE INDEX IF NOT EXISTS idx_origins_event_id ON origins(event_id);",
             "CREATE INDEX IF NOT EXISTS idx_origins_preferred ON origins(preferred);",
             "CREATE INDEX IF NOT EXISTS idx_origins_event_preferred ON origins(event_id, preferred);",
+            # Composite index for event_coordinates' "preferred=1 AND time
+            # BETWEEN ..." query pattern (fdsnws /query with starttime/
+            # endtime): without it, SQLite picks idx_origins_preferred alone
+            # and scans every preferred origin in the whole catalog before
+            # filtering by time in memory, instead of seeking directly into
+            # the requested time window. Also satisfies ORDER BY time,
+            # avoiding a temp b-tree sort.
+            "CREATE INDEX IF NOT EXISTS idx_origins_preferred_time ON origins(preferred, time);",
             #
             "CREATE INDEX IF NOT EXISTS idx_magnitudes_event_id ON magnitudes(event_id);",
             "CREATE INDEX IF NOT EXISTS idx_magnitudes_preferred ON magnitudes(preferred);",
