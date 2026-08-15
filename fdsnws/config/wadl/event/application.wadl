@@ -23,78 +23,78 @@
 					<param name="maxmagnitude" style="query" type="xsd:float"/>
 					<param name="magnitudetype" style="query" type="xsd:string"/>
 					<param name="eventtype" style="query" type="xsd:string"/>
-					<param name="includeallorigins" style="query" type="xsd:boolean" default="false"/>
-					<param name="includeallmagnitudes" style="query" type="xsd:boolean" default="false"/>
-					<param name="includearrivals" style="query" type="xsd:boolean" default="false"/>
-					<param name="eventid" style="query" repeating="true"/>
-					<param name="limit" style="query" type="xsd:int"/>
-					<param name="offset" style="query" type="xsd:int" default="1">
+					<param name="eventid" style="query" type="xsd:string"/>
+					<param name="limit" style="query" type="xsd:int">
+						<doc title="definition">
+							Minimum value 0. limit=0 returns zero rows.
+						</doc>
+					</param>
+					<param name="offset" style="query" type="xsd:int">
 						<doc title="definition">
 							The FDSNWS specification uses a weird definition of
 							an offset where the first element is not addressed
 							by 'offset=0' but 'offset=1'. So the implementation
-							will decrement the offset value by one when
-							generating the SQL database query.
+							decrements the offset value by one when generating
+							the SQL database query. Minimum value 1.
 						</doc>
 					</param>
 					<param name="orderby" style="query" type="xsd:string" default="time">
 						<option value="time"/>
 						<option value="time-asc"/>
+						<option value="time-desc"/>
 						<option value="magnitude"/>
 						<option value="magnitude-asc"/>
+						<option value="magnitude-desc"/>
 					</param>
-					<param name="contributor" style="query" type="xsd:string"/>
-					<param name="catalog" style="query" type="xsd:string"/>
-					<!-- not implemented -->
-					<!--param name="updateafter" style="query" type="xsd:dateTime"/-->
+					<param name="catalog" style="query" type="xsd:string">
+						<doc title="definition">
+							Only applied by format=text (used as the catalog
+							name in that output), otherwise unused.
+						</doc>
+					</param>
+					<param name="contributor" style="query" type="xsd:string">
+						<doc title="definition">
+							Accepted but currently unused: event_coordinates
+							has no per-agency contributor column to filter on.
+						</doc>
+					</param>
+					<param name="updatedafter" style="query" type="xsd:dateTime">
+						<doc title="definition">
+							Accepted but currently unused: event_coordinates
+							has no updated/creation-time column to filter on.
+						</doc>
+					</param>
 					<param name="format" style="query" type="xsd:string" default="xml">
 						<option value="xml" mediaType="application/xml"/>
+						<option value="quakeml" mediaType="application/xml"/>
 						<option value="text" mediaType="text/plain"/>
-
-						<!-- additional, non standard options -->
-						<option value="qml" mediaType="application/xml"/>
-						<option value="qml-rt" mediaType="application/xml"/>
-						<option value="sc3ml" mediaType="application/xml"/>
 						<option value="csv" mediaType="text/plain"/>
+						<option value="json" mediaType="application/json"/>
+						<option value="geojson" mediaType="application/json"/>
+						<option value="html" mediaType="text/html"/>
 					</param>
 					<param name="nodata" style="query" type="xsd:int" default="204">
 						<option value="204"/>
 						<option value="404"/>
 					</param>
 
-					<!-- additional, non standard parameters, effective only in XML output -->
-					<param name="includepicks" style="query" type="xsd:boolean" default="true">
-						<doc title="definition">
-							Adds pick information to arrivals. Note: Picks will
-							only be available if arrivals are requested.
-						</doc>
-					</param>
-					<param name="includefocalmechanism" style="query" type="xsd:boolean" default="false">
-						<doc title="definition">
-							Adds peferred focal mechanism information including momentensor solution if available.
-						</doc>
-					</param>
-					<param name="includeallfocalmechanisms" style="query" type="xsd:boolean" default="false">
-						<doc title="definition">
-							Adds all focal mechanism information including momentensor solution if available.
-						</doc>
-					</param>
-					<param name="includestationmts" style="query" type="xsd:boolean" default="false">
-						<doc title="definition">
-							Adds all momentensor station contributions.
-						</doc>
-					</param>
-					<!-- includecomments parameter, requires hideComments configuration parameter to be disabled -->
-					<param name="includecomments" style="query" type="xsd:boolean" default="false">
-						<doc title="definition">
-							SeisComP supports comments for most datamodel
-							objects. This parameter controls whether or not
-							comments are included in the output document.
-						</doc>
-					</param>
+					<!-- Accepted for FDSNWS compatibility but currently no-op:
+					     format=quakeml/xml always returns the complete
+					     QuakeML document exactly as stored (picks, arrivals,
+					     magnitudes, focal mechanisms, comments already
+					     included), with no XML-level filtering applied. -->
+					<param name="includeallorigins" style="query" type="xsd:boolean" default="false"/>
+					<param name="includeallmagnitudes" style="query" type="xsd:boolean" default="false"/>
+					<param name="includearrivals" style="query" type="xsd:boolean" default="false"/>
+					<param name="includepicks" style="query" type="xsd:boolean" default="false"/>
+					<param name="includefocalmechanism" style="query" type="xsd:boolean" default="false"/>
+					<param name="includeallfocalmechanisms" style="query" type="xsd:boolean" default="false"/>
+					<param name="includestationmts" style="query" type="xsd:boolean" default="false"/>
+					<param name="includecomments" style="query" type="xsd:boolean" default="false"/>
 					<param name="formatted" style="query" type="xsd:boolean" default="false">
 						<doc>
-							Controls formatted (pretty print) output.
+							Accepted but currently unused: output is never
+							pretty-printed by this implementation.
 						</doc>
 					</param>
 				</request>
