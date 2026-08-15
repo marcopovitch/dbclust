@@ -7,7 +7,9 @@ import os
 import re
 import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -46,7 +48,12 @@ class NormalizeSlashesMiddleware(BaseHTTPMiddleware):
 def iso_to_sqlite(dtstr):
     # Handles ISO 8601 formats with or without 'Z'
     dt = datetime.fromisoformat(dtstr.replace("Z", "+00:00"))
-    # Return in standard SQLite format
+    # Convert to UTC before formatting: a naive datetime.strftime() call
+    # keeps the wall-clock time as-is and silently drops the timezone
+    # offset, so "12:00:00+02:00" would otherwise become "12:00:00" in the
+    # stored/compared value instead of the correct "10:00:00" UTC.
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
@@ -56,6 +63,12 @@ WAVEFORM_FILTERS = {
     "4-20": (4.0, 20.0),
     "8-32": (8.0, 32.0),
 }
+
+# Length of the pre-event noise window used to remove DC offset from
+# unfiltered waveforms. Must stay in sync with spectrocnn's own
+# offset_before_P config (currently 15.0) - this service has no way to read
+# that value dynamically, since it only sees spectrocnn's miniSEED export.
+NOISE_WINDOW_S = 15.0
 
 
 def _decode_and_filter_waveforms(mseed_content: bytes, filter: str, window_s: float) -> list:
@@ -98,7 +111,7 @@ def _decode_and_filter_waveforms(mseed_content: bytes, filter: str, window_s: fl
                 # (the offset_before_P noise window) so unfiltered waveforms
                 # are centered like the previous JSON endpoint's output.
                 # Filtered traces are already demeaned above.
-                noise_samples = min(n_keep, max(1, int(15 * sampling_rate)))
+                noise_samples = min(n_keep, max(1, int(NOISE_WINDOW_S * sampling_rate)))
                 data -= data[:noise_samples].mean()
 
             traces.append(
@@ -353,8 +366,8 @@ def create_app(
         format: str = Query(
             "xml", pattern="^(xml|json|text|csv|quakeml|geojson|html)$"
         ),
-        limit: Optional[int] = Query(None),
-        offset: Optional[int] = Query(None),
+        limit: Optional[int] = Query(None, ge=0),
+        offset: Optional[int] = Query(None, ge=1),
         orderby: Optional[str] = Query(None, pattern="^(time|magnitude)(-asc|-desc)?$"),
         catalog: Optional[str] = Query(None),
         contributor: Optional[str] = Query(None),
@@ -375,12 +388,17 @@ def create_app(
             where = ["1=1"]
             params = []
             # Time constraints
-            if starttime:
-                where.append("time >= ?")
-                params.append(iso_to_sqlite(starttime))
-            if endtime:
-                where.append("time <= ?")
-                params.append(iso_to_sqlite(endtime))
+            try:
+                if starttime:
+                    where.append("time >= ?")
+                    params.append(iso_to_sqlite(starttime))
+                if endtime:
+                    where.append("time <= ?")
+                    params.append(iso_to_sqlite(endtime))
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid starttime/endtime: {e}"
+                )
             # Spatial constraints
             if minlatitude is not None:
                 where.append("latitude >= ?")
@@ -438,14 +456,16 @@ def create_app(
                 # Default and "time"/"time-desc"
                 sql += " ORDER BY time DESC"
 
-            if limit:
+            if limit is not None:
                 sql += " LIMIT ?"
                 params.append(limit)
-            elif offset:
+            elif offset is not None:
                 sql += " LIMIT -1"  # SQLite requires LIMIT before OFFSET; -1 = unlimited
-            if offset:
+            if offset is not None:
+                # FDSNWS offset is 1-based (offset=1 selects the first row),
+                # per the WADL's documented contract - SQL OFFSET is 0-based.
                 sql += " OFFSET ?"
-                params.append(offset)
+                params.append(offset - 1)
 
             logging.debug(f"SQL: {sql} | Params: {params}")
             cursor = conn.execute(sql, params)
@@ -513,7 +533,7 @@ def main():
     """main function to start the FDSN Web Service server.
 
     Usage example:
-        dbclust --db /path/to/my_database.db --port 9998 --host localhost
+        fdsnws-server --db /path/to/my_database.db --port 9998 --host localhost
     """
     PORT = 8000
     HOST = "localhost"
@@ -568,7 +588,9 @@ def main():
 
     # Validate database
     try:
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        # sqlite3's `with conn:` only manages the transaction (commit/
+        # rollback), not closing the connection - wrap it in closing() too.
+        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
             cursor = conn.cursor()
             # Check for the presence of the event_coordinates table
             cursor.execute(

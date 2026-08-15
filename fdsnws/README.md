@@ -28,21 +28,15 @@ pip install fastapi uvicorn jinja2
 To launch the webservice, run:
 
 ```bash
-./fdsnws.py --db /path/to/db --port 51243 --debug
+fdsnws-server --db /path/to/db --port 51243 --debug
 ```
 
 - `--db /path/to/db` : Path to your SQLite database file
 - `--port 51243`     : Port to serve the API on (default: 8000)
 - `--debug`          : Enable debug mode for verbose logging
 
-You may need to make `fdsnws.py` executable:
-```bash
-chmod +x fdsnws.py
-```
-Or run it with Python:
-```bash
-python fdsnws.py --db /path/to/db --port 51243 --debug
-```
+`fdsnws-server` is the console script installed by this package (see
+`pyproject.toml`'s `[project.scripts]`, backed by `fdsnws.server:main`).
 
 ## Endpoints
 - `/query` : Query events with flexible parameters
@@ -54,5 +48,5 @@ python fdsnws.py --db /path/to/db --port 51243 --debug
 - Error handling uses FastAPI's `HTTPException` for clear responses.
 
 ## Development
-- See `fdsnws.py` for the main application logic.
+- See `server.py` for the main application logic.
 - Output formatters are in `export_csv.py`, `export_geojson.py`, `export_quakeml.py`, and `export_text.py`.
