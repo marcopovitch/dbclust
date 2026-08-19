@@ -24,7 +24,7 @@ def yml_read_config(filename: str) -> dict:
     return cfg
 
 
-if __name__ == "__main__":
+def main():
     # Setup default logger
     logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     logger = logging.getLogger("merge_catalog")
@@ -139,3 +139,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
     logger.info("Merge process completed successfully.")
+
+
+if __name__ == "__main__":
+    main()
