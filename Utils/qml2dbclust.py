@@ -14,6 +14,8 @@ from obspy import read_events
 from obspy.core.event import Event
 from obspy.core.event import Origin
 
+logger = logging.getLogger("qml2dbclust")
+
 """
 This script processes seismic event data from a QuakeML file and exports the picks to a CSV file in a format compatible with DBClust.
 
@@ -146,10 +148,9 @@ def export_picks_to_dbclust_format(
     return lines
 
 
-if __name__ == "__main__":
+def main():
     # default logger
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    logger = logging.getLogger("qml2dbclust")
     logger.setLevel(logging.INFO)
 
     parser = argparse.ArgumentParser()
@@ -314,3 +315,7 @@ if __name__ == "__main__":
             df = picks_df
 
     df.to_csv(args.outputfile, index=False)
+
+
+if __name__ == "__main__":
+    main()

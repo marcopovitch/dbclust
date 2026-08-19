@@ -78,6 +78,8 @@ relocate = "dbclust.reprocess_event:main"
 csv2parquet = "Utils.csv2parquet:main"
 csv2parquet-sync = "Utils.csv2parquet_sync:main"
 add-event-types = "Utils.add_event_type_columns:main"
+qml2dbclust = "Utils.qml2dbclust:main"
+merge-catalogs = "Utils.merge_catalogs:main"
 nll-locate = "dbclust.locate:main"
 
 [project.urls]
