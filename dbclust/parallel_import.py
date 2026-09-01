@@ -49,10 +49,11 @@ def deduplicate_cross_partition_events(
     the earliest (i.e. the job that saw the most picks). The loser is deleted via
     CASCADE.
 
-    When the difference between first picks exceeds overlap_window_s / 2, the
-    survivor's localisation may be sub-optimal (the job that produced it did not
-    see all picks). A WARNING is logged and the event is flagged for re-localisation
-    with a suggested time window.
+    When the span between the earliest and latest pick (across both events'
+    picks) exceeds overlap_window_s, the survivor's localisation may be
+    sub-optimal (the job that produced it did not see all picks). A WARNING
+    is logged and the event is flagged for re-localisation with a suggested
+    time window.
 
     Returns a list of dicts describing events recommended for re-localisation:
       {event_id, origin_time, first_pick, last_pick, suggested_start, suggested_stop}

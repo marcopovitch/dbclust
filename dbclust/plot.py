@@ -318,9 +318,6 @@ def make_plot_with_plotext(
         The plotext library does not handle correctly the color of the markers (random behavior).
     """
 
-    ic(P_df["P_colors"])
-    ic(S_df["S_colors"])
-
     # make 2 subplots side by side
     plt.subplots(1, 2)
 

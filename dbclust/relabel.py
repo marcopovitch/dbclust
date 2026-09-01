@@ -14,7 +14,6 @@ from typing import Union
 
 import numpy as np
 import pandas as pd
-from icecream import ic
 from obspy.core.event import Arrival
 from obspy.core.event import Comment
 from obspy.core.event import Pick

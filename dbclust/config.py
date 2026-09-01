@@ -3,6 +3,7 @@ import argparse
 import logging
 import math
 import os
+import pprint
 import sys
 import warnings
 from dataclasses import dataclass
@@ -483,7 +484,7 @@ class ClusterConfig:
     min_station_score: float
     average_velocity: float
     min_picks_common: int
-    max_search_dist: Optional[float] = 0.0
+    max_search_dist: Optional[float] = None
     pre_computed_tt_matrix_file: Optional[str] = None
     # Include HDBSCAN noise picks in PyOcto aggregation (as an additional cluster)
     include_noise_in_aggregation: bool = False
@@ -653,6 +654,9 @@ class RelocationConfig:
     double_pass: bool
     keep_manual_picks: bool
     use_deactivated_arrivals: bool
+    force_uncertainty: bool = False
+    P_uncertainty: Optional[float] = None
+    S_uncertainty: Optional[float] = None
     gap_dist_max_km: Optional[float] = None
     closest_station_dist_km: Optional[float] = None
     dist_km_cutoff: Optional[float] = None
@@ -1332,15 +1336,11 @@ class DBClustConfig:
         # ic(self.quakeml)
 
     def show(self):
-        # debug
-        for key, value in self.__annotations__.items():
+        for key, _ in self.__annotations__.items():
             if self.config_type == "reloc" and key in self.reloc_no_required_keys:
                 continue
-            attribute_value = getattr(self, key)
-            ic(key, attribute_value)
-
-        # test zone
-        ic(self.pick.df)
+            logger.info(f"{key}=\n{pprint.pformat(getattr(self, key), indent=2)}")
+        logger.info(f"pick.df=\n{pprint.pformat(self.pick.df, indent=2)}")
 
 
 def is_valid_url(url: str, syntax_only: bool = False) -> bool:

@@ -51,7 +51,6 @@ def pick_delimiter_plot_all(conf):
 
 def pick_delimiter_plot(conf, zone_name):
     zone = conf.zones.get_zone_from_name(zone_name)
-    ic(zone)
     poly_df = zone.picks_delimiter
     # ic(poly_df)
 

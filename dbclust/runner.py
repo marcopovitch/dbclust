@@ -149,7 +149,7 @@ def _load_completed_indices(cfg: DBClustConfig):
         return None
 
 
-def finalize_sqlite(cfg: DBClustConfig, completed_job_indices=None) -> None:
+def finalize_sqlite(cfg: DBClustConfig, completed_job_indices=None) -> bool:
     """Finalize SQLite database after processing.
 
     Merges all per-worker temporary databases into the final database,
@@ -163,16 +163,20 @@ def finalize_sqlite(cfg: DBClustConfig, completed_job_indices=None) -> None:
         cfg: DBClust configuration object.
         completed_job_indices: Set of job indices that completed successfully.
             If None, all temp DBs are merged (legacy behaviour).
+
+    Returns:
+        True if finalization succeeded (or SQLite is disabled), False if the
+        merge failed.
     """
     if not cfg.catalog.enable_sqlite:
-        return
+        return True
 
     temp_dir = cfg.catalog.temp_db_dir or cfg.catalog.sqlite_db_path
     all_temp_db_paths = sorted(glob.glob(os.path.join(temp_dir, "tmp_worker_*.db")))
 
     if not all_temp_db_paths:
         logger.warning("No temp DBs found to merge, skipping SQLite finalization.")
-        return
+        return False
 
     if completed_job_indices is not None:
         temp_db_paths = []
@@ -198,7 +202,7 @@ def finalize_sqlite(cfg: DBClustConfig, completed_job_indices=None) -> None:
 
     if not temp_db_paths:
         logger.warning("No completed temp DBs to merge, skipping SQLite finalization.")
-        return
+        return False
 
     logger.info(
         f"Merging {len(temp_db_paths)} temp DBs into {cfg.catalog.sqlite_db_fullpath}"
@@ -212,7 +216,7 @@ def finalize_sqlite(cfg: DBClustConfig, completed_job_indices=None) -> None:
         )
     except Exception as e:
         logger.error(f"Failed to merge temp databases: {e}")
-        return
+        return False
 
     if not cfg.catalog.keep_temp_db_after_merge:
         for p in temp_db_paths:
@@ -227,6 +231,8 @@ def finalize_sqlite(cfg: DBClustConfig, completed_job_indices=None) -> None:
                     logger.warning(f"Could not remove temp DB file {path}: {e}")
     else:
         logger.info(f"Keeping temp DBs in {temp_dir} (keep_temp_db_after_merge=True)")
+
+    return True
 
 
 def main():
@@ -310,14 +316,14 @@ def main():
 
     # Finalize SQLite database — only merge DBs from completed jobs
     completed_indices = _load_completed_indices(cfg)
-    finalize_sqlite(cfg, completed_job_indices=completed_indices)
+    finalize_ok = finalize_sqlite(cfg, completed_job_indices=completed_indices)
 
     app_logger.info(f"Processing complete. {len(results)} partitions processed.")
 
     # Flush output and exit cleanly
     sys.stdout.flush()
     sys.stderr.flush()
-    sys.exit(0)
+    sys.exit(0 if finalize_ok else 1)
 
 
 if __name__ == "__main__":
