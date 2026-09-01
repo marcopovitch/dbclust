@@ -505,7 +505,6 @@ def main():
         # Setup FDSNWS URL if needed
         if args.fdsn_event_profile:
             cfg.fdsnws_event.set_url_from_service_name(args.fdsn_event_profile)
-            ic(cfg.fdsnws_event.get_url())
 
         # Validate input sources
         if args.dir and not os.path.exists(args.dir):

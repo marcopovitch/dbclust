@@ -518,7 +518,7 @@ class Clusterize(object):
             except Exception as e:
                 logger.error(e)
                 logger.error("Check your config file !")
-                sys.exit()
+                raise
         else:
             # sequential computation
             # don't forget to activate lru_cache for compute_tt()

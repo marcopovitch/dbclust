@@ -276,7 +276,7 @@ class Phase:
                 (
                     self.network,
                     self.station,
-                    self.phase[0].upper(),
+                    self.phase[0].upper() if self.phase else "",
                     self.time.datetime,
                 )
             )

@@ -366,7 +366,7 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
                 e.preferred_magnitude_id = magnitude_id
             m.resource_id = magnitude_id
 
-            if m.origin_id.id in origin_map:
+            if m.origin_id and m.origin_id.id in origin_map:
                 m.origin_id = origin_map[m.origin_id.id]
             else:
                 logger.warning(f"Magnitude {m.resource_id.id} references a missing origin {m.origin_id.id}.")

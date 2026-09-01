@@ -929,7 +929,7 @@ class NllLoc(object):
                 logger.warning(
                     f"Found invalid {field} uncertainty value ({val!r}). Ignoring event !"
                 )
-                return Catalog()
+                return _abort_localization(Catalog())
 
         if not self.quakeml_settings:
             o.creation_info.agency_id = "MyAgencyId"
@@ -1149,7 +1149,7 @@ class NllLoc(object):
                         )
                         e.event_type = "not existing"
                         if not self.keep_not_existing_event:
-                            return Catalog()
+                            return _abort_localization(Catalog())
                     else:
                         logger.warning(
                             f"Pass 2 (automatic picks only): {len(arrivals_with_gap)} arrival(s) beyond "
@@ -1238,7 +1238,7 @@ class NllLoc(object):
                 e.event_type = "not existing"
                 if not self.keep_not_existing_event:
                     # do not keep "not existing" event
-                    return Catalog()
+                    return _abort_localization(Catalog())
 
         else:
             # pass_count > 0
@@ -2907,7 +2907,7 @@ def make_preloc_origin(
     preloc_origin.evaluation_status = "preliminary"
     preloc_origin.method_id = ResourceIdentifier("PyOcto")
     preloc_origin.earth_model_id = ResourceIdentifier("haslach")
-    if "agency_id" in quakeml_settings:
+    if quakeml_settings and "agency_id" in quakeml_settings:
         preloc_origin.agency_id = quakeml_settings["agency_id"]
     else:
         preloc_origin.agency_id = "MyAgencyId"
