@@ -476,6 +476,12 @@ def dbclust(
         # Uses the pandas Dataframe given as function argument.
         con = None
 
+    # Set when a window's picks are dropped instead of localized (PyOcto data
+    # error, or association exhausted with no further window to retry at) —
+    # makes the eventual `return` reflect that data was lost even though the
+    # job itself keeps running to completion. See BUGS_COHERENCE_REVIEW_2026-09-17.md, A2.
+    picks_lost = False
+
     try:
         window = pd.Timedelta(minutes=cfg.time.time_window)
         overlap_timedelta = pd.Timedelta(cfg.time.overlap_window, "s")
@@ -870,28 +876,65 @@ def dbclust(
                         log_level=logger.level,
                     )
                 except pyproj.exceptions.ProjError as e:
-                    logger.error(f"Projection error, aborting adjust_associator_tolerance(): {e}")
-                    if begin == end:
-                        logger.info("Cleaning previous_myclust.")
-                        previous_myclust = get_clusterize_from_config(cfg, phases=None)
-                    continue
+                    # Data error (bad/out-of-range station coordinates for this window's
+                    # lat/lon extent) — see dbclust2pyocto.py's "Check stations coordinates"
+                    # log lines. Retrying with the same stations would fail identically, so
+                    # this window's picks (previous_myclust) are not recoverable: log loudly
+                    # with an exact count and drop them, but keep the job running — myclust's
+                    # deferred content (this window's not-yet-ready clusters) is untouched and
+                    # still carries forward normally via previous_myclust = myclust below.
+                    n_lost = previous_myclust.phases_count()
+                    logger.error(
+                        f"[job={job_index}] Projection error in window {i}/{len(time_divisions)} "
+                        f"[{begin}, {end}): {e}. Dropping {n_lost} unrecoverable picks from "
+                        f"previous_myclust (bad station coordinates for this window's extent — "
+                        f"see lat_range/lon_range logged above). These picks will NOT be "
+                        f"localized."
+                    )
+                    picks_lost = True
+                    previous_myclust = get_clusterize_from_config(cfg, phases=None)
                 except Exception as e:
                     logger.exception(
                         f"Unexpected error in adjust_associator_tolerance(): {e}"
                     )
                     raise
 
-                if result is None:
-                    logger.error("Failed to process with any pick_match_tolerance.")
-                    logger.debug(f"begin={begin}, end={end}")
-                    if begin == end:
-                        logger.info("Cleaning previous_myclust.")
-                        previous_myclust = get_clusterize_from_config(cfg, phases=None)
-                    continue
                 else:
-                    previous_myclust = result
-                    # Update snapshot: PyOcto has now split mega-clusters into per-event clusters.
-                    clusters_for_deferred_search = list(previous_myclust.clusters)
+                    if result is None:
+                        # Tolerance exhausted, not necessarily a data problem (e.g. too few
+                        # correlated picks in this window alone) — report previous_myclust
+                        # forward into myclust so it's retried at the next window with more
+                        # picks/context, mirroring the existing deferred-cluster mechanism.
+                        # Only give up for real once there is no next window to retry at.
+                        n_carried = previous_myclust.phases_count()
+                        if last_partition_job:
+                            # No further window in this job to carry the picks forward
+                            # to — log loudly and drop them, but keep the job running
+                            # to completion rather than crashing it (see
+                            # BUGS_COHERENCE_REVIEW_2026-09-17.md, A2).
+                            logger.error(
+                                f"[job={job_index}] PyOcto association failed with every "
+                                f"pick_match_tolerance in window {i}/{len(time_divisions)} "
+                                f"[{begin}, {end}), and this is the last window of the job: "
+                                f"dropping {n_carried} unrecoverable picks from "
+                                f"previous_myclust. These picks will NOT be localized."
+                            )
+                            picks_lost = True
+                            previous_myclust = get_clusterize_from_config(cfg, phases=None)
+                        else:
+                            logger.warning(
+                                f"[job={job_index}] PyOcto association failed with every "
+                                f"pick_match_tolerance in window {i}/{len(time_divisions)} "
+                                f"[{begin}, {end}). Carrying {n_carried} picks from "
+                                f"previous_myclust forward to window {i + 1} for retry "
+                                f"instead of discarding them."
+                            )
+                            myclust.merge(previous_myclust)
+                            previous_myclust = get_clusterize_from_config(cfg, phases=None)
+                    else:
+                        previous_myclust = result
+                        # Update snapshot: PyOcto has now split mega-clusters into per-event clusters.
+                        clusters_for_deferred_search = list(previous_myclust.clusters)
 
             # Process previous_myclust and wait next round to process myclust
             with MyTemporaryDirectory(
@@ -1111,7 +1154,13 @@ def dbclust(
         # Save remaining events
         save_catalog(locator.catalog, cfg, job_index, part=i + 1, finalize=True)
         logger.info(f"Finalizing job index: {job_index}")
-        return True
+        if picks_lost:
+            logger.error(
+                f"[job={job_index}] Completed with unrecoverable picks dropped in at "
+                f"least one window (see 'Dropping ... unrecoverable picks' above) — "
+                f"reporting failure despite reaching the end of the job."
+            )
+        return not picks_lost
     finally:
         if con is not None:
             con.close()
