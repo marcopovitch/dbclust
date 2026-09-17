@@ -966,7 +966,7 @@ def dbclust(
                             event_cluster: List[Phase] = []
                             added = 0
                             for p in cluster_phases:
-                                key = (p.station, p.time.datetime, p.phase)
+                                key = p.identity()
                                 if key not in deferred_phases_keys:
                                     event_cluster.append(p)
                                     deferred_phases_keys.add(key)
