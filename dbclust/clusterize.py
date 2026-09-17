@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 from dbclust.phase import import_phases
 from dbclust.phase import Phase
+from dbclust.phase import quakeml_pick_identity
 from dbclust.quakeml import deduplicate_picks
 # import dask.bag as db
 
@@ -171,8 +172,7 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
     for c in clusters:
         cluster_event_ids = list(set([p.event_id for p in c if p.event_id]))
         for p in c:
-            key = (p.station, p.time.datetime)
-            pick_to_cluster[key] = cluster_event_ids
+            pick_to_cluster[p.identity()] = cluster_event_ids
 
     for event in cat:
         o = event.preferred_origin()
@@ -190,7 +190,12 @@ def feed_picks_event_ids(cat: Catalog, clusters: List[List[Phase]]) -> None:
             pick = next((p for p in event.picks if p.resource_id == a.pick_id), None)
             if pick is None:
                 continue
-            key = (pick.waveform_id["station_code"], pick.time.datetime)
+            key = quakeml_pick_identity(
+                pick.waveform_id["network_code"],
+                pick.waveform_id["station_code"],
+                pick.phase_hint,
+                pick.time,
+            )
             if key in pick_to_cluster:
                 event_ids = pick_to_cluster[key]
                 break
@@ -208,7 +213,7 @@ def feed_cluster_stability(
     pick_to_cluster_idx = {}
     for idx, c in enumerate(clusters):
         for p in c:
-            pick_to_cluster_idx[(p.station, p.time.datetime)] = idx
+            pick_to_cluster_idx[p.identity()] = idx
 
     for event in cat:
         o = event.preferred_origin()
@@ -220,7 +225,12 @@ def feed_cluster_stability(
             pick = next((p for p in event.picks if p.resource_id == a.pick_id), None)
             if pick is None:
                 continue
-            key = (pick.waveform_id["station_code"], pick.time.datetime)
+            key = quakeml_pick_identity(
+                pick.waveform_id["network_code"],
+                pick.waveform_id["station_code"],
+                pick.phase_hint,
+                pick.time,
+            )
             idx = pick_to_cluster_idx.get(key)
             if idx is not None and idx < len(clusters_stability):
                 stability = float(clusters_stability[idx])
@@ -625,7 +635,7 @@ class Clusterize(object):
 
         # deferred_phases come from a prior Clusterize instance, so their Phase
         # objects are never physically present in self.clusters — no extraction needed.
-        deferred_keys = {(p.station, p.time.datetime, p.phase) for p in deferred_phases}
+        deferred_keys = {p.identity() for p in deferred_phases}
 
         # Remove matching picks (by key) from all existing clusters so the deferred
         # cluster becomes the sole owner of these picks and is not re-localized later
@@ -635,7 +645,7 @@ class Clusterize(object):
             to_remove = [
                 p
                 for p in cluster
-                if (p.station, p.time.datetime, p.phase) in deferred_keys
+                if p.identity() in deferred_keys
             ]
             for p in to_remove:
                 cluster.remove(p)
@@ -668,7 +678,7 @@ class Clusterize(object):
         t_hi = t_max + overlap_seconds
 
         def _is_candidate(p) -> bool:
-            if (p.station, p.time.datetime, p.phase) in deferred_keys:
+            if p.identity() in deferred_keys:
                 return False
             if overlap_seconds > 0 and not (t_lo <= float(p.time) <= t_hi):
                 return False
