@@ -1388,6 +1388,15 @@ class Clusterize(object):
             f"cluster_merge_based_on_eventid(): merging clusters sharing same EventId: {self.n_clusters} clusters to handle."
         )
 
+        # Keep self.preloc (positionally aligned on self.clusters by PyOcto,
+        # see dbclust2pyocto.py) in lockstep with the pop/merge below, mirroring
+        # cluster_merge_one_pass() in dbclust2pyocto.py. Without this,
+        # generate_nllobs() reads self.preloc[i] for the wrong event as soon as
+        # a merge happens (see BUGS_COHERENCE_REVIEW_2026-09-17.md, A4).
+        track_preloc = bool(self.preloc) and len(self.preloc) == len(self.clusters)
+        stale_preloc = bool(self.preloc) and not track_preloc
+        preloc: list = list(self.preloc) if track_preloc and self.preloc else []
+
         # Iterative merge until convergence to handle transitive chains:
         # if c1 shares event_id A with c2, and c2 shares event_id B with c3,
         # a single pass misses c1-c3. We repeat until no new merges occur.
@@ -1401,11 +1410,13 @@ class Clusterize(object):
             changed = False
             final_cluster_list = []
             final_stabs = []
+            final_preloc: list = []
             while self.clusters:
                 c1 = self.clusters.pop(0)
                 s1 = stabs.pop(0)
                 clusters_to_merge = [c1]
                 stabs_to_merge = [s1]
+                preloc_to_merge = [preloc.pop(0)] if track_preloc else []
                 indices_to_remove = []
                 for i, c2 in enumerate(self.clusters):
                     if cluster_share_eventid(
@@ -1418,12 +1429,16 @@ class Clusterize(object):
                         indices_to_remove.append(i)
                         clusters_to_merge.append(c2)
                         stabs_to_merge.append(stabs[i])
+                        if track_preloc:
+                            preloc_to_merge.append(preloc[i])
 
                 if indices_to_remove:
                     changed = True
                 for i in reversed(indices_to_remove):
                     self.clusters.pop(i)
                     stabs.pop(i)
+                    if track_preloc:
+                        preloc.pop(i)
 
                 # Deduplicate by physical pick identity (network, station, phase, time),
                 # preferring picks with an event_id over those without. This mirrors
@@ -1450,12 +1465,33 @@ class Clusterize(object):
                 )
                 final_cluster_list.append(new_cluster)
                 final_stabs.append(new_stab)
+                if track_preloc:
+                    # Keep the preloc of the largest pre-merge cluster, consistent
+                    # with cluster_merge_one_pass() in dbclust2pyocto.py.
+                    dominant_idx = max(
+                        range(len(clusters_to_merge)),
+                        key=lambda k: len(clusters_to_merge[k]),
+                    )
+                    final_preloc.append(preloc_to_merge[dominant_idx])
 
             self.clusters = final_cluster_list
             stabs = final_stabs
+            preloc = final_preloc
 
         self.n_clusters = len(self.clusters)
         self.clusters_stability = np.array(stabs, dtype=float)
+        if track_preloc:
+            self.preloc = preloc
+        elif stale_preloc:
+            # self.preloc existed but didn't match self.clusters' length going in
+            # (already inconsistent) — drop it rather than leave a stale/misaligned
+            # list for generate_nllobs() to read positionally.
+            logger.warning(
+                "cluster_merge_based_on_eventid(): self.preloc length didn't match "
+                "self.clusters before merging; discarding preloc instead of risking "
+                "a positional mismatch."
+            )
+            self.preloc = None
         # Verify consistency after merge
         if len(self.clusters) != len(self.clusters_stability):
             logger.error(
