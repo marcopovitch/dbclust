@@ -9,7 +9,6 @@ import os
 import sys
 import tempfile
 import uuid
-from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +23,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency at runtime only
     DBClustConfig = None  # type: ignore
 
+from dbclust.core import nllloc_kwargs_from_config
 from dbclust.localization import LocalizationError, NllLoc
 
 LOGGER = logging.getLogger("dbclust.locate")
@@ -268,18 +268,31 @@ def build_locator(
     args: argparse.Namespace,
     cfg: Optional[DBClustConfig],
 ) -> NllLoc:
-    cfg_nll = getattr(cfg, "nll", None)
-    cfg_reloc = getattr(cfg, "relocation", None)
-    cfg_cluster = getattr(cfg, "cluster", None)
-    cfg_catalog = getattr(cfg, "catalog", None)
+    # When a config is available, start from the exact same kwargs the
+    # dbclust pipeline uses (get_locator_from_config), then layer CLI-only
+    # overrides on top. This keeps `relocate` and the pipeline in sync by
+    # construction instead of two independently-maintained NllLoc(...) call
+    # sites drifting apart (see BUGS_COHERENCE_REVIEW_2026-09-17.md, B1).
+    if cfg:
+        kwargs = nllloc_kwargs_from_config(cfg)
+    else:
+        kwargs = dict(
+            quakeml_settings={
+                "agency_id": args.agency_id,
+                "author": args.author,
+                "evaluation_mode": "automatic",
+                "method_id": "NonLinLoc",
+                "model_id": None,
+            },
+        )
 
-    nll_bin = resolve_value(args.nll_bin, getattr(cfg_nll, "nlloc_bin", None), os.getenv("NLL_BIN"))
+    nll_bin = resolve_value(args.nll_bin, kwargs.get("nll_bin"), os.getenv("NLL_BIN"))
     nll_time_path = resolve_value(
-        args.nll_time_path, getattr(cfg_nll, "time_path", None), os.getenv("NLL_TIME_PATH")
+        args.nll_time_path, kwargs.get("nll_times_path"), os.getenv("NLL_TIME_PATH")
     )
     scat2latlon_bin = resolve_value(
         args.scat2latlon_bin,
-        getattr(cfg_nll, "scat2latlon_bin", None),
+        kwargs.get("scat2latlon_bin"),
         os.getenv("SCAT2LATLON_BIN"),
     )
 
@@ -292,63 +305,51 @@ def build_locator(
     if not scat2latlon_bin:
         scat2latlon_bin = nll_bin  # only used if scatter output is requested
 
-    loc_method = args.loc_method or getattr(cfg_nll, "loc_method", "EDT_OT_WT_ML")
-    min_phase = args.min_phase or getattr(cfg_nll, "min_phase", 4)
+    tmp_dir = args.tmp_dir or kwargs.get("tmpdir")
+    tmp_dir = tmp_dir or tempfile.gettempdir()
 
     if args.single_pass:
         double_pass = False
     elif args.double_pass:
         double_pass = True
     else:
-        double_pass = getattr(cfg_reloc, "double_pass", False)
+        double_pass = kwargs.get("double_pass", False)
 
-    tmp_dir = args.tmp_dir or getattr(getattr(cfg, "file", None), "tmp_path", None)
-    tmp_dir = tmp_dir or tempfile.gettempdir()
-
-    if cfg:
-        quakeml_settings = asdict(cfg.quakeml)
-    else:
-        quakeml_settings = {
-            "agency_id": args.agency_id,
-            "author": args.author,
-            "evaluation_mode": "automatic",
-            "method_id": "NonLinLoc",
-            "model_id": None,
-        }
-
-    locator = NllLoc(
+    # CLI-only overrides: args win when provided, else keep the config-derived
+    # value (or the CLI-mode default when there is no config at all).
+    kwargs.update(
         nll_bin=nll_bin,
         scat2latlon_bin=scat2latlon_bin,
         nll_times_path=nll_time_path,
         nll_template=args.nll_template,
         nll_default_template=args.nll_template,
-        nll_min_phase=min_phase,
-        loc_method=loc_method,
+        nll_min_phase=args.min_phase or kwargs.get("nll_min_phase", 4),
+        loc_method=args.loc_method or kwargs.get("loc_method", "EDT_OT_WT_ML"),
         tmpdir=tmp_dir,
         double_pass=double_pass,
-        gap_dist_max_km=getattr(cfg_reloc, "gap_dist_max_km", None),
-        closest_station_dist_km=getattr(cfg_reloc, "closest_station_dist_km", None),
-        dist_km_cutoff=getattr(cfg_reloc, "dist_km_cutoff", None),
-        use_deactivated_arrivals=getattr(cfg_reloc, "use_deactivated_arrivals", False),
-        keep_manual_picks=getattr(cfg_reloc, "keep_manual_picks", False),
-        min_station_score=getattr(cfg_cluster, "min_station_score", None),
-        min_station_with_P_and_S=getattr(cfg_cluster, "min_station_with_P_and_S", 0),
-        quakeml_settings=quakeml_settings,
-        keep_scat=getattr(cfg_nll, "enable_scatter", False),
-        zones=getattr(cfg, "zones", None),
-        min_score_threshold_pick_zone=getattr(cfg_reloc, "min_score_threshold_pick_zone", 0.5),
-        use_pick_zone=getattr(cfg_reloc, "use_pick_zone", False),
-        enable_cleanup_pick_zone=getattr(cfg_reloc, "enable_cleanup_pick_zone", False),
-        enable_relabel_pick_zone=getattr(cfg_reloc, "enable_relabel_pick_zone", False),
-        min_dist_relabel_deg=getattr(cfg_reloc, "min_dist_relabel_deg", 0.0),
-        min_time_weight=getattr(cfg_reloc, "min_time_weight", None),
-        enable_residual_threshold_with_pick_zone=getattr(cfg_reloc, "enable_residual_threshold_with_pick_zone", False),
-        keep_not_existing_event=getattr(cfg_catalog, "keep_not_existing_event", False),
-        P_time_residual_threshold=args.p_time_residual_threshold or getattr(cfg_reloc, "P_time_residual_threshold", None),
-        S_time_residual_threshold=args.s_time_residual_threshold or getattr(cfg_reloc, "S_time_residual_threshold", None),
+        P_time_residual_threshold=(
+            args.p_time_residual_threshold
+            or kwargs.get("P_time_residual_threshold")
+        ),
+        S_time_residual_threshold=(
+            args.s_time_residual_threshold
+            or kwargs.get("S_time_residual_threshold")
+        ),
     )
+    # Only reached when cfg is None: nllloc_kwargs_from_config() already sets
+    # all of these (with the pipeline's gap_dist_max_km=360 fallback) when a
+    # config is available.
+    kwargs.setdefault(
+        "gap_dist_max_km", getattr(getattr(cfg, "relocation", None), "gap_dist_max_km", None)
+    )
+    kwargs.setdefault("min_station_with_P_and_S", 0)
+    kwargs.setdefault("min_score_threshold_pick_zone", 0.5)
+    kwargs.setdefault("use_pick_zone", False)
+    kwargs.setdefault("enable_cleanup_pick_zone", False)
+    kwargs.setdefault("enable_relabel_pick_zone", False)
+    kwargs.setdefault("keep_not_existing_event", False)
 
-    return locator
+    return NllLoc(**kwargs)
 
 
 def ensure_file_exists(path: str, description: str) -> str:

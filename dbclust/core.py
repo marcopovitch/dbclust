@@ -232,14 +232,23 @@ def find_cluster_phases_for_event(event, clusters: List[List]) -> List:
     return list(best_cluster)
 
 
-def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
-    """Create a NllLoc instance from configuration.
+def nllloc_kwargs_from_config(cfg: DBClustConfig) -> dict:
+    """Build the NllLoc(**kwargs) dict shared by the dbclust pipeline and the
+    `relocate` CLI (locate.py), so both construct a locator the same way from
+    a given config instead of maintaining two divergent NllLoc(...) call sites
+    (see BUGS_COHERENCE_REVIEW_2026-09-17.md, B1).
+
+    Works with both config_type="std" (dbclust pipeline) and "reloc"
+    (locate.py CLI, where some sections such as cfg.catalog are unset — see
+    DBClustConfig.reloc_no_required_keys) — callers needing CLI-arg overrides
+    on top (locate.py) should mutate the returned dict before constructing
+    NllLoc.
 
     Args:
         cfg: DBClust configuration.
 
     Returns:
-        Configured NllLoc instance.
+        Keyword arguments dict ready to pass to NllLoc(**kwargs).
     """
     # Type assertions and defaults for potentially None config values
     gap_dist_max_km: int = int(cfg.relocation.gap_dist_max_km) if cfg.relocation.gap_dist_max_km is not None else 360
@@ -248,11 +257,11 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
     use_pick_zone: bool = cfg.relocation.use_pick_zone if cfg.relocation.use_pick_zone is not None else False
     enable_relabel_pick_zone: bool = cfg.relocation.enable_relabel_pick_zone if cfg.relocation.enable_relabel_pick_zone is not None else False
     enable_cleanup_pick_zone: bool = cfg.relocation.enable_cleanup_pick_zone if cfg.relocation.enable_cleanup_pick_zone is not None else False
-    
-    locator = NllLoc(
-        cfg.nll.nlloc_bin,
-        cfg.nll.scat2latlon_bin,
-        cfg.nll.time_path,
+
+    return dict(
+        nll_bin=cfg.nll.nlloc_bin,
+        scat2latlon_bin=cfg.nll.scat2latlon_bin,
+        nll_times_path=cfg.nll.time_path,
         #
         nll_verbose=cfg.nll.verbose,
         nll_default_template=cfg.nll.default_template_file,
@@ -295,9 +304,24 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         time_weight_outlier_min_picks=getattr(cfg.relocation, "time_weight_outlier_min_picks", 5),
         time_weight_outlier_absolute_threshold=getattr(cfg.relocation, "time_weight_outlier_absolute_threshold", None),
         #
-        keep_not_existing_event=cfg.catalog.keep_not_existing_event,
+        # cfg.catalog is unset when config_type="reloc" (locate.py CLI) —
+        # see DBClustConfig.reloc_no_required_keys.
+        keep_not_existing_event=getattr(
+            getattr(cfg, "catalog", None), "keep_not_existing_event", False
+        ),
     )
-    return locator
+
+
+def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
+    """Create a NllLoc instance from configuration.
+
+    Args:
+        cfg: DBClust configuration.
+
+    Returns:
+        Configured NllLoc instance.
+    """
+    return NllLoc(**nllloc_kwargs_from_config(cfg))
 
 
 def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
