@@ -175,6 +175,7 @@ def get_cross_partition_picks(
             OR
             (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {S_proba_threshold})
         )
+        ORDER BY station_id, phase_time, phase_type
     """
     df_all = con.sql(rqt).fetchdf()
     if df_all.empty:
@@ -270,6 +271,8 @@ def get_locator_from_config(cfg: DBClustConfig) -> NllLoc:
         nll_min_phase=nll_min_phase,
         min_station_score=cfg.cluster.min_station_score,
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
+        min_station_with_P_and_S_stability_override=cfg.cluster.min_station_with_P_and_S_stability_override,
+        min_station_with_P_and_S_score_override=cfg.cluster.min_station_with_P_and_S_score_override,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
         min_ps_ratio_wilson_z=getattr(cfg.cluster, "min_ps_ratio_wilson_z", None),
         quakeml_settings=asdict(cfg.quakeml),
@@ -546,6 +549,7 @@ def dbclust(
                             OR
                             (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {cfg.pick.S_proba_threshold})
                         )
+                        ORDER BY station_id, phase_time, phase_type
                     """
                 else:
                     # csv
@@ -561,6 +565,7 @@ def dbclust(
                             OR
                             (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {cfg.pick.S_proba_threshold})
                         )
+                        ORDER BY station_id, phase_time, phase_type
                     """
 
                 # Time measure of the query
@@ -874,7 +879,9 @@ def dbclust(
                 # ready_clusters (promoted from myclust) and/or PyOcto fallback leave two
                 # Leiden communities covering the same earthquake in previous_myclust.
                 previous_myclust.cluster_merge_based_on_eventid()
-                nll_picks = previous_myclust.generate_nllobs(my_obs_path)
+                nll_picks = previous_myclust.generate_nllobs(
+                    my_obs_path, context_tag=f"job={job_index} win={i}/{len(time_divisions)}"
+                )
 
                 logger.info("-" * 60)
                 logger.info(f"Starting localization using {locator.loc_method}.")
