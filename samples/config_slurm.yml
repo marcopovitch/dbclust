@@ -8,12 +8,16 @@ file:
   #temporary directory
   tmp_path: "/tmp/nll"
   obs_path: "/tmp/obs"
+  # remove tmp_path/obs_path content after each run
+  automatic_cleanup_tmp: True
 
 pick:
   # path to phaseNet/EQT picks file
   path: !join &PICK_PATH [*DATA, "/", "picks"]
-  filename: !join [ *PICK_PATH, "/", "picks.csv", ]
-  type: phasenetsds
+  filenames:
+    - !join [ *PICK_PATH, "/", "picks.csv" ]
+  # must be one of: csv, parquet
+  type: csv
 
   # force pick uncertainty
   P_uncertainty: 0.1
@@ -22,6 +26,11 @@ pick:
   # import only phase with proba >= phase_proba_threshold
   P_proba_threshold: 0.3
   S_proba_threshold: 0.3
+
+  # proximity threshold (seconds) used to deduplicate near-simultaneous picks
+  # from different agencies before clustering
+  P_proximity_threshold: 0.1
+  S_proximity_threshold: 0.2
 
   # use only picks in this time window
   start: 2022-01-01T00:00:00.000Z
@@ -41,6 +50,9 @@ cluster:
   min_cluster_size: &MIN_CLUSTER_SISE 3
   min_station_count: &CLUSTER_MIN_STATION_COUNT 5
   min_station_with_P_and_S: 2
+  # P:1, S:0.5, P+S:2 per station — minimum cumulated score to submit/accept a cluster
+  # null to disable
+  min_station_score: 5.0
   average_velocity: 5
   max_search_dist: 8.0
   min_picks_common: 3
@@ -59,7 +71,8 @@ nll:
   velocity_profiles:
     - name: haslach-0.2
       template: nll_haslach-0.2_template.conf
-  channel_hint: !join [*DATA, "/", "chan.txt"]
+  # method to use for NLLoc [GAU_ANALYTIC, EDT, EDT_OT_WT, EDT_OT_WT_ML]
+  loc_method: EDT_OT_WT_ML
   verbose: False
   enable_scatter: False
 
@@ -68,6 +81,10 @@ relocation:
   double_pass: True
   P_time_residual_threshold: 0.50
   S_time_residual_threshold: 1.00
+  # keep manual picks regardless of residual/time-weight thresholds
+  keep_manual_picks: False
+  # let pass 2 re-evaluate arrivals deactivated during pass 1
+  use_deactivated_arrivals: True
 
 quakeml:
   event_prefix: eost
@@ -78,9 +95,20 @@ quakeml:
   method_id: NonLinLoc
 
 catalog:
-  path: !join &QML_PATH [*DATA, "/", "qml"]
-  qml_base_filename: catalog
+  # keep events that don't already exist in the reference catalog
+  keep_not_existing_event: False
+  # number of events to keep in memory before flushing to disk
   event_flush_count: 100
+
+  # write catalog as QuakeML file(s)
+  enable_quakeml_file: True
+  qml_path: !join &QML_PATH [*DATA, "/", "qml"]
+  qml_base_filename: catalog
+
+  # write catalog to a sqlite database
+  enable_sqlite: False
+  sqlite_db_path: !join [*DATA, "/", "db"]
+  sqlite_db_filename: catalog.db
 
 pyocto:
   default_model_name: haslach
@@ -116,7 +144,7 @@ zones:
   zones:
     - name: world
       velocity_profile: haslach-0.2
-      polygone: [[-180, 90], [180, 90], [180, -90], [-180, -90]]
+      polygon: [[-180, 90], [180, 90], [180, -90], [-180, -90]]
 
 # Parallel execution configuration
 parallel:

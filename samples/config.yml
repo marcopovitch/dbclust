@@ -5,12 +5,25 @@ file:
   #temporary directory
   tmp_path: "/tmp/nll"
   obs_path: "/tmp/obs"
+  # remove tmp_path/obs_path content after each run
+  automatic_cleanup_tmp: True
+
+# parallel execution (local, non-SLURM)
+parallel:
+  # number of local workers, null = os.cpu_count()
+  n_workers: null
+  # duration of each time partition (pandas Timedelta unit)
+  partition_duration: "1D"
+  # executor: parsl_thread, parsl_hte, ray, dask
+  executor: "parsl_thread"
 
 pick:
   # path to phaseNet/EQT picks file
   path: !join &PICK_PATH [*DATA, "/", "picks"]
-  filename: !join [ *PICK_PATH, "/", "picks.csv", ]
-  type: phasenetsds
+  filenames:
+    - !join [ *PICK_PATH, "/", "picks.csv" ]
+  # must be one of: csv, parquet
+  type: csv
 
   # force pick uncertainty
   P_uncertainty: 0.1
@@ -20,10 +33,20 @@ pick:
   P_proba_threshold: 0.3
   S_proba_threshold: 0.3
 
+  # proximity threshold (seconds) used to deduplicate near-simultaneous picks
+  # from different agencies before clustering
+  P_proximity_threshold: 0.1
+  S_proximity_threshold: 0.2
+
   # use only picks in this time window
   # filter picks between [date_begin, date_end]
   start: 2022-01-01T00:00:00.000Z
   end:   2023-01-01T00:00:00.000Z
+
+# FDSN web service used to fetch existing events (only used by reloc_fdsn_event)
+fdsnws_event:
+  default: null
+  hosts:
 
 station:
   # must be [inventory, fdsnws]
@@ -55,6 +78,9 @@ cluster:
   min_station_count: &CLUSTER_MIN_STATION_COUNT 5
   # discard cluster and origin without enough stations having both P and S phases
   min_station_with_P_and_S: 2
+  # P:1, S:0.5, P+S:2 per station — minimum cumulated score to submit/accept a cluster
+  # null to disable
+  min_station_score: 5.0
 
   # km/s
   average_velocity: 5
@@ -113,11 +139,8 @@ nll:
     - name: vendenheim
       template: nll_vendenheim_template.conf
 
-  # file to keep track of SCNL when importing NLL obs file
-  # file format: NET_STA_LOC_CHAN
-  #   eg. FR_PYHE_00_HHZ
-  # channel_hint: null
-  channel_hint: !join [*DATA, "/", "chan.txt"]
+  # method to use for NLLoc [GAU_ANALYTIC, EDT, EDT_OT_WT, EDT_OT_WT_ML]
+  loc_method: EDT_OT_WT_ML
 
   # verbose
   verbose: False
@@ -144,6 +167,11 @@ relocation:
   S_time_residual_threshold: 1.00
   # P_time_residual_threshold: 1.0
   # S_time_residual_threshold: 1.5
+  # keep manual picks regardless of residual/time-weight thresholds
+  keep_manual_picks: False
+  # let pass 2 re-evaluate arrivals deactivated during pass 1
+  # (pass 1 uses the generic/preloc velocity model)
+  use_deactivated_arrivals: True
 
 # force these attributes in quakeml file
 quakeml:
@@ -159,10 +187,20 @@ quakeml:
 # Catalog will be saved more or less every event_flush_count
 # resulting file will be : "qml_base_filename-part-%d.qml"
 catalog:
-  # path definition to store catalog files
-  path: !join &QML_PATH [*DATA, "/", "qml"]
-  qml_base_filename: selestat
+  # keep events that don't already exist in the reference catalog
+  keep_not_existing_event: False
+  # number of events to keep in memory before flushing to disk
   event_flush_count: 100
+
+  # write catalog as QuakeML file(s)
+  enable_quakeml_file: True
+  qml_path: !join &QML_PATH [*DATA, "/", "qml"]
+  qml_base_filename: selestat
+
+  # write catalog to a sqlite database
+  enable_sqlite: False
+  sqlite_db_path: !join [*DATA, "/", "db"]
+  sqlite_db_filename: selestat.db
 
 pyocto:
   default_model_name: haslach
@@ -208,14 +246,14 @@ zones:
   zones:
     - name: alpes
       velocity_profile: alpes
-      polygone:
+      polygon:
         [[4.84, 47.0], [8.50, 47.0], [8.50, 43.8], [5.88, 42.9], [4.50, 43.8]]
     - name: grand-est
       velocity_profile: haslach-0.2
-      polygone: [[4.84, 47.0], [-6.20, 49.8], [8.70, 49.0], [8.50, 47.0]]
+      polygon: [[4.84, 47.0], [-6.20, 49.8], [8.70, 49.0], [8.50, 47.0]]
     - name: massif-central
       velocity_profile: auvergne
-      polygone:
+      polygon:
         [
           [4.84, 47.0],
           [2.3964, 47.0844],
@@ -226,7 +264,7 @@ zones:
         ]
     - name: mediterranee
       velocity_profile: haslach-0.2
-      polygone:
+      polygon:
         [
           [10, 41.0],
           [3.5, 41.9],
@@ -238,7 +276,7 @@ zones:
         ]
     - name: nord
       velocity_profile: haslach-0.2
-      polygone:
+      polygon:
         [
           [2.3964, 47.0844],
           [0.000, 50.000],
@@ -248,7 +286,7 @@ zones:
         ]
     - name: pyrenees
       velocity_profile: pyrenees
-      polygone:
+      polygon:
         [
           [-2.3, 43.5],
           [-1.2, 43.8],
@@ -260,7 +298,7 @@ zones:
         ]
     - name: ouest
       velocity_profile: haslach-0.2
-      polygone:
+      polygon:
         [
           [2.3964, 47.0844],
           [-0.5000, 50.5000],
@@ -274,4 +312,4 @@ zones:
         ]
     - name: world
       velocity_profile: haslach-0.2
-      polygone: [[-180, 90], [180, 90], [180, -90], [-180, -90]]
+      polygon: [[-180, 90], [180, 90], [180, -90], [-180, -90]]
