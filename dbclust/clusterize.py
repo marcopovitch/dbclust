@@ -445,6 +445,7 @@ class Clusterize(object):
         self.zones = zones
         self._deferred_cluster_indices: set = set()  # indices of injected deferred clusters
         self.clusters_pyocto_ops = None  # set by process_clusters_with_pyocto when PyOcto is used
+        self._context_tag = ""  # optional window/job label set by generate_nllobs(), used in log lines
 
         # clustering parameters
         self.max_search_dist = max_search_dist
@@ -1554,45 +1555,53 @@ class Clusterize(object):
 
         if self.force_keep_catalog_events and event_id_counts:
             logger.warning(
-                f"Cluster {cluster_idx} failed {label} "
-                f"but force_keep_catalog_events=True{ids_str} — keeping anyway"
+                f"Kept | cluster {cluster_idx}{self._context_tag} failed {label} "
+                f"but force_keep_catalog_events=True{ids_str} — keeping anyway "
+                f"(next filters in this function still apply)"
             )
             return True, True
 
         if override_stability > 0.0 and cluster_stability >= override_stability:
             logger.warning(
-                f"Cluster {cluster_idx} failed {label} "
-                f"but kept by stability override "
-                f"(stability={cluster_stability:.3f} > {override_stability}){ids_str}"
+                f"Kept | cluster {cluster_idx}{self._context_tag} failed {label} "
+                f"but stability override applies "
+                f"(stability={cluster_stability:.3f} > {override_stability}){ids_str} "
+                f"(next filters in this function still apply)"
             )
             return True, False
 
         if override_score > 0.0 and station_score is not None and station_score >= override_score:
             logger.warning(
-                f"Cluster {cluster_idx} failed {label} "
-                f"but kept by score override "
-                f"(station_score={station_score:.1f} >= {override_score}){ids_str}"
+                f"Kept | cluster {cluster_idx}{self._context_tag} failed {label} "
+                f"but score override applies "
+                f"(station_score={station_score:.1f} >= {override_score}){ids_str} "
+                f"(next filters in this function still apply)"
             )
             return True, False
 
-        log_fn = logger.warning if event_id_counts else logger.info
-        log_fn(
-            f"Cluster {cluster_idx}, stability:{cluster_stability:.3f} ignored ... "
-            f"{label} check failed{ids_str}"
+        logger.warning(
+            f"Rejected | cluster {cluster_idx}{self._context_tag}, stability:{cluster_stability:.3f} | "
+            f"reason: {label} check failed{ids_str}"
         )
         return False, False
 
-    def generate_nllobs(self, OBS_PATH):
+    def generate_nllobs(self, OBS_PATH, context_tag: str = ""):
         """
         export to obspy/NLL
         only 1 event/catalog (for NLL),
         no duplicated pick !
+
+        context_tag: optional label (e.g. "job=0 win=3/12") identifying the
+        time window this call processes, included in per-cluster log lines
+        so that "cluster N" can be told apart across windows/jobs that each
+        restart numbering from 0.
         """
         logger.info(f"Starting generate_nllobs()")
-        
+        self._context_tag = f" [{context_tag}]" if context_tag else ""
+
         # Log stability statistics before processing
         self.log_stability_summary()
-        
+
         picks_bundles = []
         rejected_event_ids: set = set()
         accepted_event_ids: set = set()
@@ -1607,9 +1616,9 @@ class Clusterize(object):
                 [p.event_id.split("/")[-1] for p in cluster if p.event_id]
             )
 
-            logger.info(f"--- cluster {i} ---")
+            logger.info(f"--- cluster {i}{self._context_tag} ---")
             logger.info(
-                f"Generating nllobs for cluster {i} ({len(stations_list)} stations / {len(cluster)} picks, "
+                f"Generating nllobs for cluster {i}{self._context_tag} ({len(stations_list)} stations / {len(cluster)} picks, "
                 f"stability={self._stability_at(i):.3f})"
                 + (f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else "")
             )
@@ -1663,9 +1672,10 @@ class Clusterize(object):
             n_stations = len(stations_list)
             ids_str = f" [event_ids: {dict(event_id_counts)}]" if event_id_counts else ""
             logger.info(
-                f"Cluster {i} → sent to NLL "
+                f"Cluster {i}{self._context_tag} → sent to NLL "
                 f"(score={station_score:.1f}, ps={stations_with_both}/{n_stations}, "
-                f"stability={self._stability_at(i):.3f}){ids_str}"
+                f"stability={self._stability_at(i):.3f}){ids_str} "
+                f"stations={sorted(stations_list)}"
             )
 
             for p in cluster:

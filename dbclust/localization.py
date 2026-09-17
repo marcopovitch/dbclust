@@ -78,6 +78,11 @@ phase_order = ["Pg", "Sg", "Pn", "Sn", "P", "S"]
 # set time_weight tolerance
 time_weight_tolerance = 0.01
 
+# Below this fraction of pass-1 arrivals still active (time_weight > 0), the
+# pass-1 position is considered too under-determined to trust for a
+# cross-family (P<->S) phase relabel decision. See cleanup_picks_and_relabel_picks.
+pass1_relabel_min_active_fraction = 0.5
+
 
 def safe_subprocess_run(args, *, env=None, text=True):
     """
@@ -239,6 +244,8 @@ class NllLoc(object):
         enable_relabel_pick_zone: bool = False,  # relabel pick within zone
         keep_not_existing_event: bool = False,  # keep "not existing" event, or not
         min_station_with_P_and_S: int = 0,  # minimum number of stations with both P and S among arrivals used by NLL (0 = disabled)
+        min_station_with_P_and_S_stability_override: float = 0.0,  # bypass P+S check if cluster_stability exceeds this (0 = disabled)
+        min_station_with_P_and_S_score_override: float = 0.0,  # bypass P+S check if station_score exceeds this (0 = disabled)
         min_ps_ratio: Optional[float] = None,  # Minimum S/P pick ratio (None = disabled)
         min_ps_ratio_wilson_z: Optional[float] = None,  # Wilson z for adaptive threshold (None = fixed)
         min_dist_relabel_deg: float = 0.0,  # minimum distance (degrees) to epicenter to allow relabeling
@@ -265,6 +272,8 @@ class NllLoc(object):
         self.tmpdir = tmpdir
         self.min_station_score = min_station_score
         self.min_station_with_P_and_S = min_station_with_P_and_S
+        self.min_station_with_P_and_S_stability_override = min_station_with_P_and_S_stability_override
+        self.min_station_with_P_and_S_score_override = min_station_with_P_and_S_score_override
         self.double_pass = double_pass
         self.force_uncertainty = force_uncertainty
         self.P_uncertainty = P_uncertainty
@@ -1300,6 +1309,7 @@ class NllLoc(object):
         final_catalog = Catalog()
         all_event_ids_seen: set = set()
         accepted_event_ids: set = set()
+        rejection_reason_by_event_id: dict = {}
         for cat in cat_results:
             if not cat or not cat.events:
                 logger.debug("Empty catalog or missing events, skipping.")
@@ -1331,15 +1341,24 @@ class NllLoc(object):
             closest_str = f"closest={closest_km:.1f}km" if closest_km is not None else "closest=N/A"
             cluster_stability_str = ""
             cluster_stability = None
+            nll_obs_file = None
             for _c in e.comments:
                 try:
                     _meta = json.loads(_c.text)
-                    if "cluster_stability" in _meta:
-                        cluster_stability = float(_meta["cluster_stability"])
-                        cluster_stability_str = f" | stability={cluster_stability:.3f}"
-                        break
                 except (ValueError, TypeError):
-                    pass
+                    continue
+                if "cluster_stability" in _meta:
+                    cluster_stability = float(_meta["cluster_stability"])
+                    cluster_stability_str = f" | stability={cluster_stability:.3f}"
+                if "nll_obs_file" in _meta:
+                    nll_obs_file = _meta["nll_obs_file"]
+            obs_file_str = f" [{nll_obs_file}]" if nll_obs_file else ""
+
+            def _record_rejection(reason: str) -> None:
+                tagged = f"{reason}{obs_file_str}" if obs_file_str else reason
+                for eid in event_ids_in_picks:
+                    rejection_reason_by_event_id[eid] = tagged
+
             summary = (
                 f"score={station_score}/{self.min_station_score} | "
                 f"phases={o.quality.used_phase_count} | "
@@ -1347,50 +1366,107 @@ class NllLoc(object):
                 f"{ps_str} | "
                 f"{closest_str}"
                 f"{cluster_stability_str}"
+                f"{obs_file_str}"
                 f"{event_ids_str}"
             )
 
             # reject event if closest station after final relocation is too far
             if self.closest_station_dist_km is not None and closest_km is not None and closest_km > self.closest_station_dist_km:
                 if event_ids_in_picks:
-                    logger.warning(f"Accepted despite far closest station | {summary} | reason: known event_id support")
+                    logger.warning(
+                        f"Passed (override) | {summary} | "
+                        f"reason: closest={closest_km:.1f}km > {self.closest_station_dist_km}km, "
+                        f"overridden by known event_id support — next filters still apply"
+                    )
                 else:
-                    logger.info(f"Rejected | {summary} | reason: closest={closest_km:.1f}km > {self.closest_station_dist_km}km")
+                    reason = f"closest={closest_km:.1f}km > {self.closest_station_dist_km}km"
+                    logger.warning(f"Rejected | {summary} | reason: {reason}")
+                    _record_rejection(reason)
                     continue
 
             if self.min_station_score is not None:
                 if station_score < self.min_station_score:
                     if event_ids_in_picks:
-                        logger.warning(f"Accepted despite low score | {summary} | reason: known event_id support")
+                        logger.warning(
+                            f"Passed (override) | {summary} | "
+                            f"reason: score < {self.min_station_score}, "
+                            f"overridden by known event_id support — next filters still apply"
+                        )
                     else:
-                        logger.info(f"Rejected | {summary} | reason: score < {self.min_station_score}")
+                        reason = f"score < {self.min_station_score}"
+                        logger.warning(f"Rejected | {summary} | reason: {reason}")
+                        _record_rejection(reason)
                         continue
 
 
             accepted_with_warning = False
             if self.min_station_with_P_and_S and ps_with_both < self.min_station_with_P_and_S:
-                if event_ids_in_picks:
+                # Mirror the pre-NLL overrides in Clusterize._check_pre_nll_filter():
+                # a cluster stable/well-scored enough pre-NLL can still clear this
+                # check post-NLL even with few dual-phase stations, e.g. after
+                # NLL zeroes out several arrivals and leaves the event otherwise
+                # well constrained (high station_score, high cluster stability).
+                # Require at least one true P+S station though: with zero, the
+                # location has no local depth/distance constraint at all and the
+                # override tends to wave through garbage (RMS in the tens of
+                # seconds) rather than genuine small events pre-NLL misjudged.
+                if ps_with_both < 1:
+                    reason = (
+                        f"stations with P and S ({ps_with_both}) < "
+                        f"{self.min_station_with_P_and_S} (no P+S station at all, "
+                        f"override not applicable even with known event_id)"
+                    )
+                    logger.warning(f"Rejected | {summary} | reason: {reason}")
+                    _record_rejection(reason)
+                    continue
+                elif (
+                    self.min_station_with_P_and_S_stability_override > 0.0
+                    and cluster_stability is not None
+                    and cluster_stability >= self.min_station_with_P_and_S_stability_override
+                ):
                     logger.warning(
-                        f"Accepted despite too few P+S stations | {summary} | "
-                        f"reason: known event_id support"
+                        f"Passed (override) | {summary} | "
+                        f"reason: too few P+S stations, overridden by stability "
+                        f"(stability >= {self.min_station_with_P_and_S_stability_override}) "
+                        f"— next filters still apply"
+                    )
+                elif (
+                    self.min_station_with_P_and_S_score_override > 0.0
+                    and station_score >= self.min_station_with_P_and_S_score_override
+                ):
+                    logger.warning(
+                        f"Passed (override) | {summary} | "
+                        f"reason: too few P+S stations, overridden by score "
+                        f"(station_score >= {self.min_station_with_P_and_S_score_override}) "
+                        f"— next filters still apply"
+                    )
+                elif event_ids_in_picks:
+                    logger.warning(
+                        f"Passed (override) | {summary} | "
+                        f"reason: too few P+S stations, overridden by known event_id support "
+                        f"— next filters still apply"
                     )
                     accepted_with_warning = True
                 else:
-                    logger.info(
-                        f"Rejected | {summary} | reason: stations with P and S "
-                        f"({ps_with_both}) < {self.min_station_with_P_and_S}"
+                    reason = (
+                        f"stations with P and S ({ps_with_both}) < "
+                        f"{self.min_station_with_P_and_S}"
                     )
+                    logger.warning(f"Rejected | {summary} | reason: {reason}")
+                    _record_rejection(reason)
                     continue
 
             if not self._ps_ratio_ok(ps_with_both, ps_total):
                 if event_ids_in_picks:
                     logger.warning(
-                        f"Accepted despite low ps_ratio | {summary} | "
-                        f"reason: known event_id support"
+                        f"Accepted | {summary} | "
+                        f"reason: low ps_ratio overridden by known event_id support"
                     )
                     accepted_with_warning = True
                 else:
-                    logger.info(f"Rejected | {summary} | reason: ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}")
+                    reason = f"ps_ratio={ps_ratio:.2f} < {self.min_ps_ratio}"
+                    logger.warning(f"Rejected | {summary} | reason: {reason}")
+                    _record_rejection(reason)
                     continue
 
             if not accepted_with_warning:
@@ -1404,10 +1480,13 @@ class NllLoc(object):
         )
         logger.info(f"Total accepted events: {len(final_catalog)}")
 
-        # Report known event_ids that did not make it into the final catalog
+        # Report known event_ids that did not make it into the final catalog,
+        # each with the reason of the last rejection recorded for it above.
         lost_event_ids = all_event_ids_seen - accepted_event_ids
         if lost_event_ids:
-            logger.warning(f"Known event_id(s) not found in accepted events: {sorted(lost_event_ids)}")
+            for eid in sorted(lost_event_ids):
+                reason = rejection_reason_by_event_id.get(eid, "no candidate cluster reached NLL")
+                logger.warning(f"Known event_id lost | {eid} | reason: {reason}")
 
         return final_catalog
 
@@ -1488,8 +1567,17 @@ class NllLoc(object):
                         exc_info=True,
                     )
 
+            # Tag each event with its source obs file so later accept/reject
+            # log lines can be traced back to the "--- Event #i/n [...] ---"
+            # and "--- cluster i [...] ---" lines that produced it.
+            for _e in cat.events:
+                _e.comments.append(Comment(
+                    text=json.dumps({"nll_obs_file": os.path.basename(nll_obs_file)})
+                ))
+
             cat_results.append(cat)
 
+        logger.info(f"--- Accept/reject summary ({len(cat_results)} localized event(s)) ---")
         mycatalog = self.get_catalog_from_results(cat_results)
 
         if append:
@@ -1709,8 +1797,17 @@ class NllLoc(object):
                 else (fabs(arrival.time_residual) > time_residual_threshold)
             )
 
+            # arrival.time_weight here comes from the first pass, computed with the
+            # generic/preloc velocity model. Only drop zero-weight arrivals when
+            # use_deactivated_arrivals is False — otherwise let the second pass
+            # (usually run with the correct zone-specific model) re-evaluate them,
+            # since a bad residual under the wrong model doesn't mean the arrival
+            # is bad under the right one.
             if (
-                isclose(arrival.time_weight, 0, abs_tol=time_weight_tolerance)
+                (
+                    not self.use_deactivated_arrivals
+                    and isclose(arrival.time_weight, 0, abs_tol=time_weight_tolerance)
+                )
                 or bad_time_residual
                 or (
                     self.dist_km_cutoff is not None
@@ -1843,6 +1940,21 @@ class NllLoc(object):
             region_name = df_polygons["region"].unique()[0]
 
         orig = event.preferred_origin()
+
+        # Fraction of pass-1 arrivals NLLoc kept active (time_weight > 0).
+        # When most arrivals were already zeroed out by pass 1 (small/marginal
+        # cluster, generic preloc model), the resulting position is fit to too
+        # few points to be geometrically trustworthy — RMS alone doesn't catch
+        # this, since an under-determined fit can still look "clean". Below
+        # this fraction, treat pass-1's (distance, travel-time) pair as too
+        # unreliable to justify a cross-family (P<->S) relabel decision.
+        _n_arrivals = len(orig.arrivals)
+        _n_active = sum(
+            1 for a in orig.arrivals
+            if a.time_weight is not None
+            and not isclose(a.time_weight, 0, abs_tol=time_weight_tolerance)
+        )
+        pass1_active_fraction = (_n_active / _n_arrivals) if _n_arrivals else 1.0
 
         # Detect time_weight outliers using MAD (Median Absolute Deviation)
         # Do this BEFORE other filters to ensure outliers are counted correctly
@@ -2013,8 +2125,16 @@ class NllLoc(object):
                 continue
 
             # remove pick with time_weight set to 0
-            if arrival.time_weight is not None and isclose(
-                arrival.time_weight, 0, abs_tol=time_weight_tolerance
+            # arrival.time_weight here comes from the first pass, computed with the
+            # generic/preloc velocity model. Only drop zero-weight arrivals when
+            # use_deactivated_arrivals is False — otherwise let the second pass
+            # (usually run with the correct zone-specific model) re-evaluate them,
+            # since a bad residual under the wrong model doesn't mean the arrival
+            # is bad under the right one.
+            if (
+                not self.use_deactivated_arrivals
+                and arrival.time_weight is not None
+                and isclose(arrival.time_weight, 0, abs_tol=time_weight_tolerance)
             ):
                 logger.debug(
                     f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
@@ -2115,11 +2235,24 @@ class NllLoc(object):
                     )
                 )
 
-                # Check if pick is not within a polygon: remove it
+                # Check if pick is not within a polygon.
+                #
+                # arrival.distance and (pick.time - orig.time) here are still
+                # pass-1 values, computed with the generic/preloc velocity
+                # model — not yet the zone-specific model just selected for
+                # pass 2. When pass 1 lands far from the true location (e.g.
+                # small/marginal cluster, wrong initial model), those values
+                # are meaningless and legitimate arrivals get judged against
+                # the wrong distance/travel-time pair, wrongly landing outside
+                # every polygon. Keep the pick instead of dropping it here:
+                # pass 2 re-runs NLLoc with the correct regional model and
+                # already has its own filters (time_weight=0 cleanup, MAD
+                # outlier detection) to catch picks that are actually bad.
                 if len(polygons_score) == 0:
                     logger.debug(
                         f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
-                        f"has no polygon defined in {region_name}. Removing it."
+                        f"has no polygon defined in {region_name} (pass-1 geometry). "
+                        f"Keeping it for pass 2 to judge with the correct model."
                     )
                     # add comment to arrival, and keep track of it
                     relabel_key, comment = relabel_phase_and_comment_arrival(
@@ -2128,14 +2261,10 @@ class NllLoc(object):
                         key,
                         evaluation_score,
                         polygons_score,
-                        "removed",
+                        "outside polygon (pass-1 geometry, kept for pass 2)",
                     )
                     relabel[relabel_key] = comment
-                    pick_to_delete.append(pick)
-                    arrival_to_delete.append(arrival)
                     cleaned_by_polygon += 1
-                    # Fixme: keep arrival but set time_weight = 0 and propagate it to the next localization
-                    # arrival.time_weight = 0
                     continue
 
                 # User wants to filter out not well tagged phases but does not want to relabel them
@@ -2255,6 +2384,35 @@ class NllLoc(object):
                     relabel[relabel_key] = comment
                     continue
 
+                # Cross-family relabels (P<->S) are a real, legitimate case —
+                # operators/pickers do mislabel phases. But key is chosen from
+                # (distance, pick.time - orig.time), both pass-1 values: on an
+                # under-determined pass-1 fit (few arrivals still active), a
+                # genuine S can score best against a P polygon purely from
+                # position noise. Only distrust the cross-family case there;
+                # same-family refinement (S -> Sg/Sn, P -> Pg/Pn/Pb) stays
+                # trusted regardless, since it doesn't flip the phase physics.
+                same_family = (
+                    arrival.phase.upper().startswith("P") == key.upper().startswith("P")
+                )
+                if not same_family and pass1_active_fraction < pass1_relabel_min_active_fraction:
+                    logger.debug(
+                        f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
+                        f"Best zone match {key} crosses phase family, but pass-1 kept only "
+                        f"{pass1_active_fraction:.0%} of arrivals active (under-determined fit). "
+                        f"Keeping original phase for pass 2 to judge with the correct model."
+                    )
+                    relabel_key, comment = relabel_phase_and_comment_arrival(
+                        arrival,
+                        pick,
+                        arrival.phase,
+                        evaluation_score,
+                        polygons_score,
+                        "cross-family match distrusted (under-determined pass-1 fit, kept original phase)",
+                    )
+                    relabel[relabel_key] = comment
+                    continue
+
                 # Relabel pick
                 logger.debug(
                     f"Pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time}. "
@@ -2277,8 +2435,8 @@ class NllLoc(object):
 
         logger.info(
             f"Removed arrivals: nll/weight ({cleaned_by_nll}), residual ({cleaned_by_residual}), "
-            f"cutoff ({cleaned_by_cutoff}), polygons ({cleaned_by_polygon}), MAD ({cleaned_by_mad}): "
-            f"{len(arrival_to_delete)} total"
+            f"cutoff ({cleaned_by_cutoff}), MAD ({cleaned_by_mad}): {len(arrival_to_delete)} total. "
+            f"Outside zone polygon (kept for pass 2 to judge): {cleaned_by_polygon}"
         )
 
         # update "stations used" with weight > 0
