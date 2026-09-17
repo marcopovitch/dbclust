@@ -282,6 +282,30 @@ class Phase:
             )
         )
 
+    def identity(self) -> tuple:
+        """The canonical (network, station, phase_family, time) identity key.
+
+        Equivalent to the tuple __hash__ hashes, exposed directly for callers
+        that need the components (e.g. as a dict key) rather than a hash —
+        see the __hash__/__eq__ docstring above for the collision caveat with
+        set()/hash-based dedup.
+
+        Callers outside the core clustering path (deferred/overlap carry-over,
+        feed_picks_event_ids/feed_cluster_stability) previously used ad hoc
+        keys such as (station, time, phase-exact) or (station, time) that
+        drift out of sync with this identity — e.g. two different agencies
+        sharing a station code, or the same arrival labeled "P" in one window
+        and "Pg" in the next (see BUGS_COHERENCE_REVIEW_2026-09-17.md, D2, and
+        the collision statistics noted in the __hash__ docstring above). Use
+        this method instead of hand-rolling a similar-looking key.
+        """
+        return (
+            self.network,
+            self.station,
+            self.phase[0].upper() if self.phase else "",
+            self.time.datetime,
+        )
+
     def __repr__(self) -> str:
         return f"{self.network}.{self.station}.{self.location}.{self.channel}: {self.phase} {self.time} {self.proba:.2f} {self.event_id}"
 
@@ -303,6 +327,25 @@ class Phase:
             )
         else:
             print("    No coordinates found.")
+
+
+def quakeml_pick_identity(network: str, station: str, phase_hint: Optional[str], time) -> tuple:
+    """The (network, station, phase_family, time) identity key for a QuakeML
+    obspy Pick, in the same shape as Phase.identity().
+
+    obspy Pick objects (event.picks, matched via origin.arrivals) aren't
+    Phase instances, so they can't call Phase.identity() directly — this
+    mirrors its family-extraction logic (first letter of the phase label,
+    upper-cased) so QuakeML-side lookups stay consistent with Phase-side
+    dict keys built from Phase.identity() (see feed_picks_event_ids,
+    feed_cluster_stability in clusterize.py).
+    """
+    return (
+        network,
+        station,
+        phase_hint[0].upper() if phase_hint else "",
+        time.datetime,
+    )
 
 
 def inventory2df(inventory: Inventory) -> pd.DataFrame:
