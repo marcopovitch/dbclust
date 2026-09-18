@@ -7,6 +7,7 @@ import sys
 from collections import Counter, defaultdict
 from itertools import chain
 from itertools import combinations
+from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -359,9 +360,40 @@ def dbclust2pyocto(
 
         # Store events and update clusters
         pyocto_preloc.extend(get_events_list(events, assignments, stations, model_name))
+
+        if len(assignments):
+            assigned_df_indices = set(assignments["pick_idx"].to_list())
+            assigned_cluster_ids = set(
+                picks.loc[picks.index.isin(assigned_df_indices), "_cluster_idx"].tolist()
+            )
+        else:
+            assigned_cluster_ids = set()
+        pre_filter_unassigned = [
+            p for j, p in enumerate(cluster) if j not in assigned_cluster_ids
+        ]
+
+        # Drop same-station P/S picks whose local S-P delay is geometrically
+        # incompatible with this event's location (see filter_incoherent_ps_pairs
+        # docstring): a coincidental travel-time match can let a foreign pick
+        # (from another, closer event) slip into a distant origin. Picks left
+        # unassigned by PyOcto are checked too, in case only one of a
+        # same-station P/S pair was assigned here.
+        ps_incoherent_dropped_ids = set()
+        event_rows = list(events.iterrows())
+        assigned_clusters = get_clusters_from_assignment(cluster, picks, events, assignments)
+        cleaned_clusters = []
+        for (_, event_row), c in zip(event_rows, assigned_clusters):
+            kept, dropped = filter_incoherent_ps_pairs(
+                c, event_row["latitude"], event_row["longitude"],
+                vp=myclust.apparent_vp, vs=myclust.apparent_vs,
+                external_candidates=pre_filter_unassigned,
+            )
+            cleaned_clusters.append(kept)
+            ps_incoherent_dropped_ids.update(id(p) for p in dropped)
+
         if associator_cfg.min_ps_ratio is not None:
             filtered_clusters = []
-            for c in get_clusters_from_assignment(cluster, picks, events, assignments):
+            for c in cleaned_clusters:
                 station_phases = defaultdict(set)
                 for p in c:
                     if not p.phase:
@@ -390,16 +422,15 @@ def dbclust2pyocto(
                     )
             pyocto_clusters.extend(filtered_clusters)
         else:
-            pyocto_clusters.extend(
-                get_clusters_from_assignment(cluster, picks, events, assignments)
-            )
-        if len(assignments):
-            assigned_df_indices = set(assignments["pick_idx"].to_list())
-            assigned_cluster_ids = set(
-                picks.loc[picks.index.isin(assigned_df_indices), "_cluster_idx"].tolist()
-            )
-        else:
-            assigned_cluster_ids = set()
+            pyocto_clusters.extend(cleaned_clusters)
+
+        if ps_incoherent_dropped_ids:
+            # Picks dropped by the P-S coherence filter go back to the
+            # unassigned pool instead of staying counted as assigned.
+            dropped_cluster_ids = {
+                j for j, p in enumerate(cluster) if id(p) in ps_incoherent_dropped_ids
+            }
+            assigned_cluster_ids -= dropped_cluster_ids
 
         n_unassigned = len(cluster) - len(assigned_cluster_ids)
         log_fn = logger.info if len(events) > 0 else logger.debug
@@ -828,6 +859,202 @@ def get_clusters_from_assignment(
         cluster_indices = picks.loc[df_indices, "_cluster_idx"].tolist()
         result.append([cluster[j] for j in cluster_indices])
     return result
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in km between two lat/lon points."""
+    R = 6371.0
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    return 2 * R * np.arcsin(np.sqrt(a))
+
+
+def _ps_pair_confidence(p_pick: Phase, s_pick: Phase) -> Optional[str]:
+    """Classify a same-station P/S pairing as "hard", "soft", or None (not a pair).
+
+    See filter_incoherent_ps_pairs docstring for the decision matrix.
+    """
+    same_agency = p_pick.agency is not None and p_pick.agency == s_pick.agency
+    if p_pick.event_id and s_pick.event_id:
+        if p_pick.event_id == s_pick.event_id:
+            return "hard"
+        if same_agency:
+            # Same agency split them into distinct events: not a pair.
+            return None
+        return "soft"
+    return "soft"
+
+
+def _ps_geometry_mismatch(
+    p_pick: Phase, s_pick: Phase, event_lat: float, event_lon: float,
+    sp_inv: float, confidence: str, soft_factor: float,
+) -> Optional[Tuple[float, float, float]]:
+    """Return (sp_observed, sp_expected, dist_km) if the pair is geometrically
+    incompatible with an origin at (event_lat, event_lon) given `confidence`,
+    else None.
+    """
+    dist_km = _haversine_km(
+        p_pick.coord["latitude"], p_pick.coord["longitude"], event_lat, event_lon,
+    )
+    sp_expected = dist_km * sp_inv
+    sp_observed = s_pick.time - p_pick.time
+    ratio = sp_observed / sp_expected if sp_expected > 0 else np.inf
+
+    if confidence == "hard":
+        mismatch = ratio > 1.5 or ratio < 1 / 1.5
+    else:
+        mismatch = ratio > soft_factor or ratio < 1 / soft_factor
+    return (sp_observed, sp_expected, dist_km) if mismatch else None
+
+
+def filter_incoherent_ps_pairs(
+    cluster_phases: List[Phase],
+    event_lat: float,
+    event_lon: float,
+    vp: float,
+    vs: float,
+    soft_factor: float = 3.0,
+    external_candidates: Optional[List[Phase]] = None,
+) -> Tuple[List[Phase], List[Phase]]:
+    """Drop same-station P/S picks whose local S-P delay is incompatible with
+    the station's distance to a PyOcto event origin.
+
+    A same-station P and S pair observed close together in time constrains the
+    source distance via the S-P delay (dist ~= (t_S - t_P) / (1/vs - 1/vp)).
+    If PyOcto assigns both picks to an origin far enough that the implied
+    travel-time difference cannot match the observed S-P delay, at least one
+    of the two picks does not belong to this origin.
+
+    Confidence in the pairing depends on event_id/agency provenance:
+      - same non-null event_id on both picks: catalog-confirmed pair -> hard
+        rule, drop both picks on any geometric incompatibility.
+      - different non-null event_id from the *same* agency: the agency itself
+        distinguished two events -> not a real pair, each pick is judged on
+        its own (no S-P coherence check applied).
+      - different non-null event_id from different agencies, or either pick
+        missing an event_id (automatic picks): unconfirmed pairing -> soft
+        rule, drop both picks but only on a gross mismatch (observed S-P
+        delay off by more than `soft_factor`) — which of the two picks is
+        the foreign one cannot be determined from the pair alone.
+
+    `external_candidates` covers the case where PyOcto assigned only one of
+    a same-station P/S pair to this origin (the other stayed unassigned or
+    went to a different origin) — the exact failure mode that let a foreign
+    P slip into a distant origin while its incompatible S was left out. This
+    check is restricted to the hard-confidence case (shared catalog event_id):
+    an external candidate was never grouped with the assigned pick by
+    Leiden/PyOcto, so "same station, opposite phase" alone is too weak a
+    signal in a large pool — an unrelated pick from another event can sit at
+    that station by coincidence. Only a shared event_id proves the two picks
+    are really a pair; on a mismatch the *assigned* pick alone is dropped
+    (the external candidate was never claimed by this origin, so there is
+    nothing else to drop from it here).
+
+    Returns (kept, dropped) — `kept`/`dropped` only ever contain picks from
+    `cluster_phases`, never from `external_candidates`.
+    """
+    if vp <= 0 or vs <= 0:
+        return cluster_phases, []
+
+    sp_inv = 1.0 / vs - 1.0 / vp
+    by_station: Dict[str, List[Phase]] = defaultdict(list)
+    for p in cluster_phases:
+        by_station[f"{p.network}.{p.station}"].append(p)
+
+    dropped_ids = set()
+
+    # --- Pass 1: pairs where both P and S were assigned to this origin ---
+    for station_code, station_phases in by_station.items():
+        p_picks = [p for p in station_phases if p.is_p()]
+        s_picks = [p for p in station_phases if p.is_s()]
+        if not p_picks or not s_picks:
+            continue
+
+        for p_pick in p_picks:
+            for s_pick in s_picks:
+                if s_pick.time <= p_pick.time:
+                    continue
+
+                confidence = _ps_pair_confidence(p_pick, s_pick)
+                if confidence is None:
+                    continue
+
+                mismatch = _ps_geometry_mismatch(
+                    p_pick, s_pick, event_lat, event_lon, sp_inv,
+                    confidence, soft_factor,
+                )
+                if mismatch is None:
+                    continue
+                sp_observed, sp_expected, dist_km = mismatch
+                logger.info(
+                    f"P-S coherence ({confidence}): {station_code} S-P observed="
+                    f"{sp_observed:.2f}s, expected~{sp_expected:.2f}s at "
+                    f"{dist_km:.0f}km (event_id={p_pick.event_id}) -> "
+                    "dropping both picks."
+                )
+                dropped_ids.add(id(p_pick))
+                dropped_ids.add(id(s_pick))
+
+    # --- Pass 2: picks assigned alone, checked against an external same-station
+    # candidate of the opposite phase (unassigned, or assigned elsewhere).
+    #
+    # Restricted to the "hard" case (same catalog event_id) only: unlike Pass 1,
+    # an external candidate was never grouped with this pick by Leiden/PyOcto,
+    # so "same station, opposite phase" alone is a much weaker signal — in a
+    # large cluster pool, an unrelated S from another event can coincidentally
+    # sit near a valid P at that station. Only a shared event_id is strong
+    # enough evidence that the two picks are really a pair; without it we
+    # cannot tell a real match from a coincidental neighbor, so no pick is
+    # dropped on the "soft" confidence level here.
+    if external_candidates:
+        ext_by_station: Dict[str, List[Phase]] = defaultdict(list)
+        for p in external_candidates:
+            ext_by_station[f"{p.network}.{p.station}"].append(p)
+
+        for station_code, station_phases in by_station.items():
+            candidates = ext_by_station.get(station_code)
+            if not candidates:
+                continue
+            for pick in station_phases:
+                if id(pick) in dropped_ids or not pick.event_id:
+                    continue
+                for ext_pick in candidates:
+                    if ext_pick.event_id != pick.event_id:
+                        continue
+                    if pick.is_p() and ext_pick.is_s():
+                        p_pick, s_pick = pick, ext_pick
+                    elif pick.is_s() and ext_pick.is_p():
+                        p_pick, s_pick = ext_pick, pick
+                    else:
+                        continue
+                    if s_pick.time <= p_pick.time:
+                        continue
+
+                    mismatch = _ps_geometry_mismatch(
+                        p_pick, s_pick, event_lat, event_lon, sp_inv,
+                        "hard", soft_factor,
+                    )
+                    if mismatch is None:
+                        continue
+                    sp_observed, sp_expected, dist_km = mismatch
+                    logger.info(
+                        f"P-S coherence (hard, external): {station_code} "
+                        f"S-P observed={sp_observed:.2f}s, expected~{sp_expected:.2f}s "
+                        f"at {dist_km:.0f}km (event_id={pick.event_id}) -> "
+                        "dropping assigned pick."
+                    )
+                    dropped_ids.add(id(pick))
+                    break
+
+    kept, dropped = [], []
+    for p in cluster_phases:
+        if id(p) in dropped_ids:
+            dropped.append(p)
+        else:
+            kept.append(p)
+    return kept, dropped
 
 
 def get_stations_from_cluster(cluster: List[Phase]) -> pd.DataFrame:
