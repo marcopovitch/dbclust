@@ -2,6 +2,7 @@
 import copy
 import datetime
 import logging
+import math
 import statistics
 import sys
 from collections import Counter, defaultdict
@@ -74,6 +75,18 @@ class MultipleEventIDsWithSameAgencyError(Exception):
         super().__init__(self.message)
 
 
+def _tolerance_candidates(original_tolerance, tolerance_steps, min_tolerance):
+    """Build the descending list of tolerances tried by the linear decay,
+    highest (original_tolerance) first, down to min_tolerance."""
+    candidates = []
+    tolerance = original_tolerance
+    while tolerance >= min_tolerance:
+        candidates.append(round(tolerance, 2))
+        step = next((s for t, s in tolerance_steps.items() if tolerance > t), 0.5)
+        tolerance -= step
+    return candidates
+
+
 def adjust_associator_tolerance(
     myclust,
     cfg,
@@ -83,7 +96,29 @@ def adjust_associator_tolerance(
     log_level=logging.INFO,
 ):
     """
-    Adjust associator.pick_match_tolerance using a linear decay search.
+    Adjust associator.pick_match_tolerance using a binary search over the same
+    descending tolerance scale the previous linear decay used.
+
+    Higher tolerance is tried first because it is cheap and the common case;
+    once a candidate fails with MultipleEventIDsWithSameAgencyError, success is
+    assumed monotonic in the remaining (lower) tolerances, so the search jumps
+    straight to the midpoint of the remaining candidates instead of walking
+    them one by one. This finds the same highest-tolerance success as the
+    linear decay in O(log N) attempts instead of O(N), which matters because
+    each attempt re-runs the full (expensive) pyocto association from scratch
+    and its cost grows sharply as tolerance decreases. If every candidate the
+    search actually probes fails, it falls back to a full linear scan of the
+    rest so the "best partial result" still matches what the exhaustive
+    linear decay would have found, rather than being limited to whichever
+    few candidates the search happened to visit.
+
+    Each attempt runs on its own shallow copy of ``myclust`` (fresh
+    ``clusters``/``noise``/``preloc`` lists, same underlying Phase objects —
+    not a deepcopy, which would needlessly duplicate each Phase's possibly
+    tens-of-MB obspy Inventory): dbclust2pyocto() mutates its argument in
+    place and the search may call it more than once, including after a
+    success (to probe for an even higher one), so attempts must not corrupt
+    each other's or the original's cluster/pick lists.
 
     Args:
         myclust (Clusterize): The cluster object to process.
@@ -101,46 +136,135 @@ def adjust_associator_tolerance(
     """
     associator = cfg.pyocto.current_model.associator
     original_tolerance = associator.pick_match_tolerance
-    tolerance = original_tolerance
+    candidates = _tolerance_candidates(original_tolerance, tolerance_steps, min_tolerance)
     best_result = None
     best_n_clusters = 0
 
-    try:
-        logger.info(f"Starting linear decay for pick_match_tolerance: {tolerance}")
-        while tolerance >= min_tolerance:
-            logger.info(f"Trying pick_match_tolerance: {tolerance:.2f}")
-            associator.pick_match_tolerance = tolerance
-            try:
-                result_myclust = dbclust2pyocto(
-                    myclust,
-                    cfg.pyocto.default_model_name,
-                    associator,
-                    cfg.pyocto.velocity_model,
-                    cfg.cluster.min_picks_common,
-                    delegate_dbclust=cfg.pyocto.delegate_dbclust,
-                    include_noise_in_aggregation=include_noise_in_aggregation,
-                    log_level=log_level,
-                )
-                logger.info(f"Success with pick_match_tolerance: {tolerance:.2f}")
-                return result_myclust
-            except pyproj.exceptions.ProjError as e:
-                logger.error(f"Projection error, skipping dbclust2pyocto() processing: {e}")
-                raise
-            except MultipleEventIDsWithSameAgencyError as e:
-                logger.warning(f"Unsuccessful with pick_match_tolerance: {tolerance:.2f}.")
-                logger.warning(f"{e}")
-                if e.partial_result is not None:
-                    n = e.partial_result.n_clusters
-                    if n > best_n_clusters:
-                        best_n_clusters = n
-                        best_result = e.partial_result
-                        logger.info(
-                            f"New best partial result: {n} clusters at tolerance {tolerance:.2f}"
-                        )
-                step = next((s for t, s in tolerance_steps.items() if tolerance > t), 0.5)
-                tolerance -= step
+    def try_tolerance(tolerance):
+        nonlocal best_result, best_n_clusters
+        logger.info(f"Trying pick_match_tolerance: {tolerance:.2f}")
+        associator.pick_match_tolerance = tolerance
+        try:
+            # See function docstring for why each attempt needs its own
+            # shallow copy with fresh clusters/noise/preloc lists.
+            # (_deferred_cluster_indices is only ever mutated by Clusterize's
+            # own methods, never by dbclust2pyocto(), so it doesn't need the
+            # same treatment.)
+            myclust_copy = copy.copy(myclust)
+            myclust_copy.clusters = [list(c) for c in myclust.clusters]
+            myclust_copy.noise = list(myclust.noise)
+            if myclust.preloc is not None:
+                myclust_copy.preloc = list(myclust.preloc)
+            result_myclust = dbclust2pyocto(
+                myclust_copy,
+                cfg.pyocto.default_model_name,
+                associator,
+                cfg.pyocto.velocity_model,
+                cfg.cluster.min_picks_common,
+                delegate_dbclust=cfg.pyocto.delegate_dbclust,
+                include_noise_in_aggregation=include_noise_in_aggregation,
+                log_level=log_level,
+            )
+            logger.info(
+                f"Success with pick_match_tolerance: {tolerance:.2f} "
+                f"({result_myclust.n_clusters} clusters, all known event_id conflicts resolved)"
+            )
+            return result_myclust
+        except MultipleEventIDsWithSameAgencyError as e:
+            logger.warning(f"Unsuccessful with pick_match_tolerance: {tolerance:.2f}.")
+            logger.warning(f"{e}")
+            # dbclust2pyocto() may attach myclust_copy, mutated further, to
+            # the exception as partial_result. Keep a reference (in
+            # best_result) only if it's the new best; otherwise let it go
+            # out of scope with this function's other locals on return.
+            partial_result = e.partial_result
+            e.partial_result = None
+            if partial_result is not None:
+                n = partial_result.n_clusters
+                if n > best_n_clusters:
+                    best_n_clusters = n
+                    best_result = partial_result
+                    logger.info(
+                        f"New best partial result: {n} clusters at tolerance {tolerance:.2f}"
+                    )
+            return None
 
-        logger.error("Exhausted all tolerances.")
+    try:
+        logger.info(
+            f"Starting tolerance search over {len(candidates)} candidates: {candidates}"
+        )
+
+        # candidates is sorted highest-tolerance-first; success is assumed
+        # monotonic from some index onward (low tolerance => success). The
+        # highest tolerance (candidates[0]) is the common case (it
+        # used to be probed at the binary search's first midpoint instead of
+        # first, costing extra full-cost attempts on the very case this
+        # search is meant to be cheap for) so it is always tried first;
+        # binary search over the remaining, lower candidates only kicks in if
+        # it fails.
+        success_idx = None
+        success_result = None
+        attempts = 0
+        try:
+            result_myclust = try_tolerance(candidates[0])
+            attempts += 1
+            if result_myclust is not None:
+                success_idx = 0
+                success_result = result_myclust
+
+            if success_idx is None:
+                lo, hi = 1, len(candidates) - 1
+                while lo <= hi:
+                    mid = (lo + hi) // 2
+                    attempts += 1
+                    result_myclust = try_tolerance(candidates[mid])
+                    if result_myclust is not None:
+                        success_idx = mid
+                        success_result = result_myclust
+                        hi = mid - 1  # look for an even higher tolerance that succeeds
+                    else:
+                        lo = mid + 1  # this tolerance (and higher) fails, go lower
+        except pyproj.exceptions.ProjError as e:
+            logger.error(f"Projection error, skipping dbclust2pyocto() processing: {e}")
+            raise
+
+        if success_idx is not None:
+            logger.info(
+                f"Tolerance search found success at tolerance={candidates[success_idx]:.2f} "
+                f"after {attempts}/{len(candidates)} attempts "
+                f"(linear decay would have taken up to {success_idx + 1} attempts)."
+            )
+            return success_result
+
+        # every candidate the binary search actually probed above
+        # failed, but it only probes O(log N) of the N candidates (it prunes
+        # ranges based on the monotonicity assumption, which is not
+        # guaranteed to hold). Fall back to a full linear scan of the
+        # remaining, still-untried candidates so both (a) best_result matches
+        # what the old exhaustive linear decay would have found instead of
+        # being silently limited to whichever few candidates the binary
+        # search happened to visit, and (b) a real success skipped by a
+        # monotonicity violation is still found. This only runs in the
+        # already-slow all-failed case, so it doesn't affect the common-case
+        # cost. try_tolerance() is idempotent per tolerance value, so
+        # re-probing any candidate the binary search already tried is
+        # wasted but not incorrect; skipping that bookkeeping keeps this
+        # fallback simple.
+        for tolerance in candidates[1:]:
+            attempts += 1
+            result_myclust = try_tolerance(tolerance)
+            if result_myclust is not None:
+                logger.warning(
+                    f"Monotonicity assumption violated: tolerance={tolerance:.2f} "
+                    f"succeeded after being skipped by the binary search."
+                )
+                logger.info(
+                    f"Tolerance search found success at tolerance={tolerance:.2f} "
+                    f"after {attempts}/{len(candidates)} attempts (fallback linear scan)."
+                )
+                return result_myclust
+
+        logger.error(f"Exhausted all {len(candidates)} tolerances.")
         if best_result is not None:
             logger.warning(
                 f"Returning best partial result with {best_n_clusters} clusters "
@@ -184,6 +308,21 @@ def dbclust2pyocto(
 
     Returns:
         Clusterize: A new Clusterize object with processed clusters.
+
+    Per-cluster min_node_size is auto-scaled from the cluster's actual search
+    volume (station lat/lon span x zlim depth), instead of using
+    associator_cfg.min_node_size as-is: PyOcto's octree falls back to slower
+    depth-first search once its node queue exceeds
+    queue_memory_protection_dfs_size (500000 by default), which a cluster
+    spanning hundreds of km (e.g. several real, distant events lumped
+    together before PyOcto splits them) can approach or exceed, turning a
+    seconds-long search into minutes. The scaling solves for the node size
+    that puts the cluster near a fixed target leaf-cell count, symmetric in
+    both directions (a small/compact cluster gets a finer resolution for
+    free instead of only ever being coarsened), bounded below by
+    min_node_size_location (no point going finer than the location-
+    refinement resolution) and above by a fixed cap (do not blur events
+    closer than that).
     """
     logger.info(
         f"Using pyocto to process clusters ({sum(len(c) for c in myclust.clusters)} picks)"
@@ -214,7 +353,19 @@ def dbclust2pyocto(
         picks["_cluster_idx"] = range(len(cluster))
 
         # Detect multi-event clusters: if multiple distinct event_ids are present,
-        # reduce min_pick_fraction to allow PyOcto to find smaller events
+        # reduce min_pick_fraction to allow PyOcto to find smaller events.
+        #
+        # min_pick_fraction is a distance-based coverage test: a candidate origin
+        # is only accepted if at least this fraction of the stations closer than
+        # its farthest contributing station also have a pick for it. A cluster
+        # with N genuinely distinct event_ids sharing the same station pool
+        # (e.g. a dense swarm) splits that coverage N ways, so each individual
+        # event structurally has less station coverage than a single isolated
+        # event would — the more event_ids are packed in, the weaker any one
+        # of them can look. Scaling the fraction down by event count (not just
+        # by pick-quality via median_proba) lets PyOcto still accept those
+        # thinner-coverage origins instead of leaving most of the cluster's
+        # picks unassigned and falling back to an unresolved multi-event blob.
         cluster_event_ids = set(p.event_id for p in cluster if p.event_id)
         if associator_cfg.adaptive_min_pick_fraction and len(cluster_event_ids) > 1:
             dl_method_ids = {m.upper() for m in associator_cfg.dl_method_ids}
@@ -226,15 +377,25 @@ def dbclust2pyocto(
                 and p.method.upper() in dl_method_ids
             ]
             median_proba = statistics.median(dl_probas) if dl_probas else 1.0
+            # 1/n^exponent rather than 1/n: a sub-0.5 exponent keeps median_proba's
+            # influence visible up to higher event counts (n=8-10 with the default
+            # 0.3) instead of saturating at the floor as soon as ~4 events share
+            # the cluster (as 1/sqrt(n) does). A lower exponent recovers more
+            # thinly-covered events in dense swarms but also raises the risk of
+            # PyOcto accepting a low-coverage origin that merges picks from
+            # unrelated, distant events — tune min_pick_fraction_event_count_exponent
+            # empirically rather than lowering it further than needed.
+            exponent = associator_cfg.min_pick_fraction_event_count_exponent
+            event_count_factor = 1.0 / (len(cluster_event_ids) ** exponent)
             effective_min_pick_fraction = max(
                 associator_cfg.min_pick_fraction_floor,
-                associator_cfg.min_pick_fraction * median_proba,
+                associator_cfg.min_pick_fraction * median_proba * event_count_factor,
             )
             logger.info(
                 f"Cluster#{i}: {len(cluster_event_ids)} distinct event_ids detected, "
                 f"median DL proba={median_proba:.3f} ({len(dl_probas)} DL picks), "
                 f"reducing min_pick_fraction: {associator_cfg.min_pick_fraction} -> {effective_min_pick_fraction:.3f} "
-                f"(floor={associator_cfg.min_pick_fraction_floor})"
+                f"(event_count_factor=1/{len(cluster_event_ids)}^{exponent}, floor={associator_cfg.min_pick_fraction_floor})"
             )
         else:
             effective_min_pick_fraction = associator_cfg.min_pick_fraction
@@ -301,6 +462,56 @@ def dbclust2pyocto(
         )
 
         logger.debug(f"range lat: {lat_range}, lon: {lon_range}")
+        lat_span_km = (lat_range[1] - lat_range[0]) * 111.0
+        lon_span_km = (lon_range[1] - lon_range[0]) * 111.0 * math.cos(
+            math.radians((lat_range[0] + lat_range[1]) / 2)
+        )
+        z_span_km = associator_cfg.zlim[1] - associator_cfg.zlim[0]
+
+        # See dbclust2pyocto() docstring for the rationale. target_leaf_cells
+        # keeps a 10x margin below the 5e5 DFS fallback threshold;
+        # min_node_size_cap is the "do not blur events closer than this" cap.
+        target_leaf_cells = 5.0e4
+        min_node_size_cap = 30.0  # km
+        search_volume_km3 = lat_span_km * lon_span_km * z_span_km
+        if search_volume_km3 <= 0:
+            # A degenerate/misconfigured zlim or lat/lon range (e.g.
+            # zlim[1] <= zlim[0]) makes this non-positive; a fractional power
+            # of a non-positive base silently returns a complex number in
+            # Python, which would crash the min()/max() below with a
+            # TypeError. Fall back to the configured min_node_size_location.
+            logger.warning(
+                f"Cluster#{i} has a non-positive search volume "
+                f"({lat_span_km:.0f}km x {lon_span_km:.0f}km x {z_span_km:.0f}km) — "
+                f"check associator zlim/station coordinates. Falling back to "
+                f"min_node_size_location={associator_cfg.min_node_size_location}km."
+            )
+            effective_min_node_size = associator_cfg.min_node_size_location
+        else:
+            min_node_size_for_target = (search_volume_km3 / target_leaf_cells) ** (1 / 3)
+            effective_min_node_size = min(
+                max(min_node_size_for_target, associator_cfg.min_node_size_location),
+                min_node_size_cap,
+            )
+        # min_node_size_location is a floor here, not a ceiling: never finer
+        # than the configured resolution, but still coarsened toward
+        # effective_min_node_size for big clusters.
+        effective_min_node_size_location = max(
+            associator_cfg.min_node_size_location,
+            min(effective_min_node_size * 0.9, effective_min_node_size),
+        )
+        approx_leaf_cells = (
+            (lat_span_km / effective_min_node_size)
+            * (lon_span_km / effective_min_node_size)
+            * (z_span_km / effective_min_node_size)
+        )
+        logger.info(
+            f"Cluster#{i} search volume: {lat_span_km:.0f}km x {lon_span_km:.0f}km x "
+            f"{z_span_km:.0f}km, {len(stations)} stations, min_node_size="
+            f"{associator_cfg.min_node_size}km -> effective {effective_min_node_size:.1f}km "
+            f"=> approx {approx_leaf_cells:.2e} leaf cells at effective resolution "
+            f"(queue_memory_protection_dfs_size=500000 default)"
+        )
 
         try:
             associator = pyocto.OctoAssociator.from_area(
@@ -310,8 +521,8 @@ def dbclust2pyocto(
                 time_before=associator_cfg.time_before,  # should be greater than dbclust time_window parameter
                 max_pick_overlap=associator_cfg.max_pick_overlap,
                 min_pick_fraction=effective_min_pick_fraction,
-                min_node_size=associator_cfg.min_node_size,  # default 10
-                min_node_size_location=associator_cfg.min_node_size_location,  # default 1.5
+                min_node_size=effective_min_node_size,
+                min_node_size_location=effective_min_node_size_location,
                 velocity_model=velocity_model,
                 pick_match_tolerance=associator_cfg.pick_match_tolerance,
                 min_interevent_time=0.4,  # default 3
@@ -435,7 +646,8 @@ def dbclust2pyocto(
         n_unassigned = len(cluster) - len(assigned_cluster_ids)
         log_fn = logger.info if len(events) > 0 else logger.debug
         log_fn(
-            f"\t{len(events)} events found in cluster#{i} with {len(cluster)} picks"
+            f"\t[tolerance={associator_cfg.pick_match_tolerance:.2f}, input_cluster#{i}] "
+            f"{len(events)} events found with {len(cluster)} picks"
             f" ({n_unassigned} unassigned by PyOcto)"
         )
 
@@ -507,6 +719,16 @@ def dbclust2pyocto(
             logger.info(
                 "PyOcto did not find any cluster. Returning original dbclust clusters."
             )
+            # this early return used to skip the moveout re-fusion
+            # entirely, even though myclust.clusters (the original, pre-PyOcto
+            # dbclust/Leiden clusters) can carry the exact same moveout
+            # fragmentation the re-fusion elsewhere in this function exists to
+            # undo. Apply it here too, on myclust.clusters/myclust.preloc,
+            # before returning — myclust.preloc may be None (no PyOcto prelocs
+            # were ever produced on this path), in which case there is nothing
+            # for the fusion to keep aligned, so skip it.
+            if _apply_moveout_refusion(myclust, myclust.clusters, myclust.preloc):
+                myclust.n_clusters = len(myclust.clusters)
             return myclust
         return None
 
@@ -523,11 +745,46 @@ def dbclust2pyocto(
     # exception so that the caller can use it as a fallback.
     try:
         pyocto_clusters = aggregate_pick_to_cluster_with_common_event_id(
-            pyocto_clusters, all_picks_list, min_com_phases
+            pyocto_clusters,
+            all_picks_list,
+            min_com_phases,
+            pick_match_tolerance=associator_cfg.pick_match_tolerance,
         )
     except MultipleEventIDsWithSameAgencyError as e:
+        # Re-fuse moveout fragments on the partial result too. The window that
+        # produces a fragment is precisely the one that exhausts all tolerances
+        # (an unresolvable same-agency conflict), so without this the fix is dead
+        # on the very path the pipeline actually returns. pyocto_clusters is the
+        # same list object as newclust.clusters (assigned above; aggregate mutates
+        # it in place and never changes the cluster count), so fusing it and
+        # refreshing n_clusters yields a valid, fragment-free partial.
+        n_fused = _apply_moveout_refusion(myclust, pyocto_clusters, pyocto_preloc)
+        if n_fused:
+            # a fusion shrinks newclust.clusters but
+            # clusters_stability was only ever set to the pre-fusion
+            # placeholder [1] * n_clusters (above) and clusters_pyocto_ops
+            # is never set at all on this exception path (unlike the
+            # success path below, which recomputes both). Re-align both
+            # to the post-fusion cluster count so a future consumer that
+            # zips clusters with clusters_stability/clusters_pyocto_ops by
+            # index does not silently read mismatched data.
+            newclust.n_clusters = len(newclust.clusters)
+            newclust.clusters_stability = np.array(
+                [1.0] * newclust.n_clusters, dtype=float
+            )
+            newclust.clusters_pyocto_ops = [
+                {"op": "passthrough", "parent_stabilities": []}
+                for _ in range(newclust.n_clusters)
+            ]
         e.partial_result = newclust
         raise
+
+    # Re-fuse moveout fragments: the Leiden moveout edge filter can split the
+    # picks of one physical event across two PyOcto events (near stations vs
+    # far stations). Runs before the cluster count is taken so a fusion is
+    # reflected in newclust.n_clusters. Only meaningful when the moveout
+    # filter was active.
+    _apply_moveout_refusion(myclust, pyocto_clusters, pyocto_preloc)
 
     newclust.clusters = pyocto_clusters
     newclust.n_clusters = len(newclust.clusters)
@@ -584,6 +841,260 @@ def dbclust2pyocto(
             delattr(myclust, attr)
 
     return newclust
+
+
+def _apply_moveout_refusion(
+    myclust, clusters: List[List[Phase]], prelocs: Optional[List[dict]]
+) -> int:
+    """Re-fuse Leiden moveout fragments in ``clusters``, if the moveout filter
+    was active for ``myclust``. Returns the number of fusions performed (0 if
+    the filter was not active, or if ``prelocs`` is None).
+
+    this wraps the "check _moveout_fusion_params, then call
+    _refuse_fragment_events" pattern that used to be duplicated verbatim at
+    three call sites (the delegate_dbclust early return, the
+    MultipleEventIDsWithSameAgencyError exception path, and the normal
+    success path), so a future change to how/when re-fusion runs only needs
+    to be made once.
+    """
+    if prelocs is None:
+        return 0
+    moveout_vps = _moveout_fusion_params(myclust)
+    if moveout_vps is None:
+        return 0
+    return _refuse_fragment_events(
+        clusters,
+        prelocs,
+        *moveout_vps,
+        min_station_count=myclust.min_station_count,
+        max_search_dist=myclust.max_search_dist,
+    )
+
+
+def _moveout_fusion_params(myclust) -> Optional[Tuple[float, float]]:
+    """Return (vp, vs) of the Leiden moveout filter if it is active, else None.
+
+    The moveout filter (leiden.py) drops edges whose P-P or S-S travel-time
+    difference exceeds dist/vp or dist/vs, which can split the picks of one
+    physical event across several PyOcto clusters. The re-fusion below is only
+    meaningful when that filter was the thing that caused the split.
+
+    Clusterize always sets leiden_vp/leiden_vs to non-zero
+    defaults (6.0/3.5) regardless of clustering_method, so a plain
+    getattr(..., None) check cannot tell "the filter ran" from "these
+    attributes just hold their defaults". The vp > 0 and vs > 0 check below
+    is not a fallback for that — it is the actual activation condition:
+    leiden.py's moveout filter is gated by that exact same "vp > 0 and
+    vs > 0" test (see leiden_cluster(), dist_km_matrix computation), so this
+    mirrors it precisely rather than approximating it. If that gating
+    condition in leiden.py ever changes, this must be updated to match.
+    """
+    if myclust.clustering_method != "leiden":
+        return None
+    vp = getattr(myclust, "leiden_vp", None)
+    vs = getattr(myclust, "leiden_vs", None)
+    if not vp or not vs or vp <= 0 or vs <= 0:
+        return None
+    return (float(vp), float(vs))
+
+
+def _refuse_fragment_events(
+    clusters: List[List[Phase]],
+    prelocs: List[dict],
+    vp: float,
+    vs: float,
+    min_station_count: int,
+    max_search_dist: float,
+    station_ratio_max: float = 0.35,
+    min_pairs_checked: int = 3,
+) -> int:
+    """Fuse small PyOcto events back into a compatible larger one after the
+    Leiden moveout filter has split them apart.
+
+    The moveout edge filter can remove the pick-to-pick edges that link the
+    near stations of one event to its far stations, leaving the near-station
+    picks as their own small PyOcto event next to the larger, correct one.
+    A pick in such a fragment violates the moveout bound with almost none of
+    the main event's picks by construction, so a compatibility test on the
+    cross pick-pairs is a safe way to tell "fragment of the same event" from
+    "a genuinely separate nearby event": two distinct events that are close
+    enough in time to be confused still have first-arrival offsets between
+    their stations that exceed the moveout bounds.
+
+    In place: fuses ``clusters[i]`` into ``clusters[j]`` (and vice-versa) by
+    concatenating and de-duplicating the picks; the larger event's preloc is
+    kept and the smaller one dropped, so ``prelocs`` stays aligned. Returns the
+    number of fusions performed.
+
+    Args:
+        min_station_count: the pipeline's configured minimum station count
+            for a credible event (``Clusterize.min_station_count``). Used to
+            derive the fragment/target size gates below instead of
+            introducing independent constants — see "size gates" comment.
+        max_search_dist: the pseudo-travel-time edge threshold (seconds) the
+            clustering step itself uses to decide whether two picks could
+            plausibly belong to the same event (``Clusterize.max_search_dist``).
+            Reused here, instead of a separate hardcoded value, as the origin
+            time compatibility bound: two events are only merge-candidates if
+            their preloc origin times are at least as close as that same
+            threshold, since anything farther apart wouldn't have been
+            considered the same event by the clustering step either.
+
+    Design note (all remaining tunables were previously independent magic
+    numbers; each is now either derived from an existing config value above,
+    a structural bound with no free parameter, or reduced to the one ratio
+    below that is genuinely an empirical choice, not a symptom of one):
+        - frag_max_st / target_min_st (used to be separate hardcoded
+          constants 6 and 10): replaced by min_station_count + 1 and
+          2 * min_station_count respectively, so they track the pipeline's
+          own definition of "enough stations for a credible event" instead
+          of drifting independently from it.
+        - max_origin_diff_s (used to be a hardcoded 10.0s): replaced by
+          max_search_dist directly (see Args above) instead of an
+          unrelated fixed number of seconds.
+        - min_compat_fraction (used to be a configurable-looking float
+          always called with 1.0): removed. cross_moveout_ok() now always
+          requires every checked cross pair to be compatible — the
+          "fraction" machinery existed for a flexibility nothing ever used.
+        - max_rounds (used to be a hardcoded 5): removed from the public
+          signature. It was never a real tuning knob — the fusion loop
+          already stops as soon as a round performs no fusion — so it is
+          now derived locally as len(clusters), the true structural upper
+          bound (each round fuses at most one pair, removing one cluster).
+    """
+    frag_max_st = min_station_count + 1
+    target_min_st = 2 * min_station_count
+    max_origin_diff_s = max_search_dist
+    max_rounds = len(clusters)
+
+    def stations(cluster: List[Phase]) -> set:
+        seen = set()
+        for p in cluster:
+            if p.coord is None:
+                continue
+            seen.add((p.network, p.station))
+        return seen
+
+    def cross_moveout_ok(a: List[Phase], b: List[Phase]) -> Tuple[bool, int, int]:
+        """(compatible, n_ok, n_checked) over P-P / S-S cross pairs.
+
+        P-S pairs are exempt (the moveout filter also leaves them unbounded).
+        STRICT: every checked pair must satisfy the moveout bound — no slack,
+        no fraction. (see design note above: min_compat_fraction used to
+        make this a configurable threshold, but every caller passed 1.0, so
+        the fraction bookkeeping was complexity with no exercised behavior;
+        this now short-circuits on the first incompatible pair instead of
+        exhaustively scoring all pairs, which is both simpler and cheaper.)
+
+        Also requires at least min_pairs_checked cross pairs before deciding
+        compatibility. With very few pairs (e.g. a single shared station),
+        one coincidentally-compatible pair would otherwise count as 100%
+        evidence and fuse two genuinely distinct nearby events, while a
+        single noisy pick could otherwise veto a legitimate fusion.
+        """
+        n_checked = 0
+        n_ok = 0
+        for pa in a:
+            if pa.coord is None:
+                continue
+            la1, lo1 = pa.coord["latitude"], pa.coord["longitude"]
+            for pb in b:
+                if pb.coord is None:
+                    continue
+                la2, lo2 = pb.coord["latitude"], pb.coord["longitude"]
+                if pa.is_p() and pb.is_p():
+                    v = vp
+                elif pa.is_s() and pb.is_s():
+                    v = vs
+                else:
+                    continue
+                d = _haversine_km(la1, lo1, la2, lo2)
+                dt = abs(float(pa.time) - float(pb.time))
+                n_checked += 1
+                if dt <= d / v:
+                    n_ok += 1
+                else:
+                    return False, n_ok, n_checked
+        if n_checked < min_pairs_checked:
+            return False, n_ok, n_checked
+        return True, n_ok, n_checked
+
+    n_fused = 0
+    for _ in range(max_rounds):
+        fused = False
+        n_clusters = len(clusters)
+        for i in range(n_clusters):
+            if fused or len(clusters[i]) < 3:
+                continue
+            small_stations = stations(clusters[i])
+            if len(small_stations) > frag_max_st:
+                continue
+            small_preloc = prelocs[i]
+            if not small_preloc or not small_preloc.get("time"):
+                continue
+            # Safety: a fragment is made of detector picks; if any pick already
+            # belongs to a catalog event, it is not a moveout fragment and is
+            # left alone.
+            if any(p.event_id for p in clusters[i]):
+                continue
+            t_i = small_preloc["time"].timestamp()
+            for j in range(n_clusters):
+                if j == i or len(clusters[j]) < 2 * len(clusters[i]):
+                    continue
+                large_stations = stations(clusters[j])
+                n_large = len(large_stations)
+                if n_large < target_min_st:
+                    continue
+                if len(small_stations) > station_ratio_max * n_large:
+                    continue
+                large_preloc = prelocs[j]
+                if not large_preloc or not large_preloc.get("time"):
+                    continue
+                if abs(t_i - large_preloc["time"].timestamp()) > max_origin_diff_s:
+                    continue
+                ok, n_ok, n_pairs = cross_moveout_ok(clusters[i], clusters[j])
+                if not ok:
+                    continue
+                logger.info(
+                    f"moveout fragment re-fusion: fusing {len(clusters[i])} picks "
+                    f"({len(small_stations)} stations) into {len(clusters[j])} picks "
+                    f"({n_large} stations); cross-pair moveout fraction={n_ok / n_pairs:.2f} "
+                    f"({n_ok}/{n_pairs}); "
+                    f"origin dt={abs(t_i - large_preloc['time'].timestamp()):.2f}s"
+                )
+                clusters[j] = _dedup_picks_prefer_event_id(clusters[j] + clusters[i])
+                clusters.pop(i)
+                prelocs.pop(i)
+                n_fused += 1
+                fused = True
+                break
+        if not fused:
+            break
+    if n_fused:
+        logger.info(f"moveout fragment re-fusion: {n_fused} fusion(s) applied")
+    return n_fused
+
+
+def _dedup_picks_prefer_event_id(picks) -> List[Phase]:
+    """De-duplicate picks by physical identity (network, station, phase
+    family, time), preferring a pick that carries an event_id over one that
+    doesn't when both share that identity. Order of ``picks`` sets which
+    duplicate is kept as the non-preferred candidate (first occurrence),
+    consistent across every caller.
+
+    Do NOT use set(picks): even though Phase.__hash__ intentionally ignores
+    channel/location (see Phase.__hash__ docstring), set() picks an
+    arbitrary survivor per hash bucket instead of preferring the pick with
+    an event_id, and there is no guarantee the dropped pick was truly
+    redundant across e.g. differing agency provenance.
+    """
+    seen: dict = {}
+    for p in picks:
+        key = (p.network, p.station, p.phase[0].upper(), p.time.datetime)
+        cur = seen.get(key)
+        if cur is None or (cur.event_id is None and p.event_id is not None):
+            seen[key] = p
+    return list(seen.values())
 
 
 def cluster_merge(
@@ -670,22 +1181,7 @@ def cluster_merge_one_pass(
 
         # Merge the clusters
         c1, c2 = clusters[c1_idx], clusters[c2_idx]
-        # Deduplicate by physical pick identity (network, station, phase family,
-        # time), preferring picks with an event_id over those without. Do NOT use
-        # set(c1 + c2): even though Phase.__hash__ intentionally ignores
-        # channel/location (see Phase.__hash__ docstring), set() picks an
-        # arbitrary survivor per hash bucket instead of preferring the pick with
-        # an event_id, and there is no guarantee the dropped pick was truly
-        # redundant across e.g. differing agency provenance.
-        seen: dict = {}
-        for p in chain(c1, c2):
-            key = (p.network, p.station, p.phase[0].upper(), p.time.datetime)
-            if key not in seen or (
-                seen[key].event_id is None and p.event_id is not None
-            ):
-                seen[key] = p
-        merged_cluster = list(seen.values())
-        clusters[c1_idx] = merged_cluster
+        clusters[c1_idx] = _dedup_picks_prefer_event_id(chain(c1, c2))
 
         # Update prelocation data
         preloc_c1 = preloc[c1_idx]
@@ -705,7 +1201,10 @@ def cluster_merge_one_pass(
 
 
 def aggregate_pick_to_cluster_with_common_event_id(
-    clusters: List[List[Phase]], picks: List[Phase], pick_count_threshold: int = 3
+    clusters: List[List[Phase]],
+    picks: List[Phase],
+    pick_count_threshold: int = 3,
+    pick_match_tolerance: Optional[float] = None,
 ) -> List[List[Phase]]:
     """
     Aggregates picks into clusters based on common event IDs.
@@ -724,10 +1223,21 @@ def aggregate_pick_to_cluster_with_common_event_id(
     Returns:
         List[List[Phase]]: The updated list of clusters with aggregated picks.
     """
+    tol_label = (
+        f"tolerance={pick_match_tolerance:.2f}"
+        if pick_match_tolerance is not None
+        else "tolerance=?"
+    )
     logger.info(
-        f"aggregate_pick_to_cluster_with_common_event_id(): {len(clusters)} clusters"
+        f"aggregate_pick_to_cluster_with_common_event_id() [{tol_label}]: "
+        f"{len(clusters)} clusters"
     )
     for cluster_idx, cluster in enumerate(clusters):
+        # Note: cluster_idx here indexes `clusters` (PyOcto's output, aggregated
+        # picks already merged in) — a different indexing than the input_cluster#i
+        # used in dbclust2pyocto()'s "events found" log (PyOcto's input, before
+        # splitting/merging). Do not assume the two indices refer to the same cluster.
+        tag = f"[{tol_label}, output_cluster#{cluster_idx}]"
         # Count the occurrences of event_id in the cluster
         event_id_counts = Counter([p.event_id for p in cluster if p.event_id])
         if event_id_counts:
@@ -735,7 +1245,7 @@ def aggregate_pick_to_cluster_with_common_event_id(
                 f"{eid.split('/')[-1]}({count} picks {'> threshold, will aggregate' if count > pick_count_threshold else f'<= threshold({pick_count_threshold}), skipped'})"
                 for eid, count in event_id_counts.most_common()
             )
-            logger.info(f"Cluster has picks from known event(s): {counts_str}")
+            logger.info(f"{tag} Cluster has picks from known event(s): {counts_str}")
 
         # count the number of agency in each event_id in event_id_counts
         # (only for event_ids that actually exceed the threshold and are
@@ -759,7 +1269,7 @@ def aggregate_pick_to_cluster_with_common_event_id(
                     agency_event_map[agency] = set()
                 agency_event_map[agency].add(event_id)
         if agency_event_map:
-            logger.info(f"agency_event_map: {agency_event_map}")
+            logger.info(f"{tag} agency_event_map: {agency_event_map}")
 
         # Detect agencies associated with multiple event_ids
         duplicate_agency_event_ids = {
@@ -769,7 +1279,18 @@ def aggregate_pick_to_cluster_with_common_event_id(
         }
 
         if duplicate_agency_event_ids:
+            logger.warning(
+                f"{tag} UNRESOLVED: {sum(len(v) for v in duplicate_agency_event_ids.values())} "
+                f"event_id(s) from the same agency still share this cluster after "
+                f"aggregation — {duplicate_agency_event_ids}. This tolerance attempt "
+                f"will be rejected for the whole window."
+            )
             raise MultipleEventIDsWithSameAgencyError(duplicate_agency_event_ids)
+        elif event_id_agency:
+            logger.info(
+                f"{tag} RESOLVED: {len(event_id_agency)} known event_id(s) aggregated "
+                f"into this cluster with no same-agency conflict."
+            )
 
         # Check if any event_id has a count > pick_count_threshold
         if not any(count > pick_count_threshold for count in event_id_counts.values()):
@@ -868,7 +1389,10 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
-    return 2 * R * np.arcsin(np.sqrt(a))
+    # Clip before sqrt/arcsin: floating-point rounding can push `a` a hair
+    # above 1.0 for near-antipodal or identical points, which would make
+    # arcsin raise.
+    return 2 * R * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
 
 
 def _ps_pair_confidence(p_pick: Phase, s_pick: Phase) -> Optional[str]:

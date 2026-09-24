@@ -967,6 +967,12 @@ class Associator:
     adaptive_min_pick_fraction: bool = False
     # Floor to avoid explosively low min_pick_fraction values when adaptive mode is on
     min_pick_fraction_floor: float = 0.10
+    # Exponent applied to 1/n_event_ids when scaling min_pick_fraction down for
+    # clusters with multiple known event_ids (see adaptive_min_pick_fraction).
+    # Lower values decay more slowly, keeping median_proba's influence visible
+    # up to higher event counts before saturating at the floor; higher values
+    # (up to 0.5, equivalent to 1/sqrt(n)) decay faster and reach the floor sooner.
+    min_pick_fraction_event_count_exponent: float = 0.3
     # DL picker method_ids used to compute median proba for adaptive scaling (case-insensitive)
     dl_method_ids: List[str] = field(default_factory=lambda: ["PHASENET"])
     # Minimum S/P pick ratio to accept a PyOcto cluster (None = disabled)
