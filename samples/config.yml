@@ -225,8 +225,23 @@ pyocto:
         # n_p_and_s_picks: *MIN_P_AND_S
         n_p_and_s_picks: 0
         # Adaptive min_pick_fraction based on median DL pick probability
-        # adaptive_min_pick_fraction: true
-        # min_pick_fraction_floor: 0.10
+        adaptive_min_pick_fraction: true
+        min_pick_fraction_floor: 0.10
+        # Exponent applied to 1/n_event_ids when scaling min_pick_fraction down
+        # for clusters with multiple known event_ids. Lower = decays slower
+        # (keeps median_proba's influence visible up to higher event counts).
+        #
+        # Note: no exponent value here is a drop-in equivalent of the
+        # pre-existing baseline (min_pick_fraction * median_proba, with no
+        # event-count factor at all). Per
+        # TUNING_HANDOFF_close_in_time_not_in_space.md ("Ce point n'est pas
+        # encore résolu"), 0.3 (the dbclust/config.py default) recovered the
+        # target event on the n=4 test cluster but also wrongly merged a
+        # ~290km Swiss event into an alpine swarm; the doc calls for
+        # retesting 0.25/0.2/etc. and states that has not been done yet.
+        # Leave this commented out and rely on the config.py default (0.3)
+        # until a value is actually validated.
+        # min_pick_fraction_event_count_exponent: 0.3  # dbclust/config.py default
         # dl_method_ids: ["PHASENET"]
 
       velocity_model:

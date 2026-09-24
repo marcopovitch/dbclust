@@ -90,13 +90,24 @@ def _build_edges(
         dt_max = np.where(pp, d / vp, np.where(ss, d / vs, np.inf))
         incompatible = abs_dt > dt_max
         n_incompatible = int(np.sum(incompatible))
+        n_total_edges = len(rows)
         if n_incompatible:
+            frac = n_incompatible / n_total_edges
             keep = ~incompatible
             rows, cols = rows[keep], cols[keep]
-            logger.info(
-                "Leiden moveout filter: removed %d incompatible edge(s) "
-                "(PP>d/vp, SS>d/vs, or PS-cross>d/vs).", n_incompatible,
+            msg = (
+                f"Leiden moveout filter: removed {n_incompatible}/{n_total_edges} "
+                f"incompatible edge(s) ({frac:.0%}) "
+                f"(PP>dist/vp or SS>dist/vs; PS pairs unfiltered)."
             )
+            if frac > 0.5:
+                logger.warning(
+                    "%s — HIGH removal fraction: this cluster's station "
+                    "coordinates or the configured vp/vs may be inconsistent "
+                    "with the data (silent-fragmentation guard).", msg,
+                )
+            else:
+                logger.info("%s", msg)
 
     edge_w = probas[rows] * probas[cols]
 

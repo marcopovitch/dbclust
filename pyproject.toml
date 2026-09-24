@@ -19,6 +19,14 @@ dependencies = [
     "icecream",
     "jinja2",
     "numpy",
+    # Pinned exactly, not >=1.4.2. patch_obspy_nll.sh applies a
+    # literal source patch to the installed obspy/io/nlloc/core.py, tied to
+    # the 1.4.2 source (see AGENTS.md: "requires specific patches for
+    # NonLinLoc and ObsPy"). A newer obspy could fail the patch outright, or
+    # (since `patch --batch --forward` allows fuzzy matching) apply it to the
+    # wrong place or silently skip it as already-applied, silently
+    # reintroducing the pick-matching bug the patch exists to fix. Re-pin
+    # exactly until the patch has been revalidated against a newer obspy.
     "obspy==1.4.2",
     "pandas",
     "requests",
