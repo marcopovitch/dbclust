@@ -450,6 +450,7 @@ class Clusterize(object):
         # post-NLL weighted gate (NllLoc).
         reserve_enabled=False,
         reserve_tt_tolerance_s=1.0,
+        reserve_max_station_dist_km=300.0,  # bounds the S-P delay of the bypass window
         reserve_pool=None,
     ):
         # clusters is a list of cluster :
@@ -513,6 +514,7 @@ class Clusterize(object):
         self.min_station_with_P_and_S_score_override = min_station_with_P_and_S_score_override
         self.reserve_enabled = reserve_enabled
         self.reserve_tt_tolerance_s = reserve_tt_tolerance_s
+        self.reserve_max_station_dist_km = reserve_max_station_dist_km
         # Reserve pool (list of S-band Phase objects). Reassigned per time
         # window by the pipeline (core.py); kept empty by default.
         self.reserve_pool = list(reserve_pool) if reserve_pool else []
@@ -1602,16 +1604,16 @@ class Clusterize(object):
         """Existence check only — never an acceptance decision.
 
         Returns True when the reserve pool holds at least one S pick at one
-        of the cluster's P-only stations, inside a generous window around the
-        cluster picks. Used to bypass the pre-NLL min_station_with_P_and_S
+        of the cluster's P-only stations, inside a generous window after that
+        station's P pick. Used to bypass the pre-NLL min_station_with_P_and_S
         gate when reserve consolidation is enabled, so the event gets the
         chance to be enriched with S picks by NllLoc (the definitive
         decision is the post-NLL weighted gate).
 
-        The window is generous on purpose: picks before the first cluster
-        pick are impossible (S always arrives after P), picks after the last
-        one are bounded by the maximum S-P delay at the maximum search
-        distance with the homogeneous model, d*(1/leiden_vs - 1/leiden_vp).
+        The window is anchored on the station's own P pick: an S can't
+        arrive before it, and the S-P delay is bounded by the homogeneous
+        model at the maximum station distance (km),
+        reserve_max_station_dist_km * (1/leiden_vs - 1/leiden_vp).
         """
         if not self.reserve_pool:
             return False
@@ -1624,23 +1626,24 @@ class Clusterize(object):
         if not p_only_stations:
             return False
 
-        t_min = min(p.time for p in cluster)
-        t_max = max(p.time for p in cluster)
-        max_search_dist_km = self.max_search_dist if self.max_search_dist else 300.0
-        max_ps_delay = max_search_dist_km * (
+        # P times of the P-only stations (several P per station are possible)
+        p_times = defaultdict(list)
+        for p in cluster:
+            station_code = f"{p.network}.{p.station}"
+            if station_code in p_only_stations and p.is_p():
+                p_times[station_code].append(p.time)
+
+        max_ps_delay = self.reserve_max_station_dist_km * (
             1.0 / self.leiden_vs - 1.0 / self.leiden_vp
         )
-        t_start = t_min - self.reserve_tt_tolerance_s
-        t_end = t_max + self.reserve_tt_tolerance_s + max_ps_delay
+        tol = self.reserve_tt_tolerance_s
 
         for ph in self.reserve_pool:
             if not ph.is_s():
                 continue
-            if (
-                f"{ph.network}.{ph.station}" in p_only_stations
-                and t_start <= ph.time <= t_end
-            ):
-                return True
+            for t_p in p_times.get(f"{ph.network}.{ph.station}", ()):
+                if t_p - tol <= ph.time <= t_p + max_ps_delay + tol:
+                    return True
         return False
 
     def _check_pre_nll_filter(

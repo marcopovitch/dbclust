@@ -608,6 +608,11 @@ class ReservePickConfig:
             difference d*(1/vs - 1/vp) vs the observed one.
         ps_count_weight: weight of a reserve-completed P+S station in
             ps_with_both (min_station_with_P_and_S gate, ps_ratio).
+        max_station_dist_km: maximum epicenter-station distance (km) used
+            to bound the S-P delay, max_station_dist_km * (1/vs - 1/vp), of
+            the pre-NLL bypass window. None -> derived from
+            cluster.max_search_dist (pseudo travel time, s) *
+            cluster.average_velocity (km/s).
     """
 
     enable: bool = False
@@ -615,6 +620,7 @@ class ReservePickConfig:
     tt_tolerance_s: float = 1.0
     ps_diff_tolerance_s: float = 0.5
     ps_count_weight: float = 0.5
+    max_station_dist_km: Optional[float] = None
 
 
 def validate_reserve_pick_config(
@@ -669,6 +675,14 @@ def validate_reserve_pick_config(
     if reserve_pick.tt_tolerance_s <= 0 or reserve_pick.ps_diff_tolerance_s <= 0:
         raise ValueError(
             "reserve_pick.tt_tolerance_s and ps_diff_tolerance_s must be > 0."
+        )
+
+    if (
+        reserve_pick.max_station_dist_km is not None
+        and reserve_pick.max_station_dist_km <= 0
+    ):
+        raise ValueError(
+            "reserve_pick.max_station_dist_km must be > 0 (or unset)."
         )
 
 

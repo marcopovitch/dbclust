@@ -11,6 +11,7 @@ from dbclust.clusterize import Clusterize
 from dbclust.phase import Phase
 from datetime import datetime
 import numpy as np
+import pytest
 
 # Configure logger
 logger = logging.getLogger("test_stability")
@@ -41,18 +42,25 @@ def create_test_phases():
     ]
 
 
-def test_basic_clustering():
-    """Test that basic clustering maintains stability consistency."""
-    print("Testing basic clustering...")
-    phases = create_test_phases()
-    
-    clust = Clusterize(
-        phases=phases, 
-        min_cluster_size=3, 
+def make_clusterize():
+    """Clusterize the test phases (shared by test_basic_clustering and test_event_id_merge)."""
+    return Clusterize(
+        phases=create_test_phases(),
+        min_cluster_size=3,
         average_velocity=5.0,
         min_com_phases=2
     )
-    
+
+
+@pytest.fixture
+def clust():
+    return make_clusterize()
+
+
+def test_basic_clustering(clust):
+    """Test that basic clustering maintains stability consistency."""
+    print("Testing basic clustering...")
+
     # Verify initial consistency
     assert len(clust.clusters) == len(clust.clusters_stability), \
         f"Initial mismatch: {len(clust.clusters)} clusters vs {len(clust.clusters_stability)} stabilities"
@@ -64,7 +72,6 @@ def test_basic_clustering():
             print(f"  Note: Cluster {i} has high stability {stab} (> 1.0)")
     
     print(f"✓ Basic clustering: {len(clust.clusters)} clusters with valid stabilities")
-    return clust
 
 
 def test_event_id_merge(clust):
@@ -75,9 +82,8 @@ def test_event_id_merge(clust):
     clust.cluster_merge_based_on_eventid()
     
     # Verify consistency after merge (should be maintained or recovered)
-    if len(clust.clusters) != len(clust.clusters_stability):
-        print(f"✗ Consistency check failed: {len(clust.clusters)} clusters vs {len(clust.clusters_stability)} stabilities")
-        return False
+    assert len(clust.clusters) == len(clust.clusters_stability), \
+        f"Consistency check failed: {len(clust.clusters)} clusters vs {len(clust.clusters_stability)} stabilities"
     
     # Verify stability values are reasonable (HDBSCAN can return values > 1.0)
     for i, stab in enumerate(clust.clusters_stability):
@@ -86,7 +92,6 @@ def test_event_id_merge(clust):
             print(f"  Note: Cluster {i} has high stability {stab} after merge (> 1.0)")
     
     print(f"✓ Event ID merge: {initial_count} -> {len(clust.clusters)} clusters, stability preserved")
-    return True
 
 
 def test_merge_operation():
@@ -152,12 +157,11 @@ def main():
     
     try:
         # Test 1: Basic clustering
-        clust = test_basic_clustering()
-        
-        # Test 2: Event ID merge
-        if not test_event_id_merge(clust):
-            print("✗ Event ID merge test failed")
-            return False
+        clust = make_clusterize()
+        test_basic_clustering(clust)
+
+        # Test 2: Event ID merge (on the same clustering)
+        test_event_id_merge(clust)
         
         # Test 3: Merge operation
         test_merge_operation()

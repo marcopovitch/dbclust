@@ -373,6 +373,11 @@ class NllLoc(object):
         self.reserve_ps_count_weight = reserve_ps_count_weight
         self.reserve_vp = reserve_vp
         self.reserve_vs = reserve_vs
+        # Reserve picks consolidated into ACCEPTED events: {"NET.STA": [timestamps]}.
+        # Consecutive windows overlap, so the pipeline re-imports some reserve
+        # picks; it filters them against this record (core.merge_reserve_pool)
+        # so a pick is never consolidated into two events.
+        self.reserve_consumed: dict = defaultdict(list)
 
         logger.info(
             f"NllLoc initialized: MAD filter={'enabled' if enable_time_weight_outlier_filter else 'disabled'}, "
@@ -466,10 +471,14 @@ class NllLoc(object):
     def _hypocentral_distance_km(origin: Origin, coord: dict) -> Optional[float]:
         """Hypocentral distance (km) from an origin to a station coord dict
         ({"latitude", "longitude", "elevation"} — see Phase.coord)."""
-        if coord is None or not coord.get("latitude") or not coord.get("longitude"):
+        if (
+            coord is None
+            or coord.get("latitude") is None
+            or coord.get("longitude") is None
+        ):
             return None
         try:
-            _, _, epicentral_m = gps2dist_azimuth(
+            epicentral_m, _, _ = gps2dist_azimuth(
                 origin.latitude,
                 origin.longitude,
                 coord["latitude"],
@@ -506,8 +515,11 @@ class NllLoc(object):
         neighboring event of the same window cannot reuse them.
 
         Args:
-            event: the pass-1 event being prepared for pass 2.
-            origin: the pass-1 preferred origin (NLL, not the PyOcto preloc).
+            event: the pass-1 event being prepared for pass 2 (after the
+                inter-pass cleanup).
+            origin: the preferred origin of that event — the pass-1 NLL
+                location (not the PyOcto preloc) whose arrivals carry the
+                inter-pass cleanup (e.g. gap_dist_max_km sets time_weight=0).
             reserve_picks: reserve pool for the current window (S-band Phase
                 objects); mutated in place (accepted candidates consumed).
 
@@ -517,8 +529,24 @@ class NllLoc(object):
         if not self.reserve_enabled or not reserve_picks:
             return event
 
-        # Active phases per station (pass-1 arrivals with time_weight != 0)
+        # Active phases per station (arrivals with time_weight != 0)
         station_phases = _station_phase_sets(event, origin.arrivals)
+
+        # Active P pick per station: the S-P anchor must be a P actually
+        # used by the location, not a deactivated one kept in event.picks
+        # (use_deactivated_arrivals=True).
+        picks_by_id = {p.resource_id: p for p in event.picks}
+        active_p_pick = {}
+        for arrival in origin.arrivals:
+            if not arrival.time_weight or not arrival.phase:
+                continue
+            if not arrival.phase.upper().startswith("P"):
+                continue
+            p = picks_by_id.get(arrival.pick_id)
+            if p is None or p.waveform_id is None:
+                continue
+            station_code = f"{p.waveform_id.network_code}.{p.waveform_id.station_code}"
+            active_p_pick.setdefault(station_code, p)
 
         # Stations holding ANY S pick in the event, active or not: skip them.
         # With use_deactivated_arrivals=True a deactivated S stays in
@@ -551,19 +579,8 @@ class NllLoc(object):
             if not candidates:
                 continue
 
-            # Anchor: the station's P pick, for the S-P coherence test
-            p_pick = next(
-                (
-                    p
-                    for p in event.picks
-                    if p.waveform_id is not None
-                    and f"{p.waveform_id.network_code}.{p.waveform_id.station_code}"
-                    == station_code
-                    and p.phase_hint
-                    and p.phase_hint.upper().startswith("P")
-                ),
-                None,
-            )
+            # Anchor: the station's active P pick, for the S-P coherence test
+            p_pick = active_p_pick.get(station_code)
             if p_pick is None:
                 continue
 
@@ -608,7 +625,17 @@ class NllLoc(object):
                 RESERVE_CONSOLIDATED_KEY: True,
                 "predicted_tt": round(d / self.reserve_vs, 3),
                 "residual_at_accept": round(residual, 3),
+                # read back by inject_spatialite (weighted ps_station_count
+                # and station_score stay coherent with this run's gate)
+                "ps_count_weight": self.reserve_ps_count_weight,
             })))
+            # Reserve picks belong to no cluster, so feed_picks_probabilities
+            # never annotates them: record the probability here (same format).
+            if candidate.proba is not None:
+                pick.comments.append(Comment(
+                    text='{"probability": {"name": "%s", "value": %.2f}}'
+                    % (candidate.agency or "undefined", candidate.proba)
+                ))
             event.picks.append(pick)
             # Single use: remove the accepted candidate from the pool by
             # identity (Phase __eq__ ignores proba, so list.remove() could
@@ -627,6 +654,88 @@ class NllLoc(object):
                 f"({len(event.picks)} picks total for pass 2)."
             )
         return event
+
+    def prune_reserve_consumed(self, cutoff: UTCDateTime) -> None:
+        """Forget consumed reserve picks older than cutoff (rolling pool bound)."""
+        cutoff_ts = float(cutoff.timestamp)
+        for station_code in list(self.reserve_consumed):
+            kept = [t for t in self.reserve_consumed[station_code] if t >= cutoff_ts]
+            if kept:
+                self.reserve_consumed[station_code] = kept
+            else:
+                del self.reserve_consumed[station_code]
+
+    @staticmethod
+    def _find_reserve_pick(event: Event, phase: Phase) -> Optional[Pick]:
+        """Return the reserve-consolidated pick of event matching a pool Phase."""
+        station_code = f"{phase.network}.{phase.station}"
+        t = float(phase.time)
+        for p in event.picks:
+            if (
+                p.waveform_id is not None
+                and f"{p.waveform_id.network_code}.{p.waveform_id.station_code}"
+                == station_code
+                and abs(float(p.time) - t) < 1e-3
+                and _reserve_pick_comment(p) is not None
+            ):
+                return p
+        return None
+
+    def _release_unused_reserve_picks(
+        self,
+        cat: Optional[Catalog],
+        consumed: List[Phase],
+        reserve_picks: List[Phase],
+    ) -> List[Phase]:
+        """Give back to the pool the reserve picks an event did not keep.
+
+        Called after nll_localisation() for each event. A consolidated
+        candidate is returned to the pool (so a neighboring event may still
+        use it) when:
+        - the localization produced no event (pass 2 failure, abort...);
+        - the final event references the pick from no arrival at all
+          (pass2_fallback revert to pass 1, pass 3 MAD removal): the orphan
+          pick is then also removed from event.picks.
+        A pick kept with time_weight=0 is still part of the event record and
+        stays consumed.
+
+        Returns:
+            List[Phase]: the candidates still consumed by the event.
+        """
+        if not consumed:
+            return []
+        if not cat or not cat.events:
+            reserve_picks.extend(consumed)
+            logger.info(
+                f"Reserve consolidation: {len(consumed)} S pick(s) released "
+                f"(no event produced)."
+            )
+            return []
+
+        e = cat.events[0]
+        referenced = {
+            a.pick_id for o in e.origins for a in o.arrivals if a.pick_id is not None
+        }
+        kept = []
+        for ph in consumed:
+            pick = self._find_reserve_pick(e, ph)
+            if pick is not None and pick.resource_id in referenced:
+                kept.append(ph)
+                continue
+            if pick is not None:
+                e.picks.remove(pick)
+            reserve_picks.append(ph)
+            logger.info(
+                f"Reserve consolidation: {ph.network}.{ph.station} S pick at "
+                f"{ph.time} released (not used by the final origin)."
+            )
+        return kept
+
+    def _commit_reserve_consumed(self, consumed: List[Phase]) -> None:
+        for ph in consumed:
+            self.reserve_consumed[f"{ph.network}.{ph.station}"].append(
+                float(ph.time.timestamp)
+            )
 
     def _get_zone_and_template(
         self, lat: float, lon: float, vel_file: str = None
@@ -1308,11 +1417,13 @@ class NllLoc(object):
             # Reserve S-pick consolidation (between pass 1 and pass 2):
             # complete stations holding an active P and no S at all, using
             # the reserve pool. Predictions come from the pass-1 NLL origin
-            # (no circularity, no extra NLL call). Accepted candidates are
+            # (no circularity, no extra NLL call). event2's origin is used,
+            # not o: it carries the inter-pass cleanup (gap_dist_max_km
+            # deactivations live on the copy only). Accepted candidates are
             # consumed from the pool (single use per window).
             if self.reserve_enabled and reserve_picks:
                 event2 = self._consolidate_reserve_s_picks(
-                    event2, o, reserve_picks
+                    event2, event2.preferred_origin(), reserve_picks
                 )
                 cat2.events[0] = event2
 
@@ -1324,15 +1435,20 @@ class NllLoc(object):
                     f"Writing {n_picks} picks ({n_arrivals} arrivals) to NLLOC_OBS file for second pass"
                 )
                 if n_picks != n_arrivals:
+                    # Reserve-consolidated picks have no pass-1 arrival by
+                    # design but are written to the obs file (the NLLOC_OBS
+                    # writer iterates event.picks) and used by pass 2: they
+                    # are not orphans.
                     orphan_picks = [
                         p for p in event2.picks
-                        if not any(a.pick_id == p.resource_id for a in event2.preferred_origin().arrivals)
+                        if _reserve_pick_comment(p) is None
+                        and not any(a.pick_id == p.resource_id for a in event2.preferred_origin().arrivals)
                     ]
-                    logger.info(
-                        f"Second pass: {n_picks - n_arrivals} orphan pick(s) without arrival "
-                        f"(will be ignored by NLL): "
-                        + ", ".join(f"{p.waveform_id.get_seed_string()} {p.phase_hint}" for p in orphan_picks)
-                    )
+                    if orphan_picks:
+                        logger.info(
+                            f"Second pass: {len(orphan_picks)} orphan pick(s) without arrival: "
+                            + ", ".join(f"{p.waveform_id.get_seed_string()} {p.phase_hint}" for p in orphan_picks)
+                        )
                 cat2.write(new_nll_obs_file, format="NLLOC_OBS")
                 loc_method_used = (
                     self.loc_method if force_loc_method is None else force_loc_method
@@ -1848,7 +1964,10 @@ class NllLoc(object):
             append (bool, optional): append new origin to self.catalog. Defaults to True.
             reserve_picks (list, optional): reserve S-band pool for the current
                 window, threaded to each event localization. Accepted candidates
-                are consumed in place (single use per window).
+                are consumed in place (single use per window); those an event
+                does not keep, or of an event rejected by the post-NLL gate,
+                are given back to the pool. Those of accepted events are
+                recorded in self.reserve_consumed.
 
         Returns:
             Catalog: returns a catalog of all computed origins
@@ -1858,12 +1977,17 @@ class NllLoc(object):
         logger.debug(f"Localization of {obs_files_pattern}")
 
         cat_results = []
+        # Reserve candidates consumed per localized event, keyed by id(event):
+        # released if the post-NLL gate rejects the event, committed to
+        # self.reserve_consumed if it is accepted.
+        reserve_consumed_by_event: dict = {}
 
         nll_obs_files = sorted(glob.glob(obs_files_pattern), key=sort_by_cluster_file)
         n_total = len(nll_obs_files)
         for i, nll_obs_file in enumerate(nll_obs_files):
             picks_set = picks[i] if picks and i < len(picks) else None
             logger.info(f"--- Event #{i + 1}/{n_total} [{os.path.basename(nll_obs_file)}] ---")
+            pool_before = list(reserve_picks) if reserve_picks else []
 
             try:
                 cat = self.nll_localisation(
@@ -1899,6 +2023,17 @@ class NllLoc(object):
                 )
                 cat = None
 
+            # Reserve candidates consumed by this event (identity diff: Phase
+            # __eq__ ignores proba/channel). Give back those it did not keep.
+            if pool_before:
+                remaining = {id(ph) for ph in reserve_picks}
+                consumed = [ph for ph in pool_before if id(ph) not in remaining]
+                consumed = self._release_unused_reserve_picks(
+                    cat, consumed, reserve_picks
+                )
+                if consumed and cat and cat.events:
+                    reserve_consumed_by_event[id(cat.events[0])] = consumed
+
             if not cat:
                 logger.debug(f"No loc obtained for {nll_obs_file} :/")
                 continue
@@ -1929,6 +2064,20 @@ class NllLoc(object):
 
         logger.info(f"--- Accept/reject summary ({len(cat_results)} localized event(s)) ---")
         mycatalog = self.get_catalog_from_results(cat_results)
+
+        # Reserve picks: commit those of accepted events, release those of
+        # rejected ones (back into the rolling pool for the next window).
+        if reserve_consumed_by_event:
+            accepted = {id(ev) for ev in mycatalog.events}
+            for event_key, consumed in reserve_consumed_by_event.items():
+                if event_key in accepted:
+                    self._commit_reserve_consumed(consumed)
+                else:
+                    reserve_picks.extend(consumed)
+                    logger.info(
+                        f"Reserve consolidation: {len(consumed)} S pick(s) "
+                        f"released (event rejected by the post-NLL gate)."
+                    )
 
         if append:
             self.catalog += mycatalog
