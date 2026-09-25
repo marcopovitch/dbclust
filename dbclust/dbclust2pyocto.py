@@ -596,7 +596,12 @@ def dbclust2pyocto(
         for (_, event_row), c in zip(event_rows, assigned_clusters):
             kept, dropped = filter_incoherent_ps_pairs(
                 c, event_row["latitude"], event_row["longitude"],
+                associator_cfg.zlim,
                 vp=myclust.apparent_vp, vs=myclust.apparent_vs,
+                epi_err_km=associator_cfg.ps_coherence_epi_err_km,
+                vel_err=associator_cfg.ps_coherence_vel_err,
+                pick_err_hard=associator_cfg.ps_coherence_pick_err_hard,
+                pick_err_soft=associator_cfg.ps_coherence_pick_err_soft,
                 external_candidates=pre_filter_unassigned,
             )
             cleaned_clusters.append(kept)
@@ -1413,33 +1418,54 @@ def _ps_pair_confidence(p_pick: Phase, s_pick: Phase) -> Optional[str]:
 
 def _ps_geometry_mismatch(
     p_pick: Phase, s_pick: Phase, event_lat: float, event_lon: float,
-    sp_inv: float, confidence: str, soft_factor: float,
-) -> Optional[Tuple[float, float, float]]:
-    """Return (sp_observed, sp_expected, dist_km) if the pair is geometrically
-    incompatible with an origin at (event_lat, event_lon) given `confidence`,
-    else None.
+    zlim: Tuple[float, float], sp_inv: float,
+    epi_err_km: float, vel_err: float, pick_err_s: float,
+) -> Optional[Tuple[float, float, float, float]]:
+    """Return (sp_observed, sp_expected_min, sp_expected_max, epi_km) if the
+    pair is geometrically incompatible with an epicenter at
+    (event_lat, event_lon), else None.
+
+    PyOcto depths are poorly constrained, so the origin depth is not trusted:
+    the expected S-P delay is the interval spanned by every source depth in
+    `zlim` (km). That interval is then widened by an explicit error budget,
+    each term covering one error source:
+      - `epi_err_km`: PyOcto epicenter error, shifts the epicentral distance;
+      - `vel_err`: relative error on the S-P slowness (Vp/Vs uncertainty);
+      - `pick_err_s`: absolute S-P picking error, dominant in the near field
+        where the S-P delay is short.
+    The pair is only flagged when no admissible source can explain the
+    observed delay.
     """
-    dist_km = _haversine_km(
+    epi_km = _haversine_km(
         p_pick.coord["latitude"], p_pick.coord["longitude"], event_lat, event_lon,
     )
-    sp_expected = dist_km * sp_inv
+    # Station elevation (m, above sea level) adds to the vertical path.
+    elevation_km = (p_pick.coord.get("elevation") or 0.0) / 1000.0
+    z_shallow = max(min(zlim) + elevation_km, 0.0)
+    z_deep = max(max(zlim) + elevation_km, 0.0)
+    dist_min = float(np.hypot(max(epi_km - epi_err_km, 0.0), z_shallow))
+    dist_max = float(np.hypot(epi_km + epi_err_km, z_deep))
+    sp_expected_min = max(dist_min * sp_inv * (1 - vel_err) - pick_err_s, 0.0)
+    sp_expected_max = dist_max * sp_inv * (1 + vel_err) + pick_err_s
     sp_observed = s_pick.time - p_pick.time
-    ratio = sp_observed / sp_expected if sp_expected > 0 else np.inf
 
-    if confidence == "hard":
-        mismatch = ratio > 1.5 or ratio < 1 / 1.5
-    else:
-        mismatch = ratio > soft_factor or ratio < 1 / soft_factor
-    return (sp_observed, sp_expected, dist_km) if mismatch else None
+    mismatch = sp_observed > sp_expected_max or sp_observed < sp_expected_min
+    return (
+        (sp_observed, sp_expected_min, sp_expected_max, epi_km) if mismatch else None
+    )
 
 
 def filter_incoherent_ps_pairs(
     cluster_phases: List[Phase],
     event_lat: float,
     event_lon: float,
+    zlim: Tuple[float, float],
     vp: float,
     vs: float,
-    soft_factor: float = 3.0,
+    epi_err_km: float = 10.0,
+    vel_err: float = 0.15,
+    pick_err_hard: float = 0.5,
+    pick_err_soft: float = 1.0,
     external_candidates: Optional[List[Phase]] = None,
 ) -> Tuple[List[Phase], List[Phase]]:
     """Drop same-station P/S picks whose local S-P delay is incompatible with
@@ -1449,19 +1475,24 @@ def filter_incoherent_ps_pairs(
     source distance via the S-P delay (dist ~= (t_S - t_P) / (1/vs - 1/vp)).
     If PyOcto assigns both picks to an origin far enough that the implied
     travel-time difference cannot match the observed S-P delay, at least one
-    of the two picks does not belong to this origin.
+    of the two picks does not belong to this origin. Only the origin's
+    epicenter is used: its depth is replaced by the admissible `zlim` (km)
+    range, since PyOcto depths are unreliable (see _ps_geometry_mismatch).
+
+    The expected S-P interval is widened by an error budget (`epi_err_km`,
+    `vel_err`, and a picking error chosen by pairing confidence).
 
     Confidence in the pairing depends on event_id/agency provenance:
       - same non-null event_id on both picks: catalog-confirmed pair -> hard
-        rule, drop both picks on any geometric incompatibility.
+        rule, picking error `pick_err_hard`.
       - different non-null event_id from the *same* agency: the agency itself
         distinguished two events -> not a real pair, each pick is judged on
         its own (no S-P coherence check applied).
       - different non-null event_id from different agencies, or either pick
         missing an event_id (automatic picks): unconfirmed pairing -> soft
-        rule, drop both picks but only on a gross mismatch (observed S-P
-        delay off by more than `soft_factor`) — which of the two picks is
-        the foreign one cannot be determined from the pair alone.
+        rule, larger picking error `pick_err_soft`.
+    On a mismatch both picks are dropped: which of the two is the foreign
+    one cannot be determined from the pair alone.
 
     `external_candidates` covers the case where PyOcto assigned only one of
     a same-station P/S pair to this origin (the other stayed unassigned or
@@ -1506,16 +1537,17 @@ def filter_incoherent_ps_pairs(
                     continue
 
                 mismatch = _ps_geometry_mismatch(
-                    p_pick, s_pick, event_lat, event_lon, sp_inv,
-                    confidence, soft_factor,
+                    p_pick, s_pick, event_lat, event_lon, zlim,
+                    sp_inv, epi_err_km, vel_err,
+                    pick_err_hard if confidence == "hard" else pick_err_soft,
                 )
                 if mismatch is None:
                     continue
-                sp_observed, sp_expected, dist_km = mismatch
+                sp_observed, sp_min, sp_max, epi_km = mismatch
                 logger.info(
                     f"P-S coherence ({confidence}): {station_code} S-P observed="
-                    f"{sp_observed:.2f}s, expected~{sp_expected:.2f}s at "
-                    f"{dist_km:.0f}km (event_id={p_pick.event_id}) -> "
+                    f"{sp_observed:.2f}s, expected {sp_min:.2f}-{sp_max:.2f}s at "
+                    f"epi {epi_km:.0f}km (event_id={p_pick.event_id}) -> "
                     "dropping both picks."
                 )
                 dropped_ids.add(id(p_pick))
@@ -1557,16 +1589,17 @@ def filter_incoherent_ps_pairs(
                         continue
 
                     mismatch = _ps_geometry_mismatch(
-                        p_pick, s_pick, event_lat, event_lon, sp_inv,
-                        "hard", soft_factor,
+                        p_pick, s_pick, event_lat, event_lon, zlim,
+                        sp_inv, epi_err_km, vel_err, pick_err_hard,
                     )
                     if mismatch is None:
                         continue
-                    sp_observed, sp_expected, dist_km = mismatch
+                    sp_observed, sp_min, sp_max, epi_km = mismatch
                     logger.info(
                         f"P-S coherence (hard, external): {station_code} "
-                        f"S-P observed={sp_observed:.2f}s, expected~{sp_expected:.2f}s "
-                        f"at {dist_km:.0f}km (event_id={pick.event_id}) -> "
+                        f"S-P observed={sp_observed:.2f}s, expected "
+                        f"{sp_min:.2f}-{sp_max:.2f}s at epi {epi_km:.0f}km "
+                        f"(event_id={pick.event_id}) -> "
                         "dropping assigned pick."
                     )
                     dropped_ids.add(id(pick))

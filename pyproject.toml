@@ -70,6 +70,11 @@ dev = [
 [tool.uv]
 package = true
 
+# obspy fork with a libmseed thread-safety fix (same 1.4.2 base).
+# Force every dependent to resolve "obspy" to the fork so the two don't conflict.
+[tool.uv.sources]
+obspy = { git = "https://github.com/marcopovitch/obspy-libmseed-threadsafe", rev = "3dc5d4942" }
+
 # pyrocko uses pkg_resources at build time without declaring it
 [tool.uv.extra-build-dependencies]
 pyrocko = ["setuptools<71"]

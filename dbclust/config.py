@@ -566,6 +566,9 @@ class ClusterConfig:
     # If score >= this value, the cluster is sent to NLL even with few P+S stations.
     # 0.0 = disabled. Typical: 8.0 (e.g. event with 9 P-only stations → score ≈ 10.0).
     min_station_with_P_and_S_score_override: float = 0.0
+    # Post-NLL: accept an event with no P+S station at all if its NLL RMS is
+    # below this value (s). null = such events are always rejected.
+    p_only_max_rms: Optional[float] = 1.0
 
     def __post_init__(self) -> None:
         if self.pre_computed_tt_matrix_file:
@@ -977,6 +980,16 @@ class Associator:
     dl_method_ids: List[str] = field(default_factory=lambda: ["PHASENET"])
     # Minimum S/P pick ratio to accept a PyOcto cluster (None = disabled)
     min_ps_ratio: Optional[float] = None
+    # Same-station P/S coherence check (filter_incoherent_ps_pairs): error
+    # budget widening the expected S-P interval spanned by zlim.
+    # PyOcto epicenter error (km)
+    ps_coherence_epi_err_km: float = 10.0
+    # Relative error on the S-P slowness (1/vs - 1/vp), i.e. on Vp/Vs
+    ps_coherence_vel_err: float = 0.15
+    # Absolute S-P pick error (s) for catalog-confirmed pairs (same event_id)
+    ps_coherence_pick_err_hard: float = 0.5
+    # Absolute S-P pick error (s) for unconfirmed/automatic pairs
+    ps_coherence_pick_err_soft: float = 1.0
 
 
 @dataclass

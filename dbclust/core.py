@@ -282,6 +282,7 @@ def nllloc_kwargs_from_config(cfg: DBClustConfig) -> dict:
         min_station_with_P_and_S=cfg.cluster.min_station_with_P_and_S,
         min_station_with_P_and_S_stability_override=cfg.cluster.min_station_with_P_and_S_stability_override,
         min_station_with_P_and_S_score_override=cfg.cluster.min_station_with_P_and_S_score_override,
+        p_only_max_rms=cfg.cluster.p_only_max_rms,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
         min_ps_ratio_wilson_z=getattr(cfg.cluster, "min_ps_ratio_wilson_z", None),
         quakeml_settings=asdict(cfg.quakeml),
@@ -962,8 +963,18 @@ def dbclust(
                         my_obs_path, picks=nll_picks, append=True
                     )
 
-                    if cfg.nll.enable_scatter:
-                        logger.warning("FIXME: scatter file not yet handled !")
+                    if cfg.nll.enable_scatter and locator.scat_files:
+                        for scat_src, event_id_short in locator.scat_files:
+                            if not os.path.exists(scat_src):
+                                continue
+                            scat_dest = os.path.join(
+                                cfg.catalog.qml_path, f"{event_id_short}.scat"
+                            )
+                            try:
+                                shutil.copy2(scat_src, scat_dest)
+                                logger.info(f"Scatter file copied to {scat_dest}")
+                            except (IOError, OSError) as e:
+                                logger.warning(f"Failed to copy scatter file for {event_id_short}: {e}")
 
             if len(clustcat) > 0:
                 for event in sorted(
