@@ -442,6 +442,15 @@ class Clusterize(object):
         leiden_min_stability=0.0,            # clusters below this stability go to HDBSCAN pool
         min_station_with_P_and_S_stability_override=0.0,  # bypass P+S check if stability > this
         min_station_with_P_and_S_score_override=0.0,      # bypass P+S check if station_score >= this
+        # --- Reserve S-pick consolidation (opt-in, see ReservePickConfig) ---
+        # Read-only reserve pool (S-band Phase objects); never added to
+        # cluster pick sets — only used to bypass the pre-NLL
+        # min_station_with_P_and_S gate when a P-only station has a
+        # plausible reserve S candidate. The definitive decision is the
+        # post-NLL weighted gate (NllLoc).
+        reserve_enabled=False,
+        reserve_tt_tolerance_s=1.0,
+        reserve_pool=None,
     ):
         # clusters is a list of cluster :
         # ie. [ [phases, label], ... ]
@@ -502,6 +511,11 @@ class Clusterize(object):
         self.leiden_min_stability = leiden_min_stability
         self.min_station_with_P_and_S_stability_override = min_station_with_P_and_S_stability_override
         self.min_station_with_P_and_S_score_override = min_station_with_P_and_S_score_override
+        self.reserve_enabled = reserve_enabled
+        self.reserve_tt_tolerance_s = reserve_tt_tolerance_s
+        # Reserve pool (list of S-band Phase objects). Reassigned per time
+        # window by the pipeline (core.py); kept empty by default.
+        self.reserve_pool = list(reserve_pool) if reserve_pool else []
 
         if phases is None:
             # Simple constructor
@@ -1584,6 +1598,51 @@ class Clusterize(object):
         )
         return 1.0
 
+    def _has_reserve_s_candidates(self, cluster, station_phase_sets) -> bool:
+        """Existence check only — never an acceptance decision.
+
+        Returns True when the reserve pool holds at least one S pick at one
+        of the cluster's P-only stations, inside a generous window around the
+        cluster picks. Used to bypass the pre-NLL min_station_with_P_and_S
+        gate when reserve consolidation is enabled, so the event gets the
+        chance to be enriched with S picks by NllLoc (the definitive
+        decision is the post-NLL weighted gate).
+
+        The window is generous on purpose: picks before the first cluster
+        pick are impossible (S always arrives after P), picks after the last
+        one are bounded by the maximum S-P delay at the maximum search
+        distance with the homogeneous model, d*(1/leiden_vs - 1/leiden_vp).
+        """
+        if not self.reserve_pool:
+            return False
+
+        p_only_stations = {
+            sta
+            for sta, phases in station_phase_sets.items()
+            if "P" in phases and "S" not in phases
+        }
+        if not p_only_stations:
+            return False
+
+        t_min = min(p.time for p in cluster)
+        t_max = max(p.time for p in cluster)
+        max_search_dist_km = self.max_search_dist if self.max_search_dist else 300.0
+        max_ps_delay = max_search_dist_km * (
+            1.0 / self.leiden_vs - 1.0 / self.leiden_vp
+        )
+        t_start = t_min - self.reserve_tt_tolerance_s
+        t_end = t_max + self.reserve_tt_tolerance_s + max_ps_delay
+
+        for ph in self.reserve_pool:
+            if not ph.is_s():
+                continue
+            if (
+                f"{ph.network}.{ph.station}" in p_only_stations
+                and t_start <= ph.time <= t_end
+            ):
+                return True
+        return False
+
     def _check_pre_nll_filter(
         self, label, criterion_failed, cluster_idx, event_id_counts,
         override_stability=0.0, override_score=0.0, station_score=None,
@@ -1702,14 +1761,34 @@ class Clusterize(object):
 
             # Pre-NLL filter: min_station_with_P_and_S (with stability and score overrides)
             if self.min_station_with_P_and_S:
-                keep, forced = self._check_pre_nll_filter(
-                    f"min_station_with_P_and_S ({stations_with_both}/{self.min_station_with_P_and_S})",
-                    stations_with_both < self.min_station_with_P_and_S,
-                    i, event_id_counts,
-                    override_stability=self.min_station_with_P_and_S_stability_override,
-                    override_score=self.min_station_with_P_and_S_score_override,
-                    station_score=station_score,
-                )
+                # Reserve bypass: when reserve consolidation is enabled and
+                # the cluster has a plausible reserve S candidate, let it
+                # through NLL without tranching here — the post-NLL
+                # weighted gate (NllLoc) makes the definitive decision.
+                # This is the only way for a "many P, all S below import
+                # threshold" cluster to ever be localized.
+                if (
+                    self.reserve_enabled
+                    and stations_with_both < self.min_station_with_P_and_S
+                    and self._has_reserve_s_candidates(cluster, station_phase_sets)
+                ):
+                    logger.warning(
+                        f"Kept | cluster {i}{self._context_tag} failed "
+                        f"min_station_with_P_and_S "
+                        f"({stations_with_both}/{self.min_station_with_P_and_S}) "
+                        f"but reserve S candidates exist — deferring the "
+                        f"decision to the post-NLL weighted gate"
+                    )
+                    keep, forced = True, False
+                else:
+                    keep, forced = self._check_pre_nll_filter(
+                        f"min_station_with_P_and_S ({stations_with_both}/{self.min_station_with_P_and_S})",
+                        stations_with_both < self.min_station_with_P_and_S,
+                        i, event_id_counts,
+                        override_stability=self.min_station_with_P_and_S_stability_override,
+                        override_score=self.min_station_with_P_and_S_score_override,
+                        station_score=station_score,
+                    )
                 if not keep:
                     rejected_event_ids.update(event_id_counts.keys())
                     continue

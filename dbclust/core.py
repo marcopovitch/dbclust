@@ -189,6 +189,152 @@ def get_cross_partition_picks(
     return deduplicate_picks_by_time(df_all, P_proximity_threshold, S_proximity_threshold)
 
 
+def _reserve_s_band_filter(df: pd.DataFrame, s_proba_threshold_low: float, s_proba_threshold: float) -> pd.DataFrame:
+    """Filter a picks DataFrame to the reserve S band.
+
+    Reserve band = S phases with S_proba_threshold_low <= score < S_proba_threshold
+    (the main import threshold is never lowered — this is an additional,
+    strictly separate pool).
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df[
+        df["phase_type"].isin(["S", "Sg", "Sn"])
+        & (df["phase_score"] >= s_proba_threshold_low)
+        & (df["phase_score"] < s_proba_threshold)
+    ]
+
+
+def _reserve_s_band_sql(cfg: DBClustConfig, begin, end) -> str:
+    """SQL query for the reserve S band of the [begin, end] window.
+
+    Mirrors the main windowed picks query (core.py dbclust()) restricted to
+    the S band: S_proba_threshold_low <= phase_score < pick.S_proba_threshold.
+    """
+    s_low = cfg.reserve_pick.S_proba_threshold_low
+    s_high = cfg.pick.S_proba_threshold
+    band = (
+        "phase_type IN ('S', 'Sg', 'Sn') "
+        f"AND phase_score >= {s_low} AND phase_score < {s_high}"
+    )
+
+    if cfg.pick.type == "parquet":
+        begin_year, begin_month = begin.year, begin.month
+        end_year, end_month = end.year, end.month
+        time_where = (
+            f"(year > {begin_year} OR (year = {begin_year} AND month >= {begin_month})) "
+            f"AND (year < {end_year} OR (year = {end_year} AND month <= {end_month})) "
+            f"AND phase_time BETWEEN '{begin}' AND '{end}'"
+        )
+    else:
+        time_where = f"phase_time BETWEEN '{begin}' AND '{end}'"
+
+    return f"""
+        SELECT DISTINCT station_id, channel, phase_type, phase_time,
+                        phase_score, phase_evaluation, phase_method,
+                        event_id, agency
+        FROM PICKS
+        WHERE {time_where}
+        AND {band}
+        ORDER BY station_id, phase_time, phase_type
+    """
+
+
+def get_cross_partition_reserve_picks(
+    con,
+    start,
+    overlap_timedelta,
+    global_start,
+    s_proba_threshold_low: float,
+    s_proba_threshold: float,
+    P_proximity_threshold: float = 0.1,
+    S_proximity_threshold: float = 0.2,
+) -> pd.DataFrame:
+    """Fetch reserve-band S picks from the backward overlap zone [start-overlap, start).
+
+    Counterpart of get_cross_partition_picks for the reserve pool, so that
+    events straddling a partition boundary keep their reserve S candidates.
+    """
+    backward_start = max(start - overlap_timedelta, global_start)
+    if backward_start >= start:
+        return pd.DataFrame()
+
+    rqt = f"""
+        SELECT DISTINCT station_id, channel, phase_type, phase_time,
+                        phase_score, phase_evaluation, phase_method,
+                        event_id, agency
+        FROM PICKS
+        WHERE phase_time >= '{backward_start}' AND phase_time < '{start}'
+        AND phase_type IN ('S', 'Sg', 'Sn')
+        AND phase_score >= {s_proba_threshold_low}
+        AND phase_score < {s_proba_threshold}
+        ORDER BY station_id, phase_time, phase_type
+    """
+    df_all = con.sql(rqt).fetchdf()
+    if df_all.empty:
+        return pd.DataFrame()
+
+    if df_all["phase_time"].dt.tz is None:
+        df_all["phase_time"] = df_all["phase_time"].dt.tz_localize("UTC")
+    else:
+        df_all["phase_time"] = df_all["phase_time"].dt.tz_convert("UTC")
+
+    return deduplicate_picks_by_time(df_all, P_proximity_threshold, S_proximity_threshold)
+
+
+def _prepare_reserve_df(
+    df_reserve: pd.DataFrame,
+    cfg: DBClustConfig,
+    begin,
+    end,
+    picks_to_remove: List,
+) -> pd.DataFrame:
+    """Apply to the reserve DataFrame the same filters as the active picks.
+
+    Order mirrors the main flow (see dbclust()): blacklist, proximity dedup
+    (merges S picks duplicated across components — without it the
+    uniqueness rule in NllLoc would systematically reject multi-component
+    S picks), unload of picks already consolidated into a previous event,
+    frequency threshold + station rename.
+
+    The event_id column is then blanked: a reserve pick consolidated into an
+    event must never contaminate event_ids_in_picks (known-event_id
+    overrides in NllLoc.get_catalog_from_results).
+    """
+    if df_reserve is None or df_reserve.empty:
+        return pd.DataFrame()
+
+    if cfg.station.blacklist:
+        for b in cfg.station.blacklist:
+            df_reserve = df_reserve[
+                ~df_reserve["station_id"].str.contains(b, regex=True)
+            ]
+
+    df_reserve = deduplicate_picks_by_time(
+        df_reserve,
+        cfg.pick.P_proximity_threshold,
+        cfg.pick.S_proximity_threshold,
+    )
+
+    if picks_to_remove:
+        df_reserve = unload_picks_list(df_reserve, picks_to_remove)
+
+    df_reserve = apply_station_filters(
+        df_reserve,
+        blacklist=None,  # already applied above
+        frequency_threshold=cfg.station.frequency_threshold,
+        window_duration_minutes=(end - begin).total_seconds() / 60,
+        rename=cfg.station.rename,
+    )
+
+    if df_reserve.empty:
+        return df_reserve
+
+    df_reserve = df_reserve.copy()
+    df_reserve["event_id"] = None
+    return df_reserve
+
+
 def find_cluster_phases_for_event(event, clusters: List[List]) -> List:
     """Return the Phase objects from the cluster that produced this event.
 
@@ -257,6 +403,8 @@ def nllloc_kwargs_from_config(cfg: DBClustConfig) -> dict:
     use_pick_zone: bool = cfg.relocation.use_pick_zone if cfg.relocation.use_pick_zone is not None else False
     enable_relabel_pick_zone: bool = cfg.relocation.enable_relabel_pick_zone if cfg.relocation.enable_relabel_pick_zone is not None else False
     enable_cleanup_pick_zone: bool = cfg.relocation.enable_cleanup_pick_zone if cfg.relocation.enable_cleanup_pick_zone is not None else False
+    reserve_pick = getattr(cfg, "reserve_pick", None)
+    reserve_enabled: bool = bool(reserve_pick and reserve_pick.enable)
 
     return dict(
         nll_bin=cfg.nll.nlloc_bin,
@@ -310,6 +458,20 @@ def nllloc_kwargs_from_config(cfg: DBClustConfig) -> dict:
         keep_not_existing_event=getattr(
             getattr(cfg, "catalog", None), "keep_not_existing_event", False
         ),
+        # --- Reserve S-pick consolidation (opt-in; reloc mode has it
+        # disabled by config validation, and no pool is ever passed there) ---
+        reserve_enabled=reserve_enabled,
+        reserve_tt_tolerance_s=(
+            reserve_pick.tt_tolerance_s if reserve_enabled else 1.0
+        ),
+        reserve_ps_diff_tolerance_s=(
+            reserve_pick.ps_diff_tolerance_s if reserve_enabled else 0.5
+        ),
+        reserve_ps_count_weight=(
+            reserve_pick.ps_count_weight if reserve_enabled else 0.5
+        ),
+        reserve_vp=cfg.cluster.leiden_vp,
+        reserve_vs=cfg.cluster.leiden_vs,
     )
 
 
@@ -348,6 +510,8 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         else (cfg.time.overlap_window if cfg.cluster.use_umap else 0.0)
     )
     tt_matrix_fname: str = cfg.cluster.pre_computed_tt_matrix_file or ""
+    reserve_pick = getattr(cfg, "reserve_pick", None)
+    reserve_enabled: bool = bool(reserve_pick and reserve_pick.enable)
 
     myclust = Clusterize(
         phases=phases,
@@ -390,6 +554,10 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         tt_matrix_fname=tt_matrix_fname,
         tt_matrix_save=cfg.cluster.tt_matrix_save,
         zones=cfg.zones,
+        reserve_enabled=reserve_enabled,
+        reserve_tt_tolerance_s=(
+            reserve_pick.tt_tolerance_s if reserve_enabled else 1.0
+        ),
     )
     return myclust
 
@@ -513,6 +681,12 @@ def dbclust(
         picks_to_remove = []
         deferred_phases_next_round: List[List[Phase]] = []  # one sub-list per deferred event
         deferred_phases_keys: set = set()  # (station, time, phase) — global dedup across all deferred events
+        # Reserve S-pool (opt-in): rolling window-level list. Accepted
+        # candidates are consumed in place by NllLoc (single use per
+        # window); entries older than the previous window are pruned below.
+        reserve_pick_cfg = getattr(cfg, "reserve_pick", None)
+        reserve_enabled = bool(reserve_pick_cfg and reserve_pick_cfg.enable)
+        reserve_phases: List[Phase] = []
         i = 0
 
         # start time looping
@@ -554,6 +728,7 @@ def dbclust(
 
             # Extract picks on this time period
             df_backward_overlap = None  # populated only for first window of non-first jobs
+            df_reserve_backward = pd.DataFrame()  # reserve S band of the backward overlap zone
             if con:
                 begin_year = begin.year
                 begin_month = begin.month
@@ -632,6 +807,24 @@ def dbclust(
                         f" for post-clustering absorption."
                     )
 
+                    # Reserve S band of the backward overlap zone: events
+                    # straddling a partition boundary keep their candidates.
+                    if reserve_enabled:
+                        df_reserve_backward = get_cross_partition_reserve_picks(
+                            con,
+                            start,
+                            overlap_timedelta,
+                            global_start,
+                            cfg.reserve_pick.S_proba_threshold_low,
+                            cfg.pick.S_proba_threshold,
+                            cfg.pick.P_proximity_threshold,
+                            cfg.pick.S_proximity_threshold,
+                        )
+                        logger.info(
+                            f"[{job_index}] Captured {len(df_reserve_backward)} "
+                            f"backward overlap reserve S picks."
+                        )
+
             else:
                 df_subset = df[(df["phase_time"] >= begin) & (df["phase_time"] < end)]
 
@@ -658,6 +851,16 @@ def dbclust(
                     cfg.station.rename,
                 )
 
+            # same station configuration for the backward reserve S picks
+            if not df_reserve_backward.empty:
+                df_reserve_backward = apply_station_filters(
+                    df_reserve_backward,
+                    cfg.station.blacklist,
+                    cfg.station.frequency_threshold,
+                    (end - begin).total_seconds() / 60,
+                    cfg.station.rename,
+                )
+
             # starting pick preprocessing to get rid of too close picks
             logger.info(
                 f"[{job_index}] Starting pick preprocessing with {len(df_subset)} phases."
@@ -669,6 +872,50 @@ def dbclust(
             )
             logger.info(
                 f"[{job_index}] End pick preprocessing with {len(df_subset)} phases."
+            )
+
+            # Reserve S-band pool (opt-in): read the low-probability S band
+            # of this window. The pool is NEVER injected into df_subset or
+            # the clustering pick sets — it only feeds the pre-NLL bypass
+            # check (Clusterize) and the pass1->pass2 consolidation (NllLoc).
+            df_reserve = pd.DataFrame()
+            if reserve_enabled:
+                if con:
+                    df_reserve = con.sql(
+                        _reserve_s_band_sql(cfg, begin, end)
+                    ).fetchdf()
+                    if not df_reserve.empty:
+                        if df_reserve["phase_time"].dt.tz is None:
+                            df_reserve["phase_time"] = df_reserve[
+                                "phase_time"
+                            ].dt.tz_localize("UTC")
+                        else:
+                            df_reserve["phase_time"] = df_reserve[
+                                "phase_time"
+                            ].dt.tz_convert("UTC")
+                    logger.info(
+                        f"[{job_index}] Reserve S band: {len(df_reserve)} picks "
+                        f"([{cfg.reserve_pick.S_proba_threshold_low}, "
+                        f"{cfg.pick.S_proba_threshold}) in window."
+                    )
+                elif not df.empty:
+                    df_reserve = _reserve_s_band_filter(
+                        df[
+                            (df["phase_time"] >= begin)
+                            & (df["phase_time"] < end)
+                        ],
+                        cfg.reserve_pick.S_proba_threshold_low,
+                        cfg.pick.S_proba_threshold,
+                    )
+                    logger.info(
+                        f"[{job_index}] Reserve S band (in-memory): "
+                        f"{len(df_reserve)} picks in window."
+                    )
+            # Same filters as the active picks (blacklist, dedup, unload of
+            # picks already consolidated into a previous event, frequency
+            # threshold, station rename) + event_id stripping.
+            df_reserve = _prepare_reserve_df(
+                df_reserve, cfg, begin, end, picks_to_remove
             )
 
             # Remove picks previously associated with events
@@ -704,6 +951,35 @@ def dbclust(
                 cfg.station.info_sta,
                 cfg.station.fallback_df,
             )
+
+            # Import reserve S-band picks (coordinates via the same
+            # inventory/fallback path). The pool is a rolling window-level
+            # list, never a cluster pick set.
+            reserve_phases_window: List[Phase] = []
+            if reserve_enabled:
+                if df_reserve_backward is not None and not df_reserve_backward.empty:
+                    # same event_id stripping as _prepare_reserve_df
+                    df_reserve_backward = df_reserve_backward.copy()
+                    df_reserve_backward["event_id"] = None
+                    df_reserve = pd.concat(
+                        [df_reserve, df_reserve_backward], ignore_index=True
+                    )
+                if not df_reserve.empty:
+                    reserve_phases_window = import_phases(
+                        df_reserve,
+                        0.0,  # no P phase in the reserve band
+                        cfg.reserve_pick.S_proba_threshold_low,
+                        cfg.pick.P_uncertainty,
+                        cfg.pick.S_uncertainty,
+                        cfg.station.info_sta,
+                        cfg.station.fallback_df,
+                    )
+                    logger.info(
+                        f"[{job_index}] Reserve pool: "
+                        f"{len(reserve_phases_window)} S phase(s) imported."
+                    )
+                    del df_reserve
+                    gc.collect()
 
             if logger.level == logging.DEBUG:
                 for p in forward_phases:
@@ -947,6 +1223,23 @@ def dbclust(
                 # ready_clusters (promoted from myclust) and/or PyOcto fallback leave two
                 # Leiden communities covering the same earthquake in previous_myclust.
                 previous_myclust.cluster_merge_based_on_eventid()
+
+                # Rolling reserve pool: prune entries older than the
+                # previous window (deferred clusters span at most one window
+                # back), then add this window's candidates. NllLoc consumes
+                # accepted candidates in place (single use per window).
+                if reserve_enabled:
+                    cutoff = begin - (end - begin) - overlap_timedelta
+                    reserve_phases[:] = [
+                        ph for ph in reserve_phases if ph.time >= cutoff
+                    ]
+                    reserve_phases.extend(reserve_phases_window)
+                    previous_myclust.reserve_pool = reserve_phases
+                    logger.info(
+                        f"[{job_index}] Reserve pool for localization: "
+                        f"{len(reserve_phases)} S phase(s)."
+                    )
+
                 nll_picks = previous_myclust.generate_nllobs(
                     my_obs_path, context_tag=f"job={job_index} win={i}/{len(time_divisions)}"
                 )
@@ -960,7 +1253,10 @@ def dbclust(
                     locator.tmpdir = tmpdir_automaticaly_cleaned
 
                     clustcat = locator.get_localisations_from_nllobs_dir(
-                        my_obs_path, picks=nll_picks, append=True
+                        my_obs_path,
+                        picks=nll_picks,
+                        append=True,
+                        reserve_picks=reserve_phases if reserve_enabled else None,
                     )
 
                     if cfg.nll.enable_scatter and locator.scat_files:
