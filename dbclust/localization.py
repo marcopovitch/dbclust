@@ -246,6 +246,7 @@ class NllLoc(object):
         min_station_with_P_and_S: int = 0,  # minimum number of stations with both P and S among arrivals used by NLL (0 = disabled)
         min_station_with_P_and_S_stability_override: float = 0.0,  # bypass P+S check if cluster_stability exceeds this (0 = disabled)
         min_station_with_P_and_S_score_override: float = 0.0,  # bypass P+S check if station_score exceeds this (0 = disabled)
+        p_only_max_rms: Optional[float] = 1.0,  # accept events with no P+S station if NLL RMS < this (s) (None = always reject)
         min_ps_ratio: Optional[float] = None,  # Minimum S/P pick ratio (None = disabled)
         min_ps_ratio_wilson_z: Optional[float] = None,  # Wilson z for adaptive threshold (None = fixed)
         min_dist_relabel_deg: float = 0.0,  # minimum distance (degrees) to epicenter to allow relabeling
@@ -274,6 +275,7 @@ class NllLoc(object):
         self.min_station_with_P_and_S = min_station_with_P_and_S
         self.min_station_with_P_and_S_stability_override = min_station_with_P_and_S_stability_override
         self.min_station_with_P_and_S_score_override = min_station_with_P_and_S_score_override
+        self.p_only_max_rms = p_only_max_rms
         self.double_pass = double_pass
         self.force_uncertainty = force_uncertainty
         self.P_uncertainty = P_uncertainty
@@ -290,6 +292,7 @@ class NllLoc(object):
         self.quakeml_settings = quakeml_settings
         self.keep_scat = keep_scat
         self.scat_file = scat_file
+        self.scat_files = []
         self.zones = zones
         self.force_zone_name = force_zone_name
         self.min_score_threshold_pick_zone = min_score_threshold_pick_zone
@@ -847,7 +850,12 @@ class NllLoc(object):
         ####################
         # handle scat file #
         ####################
-        if self.keep_scat:
+        # Only produce the scatter file for the final pass:
+        # - single pass (double_pass=False): pass_count == 0 is the final pass
+        # - double pass: pass_count == 1 is the final pass (skip pass 0)
+        scat_path = None
+        is_final_pass = (not self.double_pass and pass_count == 0) or pass_count > 0
+        if self.keep_scat and is_final_pass:
             # scat2latlon <decim_factor> <output_dir> <hyp_file_list>
             decim_factor = 10
             cmde = f"{self.scat2latlon_bin} {decim_factor} {tmp_path} {tmp_path}/last"
@@ -865,11 +873,18 @@ class NllLoc(object):
                 logger.warning(
                     f"scat2latlon did not produce expected output: {scat_path}"
                 )
+                scat_path = None
 
         # there is always only one event in the catalog
         # fixme: use resource_id to forge *better* eventid and originid
         e = cat.events[0]
         o = e.preferred_origin()
+
+        # Associate scatter file with a readable name based on origin (time, lat, lon)
+        if scat_path is not None:
+            t = o.time
+            scat_name = f"{t.year:04d}{t.month:02d}{t.day:02d}{t.hour:02d}{t.minute:02d}{t.second:02d}{int(t.microsecond / 1000):03d}_{o.latitude:.4f}_{o.longitude:.4f}"
+            self.scat_files.append((scat_path, scat_name))
 
         # Count arrivals returned by NonLinLoc before any cleanup
         total_arrivals = len(o.arrivals)
@@ -1410,15 +1425,32 @@ class NllLoc(object):
                 # location has no local depth/distance constraint at all and the
                 # override tends to wave through garbage (RMS in the tens of
                 # seconds) rather than genuine small events pre-NLL misjudged.
+                # A P-only event can still be genuine (well-distributed P
+                # stations pin the epicenter, only depth is unconstrained):
+                # accept it on a low NLL RMS alone, which garbage locations
+                # do not reach.
                 if ps_with_both < 1:
-                    reason = (
-                        f"stations with P and S ({ps_with_both}) < "
-                        f"{self.min_station_with_P_and_S} (no P+S station at all, "
-                        f"override not applicable even with known event_id)"
-                    )
-                    logger.warning(f"Rejected | {summary} | reason: {reason}")
-                    _record_rejection(reason)
-                    continue
+                    rms = o.quality.standard_error if o.quality else None
+                    if (
+                        self.p_only_max_rms is not None
+                        and rms is not None
+                        and rms < self.p_only_max_rms
+                    ):
+                        logger.warning(
+                            f"Passed (override) | {summary} | "
+                            f"reason: no P+S station, overridden by NLL "
+                            f"RMS={rms:.3f}s < {self.p_only_max_rms}s "
+                            f"— next filters still apply"
+                        )
+                    else:
+                        reason = (
+                            f"stations with P and S ({ps_with_both}) < "
+                            f"{self.min_station_with_P_and_S} (no P+S station at all, "
+                            f"RMS={rms} >= {self.p_only_max_rms}s)"
+                        )
+                        logger.warning(f"Rejected | {summary} | reason: {reason}")
+                        _record_rejection(reason)
+                        continue
                 elif (
                     self.min_station_with_P_and_S_stability_override > 0.0
                     and cluster_stability is not None

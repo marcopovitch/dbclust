@@ -78,6 +78,9 @@ cluster:
   min_station_count: &CLUSTER_MIN_STATION_COUNT 5
   # discard cluster and origin without enough stations having both P and S phases
   min_station_with_P_and_S: 2
+  # Post-NLL: accept an event with no P+S station at all if its NLL RMS is
+  # below this value (s). null = such events are always rejected.
+  p_only_max_rms: 1.0
   # P:1, S:0.5, P+S:2 per station — minimum cumulated score to submit/accept a cluster
   # null to disable
   min_station_score: 5.0
@@ -213,6 +216,13 @@ pyocto:
         max_pick_overlap: 0 # as there is no overlap window
         min_pick_fraction: 0.35
         zlim: [0, 40]
+        # Same-station P/S coherence check (filter_incoherent_ps_pairs):
+        # error budget widening the expected S-P interval spanned by zlim,
+        # instead of a fixed x1.5/x3 tolerance (PyOcto depths are unreliable).
+        ps_coherence_epi_err_km: 10.0    # PyOcto epicenter error (km)
+        ps_coherence_vel_err: 0.15       # relative error on Vp/Vs
+        ps_coherence_pick_err_hard: 0.5  # s, catalog-confirmed pair (same event_id)
+        ps_coherence_pick_err_soft: 1.0  # s, unconfirmed/automatic pair
         min_node_size: 5
         min_node_size_location: 1.5
         pick_match_tolerance: 5
