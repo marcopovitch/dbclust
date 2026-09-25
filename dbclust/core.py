@@ -12,6 +12,7 @@ import os
 import shutil
 import tempfile
 import time
+from collections import defaultdict
 from dataclasses import asdict
 from typing import Any, List, Optional
 
@@ -84,6 +85,21 @@ class MyTemporaryDirectory:
             logger.info(f"Warning undeleted directory: {self.tmp_dir}")
 
 
+def noisy_station_ids_by_frequency(
+    df: pd.DataFrame,
+    frequency_threshold: Optional[float],
+    window_duration_minutes: float,
+) -> set:
+    """Return the station_ids whose pick rate (picks/minute) reaches frequency_threshold."""
+    if not frequency_threshold or df is None or df.empty:
+        return set()
+    total_duration_in_minutes = window_duration_minutes
+    if total_duration_in_minutes == 0:
+        total_duration_in_minutes = 1.0  # Avoid division by zero
+    frequencies = df.groupby("station_id").size() / total_duration_in_minutes
+    return set(frequencies[frequencies >= frequency_threshold].index)
+
+
 def apply_station_filters(
     df: pd.DataFrame,
     blacklist: Optional[List[str]],
@@ -101,14 +117,10 @@ def apply_station_filters(
             df = df[~df["station_id"].str.contains(b, regex=True)]
 
     if frequency_threshold:
-        total_duration_in_minutes = window_duration_minutes
-        if total_duration_in_minutes == 0:
-            total_duration_in_minutes = 1.0  # Avoid division by zero
-        grouped = df.groupby("station_id")
-        station_counts = grouped.size()
-        frequencies = station_counts / total_duration_in_minutes
-        station_ids_to_keep = frequencies[frequencies < frequency_threshold].index
-        df = df[df["station_id"].isin(station_ids_to_keep)]
+        noisy = noisy_station_ids_by_frequency(
+            df, frequency_threshold, window_duration_minutes
+        )
+        df = df[~df["station_id"].isin(noisy)]
 
     if rename is not None:
         df = rename_waveform_id(df, rename)
@@ -288,6 +300,7 @@ def _prepare_reserve_df(
     begin,
     end,
     picks_to_remove: List,
+    noisy_station_ids: Optional[set] = None,
 ) -> pd.DataFrame:
     """Apply to the reserve DataFrame the same filters as the active picks.
 
@@ -296,6 +309,11 @@ def _prepare_reserve_df(
     uniqueness rule in NllLoc would systematically reject multi-component
     S picks), unload of picks already consolidated into a previous event,
     frequency threshold + station rename.
+
+    Frequency threshold: stations dropped as too noisy from the active picks
+    (noisy_station_ids, pre-rename station_id) are dropped here too, on top
+    of the threshold applied to the reserve band itself — a station must
+    not be excluded from the active picks yet feed the reserve pool.
 
     The event_id column is then blanked: a reserve pick consolidated into an
     event must never contaminate event_ids_in_picks (known-event_id
@@ -319,6 +337,9 @@ def _prepare_reserve_df(
     if picks_to_remove:
         df_reserve = unload_picks_list(df_reserve, picks_to_remove)
 
+    if noisy_station_ids:
+        df_reserve = df_reserve[~df_reserve["station_id"].isin(noisy_station_ids)]
+
     df_reserve = apply_station_filters(
         df_reserve,
         blacklist=None,  # already applied above
@@ -333,6 +354,46 @@ def _prepare_reserve_df(
     df_reserve = df_reserve.copy()
     df_reserve["event_id"] = None
     return df_reserve
+
+
+def merge_reserve_pool(
+    pool: List[Phase],
+    new_phases: List[Phase],
+    consumed: Optional[dict] = None,
+    time_tolerance: float = 0.2,
+) -> int:
+    """Extend the rolling reserve pool in place with a window's reserve phases.
+
+    Consecutive time windows overlap (end += overlap), so the reserve picks
+    of the overlap zone are imported twice. Without this dedup the pool
+    would hold two copies of the same physical pick and the uniqueness rule
+    of NllLoc._consolidate_reserve_s_picks would reject the station.
+    A new phase is skipped when the pool already holds an S pick at the
+    same station within time_tolerance, or when it matches a pick already
+    consolidated into an accepted event (consumed: {"NET.STA": [timestamps]},
+    see NllLoc.reserve_consumed) — otherwise a re-imported pick could be
+    consolidated a second time.
+
+    Returns:
+        int: number of phases actually added.
+    """
+    known = defaultdict(list)
+    for ph in pool:
+        known[f"{ph.network}.{ph.station}"].append(float(ph.time.timestamp))
+    if consumed:
+        for station_code, times in consumed.items():
+            known[station_code].extend(times)
+
+    added = 0
+    for ph in new_phases:
+        station_code = f"{ph.network}.{ph.station}"
+        t = float(ph.time.timestamp)
+        if any(abs(t - t0) <= time_tolerance for t0 in known[station_code]):
+            continue
+        pool.append(ph)
+        known[station_code].append(t)
+        added += 1
+    return added
 
 
 def find_cluster_phases_for_event(event, clusters: List[List]) -> List:
@@ -512,6 +573,16 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
     tt_matrix_fname: str = cfg.cluster.pre_computed_tt_matrix_file or ""
     reserve_pick = getattr(cfg, "reserve_pick", None)
     reserve_enabled: bool = bool(reserve_pick and reserve_pick.enable)
+    # Maximum station distance (km) bounding the S-P delay of the pre-NLL
+    # reserve bypass window. max_search_dist is a pseudo travel time (s),
+    # hence the conversion with average_velocity (km/s). The config value is
+    # used, not Clusterize.max_search_dist, which holds UMAP-space units
+    # once an embedding has been built.
+    reserve_max_station_dist_km: float = (
+        float(reserve_pick.max_station_dist_km)
+        if reserve_enabled and reserve_pick.max_station_dist_km is not None
+        else float(max_search_dist * average_velocity)
+    )
 
     myclust = Clusterize(
         phases=phases,
@@ -558,6 +629,7 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         reserve_tt_tolerance_s=(
             reserve_pick.tt_tolerance_s if reserve_enabled else 1.0
         ),
+        reserve_max_station_dist_km=reserve_max_station_dist_km,
     )
     return myclust
 
@@ -851,16 +923,6 @@ def dbclust(
                     cfg.station.rename,
                 )
 
-            # same station configuration for the backward reserve S picks
-            if not df_reserve_backward.empty:
-                df_reserve_backward = apply_station_filters(
-                    df_reserve_backward,
-                    cfg.station.blacklist,
-                    cfg.station.frequency_threshold,
-                    (end - begin).total_seconds() / 60,
-                    cfg.station.rename,
-                )
-
             # starting pick preprocessing to get rid of too close picks
             logger.info(
                 f"[{job_index}] Starting pick preprocessing with {len(df_subset)} phases."
@@ -911,12 +973,16 @@ def dbclust(
                         f"[{job_index}] Reserve S band (in-memory): "
                         f"{len(df_reserve)} picks in window."
                     )
-            # Same filters as the active picks (blacklist, dedup, unload of
-            # picks already consolidated into a previous event, frequency
-            # threshold, station rename) + event_id stripping.
-            df_reserve = _prepare_reserve_df(
-                df_reserve, cfg, begin, end, picks_to_remove
-            )
+                # Backward overlap reserve picks (first window of a non-first
+                # job) go through the same preparation as the window's.
+                if not df_reserve_backward.empty:
+                    df_reserve = pd.concat(
+                        [df_reserve, df_reserve_backward], ignore_index=True
+                    )
+            # picks_to_remove is reset below once applied to df_subset: keep
+            # it for the reserve pool, prepared after the active picks
+            # (it needs their frequency-filtered stations).
+            reserve_picks_to_remove = list(picks_to_remove)
 
             # Remove picks previously associated with events
             logger.info(f"[{job_index}] Starting clustering with {len(df_subset)} phases.")
@@ -933,6 +999,11 @@ def dbclust(
             logger.info(f"After unload_picks_list() len(df_subset) = {len(df_subset)}")
 
             # remove picks based on station frequency threshold, then rename stations
+            noisy_station_ids = noisy_station_ids_by_frequency(
+                df_subset,
+                cfg.station.frequency_threshold,
+                (end - begin).total_seconds() / 60,
+            )
             df_subset = apply_station_filters(
                 df_subset,
                 blacklist=None,  # already applied above, before unload_picks_list
@@ -940,6 +1011,20 @@ def dbclust(
                 window_duration_minutes=(end - begin).total_seconds() / 60,
                 rename=cfg.station.rename,
             )
+
+            # Reserve pool: same filters as the active picks (blacklist,
+            # dedup, unload, frequency threshold, rename) + event_id
+            # stripping. Stations dropped as too noisy from the active picks
+            # are dropped from the reserve pool too.
+            if reserve_enabled:
+                df_reserve = _prepare_reserve_df(
+                    df_reserve,
+                    cfg,
+                    begin,
+                    end,
+                    reserve_picks_to_remove,
+                    noisy_station_ids,
+                )
 
             # Import forward picks and get coordinates
             forward_phases = import_phases(
@@ -957,13 +1042,6 @@ def dbclust(
             # list, never a cluster pick set.
             reserve_phases_window: List[Phase] = []
             if reserve_enabled:
-                if df_reserve_backward is not None and not df_reserve_backward.empty:
-                    # same event_id stripping as _prepare_reserve_df
-                    df_reserve_backward = df_reserve_backward.copy()
-                    df_reserve_backward["event_id"] = None
-                    df_reserve = pd.concat(
-                        [df_reserve, df_reserve_backward], ignore_index=True
-                    )
                 if not df_reserve.empty:
                     reserve_phases_window = import_phases(
                         df_reserve,
@@ -1233,11 +1311,20 @@ def dbclust(
                     reserve_phases[:] = [
                         ph for ph in reserve_phases if ph.time >= cutoff
                     ]
-                    reserve_phases.extend(reserve_phases_window)
+                    locator.prune_reserve_consumed(UTCDateTime(cutoff))
+                    # Dedup against the previous (overlapping) window's
+                    # entries and against picks already consumed.
+                    n_added = merge_reserve_pool(
+                        reserve_phases,
+                        reserve_phases_window,
+                        consumed=locator.reserve_consumed,
+                        time_tolerance=cfg.pick.S_proximity_threshold,
+                    )
                     previous_myclust.reserve_pool = reserve_phases
                     logger.info(
                         f"[{job_index}] Reserve pool for localization: "
-                        f"{len(reserve_phases)} S phase(s)."
+                        f"{len(reserve_phases)} S phase(s) "
+                        f"({n_added}/{len(reserve_phases_window)} new from this window)."
                     )
 
                 nll_picks = previous_myclust.generate_nllobs(

@@ -508,6 +508,23 @@ def get_expectation_localization(origin: Origin) -> Tuple[float, float, float]:
     return expectation_latitude, expectation_longitude, expectation_depth
 
 
+def get_reserve_pick_weight(pick) -> Optional[float]:
+    """ps_count_weight of a pick consolidated from the dbclust reserve pool.
+
+    Returns None for a regular pick. Reserve picks carry a
+    {"reserve_consolidated": true, ..., "ps_count_weight": w} comment
+    (0.5 — the historical default — when the weight is missing).
+    """
+    for comment in pick.comments:
+        try:
+            info = json.loads(comment.text)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(info, dict) and info.get("reserve_consolidated"):
+            return float(info.get("ps_count_weight", 0.5))
+    return None
+
+
 def get_pick_probability(pick):
     """
     Extracts the probability of the pick from the pick's comment.
@@ -810,6 +827,7 @@ def compute_ps_ratio_and_station_score(
         Tuple[Optional[float], float, int]: (ps_ratio, station_score, ps_station_count)
     """
     station_phases = defaultdict(set)
+    reserve_weights = {}
     for arrival in origin.arrivals:
         if arrival.time_weight is None or arrival.time_weight == 0:
             continue
@@ -824,25 +842,45 @@ def compute_ps_ratio_and_station_score(
             station_phases[station_code].add("P")
         elif phase.startswith("s"):
             station_phases[station_code].add("S")
+            weight = get_reserve_pick_weight(pick)
+            if weight is not None:
+                reserve_weights[station_code] = weight
 
+    ps_ratio, station_score, stations_with_both = _score_station_phases(
+        station_phases, reserve_weights
+    )
+    return ps_ratio, station_score, stations_with_both
+
+
+def _score_station_phases(station_phases: dict, reserve_weights: dict) -> Tuple:
+    """(ps_ratio, station_score, ps_station_count) from per-station phase sets.
+
+    station_score: P+S=2.0, P only=1.0, S only=0.5. A P+S pair whose S was
+    consolidated from the reserve pool (dbclust reserve_pick) counts
+    1.0 + w in station_score and w in ps_station_count, w being the
+    ps_count_weight used by the run — same values as the pipeline's gate
+    (NllLoc._compute_ps_ratio / get_origin_station_score).
+    """
     total_stations = len(station_phases)
-
-    # station_score: P+S=2.0, P only=1.0, S only=0.5
     station_score = 0.0
     stations_with_both = 0
-    for phases in station_phases.values():
+    for station_code, phases in station_phases.items():
         has_p = "P" in phases
         has_s = "S" in phases
         if has_p and has_s:
-            station_score += 2.0
-            stations_with_both += 1
+            weight = reserve_weights.get(station_code)
+            if weight is not None:
+                station_score += 1.0 + weight
+                stations_with_both += weight
+            else:
+                station_score += 2.0
+                stations_with_both += 1
         elif has_p:
             station_score += 1.0
         elif has_s:
             station_score += 0.5
 
     ps_ratio = stations_with_both / total_stations if total_stations > 0 else None
-
     return ps_ratio, station_score, stations_with_both
 
 
@@ -1098,8 +1136,8 @@ def inject_event(
                 INSERT OR IGNORE INTO picks (
                     id, event_id, station_name, location_code, channel_code,
                     pick_time, uncertainty, evaluation_mode, phase_hint, agency_id,
-                    source_event_id, probability, method_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_event_id, probability, method_id, reserve_weight)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pick.resource_id.id,
@@ -1115,6 +1153,7 @@ def inject_event(
                     source_event_id,
                     probability,
                     method_id,
+                    get_reserve_pick_weight(pick),
                 ),
             )
 
@@ -1832,7 +1871,8 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 agency_id TEXT,
                 source_event_id TEXT,
                 probability DOUBLE,
-                method_id TEXT
+                method_id TEXT,
+                reserve_weight DOUBLE
             );
             """,
             """
@@ -3195,17 +3235,25 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
 # =============================================================================
 
 
-def _fetch_station_phases(cursor: sqlite3.Cursor, origin_id: str) -> dict:
-    """Return a dict mapping station_name -> set({'P', 'S'}) for used arrivals.
+def _fetch_station_phases(
+    cursor: sqlite3.Cursor, origin_id: str
+) -> Tuple[dict, dict]:
+    """Return (station_phases, reserve_weights) for the used arrivals of an origin.
+
+    station_phases maps station_name -> set({'P', 'S'}); reserve_weights maps
+    station_name -> ps_count_weight for stations whose used S pick was
+    consolidated from the dbclust reserve pool (picks.reserve_weight).
 
     Shared helper for compute_origin_station_score() and recompute_ps_ratio().
     Only arrivals with time_weight > 0 are considered.
     """
+    _ensure_column(cursor, "picks", "reserve_weight", "DOUBLE")
     cursor.execute(
         """
         SELECT
             p.station_name,
-            LOWER(a.name) as phase
+            LOWER(a.name) as phase,
+            p.reserve_weight
         FROM arrivals a
         JOIN picks p ON a.pick_id = p.id
         WHERE a.origin_id = ?
@@ -3215,14 +3263,17 @@ def _fetch_station_phases(cursor: sqlite3.Cursor, origin_id: str) -> dict:
         (origin_id,),
     )
     station_phases: dict = {}
-    for station_name, phase in cursor.fetchall():
+    reserve_weights: dict = {}
+    for station_name, phase, reserve_weight in cursor.fetchall():
         if station_name not in station_phases:
             station_phases[station_name] = set()
         if phase.startswith("p"):
             station_phases[station_name].add("P")
         elif phase.startswith("s"):
             station_phases[station_name].add("S")
-    return station_phases
+            if reserve_weight is not None:
+                reserve_weights[station_name] = reserve_weight
+    return station_phases, reserve_weights
 
 
 def compute_origin_station_score(conn: sqlite3.Connection) -> None:
@@ -3231,6 +3282,7 @@ def compute_origin_station_score(conn: sqlite3.Connection) -> None:
 
     The score is calculated based on the number of P and S phases per station:
     - 2.0 points for stations with both P and S phases
+      (1.0 + ps_count_weight when the S was consolidated from the reserve pool)
     - 1.0 point for stations with only P phase
     - 0.5 points for stations with only S phase
 
@@ -3245,16 +3297,8 @@ def compute_origin_station_score(conn: sqlite3.Connection) -> None:
     origins = cursor.fetchall()
 
     for (origin_id,) in origins:
-        station_phases = _fetch_station_phases(cursor, origin_id)
-
-        score = 0.0
-        for phases in station_phases.values():
-            if "P" in phases and "S" in phases:
-                score += 2.0
-            elif "P" in phases:
-                score += 1.0
-            elif "S" in phases:
-                score += 0.5
+        station_phases, reserve_weights = _fetch_station_phases(cursor, origin_id)
+        _, score, _ = _score_station_phases(station_phases, reserve_weights)
 
         cursor.execute(
             "UPDATE origins SET station_score = ? WHERE id = ?", (score, origin_id)
@@ -3270,7 +3314,9 @@ def recompute_ps_ratio(conn: sqlite3.Connection) -> None:
 
     ps_ratio is the ratio of stations with both P and S phases over total stations
     with at least one used phase (time_weight > 0).
-    ps_station_count is the absolute number of stations with both P and S phases.
+    ps_station_count is the number of stations with both P and S phases; a
+    station whose S was consolidated from the reserve pool counts its
+    ps_count_weight instead of 1 (same weighted value as the dbclust gate).
     """
     logger.info("Recomputing ps_ratio and ps_station_count for all preferred origins...")
     cursor = conn.cursor()
@@ -3282,20 +3328,10 @@ def recompute_ps_ratio(conn: sqlite3.Connection) -> None:
     origins = cursor.fetchall()
 
     for (origin_id,) in origins:
-        station_phases = _fetch_station_phases(cursor, origin_id)
-
-        total_stations = len(station_phases)
-        if total_stations == 0:
-            ps_ratio = None
-            ps_station_count = 0
-        else:
-            stations_with_both = sum(
-                1
-                for phases in station_phases.values()
-                if "P" in phases and "S" in phases
-            )
-            ps_ratio = stations_with_both / total_stations
-            ps_station_count = stations_with_both
+        station_phases, reserve_weights = _fetch_station_phases(cursor, origin_id)
+        ps_ratio, _, ps_station_count = _score_station_phases(
+            station_phases, reserve_weights
+        )
 
         cursor.execute(
             "UPDATE origins SET ps_ratio = ?, ps_station_count = ? WHERE id = ?",
@@ -3509,6 +3545,7 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
         _ensure_column(cursor, "picks", "channel_code", "TEXT")
         _ensure_column(cursor, "picks", "source_event_id", "TEXT")
         _ensure_column(cursor, "picks", "method_id", "TEXT")
+        _ensure_column(cursor, "picks", "reserve_weight", "DOUBLE")
 
         # Check and add columns to origins
         _ensure_column(cursor, "origins", "ps_station_count", "INTEGER")
