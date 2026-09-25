@@ -22,6 +22,7 @@ from math import fabs
 from math import isclose
 from math import isinf
 from math import isnan
+from math import sqrt
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -59,6 +60,7 @@ from dbclust.gap import get_closest_station_dist_km
 from dbclust.gap import get_station_count_before_distance_gap
 from dbclust.gt5 import compute_gallacher_gt5_score_obspy
 from dbclust.localization_quality import classify_event, classify_event_michele_mod2
+from dbclust.phase import Phase
 from dbclust.plot import plot_arrival_time
 from dbclust.quakeml import deduplicate_picks
 from dbclust.relabel import get_best_polygon_for_point
@@ -208,6 +210,54 @@ def _station_phase_sets(event: Event, arrivals) -> dict:
     return station_phases
 
 
+RESERVE_CONSOLIDATED_KEY = "reserve_consolidated"
+
+
+def _reserve_pick_comment(pick: Pick) -> Optional[dict]:
+    """Return the reserve_consolidated JSON comment of a pick, or None.
+
+    Reserve-consolidated picks carry their traceability as a Pick comment
+    (not an Arrival comment): arrivals are rebuilt from scratch by every NLL
+    pass, while picks are carried through — and cloned via deepcopy by
+    _remap_arrivals_to_picks, which preserves comments.
+    """
+    for c in pick.comments:
+        try:
+            info = json.loads(c.text)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(info, dict) and info.get(RESERVE_CONSOLIDATED_KEY):
+            return info
+    return None
+
+
+def _station_phase_sets_with_reserve(event: Event, arrivals) -> Tuple[dict, set]:
+    """Like _station_phase_sets, plus the set of stations whose S pick of a
+    P+S pair was consolidated from the reserve pool.
+
+    Returns (station_phases, reserve_s_stations).
+    """
+    station_phases = defaultdict(set)
+    reserve_s_stations = set()
+    for arrival in arrivals:
+        if arrival.time_weight is None or arrival.time_weight == 0:
+            continue
+        pick = next(
+            (p for p in event.picks if p.resource_id == arrival.pick_id), None
+        )
+        if pick is None or pick.waveform_id is None:
+            continue
+        station_code = f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
+        phase = arrival.phase.lower() if arrival.phase else ""
+        if phase.startswith("p"):
+            station_phases[station_code].add("P")
+        elif phase.startswith("s"):
+            station_phases[station_code].add("S")
+            if _reserve_pick_comment(pick) is not None:
+                reserve_s_stations.add(station_code)
+    return station_phases, reserve_s_stations
+
+
 class NllLoc(object):
     def __init__(
         self,
@@ -259,6 +309,13 @@ class NllLoc(object):
         time_weight_outlier_min_picks: int = 5,  # minimum picks needed to compute MAD statistics
         time_weight_outlier_absolute_threshold: Optional[float] = None,  # absolute threshold for time_weight (regardless of MAD)
         cleanup_tmp_on_error: bool = True,  # remove per-cluster NLL tmp dir on early-return/error paths
+        # --- Reserve S-pick consolidation (opt-in, see ReservePickConfig) ---
+        reserve_enabled: bool = False,  # complete stations with active P and no S using the reserve pool
+        reserve_tt_tolerance_s: float = 1.0,  # tolerance (s) around the predicted absolute S travel time
+        reserve_ps_diff_tolerance_s: float = 0.5,  # tolerance (s) around the predicted S-P difference
+        reserve_ps_count_weight: float = 0.5,  # weight of a reserve-completed P+S station in ps_with_both
+        reserve_vp: float = 6.0,  # homogeneous P velocity (km/s) for S-time prediction
+        reserve_vs: float = 3.5,  # homogeneous S velocity (km/s) for S-time prediction
     ):
         # define locator
         self.nll_bin = nll_bin
@@ -310,11 +367,24 @@ class NllLoc(object):
         self.time_weight_outlier_mad_factor = time_weight_outlier_mad_factor
         self.time_weight_outlier_min_picks = time_weight_outlier_min_picks
         self.time_weight_outlier_absolute_threshold = time_weight_outlier_absolute_threshold
+        self.reserve_enabled = reserve_enabled
+        self.reserve_tt_tolerance_s = reserve_tt_tolerance_s
+        self.reserve_ps_diff_tolerance_s = reserve_ps_diff_tolerance_s
+        self.reserve_ps_count_weight = reserve_ps_count_weight
+        self.reserve_vp = reserve_vp
+        self.reserve_vs = reserve_vs
 
         logger.info(
             f"NllLoc initialized: MAD filter={'enabled' if enable_time_weight_outlier_filter else 'disabled'}, "
             f"factor={time_weight_outlier_mad_factor}, min_picks={time_weight_outlier_min_picks}, "
             f"absolute_threshold={time_weight_outlier_absolute_threshold}"
+            + (
+                f", reserve_pick={'enabled' if reserve_enabled else 'disabled'} "
+                f"(tt_tol={reserve_tt_tolerance_s}s, ps_diff_tol={reserve_ps_diff_tolerance_s}s, "
+                f"ps_weight={reserve_ps_count_weight}, vp={reserve_vp}, vs={reserve_vs})"
+                if reserve_enabled
+                else ""
+            )
         )
 
         # keep track of cluster affiliation
@@ -362,24 +432,201 @@ class NllLoc(object):
 
         return sum(1 for types in phase_types.values() if {"P", "S"} <= types)
 
-    @staticmethod
-    def get_origin_station_score(event: Event, origin: Origin) -> float:
+    def get_origin_station_score(self, event: Event, origin: Origin) -> float:
+        """Station score: P+S native = 2.0, P-only = 1.0, S-only = 0.5.
+
+        A P+S pair completed by a reserve S pick counts
+        1.0 + reserve_ps_count_weight (P full + S weighted), so this gate
+        stays coherent with the weighted min_station_with_P_and_S gate
+        instead of crediting a reserve station a full 2.0.
+        """
         arrivals = origin.arrivals
         if not arrivals:
             return 0.0
 
-        station_phases = _station_phase_sets(event, arrivals)
+        station_phases, reserve_s_stations = _station_phase_sets_with_reserve(
+            event, arrivals
+        )
 
         score = 0.0
-        for phases in station_phases.values():
+        for station_code, phases in station_phases.items():
             if "P" in phases and "S" in phases:
-                score += 2.0
+                if station_code in reserve_s_stations:
+                    score += 1.0 + self.reserve_ps_count_weight
+                else:
+                    score += 2.0
             elif "P" in phases:
                 score += 1.0
             elif "S" in phases:
                 score += 0.5
 
         return score
+
+    @staticmethod
+    def _hypocentral_distance_km(origin: Origin, coord: dict) -> Optional[float]:
+        """Hypocentral distance (km) from an origin to a station coord dict
+        ({"latitude", "longitude", "elevation"} — see Phase.coord)."""
+        if coord is None or not coord.get("latitude") or not coord.get("longitude"):
+            return None
+        try:
+            _, _, epicentral_m = gps2dist_azimuth(
+                origin.latitude,
+                origin.longitude,
+                coord["latitude"],
+                coord["longitude"],
+            )
+        except Exception as e:
+            logger.warning(
+                f"Can't compute distance origin->station ({coord}): {e}"
+            )
+            return None
+        depth_km = (origin.depth or 0.0) / 1000.0
+        return sqrt((epicentral_m / 1000.0) ** 2 + depth_km**2)
+
+    def _consolidate_reserve_s_picks(
+        self,
+        event: Event,
+        origin: Origin,
+        reserve_picks: List[Phase],
+    ) -> Event:
+        """Consolidate reserve S picks into an event between pass 1 and pass 2.
+
+        For each station with an active P (time_weight != 0 among pass-1
+        arrivals) and NO S pick at all in the event (active or deactivated),
+        search the reserve pool for an S candidate matching the S travel
+        time predicted from the pass-1 origin (homogeneous Vp/Vs). A
+        candidate is accepted only if it is ALONE in the tolerance window
+        (uniqueness rule: 0 or >= 2 candidates -> skip, no "best" selection)
+        and consistent with the observed S-P difference. P picks are never
+        completed.
+
+        Accepted picks are appended to event.picks with a
+        reserve_consolidated JSON comment (Pick comment, not Arrival: see
+        _reserve_pick_comment) and removed from reserve_picks so a
+        neighboring event of the same window cannot reuse them.
+
+        Args:
+            event: the pass-1 event being prepared for pass 2.
+            origin: the pass-1 preferred origin (NLL, not the PyOcto preloc).
+            reserve_picks: reserve pool for the current window (S-band Phase
+                objects); mutated in place (accepted candidates consumed).
+
+        Returns:
+            Event: the same event (picks appended in place).
+        """
+        if not self.reserve_enabled or not reserve_picks:
+            return event
+
+        # Active phases per station (pass-1 arrivals with time_weight != 0)
+        station_phases = _station_phase_sets(event, origin.arrivals)
+
+        # Stations holding ANY S pick in the event, active or not: skip them.
+        # With use_deactivated_arrivals=True a deactivated S stays in
+        # event.picks and pass 2 will re-evaluate it — adding a reserve S
+        # on top would duplicate the S phase at the station.
+        stations_with_s_pick = set()
+        for p in event.picks:
+            if (
+                p.waveform_id is not None
+                and p.phase_hint
+                and p.phase_hint.upper().startswith("S")
+            ):
+                stations_with_s_pick.add(
+                    f"{p.waveform_id.network_code}.{p.waveform_id.station_code}"
+                )
+
+        # Index the (already deduplicated) reserve pool by station
+        pool_by_station = defaultdict(list)
+        for ph in reserve_picks:
+            if ph.is_s():
+                pool_by_station[f"{ph.network}.{ph.station}"].append(ph)
+
+        n_consolidated = 0
+        for station_code, phases in station_phases.items():
+            if "P" not in phases or "S" in phases:
+                continue
+            if station_code in stations_with_s_pick:
+                continue
+            candidates = pool_by_station.get(station_code)
+            if not candidates:
+                continue
+
+            # Anchor: the station's P pick, for the S-P coherence test
+            p_pick = next(
+                (
+                    p
+                    for p in event.picks
+                    if p.waveform_id is not None
+                    and f"{p.waveform_id.network_code}.{p.waveform_id.station_code}"
+                    == station_code
+                    and p.phase_hint
+                    and p.phase_hint.upper().startswith("P")
+                ),
+                None,
+            )
+            if p_pick is None:
+                continue
+
+            # Predicted S time from the pass-1 origin and the station coords
+            # (same station for all candidates -> single distance)
+            d = self._hypocentral_distance_km(origin, candidates[0].coord)
+            if d is None:
+                logger.debug(
+                    f"Reserve consolidation: no coordinates for {station_code}, skipping."
+                )
+                continue
+            t_pred = origin.time + d / self.reserve_vs
+
+            # Uniqueness rule: exactly one candidate in the TT window
+            in_window = [
+                ph
+                for ph in candidates
+                if fabs(float(ph.time) - float(t_pred))
+                <= self.reserve_tt_tolerance_s
+            ]
+            if len(in_window) != 1:
+                logger.info(
+                    f"Reserve consolidation: {station_code} skipped "
+                    f"({len(in_window)} candidate(s) in the tolerance window, need exactly 1)."
+                )
+                continue
+            candidate = in_window[0]
+
+            # S-P coherence: observed vs predicted d*(1/vs - 1/vp)
+            ps_diff_pred = d * (1.0 / self.reserve_vs - 1.0 / self.reserve_vp)
+            ps_diff_obs = float(candidate.time) - float(p_pick.time)
+            if fabs(ps_diff_obs - ps_diff_pred) > self.reserve_ps_diff_tolerance_s:
+                logger.info(
+                    f"Reserve consolidation: {station_code} skipped "
+                    f"(S-P observed {ps_diff_obs:.2f}s vs predicted {ps_diff_pred:.2f}s)."
+                )
+                continue
+
+            residual = float(candidate.time) - float(t_pred)
+            pick = candidate.to_pick()
+            pick.comments.append(Comment(text=json.dumps({
+                RESERVE_CONSOLIDATED_KEY: True,
+                "predicted_tt": round(d / self.reserve_vs, 3),
+                "residual_at_accept": round(residual, 3),
+            })))
+            event.picks.append(pick)
+            # Single use: remove the accepted candidate from the pool by
+            # identity (Phase __eq__ ignores proba, so list.remove() could
+            # drop a physically distinct near-duplicate instead).
+            reserve_picks[:] = [ph for ph in reserve_picks if ph is not candidate]
+            n_consolidated += 1
+            logger.info(
+                f"Reserve consolidation: {station_code} S pick at {candidate.time} "
+                f"consolidated (d={d:.1f}km, predicted S-P={ps_diff_pred:.2f}s, "
+                f"TT residual={residual:.3f}s, pool now {len(reserve_picks)})."
+            )
+
+        if n_consolidated:
+            logger.info(
+                f"Reserve consolidation: {n_consolidated} S pick(s) added "
+                f"({len(event.picks)} picks total for pass 2)."
+            )
+        return event
 
     def _get_zone_and_template(
         self, lat: float, lon: float, vel_file: str = None
@@ -549,6 +796,7 @@ class NllLoc(object):
         force_template: str = None,
         force_loc_method: str = None,
         _pass_label: str = None,  # optional label for logging (e.g. "Pass 0 preloc")
+        reserve_picks: List[Phase] = None,  # reserve S-band pool (consumed in place)
     ):
         """
         Perform NonLinLoc localization for seismic events.
@@ -918,7 +1166,7 @@ class NllLoc(object):
 
         o.quality.used_station_count = self.get_used_station_count(e, o)
         o.quality.used_phase_count = self.get_used_phase_count(e, o)
-        ps_with_both, ps_total, ps_ratio = self._compute_ps_ratio(e, o)
+        ps_with_both, ps_total, ps_ratio, _n_reserve = self._compute_ps_ratio(e, o)
         o.quality.ps_station_count = ps_with_both
 
         # set time_weight to 0 for arrival if time_weight < time_weight_tolerance
@@ -1056,6 +1304,17 @@ class NllLoc(object):
 
             # Sync event2 back into cat2 (cleanup may have replaced the object)
             cat2.events[0] = event2
+
+            # Reserve S-pick consolidation (between pass 1 and pass 2):
+            # complete stations holding an active P and no S at all, using
+            # the reserve pool. Predictions come from the pass-1 NLL origin
+            # (no circularity, no extra NLL call). Accepted candidates are
+            # consumed from the pool (single use per window).
+            if self.reserve_enabled and reserve_picks:
+                event2 = self._consolidate_reserve_s_picks(
+                    event2, o, reserve_picks
+                )
+                cat2.events[0] = event2
 
             if len(event2.picks):
                 new_nll_obs_file = nll_obs_file + ".2nd_pass"
@@ -1282,16 +1541,31 @@ class NllLoc(object):
         return cat
 
     def _compute_ps_ratio(self, event, origin) -> tuple:
-        """Compute PS ratio (stations with both P and S / total stations).
-        Returns (stations_with_both, total_stations, ps_ratio)."""
-        station_phases = _station_phase_sets(event, origin.arrivals)
+        """Compute the weighted PS ratio (stations with both P and S / total stations).
+
+        Stations with both P and S count 1.0, except when the S pick was
+        consolidated from the reserve pool: they count reserve_ps_count_weight.
+        The weighted value feeds min_station_with_P_and_S, min_ps_ratio and
+        the "no P+S station at all" sentinel (== 0).
+
+        Returns (ps_with_both, total_stations, ps_ratio, n_reserve_stations).
+        """
+        station_phases, reserve_s_stations = _station_phase_sets_with_reserve(
+            event, origin.arrivals
+        )
 
         total_stations = len(station_phases)
-        stations_with_both = sum(
-            1 for phases in station_phases.values() if "P" in phases and "S" in phases
-        )
-        ps_ratio = stations_with_both / total_stations if total_stations > 0 else 0.0
-        return stations_with_both, total_stations, ps_ratio
+        n_reserve = 0
+        ps_with_both = 0.0
+        for station_code, phases in station_phases.items():
+            if "P" in phases and "S" in phases:
+                if station_code in reserve_s_stations:
+                    ps_with_both += self.reserve_ps_count_weight
+                    n_reserve += 1
+                else:
+                    ps_with_both += 1.0
+        ps_ratio = ps_with_both / total_stations if total_stations > 0 else 0.0
+        return ps_with_both, total_stations, ps_ratio, n_reserve
 
     @staticmethod
     def _wilson_high(n_ps: int, n: int, z: float) -> float:
@@ -1346,13 +1620,46 @@ class NllLoc(object):
             # Compute quality attributes
             o.quality.used_station_count = self.get_used_station_count(e, o)
             o.quality.used_phase_count = self.get_used_phase_count(e, o)
-            ps_with_both, ps_total, ps_ratio = self._compute_ps_ratio(e, o)
+            ps_with_both, ps_total, ps_ratio, n_reserve = self._compute_ps_ratio(e, o)
             o.quality.ps_station_count = ps_with_both
+
+            # Reserve traceability: mirror the reserve_consolidated pick
+            # comments onto the final origin arrivals (single site covering
+            # pass 2, pass 3 and the pass-1 fallback), and record the
+            # native/reserve decomposition as an event comment (serialized
+            # in QuakeML, unlike custom origin.quality attributes).
+            if n_reserve:
+                for arrival in o.arrivals:
+                    pick = next(
+                        (p for p in e.picks if p.resource_id == arrival.pick_id),
+                        None,
+                    )
+                    if pick is None:
+                        continue
+                    info = _reserve_pick_comment(pick)
+                    if info is None:
+                        continue
+                    if not any(
+                        isinstance(c.text, str)
+                        and RESERVE_CONSOLIDATED_KEY in c.text
+                        for c in arrival.comments
+                    ):
+                        arrival.comments.append(Comment(text=json.dumps(info)))
+                n_native = int(round(ps_with_both - n_reserve * self.reserve_ps_count_weight))
+                e.comments.append(Comment(text=json.dumps({
+                    "reserve_ps": {
+                        "native": n_native,
+                        "reserve": n_reserve,
+                        "weighted": round(ps_with_both, 3),
+                    }
+                })))
 
             # Gather all criteria values upfront for consolidated logging
             closest_km = get_closest_station_dist_km(e) if self.closest_station_dist_km is not None else None
             station_score = self.get_origin_station_score(e, o)
-            ps_str = f"ps={ps_with_both}/{ps_total}({ps_ratio:.2f})"
+            ps_str = f"ps={ps_with_both:g}/{ps_total}({ps_ratio:.2f})"
+            if n_reserve:
+                ps_str += f"(native={ps_with_both - n_reserve * self.reserve_ps_count_weight:g}, reserve={n_reserve})"
             closest_str = f"closest={closest_km:.1f}km" if closest_km is not None else "closest=N/A"
             cluster_stability_str = ""
             cluster_stability = None
@@ -1429,7 +1736,12 @@ class NllLoc(object):
                 # stations pin the epicenter, only depth is unconstrained):
                 # accept it on a low NLL RMS alone, which garbage locations
                 # do not reach.
-                if ps_with_both < 1:
+                # ps_with_both is a weighted count (reserve-completed P+S
+                # stations count ps_count_weight, not 1.0): compare to 0,
+                # not < 1, so a reserve-completed station is not mistaken
+                # for "no P+S station at all" (it does provide a local
+                # depth/distance constraint).
+                if ps_with_both == 0:
                     rms = o.quality.standard_error if o.quality else None
                     if (
                         self.p_only_max_rms is not None
@@ -1523,7 +1835,8 @@ class NllLoc(object):
         return final_catalog
 
     def get_localisations_from_nllobs_dir(
-        self, OBS_PATH: str, picks: List[Pick] = None, append: bool = True
+        self, OBS_PATH: str, picks: List[Pick] = None, append: bool = True,
+        reserve_picks: List[Phase] = None,
     ) -> Catalog:
         """nll localisation and export to quakeml
 
@@ -1533,6 +1846,9 @@ class NllLoc(object):
         Args:
             OBS_PATH (string): directory where are the nll obs files
             append (bool, optional): append new origin to self.catalog. Defaults to True.
+            reserve_picks (list, optional): reserve S-band pool for the current
+                window, threaded to each event localization. Accepted candidates
+                are consumed in place (single use per window).
 
         Returns:
             Catalog: returns a catalog of all computed origins
@@ -1551,7 +1867,8 @@ class NllLoc(object):
 
             try:
                 cat = self.nll_localisation(
-                    nll_obs_file, picks=picks_set, double_pass=self.double_pass
+                    nll_obs_file, picks=picks_set, double_pass=self.double_pass,
+                    reserve_picks=reserve_picks,
                 )
             except FileNotFoundError as e:
                 logger.error(f"{e} - skipping {nll_obs_file}")
@@ -1566,6 +1883,7 @@ class NllLoc(object):
                         picks=picks_set,
                         double_pass=self.double_pass,
                         force_loc_method=fallback_loc_method,
+                        reserve_picks=reserve_picks,
                     )
                     logger.info(
                         f"Localization succeeded with {fallback_loc_method} for {nll_obs_file}"

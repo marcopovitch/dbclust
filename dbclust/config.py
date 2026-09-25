@@ -582,6 +582,97 @@ class ClusterConfig:
 
 
 @dataclass
+class ReservePickConfig:
+    """Configure the reserve S-pick consolidation (see plan v6).
+
+    Builds a "reserve pool" of S picks whose probability is below the main
+    import threshold (``pick.S_proba_threshold``) but not below
+    ``S_proba_threshold_low``. Between NLL pass 1 and pass 2, for each
+    station of an event holding an active P and no S pick at all, exactly
+    one reserve S candidate matching the S travel time predicted from the
+    pass-1 origin (homogeneous Vp/Vs model) may be consolidated into the
+    event. Only S picks are ever completed — never P.
+
+    Requires ``relocation.double_pass`` (the consolidation hook lives in
+    the pass 1 -> pass 2 branch of nll_localisation). Ignored (disabled
+    with a warning) in "reloc" config mode: the relocate CLI paths have no
+    reserve pool.
+
+    Attributes:
+        enable: opt-in switch (default False).
+        S_proba_threshold_low: lower bound of the reserve S band
+            (S_proba_threshold_low <= score < pick.S_proba_threshold).
+        tt_tolerance_s: tolerance (s) around the predicted absolute S
+            travel time. Must absorb the pass-1 origin depth error.
+        ps_diff_tolerance_s: tolerance (s) around the predicted S-P
+            difference d*(1/vs - 1/vp) vs the observed one.
+        ps_count_weight: weight of a reserve-completed P+S station in
+            ps_with_both (min_station_with_P_and_S gate, ps_ratio).
+    """
+
+    enable: bool = False
+    S_proba_threshold_low: float = 0.3
+    tt_tolerance_s: float = 1.0
+    ps_diff_tolerance_s: float = 0.5
+    ps_count_weight: float = 0.5
+
+
+def validate_reserve_pick_config(
+    reserve_pick: Optional[ReservePickConfig],
+    S_proba_threshold: Optional[float],
+    double_pass: bool,
+    config_type: str = "std",
+) -> None:
+    """Cross-section validation for reserve_pick (called by DBClustConfig).
+
+    Kept as a free function so it can be unit-tested without loading a full
+    configuration file.
+
+    Raises:
+        ValueError: when the reserve configuration is inconsistent.
+    """
+    if reserve_pick is None or not reserve_pick.enable:
+        return
+
+    if config_type == "reloc":
+        # No reserve pool exists on the relocate CLI paths: warn and
+        # disable instead of raising, so a single config file can serve
+        # both the processing and the relocation pipelines.
+        logger.warning(
+            "reserve_pick.enable=true ignored in 'reloc' config mode "
+            "(no reserve pool available) — disabling reserve consolidation."
+        )
+        reserve_pick.enable = False
+        return
+
+    if not double_pass:
+        raise ValueError(
+            "reserve_pick.enable requires relocation.double_pass: the "
+            "consolidation hook lives between NLL pass 1 and pass 2."
+        )
+
+    if S_proba_threshold is None or (
+        reserve_pick.S_proba_threshold_low >= S_proba_threshold
+    ):
+        raise ValueError(
+            "reserve_pick.S_proba_threshold_low must be strictly lower than "
+            "pick.S_proba_threshold (the global import threshold is never "
+            "lowered — the reserve pool is an additional read-only band)."
+        )
+
+    if not 0 < reserve_pick.ps_count_weight <= 1:
+        raise ValueError(
+            "reserve_pick.ps_count_weight must be in ]0, 1] "
+            f"(got {reserve_pick.ps_count_weight})."
+        )
+
+    if reserve_pick.tt_tolerance_s <= 0 or reserve_pick.ps_diff_tolerance_s <= 0:
+        raise ValueError(
+            "reserve_pick.tt_tolerance_s and ps_diff_tolerance_s must be > 0."
+        )
+
+
+@dataclass
 class NonLinLocVelocityProfile:
     name: str
     template: str
@@ -1204,6 +1295,8 @@ class DBClustConfig:
     parallel: ParallelConfig
     fdsnws_event: FdsnConfig
     slurm: Optional[SlurmConfig] = None
+    # Reserve S-pick consolidation (opt-in, see ReservePickConfig)
+    reserve_pick: Optional[ReservePickConfig] = None
 
     def __init__(
         self,
@@ -1223,7 +1316,7 @@ class DBClustConfig:
             "station",
         ]
         # Optional config sections (not required in YAML)
-        self.optional_keys = ["slurm"]
+        self.optional_keys = ["slurm", "reserve_pick"]
         # Runtime attribute set by runner, not from YAML
         self.log_level = logging.INFO
 
@@ -1289,6 +1382,15 @@ class DBClustConfig:
                     key,
                     from_dict(data_class=data_class, data=self.yaml_data[key]),
                 )
+
+        # Reserve S-pick consolidation: cross-section validation
+        # (disable in reloc mode, require double_pass, band/threshold coherence)
+        validate_reserve_pick_config(
+            getattr(self, "reserve_pick", None),
+            getattr(getattr(self, "pick", None), "S_proba_threshold", None),
+            getattr(getattr(self, "relocation", None), "double_pass", False),
+            self.config_type,
+        )
 
         # NLL will discard any location with number of phase < min_phase
         # take into account cluster parameters to set it accordingly

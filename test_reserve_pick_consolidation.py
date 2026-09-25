@@ -1,0 +1,395 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""Unit tests for the reserve S-pick consolidation (plan v6).
+
+Covers:
+- config validation (validate_reserve_pick_config)
+- NllLoc._consolidate_reserve_s_picks: acceptance, uniqueness rule,
+  S-P coherence, no P completion, deactivated-S guard, single use
+- weighted ps counting (_compute_ps_ratio, get_origin_station_score)
+- Clusterize._has_reserve_s_candidates (pre-NLL bypass existence check)
+"""
+import logging
+
+import pytest
+from obspy import UTCDateTime
+from obspy.core.event import Arrival
+from obspy.core.event import Event
+from obspy.core.event import Origin
+from obspy.core.event import Pick
+from obspy.core.event import WaveformStreamID
+
+from dbclust.clusterize import Clusterize
+from dbclust.config import ReservePickConfig
+from dbclust.config import validate_reserve_pick_config
+from dbclust.localization import NllLoc
+from dbclust.localization import _reserve_pick_comment
+from dbclust.phase import Phase
+
+logging.disable(logging.WARNING)
+
+T0 = UTCDateTime(2020, 1, 2, 3, 4, 5)
+# Station ~5.5 km epicentral from the origin, origin depth 10 km
+STATION_COORD = {"latitude": 45.05, "longitude": 5.0, "elevation": 500.0}
+ORIGIN_LAT, ORIGIN_LON, ORIGIN_DEPTH_M = 45.0, 5.0, 10_000.0
+
+
+def make_locator(**kwargs) -> NllLoc:
+    params = dict(
+        nll_bin="x",
+        scat2latlon_bin="y",
+        nll_times_path="/tmp",
+        reserve_enabled=True,
+        reserve_vp=6.0,
+        reserve_vs=3.5,
+        reserve_tt_tolerance_s=1.0,
+        reserve_ps_diff_tolerance_s=0.5,
+        reserve_ps_count_weight=0.5,
+    )
+    params.update(kwargs)
+    return NllLoc(**params)
+
+
+def make_pick(station: str, phase: str, time: UTCDateTime) -> Pick:
+    net, sta = station.split(".")
+    return Pick(
+        time=time,
+        waveform_id=WaveformStreamID(
+            network_code=net, station_code=sta, channel_code="HHZ"
+        ),
+        phase_hint=phase,
+    )
+
+
+def make_event_with_origin(picks_with_weight) -> tuple:
+    """Build (event, origin) from [(pick, phase, time_weight), ...]."""
+    event = Event(picks=[p for p, _, _ in picks_with_weight])
+    arrivals = []
+    for pick, phase, weight in picks_with_weight:
+        arrival = Arrival(
+            pick_id=pick.resource_id,
+            phase=phase,
+            time_weight=weight,
+        )
+        arrivals.append(arrival)
+    origin = Origin(
+        time=T0,
+        latitude=ORIGIN_LAT,
+        longitude=ORIGIN_LON,
+        depth=ORIGIN_DEPTH_M,
+        arrivals=arrivals,
+    )
+    event.origins.append(origin)
+    event.preferred_origin_id = origin.resource_id
+    return event, origin
+
+
+def make_reserve_phase(station: str, time: UTCDateTime, proba: float = 0.4) -> Phase:
+    net, sta = station.split(".")
+    return Phase(
+        network=net,
+        station=sta,
+        location="",
+        channel="HH",
+        phase="S",
+        time=time,
+        time_uncertainty=0.2,
+        proba=proba,
+        info_sta=None,
+        coord=dict(STATION_COORD),
+    )
+
+
+@pytest.fixture
+def locator() -> NllLoc:
+    return make_locator()
+
+
+def predicted_times(locator: NllLoc) -> tuple:
+    """(d_km, t_pred_S, t_pred_P) for the fixture geometry."""
+    from dbclust.localization import gps2dist_azimuth
+    from math import sqrt
+
+    _, _, epi_m = gps2dist_azimuth(
+        ORIGIN_LAT, ORIGIN_LON, STATION_COORD["latitude"], STATION_COORD["longitude"]
+    )
+    d = sqrt((epi_m / 1000.0) ** 2 + (ORIGIN_DEPTH_M / 1000.0) ** 2)
+    return d, T0 + d / locator.reserve_vs, T0 + d / locator.reserve_vp
+
+
+# --------------------------------------------------------------------------
+# Config validation
+# --------------------------------------------------------------------------
+
+
+def test_config_ok_when_disabled():
+    # disabled: no cross-checks, whatever the other values
+    validate_reserve_pick_config(
+        ReservePickConfig(enable=False, S_proba_threshold_low=0.9), 0.5, False
+    )
+
+
+def test_config_reloc_mode_disables_with_warning(caplog):
+    rp = ReservePickConfig(enable=True, S_proba_threshold_low=0.3)
+    validate_reserve_pick_config(rp, 0.5, True, config_type="reloc")
+    assert rp.enable is False
+
+
+def test_config_requires_double_pass():
+    with pytest.raises(ValueError, match="double_pass"):
+        validate_reserve_pick_config(
+            ReservePickConfig(enable=True, S_proba_threshold_low=0.3),
+            0.5,
+            double_pass=False,
+        )
+
+
+def test_config_band_below_threshold():
+    with pytest.raises(ValueError, match="strictly lower"):
+        validate_reserve_pick_config(
+            ReservePickConfig(enable=True, S_proba_threshold_low=0.5),
+            0.5,
+            True,
+        )
+
+
+def test_config_ps_count_weight_range():
+    with pytest.raises(ValueError, match="ps_count_weight"):
+        validate_reserve_pick_config(
+            ReservePickConfig(enable=True, S_proba_threshold_low=0.3, ps_count_weight=1.5),
+            0.5,
+            True,
+        )
+
+
+def test_config_tolerances_positive():
+    with pytest.raises(ValueError, match="tolerance"):
+        validate_reserve_pick_config(
+            ReservePickConfig(enable=True, S_proba_threshold_low=0.3, tt_tolerance_s=0.0),
+            0.5,
+            True,
+        )
+
+
+# --------------------------------------------------------------------------
+# Consolidation
+# --------------------------------------------------------------------------
+
+
+def test_consolidation_accepts_unique_candidate(locator):
+    d, t_s, t_p = predicted_times(locator)
+    p_pick = make_pick("FR.AAA", "P", t_p)
+    event, origin = make_event_with_origin([(p_pick, "P", 1.0)])
+    pool = [make_reserve_phase("FR.AAA", t_s - 0.2)]
+
+    event = locator._consolidate_reserve_s_picks(event, origin, pool)
+
+    assert len(event.picks) == 2
+    s_pick = event.picks[-1]
+    assert s_pick.phase_hint.upper().startswith("S")
+    # tagged on the PICK (survives the remap deepcopy), not on an arrival
+    info = _reserve_pick_comment(s_pick)
+    assert info is not None and info["reserve_consolidated"] is True
+    assert "predicted_tt" in info and "residual_at_accept" in info
+    # no event_id contamination (author carries the event_id)
+    assert not (s_pick.creation_info and s_pick.creation_info.author)
+    # single use: consumed from the pool
+    assert pool == []
+
+
+def test_consolidation_uniqueness_zero_or_multiple(locator):
+    d, t_s, t_p = predicted_times(locator)
+    p_pick = make_pick("FR.AAA", "P", t_p)
+    event, origin = make_event_with_origin([(p_pick, "P", 1.0)])
+
+    # zero candidate in window
+    pool = [make_reserve_phase("FR.AAA", t_s - 30.0)]
+    event = locator._consolidate_reserve_s_picks(event, origin, pool)
+    assert len(event.picks) == 1
+    assert len(pool) == 1  # not consumed
+
+    # two candidates in window -> ambiguous, skip (no "best" selection)
+    pool = [make_reserve_phase("FR.AAA", t_s - 0.2), make_reserve_phase("FR.AAA", t_s + 0.2)]
+    event = locator._consolidate_reserve_s_picks(event, origin, pool)
+    assert len(event.picks) == 1
+    assert len(pool) == 2
+
+
+def test_consolidation_ps_diff_coherence(locator):
+    d, t_s, t_p = predicted_times(locator)
+    p_pick = make_pick("FR.AAA", "P", t_p)
+    event, origin = make_event_with_origin([(p_pick, "P", 1.0)])
+
+    # candidate matching the TT window but inconsistent with the observed
+    # S-P difference (P moved far away from its predicted time)
+    bad_candidate_time = t_s  # right window
+    p_late = make_pick("FR.AAA", "P", t_p + 5.0)
+    event_late, origin_late = make_event_with_origin([(p_late, "P", 1.0)])
+    pool = [make_reserve_phase("FR.AAA", bad_candidate_time)]
+    event_late = locator._consolidate_reserve_s_picks(event_late, origin_late, pool)
+    assert len(event_late.picks) == 1
+    assert len(pool) == 1
+
+
+def test_consolidation_never_completes_P(locator):
+    # station with an active S and no P must stay untouched
+    s_pick = make_pick("FR.AAA", "S", T0 + 3.0)
+    event, origin = make_event_with_origin([(s_pick, "S", 1.0)])
+    # reserve pool would hold a P... but the pool only ever contains S
+    # (ingestion guarantees it); the consolidation method must not attempt
+    # anything on S-only stations regardless.
+    pool = [make_reserve_phase("FR.AAA", T0 + 3.1)]
+    event = locator._consolidate_reserve_s_picks(event, origin, pool)
+    assert len(event.picks) == 1
+
+
+def test_consolidation_skips_station_with_deactivated_S(locator):
+    d, t_s, t_p = predicted_times(locator)
+    p_pick = make_pick("FR.AAA", "P", t_p)
+    s_deactivated = make_pick("FR.AAA", "S", t_s - 0.3)
+    event, origin = make_event_with_origin(
+        [(p_pick, "P", 1.0), (s_deactivated, "S", 0.0)]
+    )
+    pool = [make_reserve_phase("FR.AAA", t_s - 0.2)]
+    event = locator._consolidate_reserve_s_picks(event, origin, pool)
+    # no double S at the station: the deactivated S pick stays the only one
+    assert len([p for p in event.picks if p.phase_hint.upper().startswith("S")]) == 1
+    assert len(pool) == 1
+
+
+def test_consolidation_single_use_across_events(locator):
+    d, t_s, t_p = predicted_times(locator)
+    pool = [make_reserve_phase("FR.AAA", t_s - 0.2)]
+
+    p1 = make_pick("FR.AAA", "P", t_p)
+    e1, o1 = make_event_with_origin([(p1, "P", 1.0)])
+    e1 = locator._consolidate_reserve_s_picks(e1, o1, pool)
+
+    # a second event at the same place/time cannot reuse the consumed pick
+    p2 = make_pick("FR.AAA", "P", t_p)
+    e2, o2 = make_event_with_origin([(p2, "P", 1.0)])
+    e2 = locator._consolidate_reserve_s_picks(e2, o2, pool)
+    assert len(e1.picks) == 2
+    assert len(e2.picks) == 1
+
+
+def test_consolidation_noop_when_disabled(locator):
+    d, t_s, t_p = predicted_times(locator)
+    p_pick = make_pick("FR.AAA", "P", t_p)
+    event, origin = make_event_with_origin([(p_pick, "P", 1.0)])
+    pool = [make_reserve_phase("FR.AAA", t_s)]
+    disabled = make_locator(reserve_enabled=False)
+    event = disabled._consolidate_reserve_s_picks(event, origin, pool)
+    assert len(event.picks) == 1
+
+
+# --------------------------------------------------------------------------
+# Weighted ps counting
+# --------------------------------------------------------------------------
+
+
+def test_compute_ps_ratio_weighted(locator):
+    d, t_s, t_p = predicted_times(locator)
+    p1 = make_pick("FR.AAA", "P", t_p)
+    s1 = make_pick("FR.AAA", "S", t_s)
+    p2 = make_pick("FR.BBB", "P", t_p)
+    s2 = make_pick("FR.BBB", "S", t_s)
+
+    # native P+S station + reserve-completed P+S station
+    import json
+    from obspy.core.event import Comment
+
+    s2.comments.append(
+        Comment(text=json.dumps({"reserve_consolidated": True, "predicted_tt": 1.0, "residual_at_accept": 0.0}))
+    )
+
+    event, origin = make_event_with_origin(
+        [(p1, "P", 1.0), (s1, "S", 1.0), (p2, "P", 1.0), (s2, "S", 1.0)]
+    )
+    ps_with_both, total, ratio, n_reserve = locator._compute_ps_ratio(event, origin)
+    assert ps_with_both == pytest.approx(1.0 + locator.reserve_ps_count_weight)
+    assert total == 2
+    assert n_reserve == 1
+    assert ratio == pytest.approx(ps_with_both / 2)
+
+
+def test_compute_ps_ratio_zero_when_no_ps_station(locator):
+    p1 = make_pick("FR.AAA", "P", T0 + 1.0)
+    p2 = make_pick("FR.BBB", "P", T0 + 1.0)
+    event, origin = make_event_with_origin([(p1, "P", 1.0), (p2, "P", 1.0)])
+    ps_with_both, total, ratio, n_reserve = locator._compute_ps_ratio(event, origin)
+    assert ps_with_both == 0
+    assert n_reserve == 0
+
+
+def test_station_score_counts_reserve_consistently(locator):
+    d, t_s, t_p = predicted_times(locator)
+    p1 = make_pick("FR.AAA", "P", t_p)
+    s1 = make_pick("FR.AAA", "S", t_s)
+    import json
+    from obspy.core.event import Comment
+
+    s1.comments.append(Comment(text=json.dumps({"reserve_consolidated": True})))
+    event, origin = make_event_with_origin([(p1, "P", 1.0), (s1, "S", 1.0)])
+    score = locator.get_origin_station_score(event, origin)
+    # P full (1.0) + S weighted (ps_count_weight), NOT a full 2.0
+    assert score == pytest.approx(1.0 + locator.reserve_ps_count_weight)
+
+
+# --------------------------------------------------------------------------
+# Pre-NLL bypass existence check (Clusterize)
+# --------------------------------------------------------------------------
+
+
+def make_clusterize(**kwargs) -> Clusterize:
+    params = dict(
+        phases=None,
+        min_cluster_size=2,
+        min_station_count=1,
+        min_station_with_P_and_S=2,
+        reserve_enabled=True,
+        reserve_tt_tolerance_s=1.0,
+        leiden_vp=6.0,
+        leiden_vs=3.5,
+        max_search_dist=100.0,
+    )
+    params.update(kwargs)
+    return Clusterize(**params)
+
+
+def test_has_reserve_s_candidates_in_window():
+    clust = make_clusterize()
+    p = Phase(
+        network="FR",
+        station="AAA",
+        location="",
+        channel="HH",
+        phase="P",
+        time=T0,
+        time_uncertainty=0.1,
+        proba=0.9,
+        info_sta=None,
+        coord=dict(STATION_COORD),
+    )
+    station_phase_sets = {"FR.AAA": {"P"}}
+    # S-P delay bound for 100 km: 100*(1/3.5 - 1/6) ≈ 11.9 s
+    pool = [make_reserve_phase("FR.AAA", T0 + 5.0)]
+    clust.reserve_pool = pool
+    assert clust._has_reserve_s_candidates([p], station_phase_sets) is True
+
+    # out of the generous window -> no bypass
+    clust.reserve_pool = [make_reserve_phase("FR.AAA", T0 + 60.0)]
+    assert clust._has_reserve_s_candidates([p], station_phase_sets) is False
+
+    # station already has an S -> not a P-only station
+    station_phase_sets_ps = {"FR.AAA": {"P", "S"}}
+    clust.reserve_pool = pool
+    assert clust._has_reserve_s_candidates([p], station_phase_sets_ps) is False
+
+    # empty pool
+    clust.reserve_pool = []
+    assert clust._has_reserve_s_candidates([p], station_phase_sets) is False
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))
