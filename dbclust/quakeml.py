@@ -369,7 +369,8 @@ def make_readable_id(cat: Catalog, prefix: str, smi_base: str) -> Catalog:
             if m.origin_id and m.origin_id.id in origin_map:
                 m.origin_id = origin_map[m.origin_id.id]
             else:
-                logger.warning(f"Magnitude {m.resource_id.id} references a missing origin {m.origin_id.id}.")
+                missing = m.origin_id.id if m.origin_id else None
+                logger.warning(f"Magnitude {m.resource_id.id} references a missing origin {missing}.")
                 m.origin_id = None
 
             # Generate readable IDs for station magnitude contribution
@@ -430,7 +431,7 @@ def deduplicate_picks_one_pass(event: Event) -> bool:
         return False  # No picks to process
 
     pick_map = {}  # Map removed pick IDs to their replacements
-    unique_picks = {}
+    groups: Dict[tuple, List[Pick]] = {}  # key -> picks, in first-seen order
     new_pick_list: List[Pick] = []
     removed_picks: List[Pick] = []
 
@@ -450,31 +451,28 @@ def deduplicate_picks_one_pass(event: Event) -> bool:
             round(pick.time.timestamp, 6),  # Tolerance on time
             pick.phase_hint,
         )
-        # Original key using full waveform_id (including channel):
-        # key = (
-        #     pick.waveform_id.get_seed_string() if pick.waveform_id else None,
-        #     round(pick.time.timestamp, 6),  # Tolerance on time
-        #     pick.phase_hint,
-        # )
+        groups.setdefault(key, []).append(pick)
 
-        if key in unique_picks:
-            ref_pick = unique_picks[key]
-
+    for group in groups.values():
+        # A manual pick always survives an automatic duplicate; otherwise the
+        # first one seen is kept.
+        ref_pick = next(
+            (p for p in group if p.evaluation_mode == "manual"), group[0]
+        )
+        new_pick_list.append(ref_pick)
+        for pick in group:
+            if pick is ref_pick:
+                continue
             if pick.resource_id and ref_pick.resource_id:
                 # Always memoize, even if ids are equal, so later passes know the survivor
                 pick_map[pick.resource_id.id] = ref_pick.resource_id.id
-
             removed_picks.append(pick)
-
             logger.debug(
                 f"Duplicate found: {pick.resource_id.id} -> {ref_pick.resource_id.id}"
             )
-        else:
-            unique_picks[key] = pick  # Add a new unique pick
-            new_pick_list.append(pick)
     # count the number of unique picks and duplicates
     logger.debug(
-        f"Picks deduplication: number of unique picks: {len(unique_picks)}, "
+        f"Picks deduplication: number of unique picks: {len(groups)}, "
         f"number of duplicates: {len(removed_picks)}"
     )
 

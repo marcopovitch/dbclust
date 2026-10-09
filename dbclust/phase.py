@@ -675,6 +675,10 @@ def get_station_info_from_fdsnws(
     return get_missing_info_from_df(df, loc, chan)
 
 
+P_PHASE_TYPES = ("P", "Pg", "Pn")
+S_PHASE_TYPES = ("S", "Sg", "Sn")
+
+
 def import_phases(
     df: Optional[pd.DataFrame] = None,
     P_proba_threshold: float = 0,
@@ -725,9 +729,10 @@ def import_phases(
 
     # Filter by phase score thresholds
     df_before = df.copy()
+    # Same phase families as the SQL pick queries in core.py
     df = df.loc[
-        ~((df["phase_type"] == "P") & (df["phase_score"] < P_proba_threshold))
-        & ~((df["phase_type"] == "S") & (df["phase_score"] < S_proba_threshold))
+        ~(df["phase_type"].isin(P_PHASE_TYPES) & (df["phase_score"] < P_proba_threshold))
+        & ~(df["phase_type"].isin(S_PHASE_TYPES) & (df["phase_score"] < S_proba_threshold))
     ]
 
     # Iterate through filtered rows
