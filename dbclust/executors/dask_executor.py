@@ -205,7 +205,7 @@ class DaskExecutor(ExecutorBase):
                 )
             except Exception as e:
                 logger.error("Task failed", exc_info=e)
-                yield (-1, False, 0.0, 0.0)
+                yield (-1, None, 0.0, 0.0)
         self._as_completed = None
 
     def cleanup(self) -> None:

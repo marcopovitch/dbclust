@@ -35,6 +35,7 @@ from dbclust.config import DBClustConfig
 from dbclust.core import dbclust
 from dbclust.executors import get_executor
 from dbclust.executors.base import config_fingerprint
+from dbclust.executors.base import read_completed_checkpoint
 from dbclust.parallel_import import merge_databases
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -116,37 +117,23 @@ def run_parallel(cfg: DBClustConfig) -> list:
             signal.signal(signal.SIGTERM, _old_sigterm[0])
 
 
-def _load_completed_indices(cfg: DBClustConfig):
+def _load_completed_indices(cfg: DBClustConfig) -> set:
     """Load the set of successfully completed job indices from the checkpoint file.
 
-    The checkpoint also stores a fingerprint of the temporal config; if it doesn't
-    match the current config, the checkpoint is stale and is ignored so that all
-    tasks are reprocessed instead of merging results from incompatible runs.
+    The checkpoint also stores a fingerprint of the temporal config; a stale,
+    unreadable or missing checkpoint yields an empty set, so that no temp DB
+    from an unknown or incompatible run gets merged.
     """
-    import json
     profiles_path = cfg.parallel.task_profiles_path or os.path.join(
         cfg.catalog.qml_path, "task_profiles.csv"
     )
     checkpoint_path = profiles_path.replace(".csv", ".completed.json")
-    if not os.path.exists(checkpoint_path):
-        return None
-    try:
-        with open(checkpoint_path) as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            logger.info(
-                "Obsolete checkpoint format (list), ignored — all tasks will be reprocessed."
-            )
-            return None
-        if data.get("fingerprint") != config_fingerprint(cfg):
-            logger.info(
-                "Temporal parameters changed since the last run, "
-                "checkpoint invalidated — all tasks will be reprocessed."
-            )
-            return None
-        return set(data.get("done", []))
-    except Exception:
-        return None
+    done, status = read_completed_checkpoint(checkpoint_path, config_fingerprint(cfg))
+    if done is None:
+        if status != "missing":
+            logger.warning(f"Checkpoint {checkpoint_path} is {status}, no job considered completed.")
+        return set()
+    return done
 
 
 def finalize_sqlite(cfg: DBClustConfig, completed_job_indices=None) -> bool:
@@ -162,7 +149,7 @@ def finalize_sqlite(cfg: DBClustConfig, completed_job_indices=None) -> bool:
     Args:
         cfg: DBClust configuration object.
         completed_job_indices: Set of job indices that completed successfully.
-            If None, all temp DBs are merged (legacy behaviour).
+            If None, all temp DBs are merged (sequential mode, no checkpoint).
 
     Returns:
         True if finalization succeeded (or SQLite is disabled), False if the
@@ -309,21 +296,38 @@ def main():
 
     # Run processing
     slurm_enabled = hasattr(cfg, "slurm") and cfg.slurm and cfg.slurm.enabled
-    if not slurm_enabled and cfg.parallel.n_workers == 1:
+    sequential = not slurm_enabled and cfg.parallel.n_workers == 1
+    if sequential:
         results = run_sequential(cfg)
     else:
         results = run_parallel(cfg)
 
-    # Finalize SQLite database — only merge DBs from completed jobs
-    completed_indices = _load_completed_indices(cfg)
+    # Finalize SQLite database. In parallel mode only merge DBs from jobs
+    # recorded in the checkpoint; the sequential runner writes no checkpoint
+    # (exceptions propagate), so every temp DB it produced is merged.
+    completed_indices = None if sequential else _load_completed_indices(cfg)
     finalize_ok = finalize_sqlite(cfg, completed_job_indices=completed_indices)
 
+    n_crashed = sum(1 for r in results if r is None)
+    n_partial = sum(1 for r in results if r is False)
     app_logger.info(f"Processing complete. {len(results)} partitions processed.")
+    if n_crashed:
+        app_logger.error(
+            f"{n_crashed} partition(s) crashed: not merged, will be re-run on resume."
+        )
+    if n_partial:
+        # Picks dropped in some windows (bad station coordinates, association
+        # exhausted at the last window) are not recoverable by a re-run: the
+        # partition is merged and this is only reported, not treated as a failure.
+        app_logger.warning(
+            f"{n_partial} partition(s) completed with dropped picks "
+            f"(see 'unrecoverable picks' in the worker logs)."
+        )
 
     # Flush output and exit cleanly
     sys.stdout.flush()
     sys.stderr.flush()
-    sys.exit(0 if finalize_ok else 1)
+    sys.exit(0 if finalize_ok and not n_crashed else 1)
 
 
 if __name__ == "__main__":
