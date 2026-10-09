@@ -58,6 +58,17 @@ def deduplicate_cross_partition_events(
     Returns a list of dicts describing events recommended for re-localisation:
       {event_id, origin_time, first_pick, last_pick, suggested_start, suggested_stop}
     """
+    if not dry_run:
+        # Losers are deleted through ON DELETE CASCADE, which SQLite only
+        # applies when foreign keys are enabled on this connection (off by
+        # default). The pragma is a no-op inside a transaction: commit first.
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = ON")
+        if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+            raise RuntimeError(
+                "Could not enable foreign keys: deleting duplicates would leave orphan rows."
+            )
+
     cursor = conn.cursor()
 
     # Load per-event pick signatures into memory — much faster than SQL self-joins
