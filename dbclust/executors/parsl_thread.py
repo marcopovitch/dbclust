@@ -199,7 +199,7 @@ class ParslThreadExecutor(ExecutorBase):
             except Exception as e:
                 logger.error(f"Task failed with error: {e}")
                 # Yield a failure result
-                yield (-1, False, 0, 0)
+                yield (-1, None, 0, 0)
 
     def cleanup(self) -> None:
         """Cleanup Parsl resources."""

@@ -358,11 +358,11 @@ class ParslHTEExecutor(ExecutorBase):
                         )
                     except (ManagerLost, WorkerLost) as e:
                         logger.error(f"Parsl worker/manager lost, task {job_index} will be skipped: {e}")
-                        yield (job_index, False, 0, 0)
+                        yield (job_index, None, 0, 0)
                     except Exception as e:
                         import traceback
                         logger.error(f"Task {job_index} failed with error: {e}\n{traceback.format_exc()}")
-                        yield (job_index, False, 0, 0)
+                        yield (job_index, None, 0, 0)
 
             logger.info("All tasks completed, exiting wait loop")
         except KeyboardInterrupt:
@@ -407,11 +407,11 @@ class ParslHTEExecutor(ExecutorBase):
                     yield (r["task_index"], r["result"], r["duration_sec"], r["peak_memory_mb"])
                 except (ManagerLost, WorkerLost) as e:
                     logger.error(f"Parsl worker/manager lost, task {job_index} skipped: {e}")
-                    yield (job_index, False, 0, 0)
+                    yield (job_index, None, 0, 0)
                 except Exception as e:
                     import traceback
                     logger.error(f"Task {job_index} failed: {e}\n{traceback.format_exc()}")
-                    yield (job_index, False, 0, 0)
+                    yield (job_index, None, 0, 0)
                 _fill()
 
     def run(self) -> List[Any]:
@@ -569,7 +569,9 @@ class ParslHTEExecutor(ExecutorBase):
                     )
                     logger.info(msg)
                     print(msg, flush=True)
-                    if job_index >= 0:
+                    # result is None when the task crashed (worker lost, exception):
+                    # it must be re-run on resume and its temp DB must not be merged.
+                    if job_index >= 0 and result is not None:
                         self._mark_completed(job_index)
                     results.append(result)
 

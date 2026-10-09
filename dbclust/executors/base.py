@@ -40,6 +40,50 @@ def config_fingerprint(cfg: DBClustConfig) -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
+def read_completed_checkpoint(path: str, fingerprint: str) -> Tuple[Optional[Set[int]], str]:
+    """Parse the completed-tasks checkpoint file.
+
+    Single source of truth for the checkpoint format, shared by the executors
+    (resume) and the runner (selecting which temp DBs to merge).
+
+    Format (JSON-lines): first line {"fingerprint": ...}, then one
+    {"done": <job_index>} per line. Any other content is "invalid".
+
+    Returns:
+        (done, status) where status is one of "missing", "ok", "stale"
+        (fingerprint mismatch) or "invalid". ``done`` is None unless status
+        is "ok".
+    """
+    if not os.path.exists(path):
+        return None, "missing"
+
+    try:
+        with open(path) as f:
+            first_line = f.readline()
+            try:
+                header = json.loads(first_line) if first_line else None
+            except json.JSONDecodeError:
+                header = None
+
+            if not isinstance(header, dict) or set(header) != {"fingerprint"}:
+                return None, "invalid"
+            if header["fingerprint"] != fingerprint:
+                return None, "stale"
+
+            done: Set[int] = set()
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    done.add(json.loads(line)["done"])
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue
+            return done, "ok"
+    except (OSError, ValueError, TypeError):
+        return None, "invalid"
+
+
 class ExecutorBase(ABC):
     """Abstract base class for parallel execution backends.
 
@@ -104,7 +148,10 @@ class ExecutorBase(ABC):
             futures: List of future objects from submit_task.
 
         Yields:
-            Tuples of (job_index, result, duration, peak_memory_mb).
+            Tuples of (job_index, result, duration, peak_memory_mb). ``result``
+            is the dbclust() return value (True, or False when the job ran to
+            completion but dropped picks) or None when the task crashed; use
+            job_index -1 when the crashed task's index is unknown.
         """
         pass
 
@@ -255,79 +302,36 @@ class ExecutorBase(ABC):
         re-reading/re-writing the whole file each time.
         """
         current_fp = self._config_fingerprint()
+        done, status = read_completed_checkpoint(self._completed_path, current_fp)
+
+        if status == "ok":
+            self._completed_cache = done
+            self._completed_fingerprint_written = True
+            return set(done)
+
         self._completed_cache = set()
         self._completed_fingerprint_written = False
+        if status == "stale":
+            logger.info(
+                "Temporal parameters changed since the last run, "
+                "checkpoint invalidated — all tasks will be reprocessed."
+            )
+        elif status == "invalid":
+            logger.info(
+                "Unreadable checkpoint, ignored — all tasks will be reprocessed."
+            )
+        if status in ("stale", "invalid"):
+            # Reset the file: appending to it would leave the old header first
+            # and keep the checkpoint unreadable on every subsequent run.
+            self._reset_completed(current_fp)
+            self._completed_fingerprint_written = True
+        return set()
 
-        if not os.path.exists(self._completed_path):
-            return set()
+    def _reset_completed(self, fingerprint: str) -> None:
+        """Atomically replace the checkpoint file with an empty one (header only).
 
-        try:
-            with open(self._completed_path) as f:
-                first_line = f.readline()
-                if not first_line:
-                    return set()
-
-                # JSON-lines format: first line is {"fingerprint": "..."},
-                # each following line is {"done": <job_index>}.
-                try:
-                    header = json.loads(first_line)
-                except json.JSONDecodeError:
-                    header = None
-
-                if isinstance(header, dict) and "fingerprint" in header and "done" not in header:
-                    if header.get("fingerprint") != current_fp:
-                        logger.info(
-                            "Temporal parameters changed since the last run, "
-                            "checkpoint invalidated — all tasks will be reprocessed."
-                        )
-                        return set()
-                    done: Set[int] = set()
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entry = json.loads(line)
-                            done.add(entry["done"])
-                        except (json.JSONDecodeError, KeyError):
-                            continue
-                    self._completed_cache = done
-                    self._completed_fingerprint_written = True
-                    return set(done)
-
-                # Legacy single-object format: {"fingerprint": "...", "done": [...]}
-                if isinstance(header, dict) and "done" in header:
-                    if header.get("fingerprint") != current_fp:
-                        logger.info(
-                            "Temporal parameters changed since the last run, "
-                            "checkpoint invalidated — all tasks will be reprocessed."
-                        )
-                        return set()
-                    done = set(header.get("done", []))
-                    self._completed_cache = done
-                    # Migrate to the new JSON-lines format immediately: truncate
-                    # and rewrite, so the legacy single-object line is not left
-                    # mixed with future appended lines.
-                    self._rewrite_completed_as_jsonl(done, current_fp)
-                    self._completed_fingerprint_written = True
-                    return set(done)
-
-                # Old format was a plain list — treat as invalid to force re-run.
-                logger.info(
-                    "Obsolete checkpoint format, ignored — all tasks will be reprocessed."
-                )
-                return set()
-        except Exception:
-            self._completed_cache = set()
-            self._completed_fingerprint_written = False
-            return set()
-
-    def _rewrite_completed_as_jsonl(self, done: Set[int], fingerprint: str) -> None:
-        """Atomically rewrite the checkpoint file in JSON-lines format.
-
-        Used once when migrating from the legacy single-JSON-object checkpoint
-        format. Writes to a temp file and renames it into place so a crash
-        mid-write cannot corrupt the existing checkpoint.
+        Writes to a temp file and renames it into place so a crash mid-write
+        cannot leave a truncated checkpoint.
         """
         directory = os.path.dirname(self._completed_path) or "."
         os.makedirs(directory, exist_ok=True)
@@ -335,8 +339,6 @@ class ExecutorBase(ABC):
         try:
             with os.fdopen(fd, "w") as f:
                 f.write(json.dumps({"fingerprint": fingerprint}) + "\n")
-                for idx in sorted(done):
-                    f.write(json.dumps({"done": idx}) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, self._completed_path)
@@ -453,7 +455,9 @@ class ExecutorBase(ABC):
             )
             logger.info(msg)
             print(msg, flush=True)
-            if job_index >= 0:
+            # result is None when the task crashed (worker lost, exception):
+            # it must be re-run on resume and its temp DB must not be merged.
+            if job_index >= 0 and result is not None:
                 self._mark_completed(job_index)
             results.append(result)
 
@@ -569,7 +573,9 @@ class ExecutorBase(ABC):
                 f"task {job_index} done in {duration:.0f}s "
                 f"— elapsed {elapsed_str} — ETA {eta_str}"
             )
-            if job_index >= 0:
+            # result is None when the task crashed (worker lost, exception):
+            # it must be re-run on resume and its temp DB must not be merged.
+            if job_index >= 0 and result is not None:
                 self._mark_completed(job_index)
             results.append(result)
 

@@ -204,7 +204,7 @@ class RayExecutor(ExecutorBase):
                     )
                 except Exception as e:
                     logger.error(f"Task failed with error: {e}")
-                    yield (-1, False, 0, 0)
+                    yield (-1, None, 0, 0)
         self._pending_futures = None
 
     def cleanup(self) -> None:
