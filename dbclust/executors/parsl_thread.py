@@ -8,7 +8,8 @@ by Python's GIL for CPU-bound tasks.
 
 import logging
 import os
-from concurrent.futures import as_completed
+from concurrent.futures import FIRST_COMPLETED
+from concurrent.futures import wait
 from typing import Any, Dict, Generator, List
 
 import parsl
@@ -117,6 +118,11 @@ class ParslThreadExecutor(ExecutorBase):
         cfg: DBClust configuration object.
     """
 
+    def __init__(self, cfg: DBClustConfig):
+        super().__init__(cfg)
+        self._future_index: Dict[Any, int] = {}
+        self._pending_futures: set = set()
+
     @property
     def name(self) -> str:
         return "Parsl ThreadPoolExecutor"
@@ -176,7 +182,13 @@ class ParslThreadExecutor(ExecutorBase):
         """
         start, end = self.cfg.parallel.time_partitions[job_index]
         logger.info(f"Submitting task {job_index} [{start} -- {end}]")
-        return _run_dbclust_task(self.cfg, job_index)
+        future = _run_dbclust_task(self.cfg, job_index)
+        self._future_index[future] = job_index
+        return future
+
+    def _inject_future(self, pending, new_future: Any) -> None:
+        """Inject a refill future into the live wait set of wait_for_results()."""
+        self._pending_futures.add(new_future)
 
     def wait_for_results(self, futures: List[Any]) -> Generator:
         """Wait for Parsl futures and yield results as they complete.
@@ -184,22 +196,29 @@ class ParslThreadExecutor(ExecutorBase):
         Args:
             futures: List of Parsl AppFuture objects.
 
+        Futures injected by _inject_future() while iterating are collected
+        too: self._pending_futures is the live wait set.
+
         Yields:
             Tuples of (job_index, result, duration, peak_memory_mb).
         """
-        for completed_future in as_completed(futures):
-            try:
-                r = completed_future.result()
-                yield (
-                    r["task_index"],
-                    r["result"],
-                    r["duration_sec"],
-                    r["peak_memory_mb"],
-                )
-            except Exception as e:
-                logger.error(f"Task failed with error: {e}")
-                # Yield a failure result
-                yield (-1, None, 0, 0)
+        self._pending_futures = set(futures)
+        while self._pending_futures:
+            done, _ = wait(self._pending_futures, return_when=FIRST_COMPLETED)
+            self._pending_futures -= done
+            for completed_future in done:
+                job_index = self._future_index.pop(completed_future, -1)
+                try:
+                    r = completed_future.result()
+                    yield (
+                        r["task_index"],
+                        r["result"],
+                        r["duration_sec"],
+                        r["peak_memory_mb"],
+                    )
+                except Exception as e:
+                    logger.error(f"Task {job_index} failed with error: {e}")
+                    yield (job_index, None, 0, 0)
 
     def cleanup(self) -> None:
         """Cleanup Parsl resources."""

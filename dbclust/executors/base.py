@@ -471,10 +471,9 @@ class ExecutorBase(ABC):
         seen again by that call. Executors whose wait_for_results() consumes
         a live, mutable wait set (e.g. Dask's as_completed, Ray's wait list)
         must override this to inject into that same live set — see
-        DaskExecutor / RayExecutor. Executors that override run() with their
-        own sliding-window collection (ParslHTEExecutor, ParslSlurmExecutor)
-        or that never exceed max_inflight in practice (ParslThreadExecutor)
-        never reach this method. The base implementation raises loudly
+        DaskExecutor / RayExecutor / ParslThreadExecutor. Executors that
+        override run() with their own sliding-window collection
+        (ParslHTEExecutor, ParslSlurmExecutor) never reach this method. The base implementation raises loudly
         instead of silently dropping refill futures.
         """
         raise NotImplementedError(
