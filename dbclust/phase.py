@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 import functools
+import io
 import logging
 import sys
+import time
 import warnings
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,6 +15,7 @@ from typing import Union
 
 import numpy as np
 import pandas as pd
+import requests
 from dateutil import parser
 from obspy import Inventory
 from obspy import read_inventory
@@ -92,7 +95,10 @@ class Phase:
             ValueError: If coordinates cannot be fetched from any source.
         """
         # Determine the appropriate function and time range for fetching station info
-        if isinstance(self.info_sta, Inventory):
+        if self.info_sta is None:
+            # fetch_method: None — no primary source, fallback CSV only
+            get_station_info = None
+        elif isinstance(self.info_sta, Inventory):
             get_station_info = get_station_info_from_inventory
             time_search_begin = time_search_end = self.time
         else:
@@ -105,16 +111,18 @@ class Phase:
             )
 
         # Fetch coordinates and channels from the primary source
+        lat, lon, elev, loc, chans = None, None, None, None, None
         try:
-            lat, lon, elev, loc, chans = get_station_info(
-                self.network,
-                self.station,
-                str(time_search_begin),
-                str(time_search_end),
-                self.info_sta,
-                loc=self.location,
-                chan=self.channel,
-            )
+            if get_station_info is not None:
+                lat, lon, elev, loc, chans = get_station_info(
+                    self.network,
+                    self.station,
+                    str(time_search_begin),
+                    str(time_search_end),
+                    self.info_sta,
+                    loc=self.location,
+                    chan=self.channel,
+                )
         except ValueError as e:
             logger.error(f"ValueError fetching coordinates: {e}")
             lat, lon, elev, loc, chans = None, None, None, None, None
@@ -582,6 +590,18 @@ def get_station_info_from_inventory(
     return get_missing_info_from_df(df, loc, chan)
 
 
+FDSNWS_TIMEOUT_S = 30
+# A failed FDSNWS request (timeout, connection or server error) is not cached by
+# lru_cache; it is only remembered for this long so that a dead server is not
+# queried again for every pick, then retried.
+FDSNWS_RETRY_AFTER_S = 300
+_fdsnws_failures: Dict[str, float] = {}
+
+
+class FdsnwsError(ValueError):
+    """FDSNWS station request failed (transient: not cached)."""
+
+
 @functools.lru_cache(maxsize=None)
 def get_station_info_from_fdsnws(
     network: str,
@@ -619,11 +639,27 @@ def get_station_info_from_fdsnws(
         f"level=channel"
     )
 
+    failed_at = _fdsnws_failures.get(url)
+    if failed_at is not None and time.monotonic() - failed_at < FDSNWS_RETRY_AFTER_S:
+        raise FdsnwsError(f"FDSNWS request failed recently, not retried yet: {url}")
+
     try:
-        df = pd.read_csv(url, sep="|", skipinitialspace=True, dtype=str)
+        response = requests.get(url, timeout=FDSNWS_TIMEOUT_S)
+        # 204 (default) or 404 (nodata=404): the station is unknown — a
+        # definitive answer, cached like a success.
+        if response.status_code in (204, 404) or not response.text.strip():
+            logger.debug(f"No station metadata for {network}.{station} at {url}")
+            return (None, None, None, None, None)
+        response.raise_for_status()
+        df = pd.read_csv(
+            io.StringIO(response.text), sep="|", skipinitialspace=True, dtype=str
+        )
     except Exception as e:
-        logger.warning(f"Failed to load station map from {url}: {e}", exc_info=True)
-        return (None, None, None, None, None)
+        _fdsnws_failures[url] = time.monotonic()
+        logger.warning(f"Failed to load station map from {url}: {e}")
+        # raising (instead of returning) keeps the failure out of lru_cache
+        raise FdsnwsError(f"FDSNWS request failed: {url}: {e}") from e
+    _fdsnws_failures.pop(url, None)
 
     # Network|Station|Location|Channel|Latitude|Longitude|Elevation|Depth|
     df.columns = df.columns.str.replace("#", "")
