@@ -16,7 +16,6 @@ dependencies = [
     "fastparquet",
     "geopandas",
     "hdbscan",
-    "icecream",
     "jinja2",
     "numpy",
     # Pinned exactly, not >=1.4.2. patch_obspy_nll.sh applies a

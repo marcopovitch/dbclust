@@ -4,7 +4,6 @@ import math
 import pandas as pd
 import plotext as plt
 import plotly.graph_objects as go
-from icecream import ic
 from obspy.core.event import Event
 from obspy.core.event import ResourceIdentifier
 from plotly.subplots import make_subplots
@@ -32,8 +31,6 @@ def plot_arrival_time(
                 break
         else:
             raise ValueError(f"Origin with id {origin_id} not found")
-
-    # ic(df_polygons)
 
     P_station_name = []
     P_arrival_time = []

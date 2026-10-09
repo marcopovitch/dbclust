@@ -12,7 +12,6 @@ dask.config.set({"dataframe.query-planning-warning": False})
 dask.config.set({"dataframe.query-planning": False})
 import dask.dataframe as dd
 import glob
-from icecream import ic
 
 from obspy import UTCDateTime
 

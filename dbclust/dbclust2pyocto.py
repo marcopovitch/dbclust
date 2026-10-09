@@ -1263,8 +1263,6 @@ def aggregate_pick_to_cluster_with_common_event_id(
                 if p.event_id not in event_id_agency:
                     event_id_agency[p.event_id] = set()
                 event_id_agency[p.event_id].add(p.agency)
-        # if event_id_agency:
-        #     ic(event_id_agency)
 
         # Invert the mapping to find agencies associated with multiple event_ids
         agency_event_map = {}
