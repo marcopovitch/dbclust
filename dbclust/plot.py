@@ -9,6 +9,8 @@ from obspy.core.event import Event
 from obspy.core.event import ResourceIdentifier
 from plotly.subplots import make_subplots
 
+from dbclust.constants import KM_PER_DEGREE
+
 # set time_weight tolerance
 time_weight_tolerance = 0.01
 
@@ -57,7 +59,7 @@ def plot_arrival_time(
             P_station_name.append(pick.waveform_id.get_seed_string())
             P_phase.append(arrival.phase)
             P_arrival_time.append(pick.time - origin.time)
-            P_distance.append(arrival.distance * 111.1)
+            P_distance.append(arrival.distance * KM_PER_DEGREE)
             P_residual.append(arrival.time_residual)
             if abs(arrival.time_weight) > time_weight_tolerance:
                 if arrival.phase == "Pg":
@@ -74,7 +76,7 @@ def plot_arrival_time(
             S_station_name.append(pick.waveform_id.get_seed_string())
             S_phase.append(arrival.phase)
             S_arrival_time.append(pick.time - origin.time)
-            S_distance.append(arrival.distance * 111.1)
+            S_distance.append(arrival.distance * KM_PER_DEGREE)
             S_residual.append(arrival.time_residual)
             if abs(arrival.time_weight) > time_weight_tolerance:
                 if arrival.phase == "Sg":
@@ -145,7 +147,7 @@ def make_plot_with_plotly(
         polygon = row["geometry"]
         x, y = polygon.exterior.xy
         # convert x to km
-        x = [i * 111.1 for i in x]
+        x = [i * KM_PER_DEGREE for i in x]
         x_list = list(x)
         y_list = list(y)
         fig.add_trace(

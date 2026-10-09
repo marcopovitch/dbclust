@@ -5,6 +5,7 @@ import logging
 import numpy as np
 from obspy.core.event import Origin
 
+from dbclust.constants import KM_PER_DEGREE
 from dbclust.gap import compute_azimuthal_gap
 from dbclust.gap import compute_secondary_azimuthal_gap
 
@@ -90,7 +91,7 @@ def compute_gt5_score_obspy(origin: Origin) -> Union[bool, dict]:
     for arrival in arrivals:
         pick = arrival.pick_id.get_referred_object()
         if pick and pick.waveform_id:
-            distance_km = arrival.distance * 111.11  # Approximate conversion
+            distance_km = arrival.distance * KM_PER_DEGREE  # Approximate conversion
             azimuths.append(arrival.azimuth)
             distances.append(distance_km)
 
@@ -160,7 +161,7 @@ def compute_gallacher_gt5_score_obspy(origin: Origin) -> Tuple[bool, dict]:
         pick = arrival.pick_id.get_referred_object()
         if pick and pick.waveform_id and arrival.distance is not None:
             distance_deg = arrival.distance
-            distance_km = distance_deg * 111.11
+            distance_km = distance_deg * KM_PER_DEGREE
             azimuths.append(arrival.azimuth)
             distances_km.append(distance_km)
             distances_deg.append(distance_deg)
@@ -316,7 +317,7 @@ def compute_gt5_score(conn: sqlite3.Connection) -> None:
 
         for azimuth, distance_deg, _ in arrivals:
             if azimuth is not None and distance_deg is not None:
-                distance_km = distance_deg * 111.11  # Approximate conversion
+                distance_km = distance_deg * KM_PER_DEGREE  # Approximate conversion
                 azimuths.append(azimuth)
                 distances_km.append(distance_km)
 

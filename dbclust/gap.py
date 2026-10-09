@@ -7,6 +7,8 @@ from typing import Union
 import numpy as np
 from obspy.core.event import Event
 
+from dbclust.constants import KM_PER_DEGREE
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +51,7 @@ def get_arrival_with_distance_gap_greater_than(
     # if their evaluation mode is in apply_to_evaluation_mode
     # return None if no arrival with distance greater than dist_max_km.
     for i in range(len(dist_list)):
-        if dist_list[i] >= dist_max_km / 111.1:
+        if dist_list[i] >= dist_max_km / KM_PER_DEGREE:
             # get the index of the first arrival with distance >= dist_max_km
             i_max = i + 1
             break
@@ -123,7 +125,7 @@ def get_station_count_before_distance_gap(
         return None
 
     for i, gap in enumerate(dist_list):
-        if gap >= dist_max_km / 111.1:
+        if gap >= dist_max_km / KM_PER_DEGREE:
             arrivals_before = sorted_arrivals[: i + 1]
             stations_before = set()
             for a in arrivals_before:
@@ -160,7 +162,7 @@ def get_closest_station_dist_km(event: Event) -> Union[float, None]:
     if not distances:
         return None
 
-    return min(distances) * 111.1  # degrees → km
+    return min(distances) * KM_PER_DEGREE  # degrees → km
 
 
 def compute_gap(azimuth_list: List[float]) -> Union[float, None]:

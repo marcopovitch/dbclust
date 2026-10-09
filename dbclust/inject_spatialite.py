@@ -55,6 +55,7 @@ from obspy.core.event import Origin
 from obspy.core.event import OriginQuality
 from tqdm import tqdm
 
+from dbclust.constants import KM_PER_DEGREE
 from dbclust.db import validate_sql_identifier
 from dbclust.gap import compute_azimuthal_gap
 from dbclust.gap import compute_secondary_azimuthal_gap
@@ -1263,7 +1264,7 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             station_id = (
                 f"{pick.waveform_id.network_code}.{pick.waveform_id.station_code}"
             )
-            distance_km = arrival.distance * 111.11
+            distance_km = arrival.distance * KM_PER_DEGREE
             if distance_km <= 10:
                 stations_10km.add(station_id)
             if distance_km <= 30:
@@ -3377,7 +3378,7 @@ def recompute_station_and_phase_counts(conn: sqlite3.Connection) -> None:
         p_count, s_count = 0, 0
         for station_name, distance_deg, phase_hint in rows:
             if station_name is not None:
-                distance_km = distance_deg * 111.11
+                distance_km = distance_deg * KM_PER_DEGREE
                 if distance_km <= 10:
                     stations_10km.add(station_name)
                 if distance_km <= 30:
@@ -3647,7 +3648,7 @@ def compute_gallacher_gt5_score(conn: sqlite3.Connection) -> None:
             continue
 
         azimuths = [a[0] for a in arrivals]
-        distances_km = [a[1] * 111.11 for a in arrivals]
+        distances_km = [a[1] * KM_PER_DEGREE for a in arrivals]
 
         # Stations with both P and S (station_name is "NET.STA")
         stations_with_p = set()
