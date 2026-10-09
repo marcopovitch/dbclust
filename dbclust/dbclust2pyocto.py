@@ -686,7 +686,6 @@ def dbclust2pyocto(
                 max_search_dist=sp_epsilon,
                 min_cluster_size=myclust.min_cluster_size,
                 average_velocity=myclust.average_velocity,
-                metric="precomputed",
                 clustering_method=sp_clustering_method,
                 leiden_resolution=myclust.leiden_resolution,
                 leiden_edge_weight_scale=myclust.leiden_edge_weight_scale,

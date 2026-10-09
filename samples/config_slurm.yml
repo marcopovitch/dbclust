@@ -63,7 +63,6 @@ cluster:
   eventid_shared_min_distinct_ids: 2
   # Sub-windowed HDBSCAN: set to ~300s when backward injection creates mega-clusters.
   # clustering_time_window: null
-  use_umap: false
 
 nll:
   nlloc_bin: /opt/nll/bin/NLLoc

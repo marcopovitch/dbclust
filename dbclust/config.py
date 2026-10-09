@@ -496,17 +496,8 @@ class ClusterConfig:
     min_ps_ratio_wilson_z: Optional[float] = None
     # Force clusters with known event_id through pre-NLL filters even if they fail thresholds
     force_keep_catalog_events: bool = False
-    # Use UMAP dimensionality reduction of TT matrix before HDBSCAN.
-    # Separates geographically incoherent pick pools without any time-window parameter.
-    # Requires umap-learn (pip install umap-learn).
-    use_umap: bool = False
-    # UMAP sub-parameters (only used when use_umap=True).
-    # Can be set either as a nested umap: block or as flat umap_* keys (legacy).
-    # Nested block takes precedence when both are present.
     apparent_vp: Optional[float] = 6.0               # apparent P-wave velocity (km/s)
     apparent_vs: Optional[float] = 3.5               # apparent S-wave velocity (km/s)
-    umap_alpha: Optional[float] = 0.3            # AOT+TT blend weight [0=pure AOT, 1=pure TT]
-    umap_clip_seconds: Optional[float] = None    # AOT normalisation scale (s); None = use overlap_window
     # HDBSCAN cluster selection method: "eom" (default) or "leaf"
     # "leaf" splits at finest granularity — better for separating co-located events
     # "eom" merges sub-clusters upward — better recall for small/isolated events
