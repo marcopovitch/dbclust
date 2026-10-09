@@ -181,3 +181,48 @@ def test_resume_reruns_only_crashed_task(tmp_path):
 def test_runner_without_checkpoint_merges_nothing(tmp_path):
     cfg = make_cfg(tmp_path)
     assert runner._load_completed_indices(cfg) == set()
+
+
+# --- C4: ParslThreadExecutor sliding window ------------------------------------
+
+
+def _patch_parsl_thread(monkeypatch, outcomes):
+    """Replace the Parsl app by a plain thread pool, keep the executor logic."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from dbclust.executors import parsl_thread
+
+    pool = ThreadPoolExecutor(max_workers=2)
+
+    def fake_task(cfg, job_index):
+        def run():
+            if outcomes[job_index] == "raise":
+                raise RuntimeError("boom")
+            return {
+                "task_index": job_index,
+                "result": outcomes[job_index],
+                "duration_sec": 0.0,
+                "peak_memory_mb": 0.0,
+            }
+
+        return pool.submit(run)
+
+    monkeypatch.setattr(parsl_thread, "_run_dbclust_task", fake_task)
+    monkeypatch.setattr(parsl_thread.ParslThreadExecutor, "initialize", lambda self: None)
+    monkeypatch.setattr(parsl_thread.ParslThreadExecutor, "cleanup", lambda self: None)
+    return parsl_thread.ParslThreadExecutor
+
+
+def test_parsl_thread_more_tasks_than_max_inflight(tmp_path, monkeypatch):
+    outcomes = {i: True for i in range(7)}
+    outcomes[4] = "raise"
+    executor_cls = _patch_parsl_thread(monkeypatch, outcomes)
+    cfg = make_cfg(tmp_path, n_partitions=7)
+    cfg.parallel.n_workers = 2  # max_inflight = 2 < 7 tasks
+
+    results = executor_cls(cfg).run()
+
+    assert len(results) == 7
+    assert results.count(None) == 1
+    # the crashed task is identified and left out of the checkpoint
+    assert runner._load_completed_indices(cfg) == {0, 1, 2, 3, 5, 6}
