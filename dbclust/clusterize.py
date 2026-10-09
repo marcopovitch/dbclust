@@ -31,6 +31,11 @@ from dbclust.quakeml import deduplicate_picks
 logger = logging.getLogger("dbclust.clusterize")
 
 
+# Distance (s) given to same-station P-S pairs that cannot belong to the same
+# event: far above any max_search_dist, still finite for HDBSCAN.
+TT_FAR = 1e6
+
+
 @functools.lru_cache(maxsize=None)
 def compute_tt(p1: Phase, p2: Phase, vmean) -> float:
     # lru_cache doesn't work with multiprocessing/dask/etc.
@@ -545,6 +550,7 @@ class Clusterize(object):
                 phases, average_velocity,
                 vp=self.apparent_vp if self.clustering_method != "leiden" else None,
                 vs=self.apparent_vs if self.clustering_method != "leiden" else None,
+                max_search_dist=self.max_search_dist,
             )
             if tt_clip_seconds > 0:
                 pseudo_tt = np.clip(pseudo_tt, 0.0, tt_clip_seconds)
@@ -771,6 +777,7 @@ class Clusterize(object):
                 all_phases, self.average_velocity,
                 vp=self.apparent_vp if self.clustering_method != "leiden" else None,
                 vs=self.apparent_vs if self.clustering_method != "leiden" else None,
+                max_search_dist=self.max_search_dist,
             )
             if self.tt_clip_seconds > 0:
                 pseudo_tt = np.clip(pseudo_tt, 0.0, self.tt_clip_seconds)
@@ -813,26 +820,27 @@ class Clusterize(object):
             self.n_noise = len(self.noise)
 
     @staticmethod
-    def numpy_compute_tt_matrix_vectorized(phases, vmean, vp=None, vs=None):
+    def numpy_compute_tt_matrix_vectorized(
+        phases, vmean, vp=None, vs=None, max_search_dist=None
+    ):
         """Vectorized TT matrix using haversine formula.
 
         Replaces per-pair gps2dist_azimuth calls with a single NumPy broadcast.
         Haversine error < 0.5% for distances < 2000 km — sufficient for clustering.
 
-        When vp and vs are provided, same-station P-S pairs whose observed S-P
-        delay exceeds the maximum physically plausible value given the inter-station
-        distance (dt_SP_max = dist_km * (1/vs - 1/vp)) are capped.  This prevents
-        spurious links between P and S picks from different events that share a
-        station code.  Enabled for HDBSCAN; disabled for Leiden (Leiden uses PS-boost
-        instead, and the cap alters cluster composition adversely).
+        When vp, vs and max_search_dist are provided, same-station P-S pairs
+        that cannot belong to the same event are pushed apart (distance
+        TT_FAR): S before P, or S-P above the delay of a source at the
+        largest distance considered, max_search_dist * vmean (km):
+            sp_max = max_search_dist * vmean * (1/vs - 1/vp)
+        This prevents spurious links between P and S picks from different
+        events that share a station.  Enabled for HDBSCAN; disabled for Leiden
+        (Leiden uses PS-boost instead).
         """
         R = 6371.0  # Earth radius in km
         lats = np.radians([p.coord["latitude"] for p in phases])
         lons = np.radians([p.coord["longitude"] for p in phases])
         times = np.array([float(p.time) for p in phases])
-        stations = np.array([f"{p.network}.{p.station}" for p in phases])
-        is_p = np.array([p.is_p() for p in phases])
-        is_s = np.array([p.is_s() for p in phases])
 
         dlat = lats[:, None] - lats[None, :]
         dlon = lons[:, None] - lons[None, :]
@@ -844,32 +852,31 @@ class Clusterize(object):
 
         dd = dist_km / vmean
         dt = times[:, None] - times[None, :]
+        tt = np.sqrt(dt**2 + dd**2)
 
-        if vp is not None and vs is not None:
-            # Cap |dt| for same-station P-S pairs at the maximum plausible S-P delay.
-            # dt_SP_max = dist_km * (1/vs - 1/vp): beyond this, the implied source
-            # distance is incompatible with the inter-station geometry.
-            sp_inv = 1.0 / vs - 1.0 / vp
-            ps_pair = (
-                (stations[:, None] == stations[None, :])
-                & ((is_p[:, None] & is_s[None, :]) | (is_s[:, None] & is_p[None, :]))
+        if vp is not None and vs is not None and max_search_dist:
+            sp_max = max_search_dist * vmean * (1.0 / vs - 1.0 / vp)
+            stations = np.array([f"{p.network}.{p.station}" for p in phases])
+            is_p = np.array([p.is_p() for p in phases])
+            is_s = np.array([p.is_s() for p in phases])
+            # [i, j]: P pick i and S pick j on the same station, S-P = t_j - t_i
+            p_then_s = (
+                (stations[:, None] == stations[None, :]) & is_p[:, None] & is_s[None, :]
             )
-            dt_SP_max = dist_km * sp_inv
-            dt_capped = np.where(
-                ps_pair & (np.abs(dt) > dt_SP_max),
-                np.sign(dt) * dt_SP_max,
-                dt,
-            )
-            n_capped = int(np.sum(np.triu(ps_pair & (np.abs(dt) > dt_SP_max), k=1)))
-            if n_capped:
+            s_minus_p = -dt
+            impossible = p_then_s & ((s_minus_p <= 0) | (s_minus_p > sp_max))
+            impossible |= impossible.T
+            tt[impossible] = TT_FAR
+            n_impossible = int(np.sum(np.triu(impossible, k=1)))
+            if n_impossible:
                 logger.debug(
-                    "TT matrix: %d same-station P-S pair(s) dt capped to dt_SP_max.",
-                    n_capped,
+                    "TT matrix: %d same-station P-S pair(s) with impossible S-P "
+                    "(> %.1fs or negative) pushed apart.",
+                    n_impossible,
+                    sp_max,
                 )
-        else:
-            dt_capped = dt
 
-        return np.sqrt(dt_capped**2 + dd**2)
+        return tt
 
     @staticmethod
     def _merge_ps_split_clusters(

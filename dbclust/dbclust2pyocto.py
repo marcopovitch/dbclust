@@ -661,12 +661,12 @@ def dbclust2pyocto(
             unassigned = [p for j, p in enumerate(cluster) if j not in assigned_cluster_ids]
             pseudo_tt2 = myclust.numpy_compute_tt_matrix_vectorized(
                 unassigned, myclust.average_velocity,
-                # Same-station P-S cap: enabled for HDBSCAN, disabled for Leiden
-                # (Leiden uses PS-boost instead; the cap alters cluster
-                # composition adversely — see numpy_compute_tt_matrix_vectorized
-                # docstring and the equivalent guard in clusterize.py).
+                # Same-station impossible P-S pairs pushed apart: enabled for
+                # HDBSCAN, disabled for Leiden (Leiden uses PS-boost instead —
+                # see numpy_compute_tt_matrix_vectorized and clusterize.py).
                 vp=myclust.apparent_vp if myclust.clustering_method != "leiden" else None,
                 vs=myclust.apparent_vs if myclust.clustering_method != "leiden" else None,
+                max_search_dist=myclust.max_search_dist,
             )
             sp_epsilon = (
                 myclust.max_search_dist
