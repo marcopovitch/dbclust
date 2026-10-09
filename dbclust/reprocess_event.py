@@ -11,7 +11,6 @@ from dataclasses import asdict
 from datetime import datetime
 from datetime import timedelta
 from shutil import copyfile
-from icecream import ic
 import pandas as pd
 from obspy import read_events
 

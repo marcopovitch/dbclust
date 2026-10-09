@@ -2,11 +2,8 @@
 import functools
 import io
 import logging
-import sys
 import time
-import warnings
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Dict
 from typing import List
 from typing import Literal
@@ -16,11 +13,8 @@ from typing import Union
 import numpy as np
 import pandas as pd
 import requests
-from dateutil import parser
 from obspy import Inventory
-from obspy import read_inventory
 from obspy import UTCDateTime
-from obspy.core.event import Comment
 from obspy.core.event import CreationInfo
 from obspy.core.event import Pick
 from obspy.core.event import ResourceIdentifier

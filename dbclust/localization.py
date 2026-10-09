@@ -939,8 +939,6 @@ class NllLoc(object):
             If there is an error in generating the NLL configuration file or running the NLL binary.
         """
 
-        # ic(nll_obs_file, double_pass, pass_count, force_model_id, force_template)
-
         if not nll_obs_file:
             nll_obs_file = self.nll_obs_file
 
@@ -991,7 +989,6 @@ class NllLoc(object):
                 f"template: {nll_template}."
             )
 
-        # ic(picks)
 
         if pass_count == 0:
             # get info to create a full Origin for preliminary location
@@ -2435,7 +2432,6 @@ class NllLoc(object):
 
         if df_polygons.empty:
             logger.warning("No polygon defined in zone. Can't cleanup picks.")
-            # ic(zone)
         else:
             region_name = df_polygons["region"].unique()[0]
 

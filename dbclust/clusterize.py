@@ -20,7 +20,6 @@ from obspy.core.event import Comment
 from obspy.core.event import Event
 from obspy.core.event import Origin
 from obspy.geodetics import gps2dist_azimuth
-from tqdm import tqdm
 
 from dbclust.phase import import_phases
 from dbclust.phase import Phase
@@ -541,15 +540,6 @@ class Clusterize(object):
                 logger.error("Check your config file !")
                 raise
         else:
-            # sequential computation
-            # don't forget to activate lru_cache for compute_tt()
-            # pseudo_tt = self.compute_tt_matrix(phases, average_velocity)
-            # pseudo_tt = self.numpy_compute_tt_matrix_seq(phases, average_velocity)
-
-            # use the fact that the matrix is diagonal and symmetrical
-            # running time is quite similar to sequential computation + lru_cache
-            # pseudo_tt = self.numpy_compute_tt_matrix(phases, average_velocity)
-
             # vectorized haversine: ~20-100x faster than per-pair gps2dist_azimuth
             pseudo_tt = self.numpy_compute_tt_matrix_vectorized(
                 phases, average_velocity,
@@ -560,8 +550,6 @@ class Clusterize(object):
                 pseudo_tt = np.clip(pseudo_tt, 0.0, tt_clip_seconds)
                 logger.info(f"TT matrix clipped to {tt_clip_seconds}s.")
 
-            # // computation using dask bag: slower for small cluster
-            # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
             try:
                 logger.info(f"TT matrix: {compute_tt.cache_info()}")
                 compute_tt.cache_clear()
@@ -824,56 +812,6 @@ class Clusterize(object):
             self.noise = list(all_phases)
             self.n_noise = len(self.noise)
 
-    def absorb_backward_picks(self, backward_phases):
-        """Superseded by build_clusters_from_backward — raises if called."""
-        raise NotImplementedError(
-            "absorb_backward_picks is superseded by build_clusters_from_backward"
-        )
-
-    @staticmethod
-    def compute_tt_matrix(phases, vmean):
-        # optimization : matrix is symmetrical -> use lru_cache
-        tt_matrix = []
-        for p1 in tqdm(phases):
-            line = []
-            for p2 in phases:
-                # line.append(compute_tt(p1, p2, vmean))
-                line.append(compute_tt(*sorted((p1, p2)), vmean))
-            tt_matrix.append(line)
-        return tt_matrix
-
-    @staticmethod
-    def numpy_compute_tt_matrix_seq(phases, vmean):
-        # optimization : matrix is symmetrical -> use lru_cache
-        nb_phases = len(phases)
-        tt_matrix = np.empty([nb_phases, nb_phases], dtype=float)
-        for i in range(0, nb_phases):
-            p1 = phases[i]
-            for j in range(0, nb_phases):
-                p2 = phases[j]
-                tt_matrix[i, j] = compute_tt(*sorted((p1, p2)), vmean)
-        return tt_matrix
-
-    @staticmethod
-    def numpy_compute_tt_matrix(phases, vmean):
-        # optimization : matrix is diagonal and symmetrical
-        nb_phases = len(phases)
-        elements = []
-        for i in range(0, nb_phases):
-            p1 = phases[i]
-            for j in range(i, nb_phases):
-                p2 = phases[j]
-                elements.append(compute_tt(*sorted((p1, p2)), vmean))
-
-        matrix_upper1 = np.zeros((nb_phases, nb_phases))
-        row, col = np.triu_indices(nb_phases)
-        matrix_upper1[row, col] = elements
-
-        matrix_upper2 = np.copy(matrix_upper1)
-        np.fill_diagonal(matrix_upper2, 0)
-        tt_matrix = matrix_upper1 + matrix_upper2.T
-        return tt_matrix
-
     @staticmethod
     def numpy_compute_tt_matrix_vectorized(phases, vmean, vp=None, vs=None):
         """Vectorized TT matrix using haversine formula.
@@ -932,57 +870,6 @@ class Clusterize(object):
             dt_capped = dt
 
         return np.sqrt(dt_capped**2 + dd**2)
-
-    @staticmethod
-    def numpy_compute_proba_weighted_tt_matrix(phases, vmean, alpha):
-        """Compute TT matrix with pick probability weighting on the temporal component.
-
-        Low-probability picks get a larger effective time tolerance, making them
-        easier to cluster with their high-probability neighbours. The spatial
-        component (dd = dist/vmean) is left untouched so that two distinct events
-        at the same time but different locations remain separated by their geography.
-
-        alpha controls the strength of the effect. The tolerance is driven by the
-        weakest pick in each pair via min(p_i, p_j): a strong pick (0.9) paired
-        with a weak one (0.3) gets the same stretch as two weak picks (0.3, 0.3)
-        — the uncertain pick sets the tolerance, not the average.
-
-            w(p_i, p_j) = 1 / (alpha + (1-alpha) * min(p_i, p_j))    [w >= 1]
-
-            alpha=1.0 → w=1 always — identical to numpy_compute_tt_matrix_vectorized (no effect)
-            alpha=0.5 → picks (0.9,0.9): w≈1.04 (+4%)  ; picks (0.9,0.3) or (0.3,0.3): w≈1.23 (+23%)
-            alpha=0.5 → picks (0.9,0.9): w≈1.10 (+10%) ; picks (0.9,0.3) or (0.3,0.3): w≈1.54 (+54%)
-            alpha=0.0 → w = 1/min_proba — unbounded for near-zero picks, use with caution
-        """
-        R = 6371.0
-        lats = np.radians([p.coord["latitude"] for p in phases])
-        lons = np.radians([p.coord["longitude"] for p in phases])
-        times = np.array([float(p.time) for p in phases])
-        probas = np.clip([p.proba for p in phases], 0.0, 1.0)
-
-        dlat = lats[:, None] - lats[None, :]
-        dlon = lons[:, None] - lons[None, :]
-        a = (
-            np.sin(dlat / 2) ** 2
-            + np.cos(lats[:, None]) * np.cos(lats[None, :]) * np.sin(dlon / 2) ** 2
-        )
-        dd = 2 * R * np.arcsin(np.sqrt(a)) / vmean  # same dd as in numpy_compute_tt_matrix_vectorized
-
-        min_p = np.minimum(probas[:, None], probas[None, :])
-        w = 1.0 / (alpha + (1.0 - alpha) * min_p)
-        dt = (times[:, None] - times[None, :]) * w
-
-        return np.sqrt(dt**2 + dd**2)
-
-    # @staticmethod
-    # def dask_compute_tt_matrix(phases, vmean):
-    #     """Optimization to compute tt_matrix in //"""
-    #     # data = [sorted((p1, p2)) for p1 in phases for p2 in phases]
-    #     data = product(phases, repeat=2)
-    #     b = db.from_sequence(data)
-    #     tt_matrix_tmp = b.map(lambda x: compute_tt(*x, vmean)).compute()
-    #     tt_matrix = np.array(tt_matrix_tmp).reshape((len(phases), len(phases)))
-    #     return tt_matrix
 
     @staticmethod
     def _merge_ps_split_clusters(

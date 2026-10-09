@@ -25,7 +25,6 @@ import pandas as pd
 import pyproj
 import yaml
 from dacite import from_dict
-from icecream import ic
 from obspy import Inventory
 from obspy import read_inventory
 from obspy import UTCDateTime
@@ -37,15 +36,6 @@ from shapely.geometry import Polygon
 from dbclust.db import duckdb_init
 from dbclust.db import duckdb_init_parquet
 from dbclust.read_yml import read_config
-
-
-# Configure icecream to flush output immediately (needed for Parsl)
-def _ic_output(s):
-    sys.stderr.write(s + "\n")
-    sys.stderr.flush()
-
-
-ic.configureOutput(outputFunction=_ic_output)
 
 # default logger (uses hierarchical name for selective level control)
 logger = logging.getLogger("dbclust.config")
@@ -1459,7 +1449,6 @@ class DBClustConfig:
 
         # Set default velocity model
         self.quakeml.model_id = self.nll.default_velocity_profile
-        # ic(self.quakeml)
 
     def show(self):
         for key, _ in self.__annotations__.items():

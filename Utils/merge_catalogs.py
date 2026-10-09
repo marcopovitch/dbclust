@@ -7,7 +7,6 @@ import warnings
 
 import pandas as pd
 import yaml
-from icecream import ic
 from obspy import Catalog
 from obspy import read_events
 

@@ -846,12 +846,10 @@ def dbclust(
                     df_subset["phase_time"] = df_subset["phase_time"].dt.tz_convert("UTC")
 
                 # First window of non-first parallel jobs: capture picks from the
-                # backward overlap zone [start-overlap, start].  These are NOT
-                # injected into df_subset before HDBSCAN (which could cause
-                # mega-clusters in TT space).  Instead they are absorbed
-                # post-clustering via Clusterize.absorb_backward_picks() which
-                # assigns them to existing clusters (Case A) or forms new ones
-                # from the residuals + noise (Case B).
+                # backward overlap zone [start-overlap, start].  They are not
+                # injected into df_subset; they are clustered together with this
+                # window's picks in a single pass by
+                # Clusterize.build_clusters_from_backward().
                 if parallel_mode and job_index > 0 and i == 1:
                     pick_start = cfg.pick.start or pd.Timestamp("1970-01-01")
                     global_start = pd.Timestamp(pick_start).tz_localize(None) if not hasattr(pick_start, 'tz') else pd.Timestamp(pick_start)

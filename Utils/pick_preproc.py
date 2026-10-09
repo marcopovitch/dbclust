@@ -6,7 +6,6 @@ import sys
 from datetime import timedelta
 
 import pandas as pd
-from icecream import ic
 from pandas.core.groupby import GroupBy
 from sklearn.cluster import DBSCAN
 
