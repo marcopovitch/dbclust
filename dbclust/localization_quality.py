@@ -11,6 +11,7 @@ from obspy.core.event import Event
 from scipy.special import erf
 from scipy.special import expit
 
+from dbclust.constants import KM_PER_DEGREE
 from dbclust.localization_error import get_erh_erz
 
 logger = logging.getLogger("dbclust")
@@ -135,7 +136,7 @@ def classify_event(
     erh, erz, error_method = get_erh_erz(origin)
 
     # TBD: compute minimal distance between stations and the event with the real coordinates
-    # rather than the 111.1 km/deg approximation
+    # rather than the KM_PER_DEGREE km/deg approximation
 
     quality, qs, qd = classify(
         origin.quality.standard_error,  # in seconds
@@ -143,7 +144,7 @@ def classify_event(
         erz,  # in km
         origin.quality.used_station_count,
         origin.quality.azimuthal_gap,  # in degrees
-        origin.quality.minimum_distance * 111.1,  # convert distance from degres to km
+        origin.quality.minimum_distance * KM_PER_DEGREE,  # convert distance from degres to km
         origin.depth / 1000.0,  # depth in km
     )
 
@@ -151,7 +152,7 @@ def classify_event(
         logger.debug(
             f"classify_event: rms={origin.quality.standard_error}, erh={erh}, erz={erz}, "
             f"stations={origin.quality.used_station_count}, gap={origin.quality.azimuthal_gap}, "
-            f"dmin={origin.quality.minimum_distance * 111.1}, depth={origin.depth / 1000.0}, "
+            f"dmin={origin.quality.minimum_distance * KM_PER_DEGREE}, depth={origin.depth / 1000.0}, "
             f"quality={quality}, qs={qs}, qd={qd}, error_method={error_method}"
         )
 

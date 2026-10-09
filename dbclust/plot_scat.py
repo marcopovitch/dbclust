@@ -14,6 +14,7 @@ import pygmt
 from obspy import read_events
 from obspy.geodetics import locations2degrees
 
+from dbclust.constants import KM_PER_DEGREE
 from dbclust.localization_error import get_erh_erz
 from dbclust.localization_quality import (
     classify,
@@ -303,7 +304,7 @@ if __name__ == "__main__":
     # Get error estimates and additional quality parameters for classification
     erh, erz, _ = get_erh_erz(o)
     dmin = (
-        o.quality.minimum_distance * 111.1
+        o.quality.minimum_distance * KM_PER_DEGREE
         if o.quality and o.quality.minimum_distance
         else None
     )  # deg to km
@@ -876,9 +877,9 @@ if __name__ == "__main__":
     rms_str = f"{rms:.3f} s" if rms else "N/A"
     gap_str = f"{azimuthal_gap:.0f}@~\\260@~" if azimuthal_gap else "N/A"
     dmin_str = f"{dmin:.1f} km" if dmin is not None else "N/A"
-    dmed_km = dmed_deg * 111.1 if dmed_deg is not None else None
+    dmed_km = dmed_deg * KM_PER_DEGREE if dmed_deg is not None else None
     dmed_str = f"{dmed_km:.1f} km" if dmed_km is not None else "N/A"
-    dmax_km = dmax_deg * 111.1 if dmax_deg is not None else None
+    dmax_km = dmax_deg * KM_PER_DEGREE if dmax_deg is not None else None
     dmax_str = f"{dmax_km:.1f} km" if dmax_km is not None else "N/A"
     gap2_str = f"Gap2: {gap2:.0f}@~\\260@~" if gap2 is not None else "Gap2: N/A"
     quality_lines = [

@@ -20,6 +20,7 @@ import pyocto
 import pyocto._core as _pyocto_backend
 import pyproj
 import pyproj.exceptions
+from dbclust.constants import KM_PER_DEGREE
 from dbclust.clusterize import cluster_share_eventid
 from dbclust.clusterize import Clusterize
 from dbclust.config import Associator
@@ -462,8 +463,8 @@ def dbclust2pyocto(
         )
 
         logger.debug(f"range lat: {lat_range}, lon: {lon_range}")
-        lat_span_km = (lat_range[1] - lat_range[0]) * 111.0
-        lon_span_km = (lon_range[1] - lon_range[0]) * 111.0 * math.cos(
+        lat_span_km = (lat_range[1] - lat_range[0]) * KM_PER_DEGREE
+        lon_span_km = (lon_range[1] - lon_range[0]) * KM_PER_DEGREE * math.cos(
             math.radians((lat_range[0] + lat_range[1]) / 2)
         )
         z_span_km = associator_cfg.zlim[1] - associator_cfg.zlim[0]

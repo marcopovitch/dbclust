@@ -50,6 +50,7 @@ from obspy.geodetics import kilometer2degrees
 from prettytable import PrettyTable
 from shapely.geometry import Point
 
+from dbclust.constants import KM_PER_DEGREE
 from dbclust.config import Zone
 from dbclust.config import Zones
 from dbclust.gap import compute_azimuthal_gap
@@ -834,7 +835,7 @@ class NllLoc(object):
 
             # Remove arrivals from stations if their distance exceeds the cutoff.
             if self.dist_km_cutoff is not None and arrival.distance > (
-                self.dist_km_cutoff / 111.0
+                self.dist_km_cutoff / KM_PER_DEGREE
             ):
                 continue
 
@@ -1535,7 +1536,7 @@ class NllLoc(object):
                     for a in arrivals_with_gap:
                         p = next((pk for pk in event2.picks if pk.resource_id == a.pick_id), None)
                         if p:
-                            gap_stations.append(f"{p.waveform_id.get_seed_string()} {a.phase} dist={a.distance*111.1:.0f}km")
+                            gap_stations.append(f"{p.waveform_id.get_seed_string()} {a.phase} dist={a.distance*KM_PER_DEGREE:.0f}km")
                     # FIXME: hardcoded threshold, should be passed as a NllLoc parameter
                     if station_count_before_gap < 5:
                         # Too few local stations support the solution: likely a fake event
@@ -2310,7 +2311,7 @@ class NllLoc(object):
                 or bad_time_residual
                 or (
                     self.dist_km_cutoff is not None
-                    and arrival.distance > self.dist_km_cutoff / 111.0
+                    and arrival.distance > self.dist_km_cutoff / KM_PER_DEGREE
                 )
             ):
                 if pick not in pick_to_delete:
@@ -2663,7 +2664,7 @@ class NllLoc(object):
             # remove pick with distance > dist_km_cutoff
             if (
                 self.dist_km_cutoff is not None
-                and arrival.distance > self.dist_km_cutoff / 111.0
+                and arrival.distance > self.dist_km_cutoff / KM_PER_DEGREE
             ):
                 logger.info(
                     f"Remove pick {pick.waveform_id.get_seed_string()} {arrival.phase} {pick.time} "
