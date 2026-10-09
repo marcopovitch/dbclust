@@ -419,11 +419,8 @@ class Clusterize(object):
         tt_matrix_load=False,
         tt_matrix_save=False,
         zones=None,
-        use_umap=False,  # if True, apply UMAP on TT matrix before HDBSCAN
-        umap_clip_seconds=0.0,  # explicit clip ceiling (0 = use p75 of TT matrix)
-        umap_aot_tt_blend_alpha=0.3,  # weight of TT in blended dist matrix (0=pure AOT)
-        apparent_vp=6.0,  # apparent P-wave velocity for AOT (km/s)
-        apparent_vs=3.5,  # apparent S-wave velocity for AOT (km/s)
+        apparent_vp=6.0,  # apparent P-wave velocity for the TT matrix (km/s)
+        apparent_vs=3.5,  # apparent S-wave velocity for the TT matrix (km/s)
         cluster_selection_method="eom",  # HDBSCAN: "eom" (default) or "leaf"
         allow_single_cluster=True,        # HDBSCAN: allow a single cluster (False → noise if no structure)
         tt_clip_seconds=0.0,  # clip TT matrix to this value in seconds (0 = no clip)
@@ -489,9 +486,6 @@ class Clusterize(object):
         # tt_matrix load/save parameters
         self.tt_matrix_fname = tt_matrix_fname
         self.tt_matrix_load = tt_matrix_load
-        self.use_umap = use_umap
-        self.umap_clip_seconds = umap_clip_seconds
-        self.umap_aot_tt_blend_alpha = umap_aot_tt_blend_alpha
         self.apparent_vp = apparent_vp
         self.apparent_vs = apparent_vs
         self.cluster_selection_method = cluster_selection_method
@@ -562,24 +556,9 @@ class Clusterize(object):
                 vp=self.apparent_vp if self.clustering_method != "leiden" else None,
                 vs=self.apparent_vs if self.clustering_method != "leiden" else None,
             )
-            # Optional UMAP dimensionality reduction: embed the TT distance matrix
-            # into a low-dimensional Euclidean space before HDBSCAN. This separates
-            # geographically incoherent pick pools (backward injection) that form
-            # mega-clusters in raw TT space but are well-separated in UMAP space.
             if tt_clip_seconds > 0:
                 pseudo_tt = np.clip(pseudo_tt, 0.0, tt_clip_seconds)
                 logger.info(f"TT matrix clipped to {tt_clip_seconds}s.")
-
-            if use_umap:
-                pseudo_tt, max_search_dist = self.build_umap_embedding(
-                    phases,
-                    pseudo_tt,
-                    min_cluster_size=min_cluster_size,
-                    umap_clip_seconds=umap_clip_seconds,
-                    aot_tt_blend_alpha=umap_aot_tt_blend_alpha,
-                    vp=self.apparent_vp,
-                    vs=self.apparent_vs,
-                )
 
             # // computation using dask bag: slower for small cluster
             # pseudo_tt = self.dask_compute_tt_matrix(phases, average_velocity)
@@ -600,7 +579,6 @@ class Clusterize(object):
             max_search_dist,
             min_cluster_size,
             average_velocity=average_velocity,
-            metric="euclidean" if use_umap else "precomputed",
             cluster_selection_method=cluster_selection_method,
             allow_single_cluster=allow_single_cluster,
             clustering_method=clustering_method,
@@ -619,7 +597,7 @@ class Clusterize(object):
         )
         self.n_clusters = len(self.clusters)
         self.n_noise = len(self.noise)
-        self.max_search_dist = max_search_dist  # persist post-UMAP value for absorb_deferred_cluster
+        self.max_search_dist = max_search_dist
 
         del pseudo_tt
         self.cluster_merge_based_on_eventid()
@@ -811,22 +789,10 @@ class Clusterize(object):
                 logger.info(f"TT matrix clipped to {self.tt_clip_seconds}s.")
 
             max_search_dist = self.max_search_dist
-            if self.use_umap:
-                pseudo_tt, max_search_dist = self.build_umap_embedding(
-                    all_phases,
-                    pseudo_tt,
-                    min_cluster_size=self.min_cluster_size,
-                    umap_clip_seconds=self.umap_clip_seconds,
-                    aot_tt_blend_alpha=self.umap_aot_tt_blend_alpha,
-                    vp=self.apparent_vp,
-                    vs=self.apparent_vs,
-                )
-                self.max_search_dist = max_search_dist  # persist post-UMAP value
 
             self.clusters, stab, self.noise = self.get_clusters(
                 all_phases, pseudo_tt, max_search_dist,
                 self.min_cluster_size, average_velocity=self.average_velocity,
-                metric="euclidean" if self.use_umap else "precomputed",
                 cluster_selection_method=self.cluster_selection_method,
                 clustering_method=self.clustering_method,
                 allow_single_cluster=self.allow_single_cluster,
@@ -907,41 +873,6 @@ class Clusterize(object):
         np.fill_diagonal(matrix_upper2, 0)
         tt_matrix = matrix_upper1 + matrix_upper2.T
         return tt_matrix
-
-    @staticmethod
-    def build_umap_embedding(
-        phases,
-        pseudo_tt,
-        *,
-        min_cluster_size,
-        umap_clip_seconds=0.0,
-        aot_tt_blend_alpha=0.3,
-        vp=6.0,
-        vs=3.5,
-    ):
-        """Thin wrapper around :func:`dbclust.umap_embedding.build_umap_embedding`.
-
-        Extracts numpy arrays from the Phase list and delegates to the
-        standalone function so the same logic can be reused by scripts.
-        """
-        from dbclust.umap_embedding import build_umap_embedding as _build
-
-        try:
-            return _build(
-                lats_deg=[p.coord["latitude"] for p in phases],
-                lons_deg=[p.coord["longitude"] for p in phases],
-                times=[float(p.time) for p in phases],
-                phase_types=[p.phase for p in phases],
-                pseudo_tt=pseudo_tt,
-                min_cluster_size=min_cluster_size,
-                umap_clip_seconds=umap_clip_seconds,
-                aot_tt_blend_alpha=aot_tt_blend_alpha,
-                vp=vp,
-                vs=vs,
-            )
-        except ImportError as exc:
-            logger.warning("%s — falling back to standard HDBSCAN on TT matrix.", exc)
-            return pseudo_tt, 0
 
     @staticmethod
     def numpy_compute_tt_matrix_vectorized(phases, vmean, vp=None, vs=None):
@@ -1218,7 +1149,6 @@ class Clusterize(object):
         max_search_dist,
         min_cluster_size,
         average_velocity=5.0,
-        metric="precomputed",
         cluster_selection_method="eom",
         allow_single_cluster=True,
         clustering_method="hdbscan",
@@ -1235,8 +1165,7 @@ class Clusterize(object):
         leiden_hdbscan_fallback=False,      # run HDBSCAN on Leiden noise + unstable clusters
         leiden_min_stability=0.0,           # clusters below this stability are re-tried with HDBSCAN
     ):
-        # metric is "precomputed" ==> X is assumed to be a distance matrix and must be square
-        # metric is "euclidean" when pseudo_tt is a UMAP 2D embedding
+        # pseudo_tt is a square travel-time distance matrix (metric="precomputed")
 
         if clustering_method == "leiden":
             from dbclust.leiden import leiden_cluster
@@ -1274,7 +1203,6 @@ class Clusterize(object):
                     sub_tt = pseudo_tt[np.ix_(pool_indices, pool_indices)]
                     hdb_clusters, hdb_stab, hdb_noise = Clusterize.get_clusters(
                         hdbscan_pool, sub_tt, max_search_dist, min_cluster_size,
-                        metric="precomputed",
                         cluster_selection_method=cluster_selection_method,
                         allow_single_cluster=allow_single_cluster,
                         clustering_method="hdbscan",
@@ -1293,19 +1221,15 @@ class Clusterize(object):
                     noise = hdbscan_pool
             return clusters, stabilities, noise
 
-        # n_jobs is not supported by the KDTree-based algorithm used for euclidean metric
-        hdbscan_kwargs = dict(
+        db = hdbscan.HDBSCAN(
             min_cluster_size=min_cluster_size,  # default 5
             min_samples=1,  # default None
             allow_single_cluster=allow_single_cluster,
             cluster_selection_epsilon=max_search_dist,  # default 0.0,
-            metric=metric,
+            metric="precomputed",
             cluster_selection_method=cluster_selection_method,
-        )
-        if metric == "precomputed":
-            hdbscan_kwargs["n_jobs"] = -1
-
-        db = hdbscan.HDBSCAN(**hdbscan_kwargs).fit(pseudo_tt)
+            n_jobs=-1,
+        ).fit(pseudo_tt)
 
         labels = db.labels_
 

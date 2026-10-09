@@ -102,9 +102,6 @@ cluster:
   # Must be < backward injection window duration. Set to null to disable.
   # Recommended: ~150s when using backward injection with 10-min time windows.
   # clustering_time_window: null
-  # Use UMAP reduction of TT matrix before HDBSCAN (requires umap-learn).
-  # Separates geographically incoherent pick pools without any time-window parameter.
-  use_umap: false
   # WARNING : to be used only for a unique event !
   # Don't use it if you don't know what you are doing !
   # pre_computed_tt_matrix_file: !join [*DATA, "/", "tt_matrix-min_size", *MIN_CLUSTER_SISE, ".npy"]

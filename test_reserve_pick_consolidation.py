@@ -454,7 +454,7 @@ def test_bypass_distance_in_km_not_pseudo_tt(monkeypatch):
     captured = {}
     monkeypatch.setattr(core, "Clusterize", lambda **kw: captured.update(kw))
     cfg = SimpleNamespace(
-        cluster=Anything(average_velocity=5, max_search_dist=20, use_umap=False),
+        cluster=Anything(average_velocity=5, max_search_dist=20),
         pick=Anything(),
         time=Anything(overlap_window=0),
         zones=None,

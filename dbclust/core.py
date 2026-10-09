@@ -563,21 +563,12 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
     max_search_dist: int = int(cfg.cluster.max_search_dist) if cfg.cluster.max_search_dist is not None else 100
     apparent_vp: float = float(cfg.cluster.apparent_vp) if cfg.cluster.apparent_vp is not None else 6.0
     apparent_vs: float = float(cfg.cluster.apparent_vs) if cfg.cluster.apparent_vs is not None else 3.5
-    umap_alpha: float = float(cfg.cluster.umap_alpha) if cfg.cluster.umap_alpha is not None else 0.3
-    # umap_clip_seconds: use explicit value if set, otherwise fall back to overlap_window
-    umap_clip_seconds: float = (
-        float(cfg.cluster.umap_clip_seconds)
-        if cfg.cluster.umap_clip_seconds is not None
-        else (cfg.time.overlap_window if cfg.cluster.use_umap else 0.0)
-    )
     tt_matrix_fname: str = cfg.cluster.pre_computed_tt_matrix_file or ""
     reserve_pick = getattr(cfg, "reserve_pick", None)
     reserve_enabled: bool = bool(reserve_pick and reserve_pick.enable)
     # Maximum station distance (km) bounding the S-P delay of the pre-NLL
     # reserve bypass window. max_search_dist is a pseudo travel time (s),
-    # hence the conversion with average_velocity (km/s). The config value is
-    # used, not Clusterize.max_search_dist, which holds UMAP-space units
-    # once an embedding has been built.
+    # hence the conversion with average_velocity (km/s).
     reserve_max_station_dist_km: float = (
         float(reserve_pick.max_station_dist_km)
         if reserve_enabled and reserve_pick.max_station_dist_km is not None
@@ -595,9 +586,6 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
         min_station_score=cfg.cluster.min_station_score,
         min_ps_ratio=cfg.cluster.min_ps_ratio,
         force_keep_catalog_events=cfg.cluster.force_keep_catalog_events,
-        use_umap=cfg.cluster.use_umap,
-        umap_clip_seconds=umap_clip_seconds,
-        umap_aot_tt_blend_alpha=umap_alpha,
         apparent_vp=apparent_vp,
         apparent_vs=apparent_vs,
         cluster_selection_method=cfg.cluster.cluster_selection_method,
@@ -860,7 +848,7 @@ def dbclust(
                 # First window of non-first parallel jobs: capture picks from the
                 # backward overlap zone [start-overlap, start].  These are NOT
                 # injected into df_subset before HDBSCAN (which could cause
-                # mega-clusters in TT or UMAP space).  Instead they are absorbed
+                # mega-clusters in TT space).  Instead they are absorbed
                 # post-clustering via Clusterize.absorb_backward_picks() which
                 # assigns them to existing clusters (Case A) or forms new ones
                 # from the residuals + noise (Case B).
