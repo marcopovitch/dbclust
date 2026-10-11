@@ -594,6 +594,10 @@ class ReservePickConfig:
             the pre-NLL bypass window. None -> derived from
             cluster.max_search_dist (pseudo travel time, s) *
             cluster.average_velocity (km/s).
+        vp, vs: homogeneous P / S velocities (km/s) used to predict the S
+            time and the S-P delay. Independent from cluster.leiden_vp /
+            leiden_vs, which are 0.0 when the Leiden moveout filter is
+            disabled.
     """
 
     enable: bool = False
@@ -602,6 +606,8 @@ class ReservePickConfig:
     ps_diff_tolerance_s: float = 0.5
     ps_count_weight: float = 0.5
     max_station_dist_km: Optional[float] = None
+    vp: float = 6.0
+    vs: float = 3.5
 
 
 def validate_reserve_pick_config(
@@ -664,6 +670,12 @@ def validate_reserve_pick_config(
     ):
         raise ValueError(
             "reserve_pick.max_station_dist_km must be > 0 (or unset)."
+        )
+
+    if not 0 < reserve_pick.vs < reserve_pick.vp:
+        raise ValueError(
+            "reserve_pick.vp and vs must satisfy 0 < vs < vp "
+            f"(got vp={reserve_pick.vp}, vs={reserve_pick.vs})."
         )
 
 
