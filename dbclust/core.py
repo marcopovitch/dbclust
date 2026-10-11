@@ -531,8 +531,8 @@ def nllloc_kwargs_from_config(cfg: DBClustConfig) -> dict:
         reserve_ps_count_weight=(
             reserve_pick.ps_count_weight if reserve_enabled else 0.5
         ),
-        reserve_vp=cfg.cluster.leiden_vp,
-        reserve_vs=cfg.cluster.leiden_vs,
+        reserve_vp=reserve_pick.vp if reserve_enabled else 6.0,
+        reserve_vs=reserve_pick.vs if reserve_enabled else 3.5,
     )
 
 
@@ -618,6 +618,8 @@ def get_clusterize_from_config(cfg: DBClustConfig, phases=None) -> Clusterize:
             reserve_pick.tt_tolerance_s if reserve_enabled else 1.0
         ),
         reserve_max_station_dist_km=reserve_max_station_dist_km,
+        reserve_vp=reserve_pick.vp if reserve_enabled else 6.0,
+        reserve_vs=reserve_pick.vs if reserve_enabled else 3.5,
     )
     return myclust
 

@@ -452,6 +452,8 @@ class Clusterize(object):
         reserve_enabled=False,
         reserve_tt_tolerance_s=1.0,
         reserve_max_station_dist_km=300.0,  # bounds the S-P delay of the bypass window
+        reserve_vp=6.0,  # homogeneous velocities (km/s) of the S-P delay bound;
+        reserve_vs=3.5,  # independent from leiden_vp/vs (0.0 = moveout off)
         reserve_pool=None,
     ):
         # clusters is a list of cluster :
@@ -513,6 +515,8 @@ class Clusterize(object):
         self.reserve_enabled = reserve_enabled
         self.reserve_tt_tolerance_s = reserve_tt_tolerance_s
         self.reserve_max_station_dist_km = reserve_max_station_dist_km
+        self.reserve_vp = reserve_vp
+        self.reserve_vs = reserve_vs
         # Reserve pool (list of S-band Phase objects). Reassigned per time
         # window by the pipeline (core.py); kept empty by default.
         self.reserve_pool = list(reserve_pool) if reserve_pool else []
@@ -1431,7 +1435,7 @@ class Clusterize(object):
         The window is anchored on the station's own P pick: an S can't
         arrive before it, and the S-P delay is bounded by the homogeneous
         model at the maximum station distance (km),
-        reserve_max_station_dist_km * (1/leiden_vs - 1/leiden_vp).
+        reserve_max_station_dist_km * (1/reserve_vs - 1/reserve_vp).
         """
         if not self.reserve_pool:
             return False
@@ -1452,7 +1456,7 @@ class Clusterize(object):
                 p_times[station_code].append(p.time)
 
         max_ps_delay = self.reserve_max_station_dist_km * (
-            1.0 / self.leiden_vs - 1.0 / self.leiden_vp
+            1.0 / self.reserve_vs - 1.0 / self.reserve_vp
         )
         tol = self.reserve_tt_tolerance_s
 
