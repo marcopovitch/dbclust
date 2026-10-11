@@ -1562,12 +1562,39 @@ class NllLoc(object):
                 # Pass 3: if MAD outliers remain in Pass 2 result, relocate without them.
                 # NLL may assign low time_weight to picks that survived inter-pass cleanup;
                 # a cosmetic zeroing would not fix the location, so we re-run NLL.
+                #
+                # Arrivals outside every zone polygon are also removed here: the
+                # inter-pass cleanup keeps them (pass-1 geometry is unreliable),
+                # so this is where picks of a foreign event merged into the
+                # cluster are caught, with the reliable pass-2 geometry.
                 mad_outliers_pass2 = self._detect_mad_outliers(event2, orig2)
-                if mad_outliers_pass2:
-                    outlier_pick_ids = {a.pick_id for a in mad_outliers_pass2}
+                polygon_outliers_pass2 = []
+                if (
+                    self.use_pick_zone
+                    and self.zones
+                    and self.enable_cleanup_pick_zone
+                    and zone is not None
+                    and len(zone) > 0
+                    and len(zone.picks_delimiter)
+                ):
+                    polygon_outliers_pass2 = [
+                        a
+                        for a in self._detect_polygon_outliers(
+                            list(event2.picks) + list(e.picks),
+                            orig2,
+                            zone,
+                            self.min_score_threshold_pick_zone,
+                        )
+                        if a not in mad_outliers_pass2
+                    ]
+                outliers_pass2 = mad_outliers_pass2 + polygon_outliers_pass2
+                if outliers_pass2:
+                    outlier_pick_ids = {a.pick_id for a in outliers_pass2}
                     picks3 = [p for p in event2.picks if p.resource_id not in outlier_pick_ids]
                     logger.info(
-                        f"Pass 3 (MAD post-filter): {len(mad_outliers_pass2)} outlier(s) removed, "
+                        f"Pass 3 (MAD post-filter): {len(outliers_pass2)} outlier(s) removed "
+                        f"({len(mad_outliers_pass2)} MAD, {len(polygon_outliers_pass2)} outside "
+                        f"zone polygon after pass 2), "
                         f"{len(picks3)} picks remaining — relaunching NLL."
                     )
                     if len(picks3) >= self.nll_min_phase:
@@ -3015,6 +3042,53 @@ class NllLoc(object):
         with open(outfilename, "w") as out_fh:
             out_fh.write(t)
             logger.debug(f"Template {templatefile} rendered as {outfilename}")
+
+    def _detect_polygon_outliers(
+        self, picks: List[Pick], origin: Origin, zone: Zone, eval_threshold: float
+    ) -> list:
+        """Active arrivals lying outside every zone polygon, judged on `origin`.
+
+        Used on the pass-2 origin, whose (distance, travel-time) pairs come
+        from the zone-specific model and are reliable. Counterpart of the
+        inter-pass cleanup, which deliberately keeps such arrivals because
+        pass-1 geometry can be meaningless. Picks of a different event merged
+        into the cluster typically fall outside every polygon here.
+
+        Args:
+            picks: picks that the origin's arrivals reference (by pick_id).
+            origin: pass-2 origin.
+            zone: zone providing the polygons (picks_delimiter) and sigma.
+            eval_threshold: evaluation score threshold, as in the cleanup.
+
+        Returns:
+            Arrivals to remove (empty if the zone has no polygon).
+        """
+        df_polygons = zone.picks_delimiter
+        if df_polygons.empty:
+            return []
+
+        picks_by_id = {p.resource_id: p for p in picks}
+        outliers = []
+        for arrival in origin.arrivals:
+            if arrival.phase not in ["P", "S", "Pg", "Pn", "Sg", "Sn"]:
+                continue
+            if arrival.time_weight is None or isclose(
+                arrival.time_weight, 0, abs_tol=time_weight_tolerance
+            ):
+                continue
+            pick = picks_by_id.get(arrival.pick_id)
+            if pick is None or arrival.distance is None or isnan(arrival.distance):
+                continue
+            _, _, polygons_score, _ = get_best_polygon_for_point(
+                Point(arrival.distance, pick.time - origin.time),
+                f"{pick.waveform_id.get_seed_string()} {arrival.phase}",
+                df_polygons,
+                zone.sigma,
+                eval_threshold=eval_threshold,
+            )
+            if len(polygons_score) == 0:
+                outliers.append(arrival)
+        return outliers
 
     def _detect_mad_outliers(self, event: Event, origin: Origin) -> list:
         """
