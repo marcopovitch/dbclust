@@ -53,6 +53,26 @@ def compute_tt(p1: Phase, p2: Phase, vmean) -> float:
     return tt
 
 
+def preloc_pseudo_tt(preloc1, preloc2, vmean) -> Optional[tuple]:
+    """Separation of two PyOcto prelocations: (dist_km, dt_s, tt_s).
+
+    tt_s = sqrt(dt_s^2 + (dist_km / vmean)^2), same metric as compute_tt() but
+    between two origins instead of two picks (so it is not comparable with
+    max_search_dist). Returns None when either prelocation is missing or
+    incomplete (e.g. clusters returned as-is by delegate_dbclust).
+    """
+    try:
+        distance, _, _ = gps2dist_azimuth(
+            float(preloc1["latitude"]), float(preloc1["longitude"]),
+            float(preloc2["latitude"]), float(preloc2["longitude"]),
+        )
+        dt_s = abs(preloc1["time"].timestamp() - preloc2["time"].timestamp())
+    except (TypeError, KeyError, AttributeError, ValueError):
+        return None
+    dist_km = distance / 1000.0
+    return dist_km, dt_s, sqrt(pow(dt_s, 2) + pow(dist_km / vmean, 2))
+
+
 def cluster_share_eventid(
     c1: List[Phase],
     c2: List[Phase],
@@ -419,6 +439,11 @@ class Clusterize(object):
         min_com_phases=3,
         eventid_shared_min_picks_per_cluster=None,
         eventid_shared_min_distinct_ids=2,
+        eventid_merge_max_tt_s=None,  # refuse event_id-only PyOcto merges beyond this preloc pseudo travel time (s)
+        eventid_merge_moveout_min_fraction=0.95,  # moveout overrule of a refusal: min fraction of compatible pairs
+        eventid_merge_moveout_min_picks=3,  # ... and min checkable picks on each side
+        eventid_merge_moveout_vp=6.0,  # km/s, P bound of the moveout check
+        eventid_merge_moveout_vs=3.5,  # km/s, S bound of the moveout check
         tt_matrix_fname="tt_matrix.npy",
         tt_matrix_load=False,
         tt_matrix_save=False,
@@ -488,6 +513,11 @@ class Clusterize(object):
         self.min_com_phases = min_com_phases
         self.eventid_shared_min_picks_per_cluster = eventid_shared_min_picks_per_cluster
         self.eventid_shared_min_distinct_ids = eventid_shared_min_distinct_ids
+        self.eventid_merge_max_tt_s = eventid_merge_max_tt_s
+        self.eventid_merge_moveout_min_fraction = eventid_merge_moveout_min_fraction
+        self.eventid_merge_moveout_min_picks = eventid_merge_moveout_min_picks
+        self.eventid_merge_moveout_vp = eventid_merge_moveout_vp
+        self.eventid_merge_moveout_vs = eventid_merge_moveout_vs
 
         # tt_matrix load/save parameters
         self.tt_matrix_fname = tt_matrix_fname
@@ -1232,6 +1262,9 @@ class Clusterize(object):
         # generate_nllobs() reads self.preloc[i] for the wrong event as soon as
         # a merge happens (see BUGS_COHERENCE_REVIEW_2026-09-17.md, A4).
         track_preloc = bool(self.preloc) and len(self.preloc) == len(self.clusters)
+        # Event-ID merge guard (needs prelocations aligned on the clusters).
+        from dbclust.dbclust2pyocto import eventid_merge_guard_from
+        guard = eventid_merge_guard_from(self) if track_preloc else None
         stale_preloc = bool(self.preloc) and not track_preloc
         preloc: list = list(self.preloc) if track_preloc and self.preloc else []
 
@@ -1264,6 +1297,22 @@ class Clusterize(object):
                         min_picks_per_cluster=self.eventid_shared_min_picks_per_cluster,
                         min_distinct_event_ids=self.eventid_shared_min_distinct_ids,
                     ):
+                        # Same guard as cluster_merge_one_pass(): this is a second
+                        # event_id-only merge point, it must not undo a refusal.
+                        # The candidate is checked against every cluster already
+                        # in the group.
+                        if guard is not None:
+                            refusal = None
+                            for member, pl in zip(clusters_to_merge, preloc_to_merge):
+                                allowed, why = guard.decide(member, c2, pl, preloc[i])
+                                if not allowed:
+                                    refusal = why
+                                    break
+                            if refusal is not None:
+                                logger.info(
+                                    f"Refused event-ID merge (cluster_merge_based_on_eventid): {refusal}"
+                                )
+                                continue
                         indices_to_remove.append(i)
                         clusters_to_merge.append(c2)
                         stabs_to_merge.append(stabs[i])

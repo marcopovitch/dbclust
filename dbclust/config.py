@@ -502,6 +502,29 @@ class ClusterConfig:
     eventid_shared_min_picks_per_cluster: Optional[int] = None
     # Event-ID merge guard: minimum number of distinct shared event_ids.
     eventid_shared_min_distinct_ids: int = 2
+    # Event-ID merge guard on PyOcto clusters: refuse a merge driven by a shared
+    # event_id only (fewer than min_picks_common common picks) when the pseudo
+    # travel time between the two PyOcto prelocations,
+    # sqrt(dt_origin^2 + (epicentral_distance / average_velocity)^2), exceeds
+    # this value (s). None = disabled.
+    # Not comparable with max_search_dist: that one bounds the pseudo travel
+    # time between two *picks*, which spread over the network aperture, hence
+    # a large value. Two prelocations of the same earthquake only differ by the
+    # location error, hence a much smaller threshold (typically 20-40 s).
+    eventid_merge_max_tt_s: Optional[float] = None
+    # A far prelocation is not proof of two earthquakes: a cluster made of
+    # distant stations only gets a poorly constrained one. A refusal is
+    # overruled when the picks themselves are moveout-compatible: for each
+    # cross pair of picks of the same family (P-P, S-S) at stations d km
+    # apart, |dt| <= d / v (one wavefront cannot be seen with a larger delay).
+    # The overrule needs at least eventid_merge_moveout_min_picks checkable
+    # picks on each side and a fraction of compatible pairs of at least
+    # eventid_merge_moveout_min_fraction; otherwise the refusal stands.
+    # The moveout never vetoes a merge whose prelocations are close.
+    eventid_merge_moveout_min_fraction: float = 0.95  # 0.9 re-merged 3 real events (validated on 52 windows)
+    eventid_merge_moveout_min_picks: int = 3
+    eventid_merge_moveout_vp: float = 6.0  # km/s, P bound (independent from leiden_vp)
+    eventid_merge_moveout_vs: float = 3.5  # km/s, S bound (independent from leiden_vs)
     
     # Clustering algorithm: "hdbscan" (default) or "leiden"
     # Leiden uses graph community detection (CPM objective) instead of density-based
@@ -608,6 +631,37 @@ class ReservePickConfig:
     max_station_dist_km: Optional[float] = None
     vp: float = 6.0
     vs: float = 3.5
+
+
+def validate_eventid_merge_config(cluster: Optional["ClusterConfig"]) -> None:
+    """Validate the event-ID merge guard parameters (called by DBClustConfig).
+
+    Free function so it can be unit-tested without a configuration file.
+
+    Raises:
+        ValueError: when a parameter is out of range.
+    """
+    if cluster is None:
+        return
+    if cluster.eventid_merge_max_tt_s is not None and cluster.eventid_merge_max_tt_s <= 0:
+        raise ValueError(
+            "cluster.eventid_merge_max_tt_s must be > 0 (or null to disable the guard)."
+        )
+    if not 0 < cluster.eventid_merge_moveout_min_fraction <= 1:
+        raise ValueError(
+            "cluster.eventid_merge_moveout_min_fraction must be in ]0, 1] "
+            f"(got {cluster.eventid_merge_moveout_min_fraction})."
+        )
+    if cluster.eventid_merge_moveout_min_picks < 1:
+        raise ValueError(
+            "cluster.eventid_merge_moveout_min_picks must be >= 1 "
+            f"(got {cluster.eventid_merge_moveout_min_picks})."
+        )
+    if not 0 < cluster.eventid_merge_moveout_vs < cluster.eventid_merge_moveout_vp:
+        raise ValueError(
+            "cluster.eventid_merge_moveout_vp and _vs must satisfy 0 < vs < vp "
+            f"(got vp={cluster.eventid_merge_moveout_vp}, vs={cluster.eventid_merge_moveout_vs})."
+        )
 
 
 def validate_reserve_pick_config(
@@ -1389,6 +1443,8 @@ class DBClustConfig:
                     key,
                     from_dict(data_class=data_class, data=self.yaml_data[key]),
                 )
+
+        validate_eventid_merge_config(getattr(self, "cluster", None))
 
         # Reserve S-pick consolidation: cross-section validation
         # (disable in reloc mode, require double_pass, band/threshold coherence)
