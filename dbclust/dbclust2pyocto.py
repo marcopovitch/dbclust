@@ -1359,6 +1359,14 @@ def aggregate_pick_to_cluster_with_common_event_id(
     a cluster if its event ID appears more than pick_count_threshold times in the cluster
     to avoid adding picks if a cluster is contaminated with few picks from other events.
 
+    Each event_id has a single owner cluster: the one holding the most picks of
+    that event_id (ties: the largest cluster). Only the owner aggregates the
+    remaining picks of the event_id, and picks it takes from another cluster
+    are moved, not copied: a pick never belongs to two clusters. Otherwise a
+    small cluster with just over pick_count_threshold picks of an event_id
+    would copy all the picks of that event_id, including those of the large
+    cluster that really holds the event, and both clusters would be localized.
+
     Args:
         clusters (List[List[Phase]]):
             A list of clusters, where each cluster is a list of Phase objects.
@@ -1378,6 +1386,17 @@ def aggregate_pick_to_cluster_with_common_event_id(
         f"aggregate_pick_to_cluster_with_common_event_id() [{tol_label}]: "
         f"{len(clusters)} clusters"
     )
+    # Owner cluster of each event_id (see docstring), from the clusters as PyOcto
+    # left them: aggregation below must not change who the owner is.
+    owner_of_event_id: Dict[str, int] = {}
+    owner_rank: Dict[str, tuple] = {}
+    for idx, cl in enumerate(clusters):
+        for eid, count in Counter(p.event_id for p in cl if p.event_id).items():
+            rank = (count, len(cl))
+            if count > pick_count_threshold and rank > owner_rank.get(eid, (0, 0)):
+                owner_of_event_id[eid] = idx
+                owner_rank[eid] = rank
+
     for cluster_idx, cluster in enumerate(clusters):
         # Note: cluster_idx here indexes `clusters` (PyOcto's output, aggregated
         # picks already merged in) — a different indexing than the input_cluster#i
@@ -1388,7 +1407,15 @@ def aggregate_pick_to_cluster_with_common_event_id(
         event_id_counts = Counter([p.event_id for p in cluster if p.event_id])
         if event_id_counts:
             counts_str = ", ".join(
-                f"{eid.split('/')[-1]}({count} picks {'> threshold, will aggregate' if count > pick_count_threshold else f'<= threshold({pick_count_threshold}), skipped'})"
+                f"{eid.split('/')[-1]}({count} picks "
+                + (
+                    "> threshold, will aggregate"
+                    if count > pick_count_threshold and owner_of_event_id.get(eid) == cluster_idx
+                    else f"> threshold but owned by cluster#{owner_of_event_id.get(eid)}, kept as is"
+                    if count > pick_count_threshold
+                    else f"<= threshold({pick_count_threshold}), skipped"
+                )
+                + ")"
                 for eid, count in event_id_counts.most_common()
             )
             logger.info(f"{tag} Cluster has picks from known event(s): {counts_str}")
@@ -1436,8 +1463,14 @@ def aggregate_pick_to_cluster_with_common_event_id(
                 f"into this cluster with no same-agency conflict."
             )
 
-        # Check if any event_id has a count > pick_count_threshold
-        if not any(count > pick_count_threshold for count in event_id_counts.values()):
+        # Event_ids this cluster owns (and may aggregate): above the threshold
+        # here AND not held in larger number by another cluster.
+        owned_event_ids = {
+            eid
+            for eid, count in event_id_counts.items()
+            if count > pick_count_threshold and owner_of_event_id.get(eid) == cluster_idx
+        }
+        if not owned_event_ids:
             continue
 
         # Partition picks into those added to cluster and those remaining.
@@ -1448,15 +1481,22 @@ def aggregate_pick_to_cluster_with_common_event_id(
         picks_to_add = [
             p
             for p in picks
-            if p.event_id
-            and p.event_id in event_id_counts
-            and event_id_counts[p.event_id] > pick_count_threshold
-            and id(p) not in existing_ids
+            if p.event_id in owned_event_ids and id(p) not in existing_ids
         ]
         cluster.extend(picks_to_add)
         clusters[cluster_idx] = cluster
         added = set(id(p) for p in picks_to_add)
         picks = [p for p in picks if id(p) not in added]
+        # Move, do not copy: drop the aggregated picks from any other cluster.
+        n_moved = 0
+        for other_idx, other in enumerate(clusters):
+            if other_idx == cluster_idx:
+                continue
+            kept = [p for p in other if id(p) not in added]
+            n_moved += len(other) - len(kept)
+            other[:] = kept
+        if n_moved:
+            logger.info(f"{tag} {n_moved} aggregated pick(s) moved from other cluster(s).")
 
     return clusters
 
