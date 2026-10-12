@@ -6,6 +6,7 @@ import math
 import statistics
 import sys
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from itertools import chain
 from itertools import combinations
 from typing import Dict
@@ -22,6 +23,7 @@ import pyproj
 import pyproj.exceptions
 from dbclust.constants import KM_PER_DEGREE
 from dbclust.clusterize import cluster_share_eventid
+from dbclust.clusterize import preloc_pseudo_tt
 from dbclust.clusterize import Clusterize
 from dbclust.config import Associator
 from dbclust.phase import Phase
@@ -712,6 +714,7 @@ def dbclust2pyocto(
         min_com_phases,
         eventid_shared_min_picks_per_cluster=myclust.eventid_shared_min_picks_per_cluster,
         eventid_shared_min_distinct_ids=myclust.eventid_shared_min_distinct_ids,
+        guard=eventid_merge_guard_from(myclust),
     )
 
     logger.info(
@@ -1102,12 +1105,132 @@ def _dedup_picks_prefer_event_id(picks) -> List[Phase]:
     return list(seen.values())
 
 
+# Upper bound on the picks compared per cluster and phase family by the
+# moveout check (stride subsample by time): only bounds the cost.
+EVENTID_MERGE_MOVEOUT_MAX_PICKS = 200
+
+MOVEOUT_COMPATIBLE = "compatible"
+MOVEOUT_INCOMPATIBLE = "incompatible"
+MOVEOUT_UNDETERMINED = "undetermined"
+
+
+def clusters_moveout_fraction(
+    c1: List[Phase], c2: List[Phase], vp: float, vs: float
+) -> Tuple[Optional[float], int, int, int]:
+    """Moveout compatibility of two clusters' picks.
+
+    For each cross pair of picks of the same family (P-P, S-S) recorded at
+    stations d km apart, one wavefront cannot be seen with a delay larger than
+    the travel time between the stations: |dt| <= d / v. Picks of a single
+    earthquake satisfy it; two earthquakes with different origin times violate
+    it for many pairs. P-S pairs and same-station pairs (< 1 km) are not
+    checked. Each cluster is subsampled (stride, by time) to
+    EVENTID_MERGE_MOVEOUT_MAX_PICKS picks per family.
+
+    Returns:
+        (fraction of compatible pairs or None if no pair, number of pairs,
+        picks of c1 in at least one checked pair, same for c2)
+    """
+    def sample(cluster, family):
+        picks = sorted(
+            (
+                p for p in cluster
+                if p.coord is not None and (p.is_p() if family == "P" else p.is_s())
+            ),
+            key=lambda p: float(p.time),
+        )
+        step = max(1, math.ceil(len(picks) / EVENTID_MERGE_MOVEOUT_MAX_PICKS))
+        return picks[::step]
+
+    n_pairs = n_ok = n_used1 = n_used2 = 0
+    for family, v in (("P", vp), ("S", vs)):
+        a, b = sample(c1, family), sample(c2, family)
+        if not a or not b:
+            continue
+        lat_a = np.array([p.coord["latitude"] for p in a])[:, None]
+        lon_a = np.array([p.coord["longitude"] for p in a])[:, None]
+        lat_b = np.array([p.coord["latitude"] for p in b])[None, :]
+        lon_b = np.array([p.coord["longitude"] for p in b])[None, :]
+        dist = _haversine_km(lat_a, lon_a, lat_b, lon_b)
+        dt = np.abs(
+            np.array([float(p.time) for p in a])[:, None]
+            - np.array([float(p.time) for p in b])[None, :]
+        )
+        checked = dist >= 1.0
+        n_pairs += int(checked.sum())
+        n_ok += int((checked & (dt <= dist / v)).sum())
+        n_used1 += int(checked.any(axis=1).sum())
+        n_used2 += int(checked.any(axis=0).sum())
+    return (n_ok / n_pairs if n_pairs else None), n_pairs, n_used1, n_used2
+
+
+@dataclass
+class EventIdMergeGuard:
+    """Guard on PyOcto cluster merges driven by a shared event_id only.
+
+    Decision (see ClusterConfig.eventid_merge_* for the parameters):
+      - prelocations close (pseudo travel time <= max_tt_s) or missing: merge;
+      - prelocations far: merge only if the picks are moveout-compatible
+        (verdict MOVEOUT_COMPATIBLE), refuse otherwise. The moveout never
+        vetoes a merge whose prelocations are close.
+    """
+
+    max_tt_s: float
+    average_velocity: float
+    vp: float = 6.0
+    vs: float = 3.5
+    min_fraction: float = 0.95
+    min_picks: int = 3
+
+    def moveout_verdict(self, c1: List[Phase], c2: List[Phase]) -> Tuple[str, str]:
+        """(verdict, details for the log)."""
+        frac, n_pairs, n1, n2 = clusters_moveout_fraction(c1, c2, self.vp, self.vs)
+        details = (
+            f"moveout {('n/a' if frac is None else f'{frac:.2f}')} on {n_pairs} pairs, "
+            f"{n1}/{n2} checkable picks"
+        )
+        if frac is None or min(n1, n2) < self.min_picks:
+            return MOVEOUT_UNDETERMINED, details
+        if frac >= self.min_fraction:
+            return MOVEOUT_COMPATIBLE, details
+        return MOVEOUT_INCOMPATIBLE, details
+
+    def decide(self, c1, c2, preloc1, preloc2) -> Tuple[bool, str]:
+        """(merge allowed, details for the log)."""
+        sep = preloc_pseudo_tt(preloc1, preloc2, self.average_velocity)
+        if sep is None:
+            return True, "no prelocation"
+        dist_km, dt_s, tt_s = sep
+        details = f"preloc dist: {dist_km:.1f} km, dt: {dt_s:.1f} s, tt: {tt_s:.1f} s"
+        if tt_s <= self.max_tt_s:
+            return True, details
+        verdict, moveout = self.moveout_verdict(c1, c2)
+        details += f" (max {self.max_tt_s} s); {moveout}: {verdict}"
+        return verdict == MOVEOUT_COMPATIBLE, details
+
+
+def eventid_merge_guard_from(myclust) -> Optional[EventIdMergeGuard]:
+    """EventIdMergeGuard configured from a Clusterize, None when disabled."""
+    max_tt_s = getattr(myclust, "eventid_merge_max_tt_s", None)
+    if max_tt_s is None:
+        return None
+    return EventIdMergeGuard(
+        max_tt_s=max_tt_s,
+        average_velocity=myclust.average_velocity,
+        vp=myclust.eventid_merge_moveout_vp,
+        vs=myclust.eventid_merge_moveout_vs,
+        min_fraction=myclust.eventid_merge_moveout_min_fraction,
+        min_picks=myclust.eventid_merge_moveout_min_picks,
+    )
+
+
 def cluster_merge(
     clusters: List[List[Phase]],
     preloc,
     min_com_phases: int,
     eventid_shared_min_picks_per_cluster: Optional[int] = None,
     eventid_shared_min_distinct_ids: int = 2,
+    guard: Optional[EventIdMergeGuard] = None,
 ) -> Tuple[List[List[Phase]], List]:
     """
     Iteratively merges clusters with shared phases or event IDs
@@ -1117,6 +1240,8 @@ def cluster_merge(
         clusters (List[List[Phase]]): List of clusters to be merged.
         preloc: Preliminary localization data associated with clusters.
         min_com_phases (int): Minimum number of common phases required for merging clusters.
+        guard: EventIdMergeGuard applied to merges driven by a shared event_id
+            only (None = disabled, see cluster_merge_one_pass).
 
     Returns:
         Tuple: Merged clusters and updated preliminary localization data.
@@ -1128,6 +1253,7 @@ def cluster_merge(
             min_com_phases,
             eventid_shared_min_picks_per_cluster=eventid_shared_min_picks_per_cluster,
             eventid_shared_min_distinct_ids=eventid_shared_min_distinct_ids,
+            guard=guard,
         )
         if merge_count == 0:
             break
@@ -1140,6 +1266,7 @@ def cluster_merge_one_pass(
     min_com_phases: int,
     eventid_shared_min_picks_per_cluster: Optional[int] = None,
     eventid_shared_min_distinct_ids: int = 2,
+    guard: Optional[EventIdMergeGuard] = None,
 ) -> Tuple[List[List[Phase]], List, int]:
     """
     Perform one pass of cluster merging based on shared picks or event IDs.
@@ -1148,6 +1275,10 @@ def cluster_merge_one_pass(
         clusters: List of clusters (each cluster is a list of Phase objects).
         preloc: List of prelocation data corresponding to clusters.
         min_com_phases: Minimum number of shared phases for merging.
+        guard: EventIdMergeGuard deciding merges driven by a shared event_id
+            only (fewer than min_com_phases common picks): refused when the two
+            PyOcto prelocations are far apart, unless the picks are
+            moveout-compatible. None = disabled (always merge).
 
     Returns:
         Tuple: Updated clusters, updated preloc, and count of merges performed.
@@ -1173,8 +1304,18 @@ def cluster_merge_one_pass(
         )
 
         if common_count >= min_com_phases or eventid_shared:
+            # A merge driven by a shared event_id alone can join two distinct
+            # earthquakes (one mis-associated catalog pick is enough).
+            details = ""
+            if common_count < min_com_phases and guard is not None:
+                allowed, why = guard.decide(c1, c2, preloc[c1_idx], preloc[c2_idx])
+                if not allowed:
+                    logger.info(f"Refused event-ID merge: picks shared: {common_count}, {why}")
+                    continue
+                details = f", {why}"
             logger.info(
                 f"Merging clusters: picks shared: {common_count}, event ID shared: {eventid_shared}"
+                f"{details}"
             )
             to_be_merged.append((c1_idx, c2_idx))
 
