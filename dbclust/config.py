@@ -837,7 +837,7 @@ class CatalogConfig:
         if self.enable_quakeml_file:
             if not os.path.exists(self.qml_path) or not os.path.isdir(self.qml_path):
                 try:
-                    os.makedirs(self.qml_path)
+                    os.makedirs(self.qml_path, exist_ok=True)  # concurrent workers may create it first
                 except OSError as e:
                     raise OSError(f"Can't create directory {self.qml_path}: {e}") from e
 
@@ -849,7 +849,7 @@ class CatalogConfig:
                 self.sqlite_db_path
             ):
                 try:
-                    os.makedirs(self.sqlite_db_path)
+                    os.makedirs(self.sqlite_db_path, exist_ok=True)  # concurrent workers may create it first
                 except OSError as e:
                     raise OSError(
                         f"Can't create directory {self.sqlite_db_path}: {e}"
@@ -868,7 +868,7 @@ class CatalogConfig:
                 self.temp_db_dir
             ):
                 try:
-                    os.makedirs(self.temp_db_dir)
+                    os.makedirs(self.temp_db_dir, exist_ok=True)  # concurrent workers may create it first
                 except OSError as e:
                     raise OSError(
                         f"Can't create directory {self.temp_db_dir}: {e}"
