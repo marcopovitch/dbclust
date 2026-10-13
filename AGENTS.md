@@ -76,6 +76,6 @@ docker-compose up -d dbclust
 ## Important Notes
 
 - DBClust uses a small SQLite database for intermediate storage
-- The main processing pipeline follows: Data Loading → Pick Preprocessing → Station Processing → Time Window Processing → Clustering → First Pass Localization → Pick Filtering → Pick Relabeling → Second Pass Location → Output Generation
+- The main processing pipeline follows: Data Loading → Pick Preprocessing → Station Processing → Time Window Processing → Clustering → Association (PyOcto, event_id merges) → First Pass Localization → Pick Filtering → Pick Relabeling → Second Pass Location → Third Pass Location (outlier removal) → Output Generation
 - Configuration is managed through YAML files with extensive options for parallel processing
 - The system requires specific patches for NonLinLoc and ObsPy to work correctly with the processing pipeline
