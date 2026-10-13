@@ -1621,10 +1621,33 @@ class NllLoc(object):
                             orig2 = event2.preferred_origin()
                             self._remap_arrivals_to_existing_picks(orig2, event2, e)
                     else:
-                        logger.warning(
-                            f"Pass 3 skipped: only {len(picks3)} picks remaining "
-                            f"(< nll_min_phase={self.nll_min_phase}) — keeping Pass 2 result."
-                        )
+                        # Too few consistent picks to relocate. The pass-2 solution
+                        # is still valid if it did not use the outliers (they all
+                        # had a null time_weight); if it relied on picks judged
+                        # outliers, it is not, and there are not enough consistent
+                        # picks left to build another one: the event is rejected,
+                        # as when pass 2 itself fails.
+                        used_outliers = [
+                            a
+                            for a in outliers_pass2
+                            if a.time_weight is not None
+                            and not isclose(a.time_weight, 0, abs_tol=time_weight_tolerance)
+                        ]
+                        if not used_outliers:
+                            logger.info(
+                                f"Pass 3 skipped: only {len(picks3)} picks remaining "
+                                f"(< nll_min_phase={self.nll_min_phase}) — keeping Pass 2 "
+                                f"result (none of the outliers was used by it)."
+                            )
+                        else:
+                            logger.warning(
+                                f"Rejected: Pass 2 solution relies on {len(used_outliers)} "
+                                f"outlier pick(s) and only {len(picks3)} consistent picks "
+                                f"remain (< nll_min_phase={self.nll_min_phase})."
+                            )
+                            e.event_type = "not existing"
+                            if not self.keep_not_existing_event:
+                                return _abort_localization(Catalog())
 
                 e.origins.append(orig2)
                 e.preferred_origin_id = orig2.resource_id
