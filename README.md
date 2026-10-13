@@ -674,11 +674,38 @@ catalog:
 3. **Station Processing**: Fetch station metadata and apply any renaming rules
 4. **Time Window Processing**: Process data in configurable time windows
 5. **Clustering**: Apply clustering algorithms to identify seismic events
-6. **First Pass localization**: Use NonLinLoc to locate identified events
-7. **Pick Filtering**: A posteriori filtering of seismic phase based on time residual threshold and more advanced criteria
-8. **Pick Relabeling**: Relabel seismic phase picks based on configurable pick zone and score threshold
-9. **Second Pass location**: Use NonLinLoc to relocate identified events
-10. **Output**: Generate QuakeML files and update SQLite database
+6. **Association**: Split/validate clusters with PyOcto, merge clusters sharing picks or a catalog event_id (see [Event-ID merge guard](#event-id-merge-guard)) and aggregate the picks of each known event_id into a single owner cluster
+7. **First Pass localization**: Use NonLinLoc to locate identified events
+8. **Pick Filtering**: A posteriori filtering of seismic phase based on time residual threshold and more advanced criteria
+9. **Pick Relabeling**: Relabel seismic phase picks based on configurable pick zone and score threshold
+10. **Second Pass location**: Use NonLinLoc to relocate identified events
+11. **Third Pass location**: Remove the arrivals that remain outliers after pass 2 (MAD on NLL time weights, or outside every zone polygon with the pass-2 geometry) and relocate. If too few consistent picks remain and the pass-2 solution relied on outliers, the event is rejected
+12. **Output**: Generate QuakeML files and update SQLite database
+
+### Event-ID merge guard
+
+Two PyOcto clusters sharing a catalog event_id but no picks are merged by default. A single
+mis-associated catalog pick can then merge two distinct earthquakes. The guard, in the
+`cluster` section, refuses such a merge when the two PyOcto prelocations are far apart,
+unless the picks themselves show that they come from the same earthquake:
+
+```yaml
+cluster:
+  eventid_merge_max_tt_s: 30               # null (default) disables the guard
+  eventid_merge_moveout_min_fraction: 0.95
+  eventid_merge_moveout_min_picks: 3
+  eventid_merge_moveout_vp: 6.0             # km/s
+  eventid_merge_moveout_vs: 3.5             # km/s
+```
+
+- The prelocations are compared with the pseudo travel time
+  `sqrt(dt_origin^2 + (epicentral_distance / average_velocity)^2)`. It is not comparable with
+  `max_search_dist`, which bounds the distance between two *picks* spread over the network
+  aperture; two prelocations of the same earthquake only differ by the location error.
+- Moveout check: for each cross pair of picks of the same family (P-P, S-S) at stations
+  `d` km apart, a single wavefront satisfies `|dt| <= d / v`. A refusal is overruled when at
+  least `min_fraction` of the pairs satisfy it, with at least `min_picks` checkable picks on
+  each side. The moveout never vetoes a merge whose prelocations are close.
 
 ## Output
 
