@@ -968,10 +968,16 @@ def dbclust(
                     )
                 # Backward overlap reserve picks (first window of a non-first
                 # job) go through the same preparation as the window's.
+                # An empty window frame has a naive datetime64 phase_time:
+                # concatenating it with the tz-aware backward frame degrades
+                # the column to object and breaks the dedup arithmetic.
                 if not df_reserve_backward.empty:
-                    df_reserve = pd.concat(
-                        [df_reserve, df_reserve_backward], ignore_index=True
-                    )
+                    if df_reserve.empty:
+                        df_reserve = df_reserve_backward
+                    else:
+                        df_reserve = pd.concat(
+                            [df_reserve, df_reserve_backward], ignore_index=True
+                        )
             # picks_to_remove is reset below once applied to df_subset: keep
             # it for the reserve pool, prepared after the active picks
             # (it needs their frequency-filtered stations).
