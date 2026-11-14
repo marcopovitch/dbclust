@@ -287,6 +287,7 @@ class NllLoc(object):
         quakeml_settings=None,
         keep_scat=False,
         scat_file=None,
+        scat_decim: int = 10,  # scat2latlon decimation factor (1 = every scatter sample)
         zones: Zones = None,  # zones (polygons) delimitation to keep picks
         force_zone_name: str = None,  # force zone to use
         min_score_threshold_pick_zone=0.5,  # minimum score to relabel pick in zone
@@ -350,6 +351,7 @@ class NllLoc(object):
         self.quakeml_settings = quakeml_settings
         self.keep_scat = keep_scat
         self.scat_file = scat_file
+        self.scat_decim = max(1, int(scat_decim))
         self.scat_files = []
         self.zones = zones
         self.force_zone_name = force_zone_name
@@ -1212,8 +1214,7 @@ class NllLoc(object):
         is_final_pass = (not self.double_pass and pass_count == 0) or pass_count > 0
         if self.keep_scat and is_final_pass:
             # scat2latlon <decim_factor> <output_dir> <hyp_file_list>
-            decim_factor = 10
-            cmde = f"{self.scat2latlon_bin} {decim_factor} {tmp_path} {tmp_path}/last"
+            cmde = f"{self.scat2latlon_bin} {self.scat_decim} {tmp_path} {tmp_path}/last"
             logger.debug(cmde)
             try:
                 safe_subprocess_run(shlex.split(cmde))

@@ -115,6 +115,7 @@ def process_file(
                 quakeml_settings=asdict(cfg.quakeml),
                 nll_verbose=cfg.nll.verbose,
                 keep_scat=cfg.nll.enable_scatter,
+                scat_decim=cfg.nll.scatter_decim,
                 zones=cfg.zones,
                 force_zone_name=args.zone_name,
                 min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
@@ -406,6 +407,14 @@ def parse_arguments() -> argparse.Namespace:
         "-s", "--scat", dest="scat", help="Get xyz scat file", action="store_true"
     )
     output_group.add_argument(
+        "--scat-decim",
+        dest="scat_decim",
+        type=int,
+        default=None,
+        help="scat2latlon decimation factor of the scat file (1 = every scatter sample; "
+        "default: nll.scatter_decim of the config, 10 when unset)",
+    )
+    output_group.add_argument(
         "-o",
         "--output",
         dest="output_name",
@@ -492,6 +501,11 @@ def main():
 
         if args.scat:
             cfg.nll.enable_scatter = args.scat
+
+        if args.scat_decim is not None:
+            if args.scat_decim < 1:
+                raise ValueError(f"--scat-decim must be >= 1, got {args.scat_decim}")
+            cfg.nll.scatter_decim = args.scat_decim
 
         if not args.zone_name:
             cfg.quakeml.model_id = None
