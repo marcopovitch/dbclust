@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import resource
 import shlex
 import shutil
 import sys
@@ -109,6 +110,15 @@ def safe_subprocess_run(args, *, env=None, text=True):
     # Merge on top of the current environment: callers pass a handful of
     # overrides (e.g. OMP_NUM_THREADS) and expect PATH/LD_LIBRARY_PATH/etc.
     # to still reach the child process.
+    # NLLoc's recursive octree search can SIGSEGV (stack overflow) on deep
+    # searches; give the child a 32 MB stack before spawning.
+    _stack_soft, _stack_hard = resource.getrlimit(resource.RLIMIT_STACK)
+    _target = min(32 * 1024 * 1024, _stack_hard)
+    if _stack_soft < _target:
+        try:
+            resource.setrlimit(resource.RLIMIT_STACK, (_target, _stack_hard))
+        except (ValueError, OSError):
+            pass
     env = {**os.environ, **env} if env else os.environ.copy()
 
     # Temporary file to capture stdout/stderr
