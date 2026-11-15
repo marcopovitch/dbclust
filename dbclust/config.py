@@ -959,6 +959,19 @@ class Zone:
         return txt
 
 
+_WGS84_TO_LAMBERT2 = None
+
+
+def _wgs84_to_lambert2_transformer() -> pyproj.Transformer:
+    """WGS84 (lon, lat) -> Lambert II (x, y) transformer, built once per process."""
+    global _WGS84_TO_LAMBERT2
+    if _WGS84_TO_LAMBERT2 is None:
+        _WGS84_TO_LAMBERT2 = pyproj.Transformer.from_crs(
+            "EPSG:4326", "EPSG:27572", always_xy=True
+        )
+    return _WGS84_TO_LAMBERT2
+
+
 @dataclass
 class Zones:
     zones: List[Zone]
@@ -1068,7 +1081,9 @@ class Zones:
             if polygon.contains(point_shapely):
 
                 # convert wgs84 coord to lambert II (metric)
-                transformer = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:27572")
+                # always_xy: coordinates are passed as (lon, lat) below, whereas
+                # EPSG:4326's native axis order is (lat, lon).
+                transformer = _wgs84_to_lambert2_transformer()
                 x_point, y_point = transformer.transform(longitude, latitude)
                 lambert_vertices = [
                     transformer.transform(lon, lat)
@@ -1078,26 +1093,16 @@ class Zones:
                 polygon = Polygon(lambert_vertices)
                 point_shapely = Point(x_point, y_point)
 
-                lines = [
-                    LineString(
-                        [
-                            polygon.exterior.coords[i],
-                            polygon.exterior.coords[
-                                (i + 1) % len(polygon.exterior.coords)
-                            ],
-                        ]
-                    )
-                    for i in range(len(polygon.exterior.coords))
-                ]
+                # Distance to the polygon boundary. (The previous per-segment
+                # loop included the zero-length segment closing the ring, whose
+                # distance raised a RuntimeWarning: the result was always None.)
                 with warnings.catch_warnings():
                     warnings.filterwarnings("error", category=RuntimeWarning)
                     try:
-                        distances = [point_shapely.distance(line) for line in lines]
-                    except RuntimeWarning as rw:
+                        distance_km = polygon.exterior.distance(point_shapely) / 1000
+                    except RuntimeWarning:
                         logger.debug(f"Can't compute distance(point, polygon): {row}")
                         distance_km = None
-                    else:
-                        distance_km = min(distances) / 1000
                 return row, distance_km
         return gpd.GeoDataFrame(), None
 
@@ -1247,14 +1252,18 @@ class PyoctoConfig:
             }
         )
 
-        # create travel time grid
+        # create travel time grid. Several worker processes may build their
+        # config (hence this grid) while others are already reading it: write
+        # to a per-process temp file and rename it into place atomically.
+        tmp_filename = f"{filename}.{os.getpid()}.tmp"
         VelocityModel1D.create_model(
             profil_model,
             vmodel.grid_spacing_km,
             vmodel.max_horizontal_dist_km,
             vmodel.max_vertical_dist_km,
-            filename,
+            tmp_filename,
         )
+        os.replace(tmp_filename, filename)
 
         return profil_model
 
@@ -1491,9 +1500,18 @@ class DBClustConfig:
             )
             self.resolved_config_path = os.path.join(run_dir, "dbclust-config.yml")
             try:
-                os.makedirs(run_dir, exist_ok=True)
-                with open(self.resolved_config_path, "w") as f:
-                    yaml.safe_dump(self.yaml_data, f)
+                # A worker loading the resolved file itself must not rewrite
+                # it: other workers may be reading it at the same time.
+                # Otherwise write to a temp file and rename it into place, so
+                # a reader never sees a truncated file.
+                if os.path.abspath(self.resolved_config_path) != os.path.abspath(
+                    self.filename
+                ):
+                    os.makedirs(run_dir, exist_ok=True)
+                    tmp_config_path = f"{self.resolved_config_path}.{os.getpid()}.tmp"
+                    with open(tmp_config_path, "w") as f:
+                        yaml.safe_dump(self.yaml_data, f)
+                    os.replace(tmp_config_path, self.resolved_config_path)
             except OSError as e:
                 logger.warning(
                     f"Could not write resolved config to {run_dir}: {e}"
@@ -1530,6 +1548,26 @@ class DBClustConfig:
                 continue
             logger.info(f"{key}=\n{pprint.pformat(getattr(self, key), indent=2)}")
         logger.info(f"pick.df=\n{pprint.pformat(self.pick.df, indent=2)}")
+
+
+_CONFIG_CACHE: Dict[tuple, "DBClustConfig"] = {}
+
+
+def load_config_cached(filename: str, config_type: str = "std") -> "DBClustConfig":
+    """Return the DBClustConfig for filename, built once per process.
+
+    Used by executors whose workers rebuild the config from a file path
+    (Parsl HTE / Slurm): reading the StationXML inventories and scanning the
+    pick files for every task is expensive. The cache is keyed on the file's
+    modification time, so an edited file is reloaded.
+    """
+    key = (os.path.abspath(filename), os.path.getmtime(filename), config_type)
+    cfg = _CONFIG_CACHE.get(key)
+    if cfg is None:
+        cfg = DBClustConfig(filename, config_type=config_type)
+        _CONFIG_CACHE.clear()  # keep a single config per process
+        _CONFIG_CACHE[key] = cfg
+    return cfg
 
 
 def is_valid_url(url: str, syntax_only: bool = False) -> bool:

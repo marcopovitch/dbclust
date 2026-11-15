@@ -305,7 +305,13 @@ def main():
     # Finalize SQLite database. In parallel mode only merge DBs from jobs
     # recorded in the checkpoint; the sequential runner writes no checkpoint
     # (exceptions propagate), so every temp DB it produced is merged.
-    completed_indices = None if sequential else _load_completed_indices(cfg)
+    # Restricted to this run's partitions: a temp DB left by a previous run
+    # with more partitions in the same directory must not be merged.
+    completed_indices = (
+        set(range(len(cfg.parallel.time_partitions)))
+        if sequential
+        else _load_completed_indices(cfg)
+    )
     finalize_ok = finalize_sqlite(cfg, completed_job_indices=completed_indices)
 
     n_crashed = sum(1 for r in results if r is None)

@@ -136,10 +136,18 @@ class DaskExecutor(ExecutorBase):
         ]:
             _logging.getLogger(name).setLevel(_logging.CRITICAL)
 
-        # Memory protection
-        Worker.memory_target_fraction = 0.70
-        Worker.memory_spill_fraction = 0.80
-        Worker.memory_pause_fraction = 0.95
+        # Memory protection. Set through the Dask config, which is forwarded
+        # to the worker processes: attributes set on the Worker class here
+        # only exist in this (client) process and never reach the workers.
+        import dask
+
+        dask.config.set(
+            {
+                "distributed.worker.memory.target": 0.70,
+                "distributed.worker.memory.spill": 0.80,
+                "distributed.worker.memory.pause": 0.95,
+            }
+        )
 
         # Start in batches to avoid spawning all nannies simultaneously (EMFILE).
         batch_size = min(16, max_workers)

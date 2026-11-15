@@ -722,7 +722,6 @@ def import_phases(
             df["station_id"] = df["station_id"].astype(str) + "." + channel
 
     # Filter by phase score thresholds
-    df_before = df.copy()
     # Same phase families as the SQL pick queries in core.py
     df = df.loc[
         ~(df["phase_type"].isin(P_PHASE_TYPES) & (df["phase_score"] < P_proba_threshold))
@@ -787,7 +786,7 @@ def import_phases(
         phases.append(myphase)
 
         # Optionally show phase details
-        if logger.level == logging.DEBUG:
+        if logger.isEnabledFor(logging.DEBUG):
             myphase.show_all()
 
     # Log cache information if applicable

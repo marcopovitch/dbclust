@@ -81,15 +81,26 @@ def rename_waveform_id(df: pd.DataFrame, rename_config: RenameConfig) -> pd.Data
         return df
 
     def apply_regex_and_update(data, patterns, indices=None):
-        """Apply regex to rows and update the DataFrame."""
-        temp_result = data.apply(lambda row: apply_regex_to_row(row, patterns), axis=1)
-        temp_df = pd.DataFrame(
-            temp_result.tolist(), index=data.index, columns=["station_id", "channel"]
-        )
-        if indices is not None:
-            df.loc[indices, ["station_id", "channel"]] = temp_df.values
-        else:
-            df.loc[:, ["station_id", "channel"]] = temp_df[["station_id", "channel"]].values
+        """Apply regex to rows and update the DataFrame.
+
+        The rules only depend on (station_id, channel): they are evaluated
+        once per distinct pair instead of once per row, then mapped back.
+        """
+        if data.empty or not patterns:
+            return
+        keys = data["station_id"].astype(str) + "\x00" + data["channel"].astype(str)
+        first_rows = data.loc[~keys.duplicated(), ["station_id", "channel"]]
+        renamed = {}
+        for key, row in zip(keys[first_rows.index], first_rows.to_dict("records")):
+            new_station_id, new_channel = apply_regex_to_row(row, patterns)
+            if (new_station_id, new_channel) != (row["station_id"], row["channel"]):
+                renamed[key] = (new_station_id, new_channel)
+        if not renamed:
+            return
+        mask = keys.isin(renamed)
+        target = data.index[mask]
+        df.loc[target, "station_id"] = [renamed[k][0] for k in keys[mask]]
+        df.loc[target, "channel"] = [renamed[k][1] for k in keys[mask]]
 
     # Apply "before" transformations
     if rename_config and rename_config.before:
