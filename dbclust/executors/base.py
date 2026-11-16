@@ -22,13 +22,55 @@ from dbclust.core import CSV_FIELDNAMES
 logger = logging.getLogger("dbclust")
 
 
-def config_fingerprint(cfg: DBClustConfig) -> str:
-    """Compute a short hash of the temporal config parameters that define partitions.
+#: Config entries that do not influence the catalog (execution resources, output
+#: locations, logging): changing them must not invalidate a resume.
+_FINGERPRINT_IGNORED = {
+    "slurm": None,  # whole section
+    "file": None,
+    "fdsnws_event": None,
+    "parallel": {"partition_duration"},  # None = ignore all, set = keep these
+    "catalog": {"keep_not_existing_event"},
+}
 
-    If any of these parameters change (start, end, partition_duration,
-    time_window, overlap_window), the checkpoint is automatically invalidated.
+
+def _result_affecting_config(yaml_data: dict) -> dict:
+    """The part of the resolved YAML that determines the processing results."""
+    kept = {}
+    for section, value in yaml_data.items():
+        if section in _FINGERPRINT_IGNORED:
+            keep = _FINGERPRINT_IGNORED[section]
+            if keep and isinstance(value, dict):
+                kept[section] = {k: v for k, v in value.items() if k in keep}
+            continue
+        kept[section] = value
+    nll = kept.get("nll")
+    if isinstance(nll, dict):  # console output only
+        kept["nll"] = {k: v for k, v in nll.items() if k not in ("verbose",)}
+    return kept
+
+
+def config_fingerprint(cfg: DBClustConfig) -> str:
+    """Compute a short hash of the config parameters that define the results.
+
+    The resolved YAML (CLI overrides included) is hashed, minus the entries that
+    only concern execution (workers, Slurm), output locations and logging. If
+    anything else changes between two runs (pick thresholds, clustering, NLL
+    settings, zones, time window, period...), the checkpoint is invalidated and
+    every task is reprocessed, instead of silently mixing two configurations
+    in one catalog.
+
+    Configs without a resolved YAML (e.g. built by hand) fall back to the
+    temporal parameters only.
     """
     import hashlib
+    import json
+
+    yaml_data = getattr(cfg, "yaml_data", None)
+    if isinstance(yaml_data, dict) and yaml_data:
+        payload = json.dumps(
+            _result_affecting_config(yaml_data), sort_keys=True, default=str
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
     key = "|".join([
         str(cfg.pick.start),
@@ -313,7 +355,7 @@ class ExecutorBase(ABC):
         self._completed_fingerprint_written = False
         if status == "stale":
             logger.info(
-                "Temporal parameters changed since the last run, "
+                "Configuration changed since the last run, "
                 "checkpoint invalidated — all tasks will be reprocessed."
             )
         elif status == "invalid":

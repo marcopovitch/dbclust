@@ -226,3 +226,50 @@ def test_parsl_thread_more_tasks_than_max_inflight(tmp_path, monkeypatch):
     assert results.count(None) == 1
     # the crashed task is identified and left out of the checkpoint
     assert runner._load_completed_indices(cfg) == {0, 1, 2, 3, 5, 6}
+
+
+def _cfg_with_yaml(yaml_data):
+    from pathlib import Path
+    tmp_path = Path("/tmp/x")
+    cfg = make_cfg(tmp_path)
+    cfg.yaml_data = yaml_data
+    return cfg
+
+
+def _base_yaml():
+    return {
+        "pick": {"start": "2020-01-01", "P_proba_threshold": 0.6, "filenames": ["a.pq"]},
+        "time": {"time_window": 10, "overlap_window": 250},
+        "cluster": {"min_cluster_size": 4},
+        "nll": {"loc_method": "EDT_OT_WT_ML", "verbose": False},
+        "parallel": {"n_workers": 12, "partition_duration": "1h"},
+        "file": {"run_id": "a", "tmp_path": "/tmp/a"},
+        "catalog": {"qml_path": "/x/a", "keep_not_existing_event": False},
+        "slurm": {"enabled": False},
+    }
+
+
+def test_fingerprint_ignores_operational_settings():
+    ref = config_fingerprint(_cfg_with_yaml(_base_yaml()))
+    changed = _base_yaml()
+    changed["parallel"]["n_workers"] = 4
+    changed["file"] = {"run_id": "b", "tmp_path": "/tmp/b"}
+    changed["catalog"]["qml_path"] = "/x/b"
+    changed["slurm"]["enabled"] = True
+    changed["nll"]["verbose"] = True
+    assert config_fingerprint(_cfg_with_yaml(changed)) == ref
+
+
+def test_fingerprint_follows_result_affecting_settings():
+    ref = config_fingerprint(_cfg_with_yaml(_base_yaml()))
+    for section, key, value in (
+        ("pick", "P_proba_threshold", 0.7),
+        ("cluster", "min_cluster_size", 5),
+        ("nll", "loc_method", "EDT"),
+        ("time", "overlap_window", 300),
+        ("parallel", "partition_duration", "2h"),
+        ("catalog", "keep_not_existing_event", True),
+    ):
+        changed = _base_yaml()
+        changed[section][key] = value
+        assert config_fingerprint(_cfg_with_yaml(changed)) != ref, (section, key)
