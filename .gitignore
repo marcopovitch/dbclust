@@ -131,3 +131,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Internal notes, kept locally only
+plan-reservePickConsolidation.prompt.md
+bug_repport_complet_mouveout_re-fuse.md
+LEIDEN_EXPERIMENTS.md
+BUGS_REVIEW_2026-07-07.md
