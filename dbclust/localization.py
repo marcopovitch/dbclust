@@ -984,6 +984,11 @@ class NllLoc(object):
             If there is an error in generating the NLL configuration file or running the NLL binary.
         """
 
+        if pass_count == 0:
+            # Top-level call: forget the output directories of a previous
+            # localization that was rejected before reaching the final step.
+            self._origin_tmp_dirs.clear()
+
         if not nll_obs_file:
             nll_obs_file = self.nll_obs_file
 
