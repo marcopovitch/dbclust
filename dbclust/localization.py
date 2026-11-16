@@ -1149,10 +1149,6 @@ class NllLoc(object):
             ),
         }
 
-        # Legacy spelling of the placeholder, still used by template copies
-        # kept outside this repository.
-        tags["HYPYPOUT"] = tags["HYPOUT"]
-
         # Generate NLL configuration file
         try:
             self.replace(nll_template, conf_file, tags)
