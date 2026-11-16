@@ -139,6 +139,9 @@ nll:
     - name: vendenheim
       template: nll_vendenheim_template.conf
 
+    - name: vendenheim-wide
+      template: nll_vendenheim-wide_template.conf
+
   # method to use for NLLoc [GAU_ANALYTIC, EDT, EDT_OT_WT, EDT_OT_WT_ML]
   loc_method: EDT_OT_WT_ML
 
@@ -266,6 +269,10 @@ pyocto:
 # velocity_profile is the nll velocity name to be used.
 zones:
   zones:
+    - name: vendenheim
+      velocity_profile: vendenheim-wide
+      polygon: [[7.50, 48.40], [8.15, 48.40], [8.15, 49.00], [7.50, 49.00]]
+
     - name: alpes
       velocity_profile: alpes
       polygon:
