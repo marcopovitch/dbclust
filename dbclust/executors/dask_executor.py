@@ -147,8 +147,12 @@ class DaskExecutor(ExecutorBase):
             n_workers=batch_size,
             threads_per_worker=1,   # one task per process — no GIL issues
             processes=True,
-            memory_limit="2GB",
-            dashboard_address=":8265",
+            # C extensions (DuckDB, numpy, pyocto) hold memory Dask cannot
+            # attribute to any task, so "unmanaged memory" runs high even with
+            # modest real load; macOS/Libc does not return freed arenas to the
+            # OS either. 4 GB per worker keeps the unmanaged/target ratio well
+            # under memory_target_fraction (0.70) and gives real headroom.
+            memory_limit="4GB",
         )
 
         self.client = Client(self.cluster, timeout=120, direct_to_workers=True)
@@ -169,7 +173,7 @@ class DaskExecutor(ExecutorBase):
         logger.info(
             f"Dask cluster ready: {actual_workers}/{max_workers} workers up "
             f"({configured_workers} CPUs × {oversubscription}x oversubscription), "
-            "memory_limit=2GB/worker"
+            "memory_limit=4GB/worker"
         )
         logger.info(f"Dask dashboard: {self.client.dashboard_link}")
 
