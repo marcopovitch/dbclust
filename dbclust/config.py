@@ -772,10 +772,22 @@ class NonLinLocConfig:
     # Decimation factor given to scat2latlon when enable_scatter is on: 1 keeps every scatter sample NLLoc
     # wrote (LOCSEARCH's nScatterSample), 10 (the historical value) keeps one in ten.
     scatter_decim: int = 10
+    # NLLoc LOCHYPOUT directive: which hypocenter NLLoc saves as the origin.
+    # SAVE_NLLOC_ALL (default, historical behaviour) saves the maximum-likelihood
+    # hypocenter (center of the best octree cell); SAVE_NLLOC_EXPECTATION saves
+    # the probability-weighted expectation (sub-cell precision, never quantized,
+    # residuals/RMS recomputed on the scatter points).
+    hypout: str = "SAVE_NLLOC_ALL"
 
     def __post_init__(self) -> None:
         if self.scatter_decim < 1:
             raise ValueError(f"nll.scatter_decim must be >= 1, got {self.scatter_decim}")
+        self.hypout = str(self.hypout).strip().upper()
+        if self.hypout not in ("SAVE_NLLOC_ALL", "SAVE_NLLOC_EXPECTATION"):
+            raise ValueError(
+                "nll.hypout must be SAVE_NLLOC_ALL or SAVE_NLLOC_EXPECTATION, "
+                f"got {self.hypout!r}"
+            )
         if not os.path.exists(self.nlloc_bin):
             raise FileNotFoundError(f"File {self.nlloc_bin} does not exist !")
 

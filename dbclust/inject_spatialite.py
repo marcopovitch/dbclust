@@ -509,6 +509,32 @@ def get_expectation_localization(origin: Origin) -> Tuple[float, float, float]:
     return expectation_latitude, expectation_longitude, expectation_depth
 
 
+def get_max_likelihood_localization(origin: Origin) -> Tuple[float, float, float]:
+    """
+    Extracts from the origin's comment NonLinLoc's maximum-likelihood hypocenter.
+
+    Only present when the origin itself is the expectation hypocenter
+    (LOCHYPOUT SAVE_NLLOC_EXPECTATION).
+
+    Returns:
+        Tuple (latitude, longitude, depth in meters), (None, None, None) if not found.
+    """
+    for comment in origin.comments:
+        try:
+            info = json.loads(comment.text)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        data = info.get("maximum_likelihood") if isinstance(info, dict) else None
+        if data:
+            depth = data.get("depth")
+            return (
+                data.get("latitude"),
+                data.get("longitude"),
+                depth * 1000.0 if depth is not None else None,
+            )
+    return None, None, None
+
+
 def get_reserve_pick_weight(pick) -> Optional[float]:
     """ps_count_weight of a pick consolidated from the dbclust reserve pool.
 
@@ -1284,22 +1310,34 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
         get_expectation_localization(origin)
     )
 
-    # distance in km between the horizontal coordinates of the origin and
-    # the expectation coordinates
+    # NonLinLoc maximum-likelihood hypocenter: the origin itself, unless the
+    # origin is the expectation (LOCHYPOUT SAVE_NLLOC_EXPECTATION), in which
+    # case NonLinLoc reports it separately. Comparing it (not the origin) with
+    # the expectation keeps dloch/dz meaningful in both modes.
+    max_like_latitude, max_like_longitude, max_like_depth = (
+        get_max_likelihood_localization(origin)
+    )
+    ml_latitude = max_like_latitude if max_like_latitude is not None else origin.latitude
+    ml_longitude = max_like_longitude if max_like_longitude is not None else origin.longitude
+    ml_depth = max_like_depth if max_like_depth is not None else origin.depth
+
+    # distance in km between the horizontal coordinates of the maximum
+    # likelihood and the expectation coordinates
     if expectation_latitude is not None and expectation_longitude is not None:
         dloch = haversine_distance(
-            origin.latitude,
-            origin.longitude,
+            ml_latitude,
+            ml_longitude,
             expectation_latitude,
             expectation_longitude,
         )
     else:
         dloch = None
 
-    # distance in km between the depth of the origin and the expectation depth
+    # distance in km between the depth of the maximum likelihood and the
+    # expectation depth
     dz = (
-        abs(origin.depth - expectation_depth) / 1000.0
-        if expectation_depth is not None
+        abs(ml_depth - expectation_depth) / 1000.0
+        if expectation_depth is not None and ml_depth is not None
         else None
     )
 
@@ -1308,7 +1346,9 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
         math.sqrt(dloch**2 + dz**2) if dloch is not None and dz is not None else None
     )
 
-    # Get only the relevant info from the origin method ID
+    # Strip only the SMI prefix (the single "/" in "smi:local/...") so
+    # external origins keep their short name (e.g. "LOCSAT") and dbclust
+    # origins keep the full "NonLinLoc+<method>+<type>" identity.
     origin_method_id = getattr(getattr(origin, "method_id", None), "id", "unknown")
     if isinstance(origin_method_id, str) and "/" in origin_method_id:
         origin_method_id = origin_method_id.rsplit("/", 1)[-1]
@@ -1381,7 +1421,9 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             cpq,
             gallacher_gt5_status,
             evaluation_mode, preferred, ps_ratio, ps_station_count, station_score,
-            nll_epicenters_diff_km, nll_hypocenters_diff_km, geometry
+            nll_epicenters_diff_km, nll_hypocenters_diff_km,
+            max_likelihood_latitude, max_likelihood_longitude, max_likelihood_depth,
+            geometry
         )
         VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
@@ -1389,6 +1431,7 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?,
+            ?, ?, ?,
             ST_GeomFromText(?, 4326)
         )
         """,
@@ -1441,6 +1484,9 @@ def insert_origin(conn: sqlite3.Connection, origin: Origin, event: Event) -> boo
             station_score,
             dloch,
             dloc_hypo,
+            max_like_latitude,
+            max_like_longitude,
+            max_like_depth,
             f"POINT({origin.longitude} {origin.latitude})",
         ),
     )
@@ -1923,7 +1969,10 @@ def create_tables(cursor: sqlite3.Cursor, create_indexes: bool = False) -> None:
                 median_prob_s DOUBLE,
                 median_prob_total DOUBLE,
                 nll_epicenters_diff_km DOUBLE,
-                nll_hypocenters_diff_km DOUBLE
+                nll_hypocenters_diff_km DOUBLE,
+                max_likelihood_latitude DOUBLE,
+                max_likelihood_longitude DOUBLE,
+                max_likelihood_depth DOUBLE
             );
             """,
             """
@@ -3142,6 +3191,9 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
 
     _ensure_column(cursor, "origins", "quality", "TEXT")
     _ensure_column(cursor, "origins", "quality_factor", "DOUBLE")
+    _ensure_column(cursor, "origins", "max_likelihood_latitude", "DOUBLE")
+    _ensure_column(cursor, "origins", "max_likelihood_longitude", "DOUBLE")
+    _ensure_column(cursor, "origins", "max_likelihood_depth", "DOUBLE")
     conn.commit()
 
     # Fetch data for quality computation
@@ -3158,9 +3210,11 @@ def add_compute_localization_quality(conn: sqlite3.Connection) -> None:
             o.azimuthal_gap,
             o.secondary_azimuthal_gap,
             o.scatter_volume,
-            o.latitude,
-            o.longitude,
-            o.depth,
+            -- maximum-likelihood hypocenter: stored separately when the
+            -- origin is the expectation (SAVE_NLLOC_EXPECTATION), else the origin
+            COALESCE(o.max_likelihood_latitude, o.latitude),
+            COALESCE(o.max_likelihood_longitude, o.longitude),
+            COALESCE(o.max_likelihood_depth, o.depth),
             o.expectation_latitude,
             o.expectation_longitude,
             o.expectation_depth
@@ -3515,6 +3569,11 @@ def ensure_required_columns_exist(conn: sqlite3.Connection) -> None:
         _ensure_column(cursor, "origins", "gallacher_gt5_status", "BOOLEAN")
         _ensure_column(cursor, "origins", "nll_epicenters_diff_km", "DOUBLE")
         _ensure_column(cursor, "origins", "nll_hypocenters_diff_km", "DOUBLE")
+        # NonLinLoc maximum-likelihood hypocenter, set only when the origin is
+        # the expectation (LOCHYPOUT SAVE_NLLOC_EXPECTATION); depth in meters.
+        _ensure_column(cursor, "origins", "max_likelihood_latitude", "DOUBLE")
+        _ensure_column(cursor, "origins", "max_likelihood_longitude", "DOUBLE")
+        _ensure_column(cursor, "origins", "max_likelihood_depth", "DOUBLE")
 
         # event_type enrichment columns (multi-agency + spectrocnn)
         _ensure_column(cursor, "events", "event_type_source", "TEXT")

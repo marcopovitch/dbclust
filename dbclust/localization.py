@@ -168,6 +168,36 @@ def safe_subprocess_run(args, *, env=None, text=True):
     return result
 
 
+def read_nll_max_likelihood(hyp_file: str) -> Optional[Tuple[float, float, float]]:
+    """Maximum-likelihood hypocenter reported by NonLinLoc in a .hyp file.
+
+    With LOCHYPOUT SAVE_NLLOC_EXPECTATION the saved hypocenter is the
+    expectation, and NonLinLoc writes the maximum likelihood it replaced on a
+    dedicated line:
+
+        MAXIMUM_LIKELIHOOD  MaxLikeLat <lat> Long <lon> Depth <km> OT <s>
+
+    Returns:
+        (latitude, longitude, depth in km), or None when the line is absent
+        (SAVE_NLLOC_ALL: the saved hypocenter already is the maximum likelihood).
+    """
+    try:
+        with open(hyp_file, encoding="utf-8", errors="replace") as hyp:
+            for line in hyp:
+                if not line.startswith("MAXIMUM_LIKELIHOOD"):
+                    continue
+                fields = line.split()
+                values = dict(zip(fields[1::2], fields[2::2]))
+                return (
+                    float(values["MaxLikeLat"]),
+                    float(values["Long"]),
+                    float(values["Depth"]),
+                )
+    except (OSError, KeyError, ValueError) as e:
+        logger.warning(f"Can't read maximum likelihood hypocenter from {hyp_file}: {e}")
+    return None
+
+
 class LocalizationError(Exception):
     """Raised when NonLinLoc localization fails."""
 
@@ -298,6 +328,7 @@ class NllLoc(object):
         keep_scat=False,
         scat_file=None,
         scat_decim: int = 10,  # scat2latlon decimation factor (1 = every scatter sample)
+        hypout: str = "SAVE_NLLOC_ALL",  # NLLoc LOCHYPOUT: which hypocenter to save as origin
         zones: Zones = None,  # zones (polygons) delimitation to keep picks
         force_zone_name: str = None,  # force zone to use
         min_score_threshold_pick_zone=0.5,  # minimum score to relabel pick in zone
@@ -362,6 +393,7 @@ class NllLoc(object):
         self.keep_scat = keep_scat
         self.scat_file = scat_file
         self.scat_decim = max(1, int(scat_decim))
+        self.hypout = hypout
         self.scat_files = []
         self.zones = zones
         self.force_zone_name = force_zone_name
@@ -1107,6 +1139,14 @@ class NllLoc(object):
             "LOC_METHOD": (
                 self.loc_method if force_loc_method is None else force_loc_method
             ),
+            # SAVE_NLLOC_EXPECTATION alone only retypes the origin; it does not
+            # enable the event-file write (iSaveNLLocEvent), so combine it with
+            # SAVE_NLLOC_ALL (which NLLoc parses as a space-separated list).
+            "HYPYPOUT": (
+                "SAVE_NLLOC_ALL SAVE_NLLOC_EXPECTATION"
+                if "EXPECTATION" in self.hypout.upper()
+                else self.hypout
+            ),
         }
 
         # Generate NLL configuration file
@@ -1333,6 +1373,21 @@ class NllLoc(object):
             o.evaluation_mode = self.quakeml_settings["evaluation_mode"]
             o.method_id = self.quakeml_settings["method_id"]
             o.earth_model_id = model_id
+        # Encode the full NonLinLoc localization identity into method_id:
+        # <configured method>+<NLL location method>+<origin type>
+        # (e.g. NonLinLoc+EDT_OT_WT_ML+EXPECTATION). "+" is the separator: it
+        # appears in none of the three components (methods already use "_"),
+        # so value.split("+") recovers the parts unambiguously, and it is a
+        # valid QuakeML method id. The only "/" left is the SMI prefix, so
+        # downstream consumers keep rsplit-ing on "/" (external origins stay
+        # "LOCSAT").
+        loc_method_used = (
+            self.loc_method if force_loc_method is None else force_loc_method
+        )
+        origin_type = (
+            "EXPECTATION" if "EXPECTATION" in self.hypout.upper() else "MAXIMUM_LIKELIHOOD"
+        )
+        o.method_id = f"{o.method_id}+{loc_method_used}+{origin_type}"
         # to keep track of different origins
         o.creation_info.version = pass_count + 1
 
@@ -1350,6 +1405,18 @@ class NllLoc(object):
                 Comment(
                     text='{"expectation": {"latitude": %s, "longitude": %s, "depth": %s}}'
                     % (expect_lat, expect_lon, expect_depth)
+                )
+            )
+
+        # store into comment the maximum-likelihood hypocenter when the origin
+        # is the expectation: quality metrics compare the two (dloch/dz), which
+        # would otherwise always be 0 in SAVE_NLLOC_EXPECTATION mode.
+        max_like = read_nll_max_likelihood(nll_output)
+        if max_like is not None:
+            o.comments.append(
+                Comment(
+                    text='{"maximum_likelihood": {"latitude": %s, "longitude": %s, "depth": %s}}'
+                    % max_like
                 )
             )
 

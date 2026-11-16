@@ -116,6 +116,7 @@ def process_file(
                 nll_verbose=cfg.nll.verbose,
                 keep_scat=cfg.nll.enable_scatter,
                 scat_decim=cfg.nll.scatter_decim,
+                hypout=cfg.nll.hypout,
                 zones=cfg.zones,
                 force_zone_name=args.zone_name,
                 min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,

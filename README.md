@@ -368,6 +368,54 @@ A large offset indicates an asymmetric or multimodal location PDF. The column
 is stored in the `origins` table and exposed in `event_coordinates` just after
 `scatter_volume`.
 
+#### ML vs expectation hypocenter
+
+With `LOCSEARCH OCT`, the saved NLLoc origin is the **maximum likelihood**
+hypocenter: the center of the best octree cell. When the octree's
+`min_node_size` is coarse relative to the event's actual resolution, nearby
+events can share identical coordinates (a visible "grid" in GIS). The
+**expectation** hypocenter (probability-weighted centroid of the scatter
+points, sub-cell precision, never quantized) is always available:
+
+- SQLite: `origins.expectation_latitude / expectation_longitude /
+  expectation_depth`
+- QuakeML: origin comment `{"expectation": {"latitude": ..., "longitude": ...,
+  "depth": ...}}`
+
+Use the expectation values when plotting locations. To make NLLoc save the
+expectation coordinates (with recomputed residuals/RMS) as the origin itself,
+set in the dbclust config:
+
+```yaml
+nll:
+  hypout: SAVE_NLLOC_EXPECTATION
+```
+
+(default: `SAVE_NLLOC_ALL`, i.e. the ML hypocenter; any other value is
+rejected when the config is loaded). The value is rendered into `LOCHYPOUT`
+of every NLL template via the `{{ HYPYPOUT }}` placeholder.
+
+In `SAVE_NLLOC_EXPECTATION` mode the maximum-likelihood hypocenter that the
+expectation replaced is kept, so that the ML/expectation offset
+(`nll_epicenters_diff_km`, `nll_hypocenters_diff_km`, and the `dloch`/`dz`
+terms of the quality factor) means the same thing in both modes:
+
+- SQLite: `origins.max_likelihood_latitude / max_likelihood_longitude /
+  max_likelihood_depth` (NULL in `SAVE_NLLOC_ALL` mode, where the origin
+  itself is the ML hypocenter)
+- QuakeML: origin comment `{"maximum_likelihood": {"latitude": ...,
+  "longitude": ..., "depth": ...}}`
+
+The origin's `method_id` also encodes the full localization identity as
+`<configured method_id>+<NLL location method>+<origin type>`, e.g.
+`NonLinLoc+EDT_OT_WT_ML+EXPECTATION` or `NonLinLoc+EDT_OT_WT_ML+MAXIMUM_LIKELIHOOD`
+(pass 0 preloc with `GAU_ANALYTIC` reads `NonLinLoc+GAU_ANALYTIC+...`). The
+`+` separator appears in none of the components, so `method_id.split("+")`
+recovers the three parts unambiguously. The only `/` left in the value is the
+SMI prefix, so the SQLite export (and the `event_coordinates` view's
+`location_method_id`) store the full `NonLinLoc+<method>+<type>` string while
+external origins keep their short name (`LOCSAT`).
+
 #### Export Options
 
 ```bash

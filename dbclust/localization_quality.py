@@ -217,14 +217,52 @@ def _extract_from_comments(
     return None
 
 
-def _extract_expectation(comments: list) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+def nll_ml_expectation_offset(origin) -> Optional[Tuple[float, float]]:
+    """Offset between NonLinLoc's maximum-likelihood and expectation hypocenters.
+
+    Returns (dloch_km, dz_km): the horizontal distance and the signed depth
+    difference (maximum likelihood minus expectation), or None when the
+    expectation hypocenter is not available in the origin comments.
+
+    The origin itself is one of the two hypocenters: the maximum likelihood
+    with LOCHYPOUT SAVE_NLLOC_ALL (historical), the expectation with
+    SAVE_NLLOC_EXPECTATION. In the latter case NonLinLoc reports the maximum
+    likelihood separately ({"maximum_likelihood": ...} comment); using it keeps
+    dloch/dz — hence the Michele quality factor — comparable between the two
+    modes instead of collapsing to 0.
+    """
+    expect_lat, expect_lon, expect_depth = _extract_expectation(origin.comments)
+    if expect_lat is None or expect_lon is None or expect_depth is None:
+        return None
+
+    ml_lat, ml_lon, ml_depth = _extract_expectation(
+        origin.comments, key="maximum_likelihood"
+    )
+    if ml_lat is None or ml_lon is None or ml_depth is None:
+        if origin.latitude is None or origin.longitude is None or origin.depth is None:
+            return None
+        ml_lat, ml_lon, ml_depth = (
+            origin.latitude,
+            origin.longitude,
+            origin.depth / 1000.0,
+        )
+
+    dloch = haversine_distance(ml_lat, ml_lon, expect_lat, expect_lon)
+    return dloch, ml_depth - expect_depth
+
+
+def _extract_expectation(
+    comments: list, key: str = "expectation"
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """
     Extract expectation hypocenter from origin comments.
 
     Searches for JSON format: {"expectation": {"latitude": x, "longitude": y, "depth": z}}
+    (or the same structure under another key, e.g. "maximum_likelihood").
 
     Args:
         comments: List of Comment objects from origin.comments.
+        key: JSON key holding the hypocenter (depth in km).
 
     Returns:
         Tuple of (latitude, longitude, depth) or (None, None, None) if not found.
@@ -238,8 +276,8 @@ def _extract_expectation(comments: list) -> Tuple[Optional[float], Optional[floa
 
         try:
             data = json.loads(comment.text)
-            if isinstance(data, dict) and "expectation" in data:
-                exp = data["expectation"]
+            if isinstance(data, dict) and key in data:
+                exp = data[key]
                 return (
                     float(exp.get("latitude")) if exp.get("latitude") is not None else None,
                     float(exp.get("longitude")) if exp.get("longitude") is not None else None,
@@ -335,17 +373,14 @@ def classify_event_michele_mod2(
         logger.debug("scatter_volume not found in origin comments")
         return None, None
 
-    # Extract expectation hypocenter from comments
-    expect_lat, expect_lon, expect_depth = _extract_expectation(origin.comments)
-    if expect_lat is None or expect_lon is None or expect_depth is None:
+    # dloch (horizontal distance) and dz (depth difference) between the
+    # maximum-likelihood and the expectation hypocenters, whichever of the two
+    # the origin holds (see nll_ml_expectation_offset).
+    offset = nll_ml_expectation_offset(origin)
+    if offset is None:
         logger.debug("expectation not found in origin comments")
         return None, None
-
-    # Compute dloch (horizontal distance between location and expectation)
-    dloch = haversine_distance(lat, lon, expect_lat, expect_lon)
-
-    # Compute dz (depth difference)
-    dz = depth_km - expect_depth
+    dloch, dz = offset
 
     # Call classify_Michele_mod2
     try:

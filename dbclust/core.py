@@ -497,6 +497,7 @@ def nllloc_kwargs_from_config(cfg: DBClustConfig) -> dict:
         quakeml_settings=asdict(cfg.quakeml),
         keep_scat=cfg.nll.enable_scatter,
         scat_decim=cfg.nll.scatter_decim,
+        hypout=cfg.nll.hypout,
         cleanup_tmp_on_error=cfg.file.automatic_cleanup_tmp,
         #
         zones=cfg.zones,
