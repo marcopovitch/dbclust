@@ -395,6 +395,7 @@ class NllLoc(object):
         self.scat_decim = max(1, int(scat_decim))
         self.hypout = hypout
         self.scat_files = []
+        self._origin_tmp_dirs = {}  # origin resource id -> NLLoc output dir
         self.zones = zones
         self.force_zone_name = force_zone_name
         self.min_score_threshold_pick_zone = min_score_threshold_pick_zone
@@ -1254,43 +1255,15 @@ class NllLoc(object):
         if cat is None:
             return _abort_localization(Catalog())
 
-        ####################
-        # handle scat file #
-        ####################
-        # Only produce the scatter file for the final pass:
-        # - single pass (double_pass=False): pass_count == 0 is the final pass
-        # - double pass: pass_count == 1 is the final pass (skip pass 0)
-        scat_path = None
-        is_final_pass = (not self.double_pass and pass_count == 0) or pass_count > 0
-        if self.keep_scat and is_final_pass:
-            # scat2latlon <decim_factor> <output_dir> <hyp_file_list>
-            cmde = f"{self.scat2latlon_bin} {self.scat_decim} {tmp_path} {tmp_path}/last"
-            logger.debug(cmde)
-            try:
-                safe_subprocess_run(shlex.split(cmde))
-            except Exception as e:
-                logger.warning(f"scat2latlon failed to run: {e}")
-
-            scat_path = os.path.join(tmp_path, "last.hyp.scat.xyz")
-            if os.path.exists(scat_path):
-                self.scat_file = scat_path
-                logger.debug("nll scat file is %s", self.scat_file)
-            else:
-                logger.warning(
-                    f"scat2latlon did not produce expected output: {scat_path}"
-                )
-                scat_path = None
-
         # there is always only one event in the catalog
         # fixme: use resource_id to forge *better* eventid and originid
         e = cat.events[0]
         o = e.preferred_origin()
 
-        # Associate scatter file with a readable name based on origin (time, lat, lon)
-        if scat_path is not None:
-            t = o.time
-            scat_name = f"{t.year:04d}{t.month:02d}{t.day:02d}{t.hour:02d}{t.minute:02d}{t.second:02d}{int(t.microsecond / 1000):03d}_{o.latitude:.4f}_{o.longitude:.4f}"
-            self.scat_files.append((scat_path, scat_name))
+        # Remember where this pass' NLLoc output lives. The scatter file is
+        # produced once, for the origin finally retained (see the end of this
+        # method), not for every intermediate pass.
+        self._origin_tmp_dirs[o.resource_id.id] = tmp_path
 
         # Count arrivals returned by NonLinLoc before any cleanup
         total_arrivals = len(o.arrivals)
@@ -1780,7 +1753,47 @@ class NllLoc(object):
             e.origins.append(preloc_origin)
 
         e = deduplicate_picks(e)
+
+        # Top-level call only: the preferred origin is now final.
+        if pass_count == 0:
+            if self.keep_scat:
+                final_origin = e.preferred_origin()
+                final_tmp_dir = self._origin_tmp_dirs.get(
+                    final_origin.resource_id.id if final_origin else None
+                )
+                if final_tmp_dir is not None:
+                    self._make_scatter_file(final_tmp_dir, final_origin)
+            self._origin_tmp_dirs.clear()
         return cat
+
+    def _make_scatter_file(self, tmp_path: str, origin: Origin) -> None:
+        """Run scat2latlon on the NLLoc output of the retained origin.
+
+        The scatter file is named after the origin (time, lat, lon) and
+        recorded in self.scat_files / self.scat_file.
+        """
+        # scat2latlon <decim_factor> <output_dir> <hyp_file_list>
+        cmde = f"{self.scat2latlon_bin} {self.scat_decim} {tmp_path} {tmp_path}/last"
+        logger.debug(cmde)
+        try:
+            safe_subprocess_run(shlex.split(cmde))
+        except Exception as e:
+            logger.warning(f"scat2latlon failed to run: {e}")
+
+        scat_path = os.path.join(tmp_path, "last.hyp.scat.xyz")
+        if not os.path.exists(scat_path):
+            logger.warning(f"scat2latlon did not produce expected output: {scat_path}")
+            return
+        self.scat_file = scat_path
+        logger.debug("nll scat file is %s", self.scat_file)
+
+        t = origin.time
+        scat_name = (
+            f"{t.year:04d}{t.month:02d}{t.day:02d}{t.hour:02d}{t.minute:02d}"
+            f"{t.second:02d}{int(t.microsecond / 1000):03d}"
+            f"_{origin.latitude:.4f}_{origin.longitude:.4f}"
+        )
+        self.scat_files.append((scat_path, scat_name))
 
     def _compute_ps_ratio(self, event, origin) -> tuple:
         """Compute the weighted PS ratio (stations with both P and S / total stations).
