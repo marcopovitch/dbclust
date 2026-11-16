@@ -1550,28 +1550,7 @@ class NllLoc(object):
                 orig2 = event2.preferred_origin()
 
                 # Synchronize current event phase's comments with relabel_dict info
-                # 1. add relabel phase according to relabel_dict
-                # 2. deactivate arrival if needed
-                if self.enable_cleanup_pick_zone and relabel_dict:
-                    for arrival in orig2.arrivals:
-                        pick = next(
-                            (
-                                p
-                                for p in event2.picks
-                                if p.resource_id == arrival.pick_id
-                            ),
-                            None,
-                        )
-                        if pick is None:
-                            continue
-                        key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
-                        if key in relabel_dict.keys():
-                            arrival.comments.append(relabel_dict[key])
-                            c = relabel_dict[key].text
-                            info = json.loads(c)
-                            if "removed" in info["relabel"]["action"]:
-                                # deactivate arrival
-                                arrival.time_weight = 0
+                self._apply_relabel_info(orig2, event2, relabel_dict)
 
                 # Re-apply gap_dist_max_km check on pass 2 result.
                 # Pass 1 location may be too noisy to reveal the real station gap;
@@ -1675,6 +1654,10 @@ class NllLoc(object):
                         if cat3:
                             event2 = cat3.events[0]
                             orig2 = event2.preferred_origin()
+                            # The pass-3 origin is a fresh NLL result: it carries
+                            # neither the relabel comments nor the deactivation of
+                            # the "removed" arrivals that pass 2 received.
+                            self._apply_relabel_info(orig2, event2, relabel_dict)
                             self._remap_arrivals_to_existing_picks(orig2, event2, e)
                     else:
                         # Too few consistent picks to relocate. The pass-2 solution
@@ -2316,6 +2299,33 @@ class NllLoc(object):
                     base_id,
                     key,
                 )
+
+
+    def _apply_relabel_info(self, origin: Origin, event: Event, relabel_dict: dict) -> None:
+        """Copy the relabel comments of relabel_dict onto the arrivals of origin.
+
+        1. add the relabel comment of each arrival listed in relabel_dict;
+        2. deactivate (time_weight = 0) the arrivals whose action is "removed".
+
+        Arrivals are matched through event.picks, so this must run while the
+        arrivals still reference event's own picks (before the remap onto the
+        picks of the first-pass event). Must be applied to every origin
+        produced by NLL after the cleanup (pass 2 and pass 3).
+        """
+        if not (self.enable_cleanup_pick_zone and relabel_dict):
+            return
+        for arrival in origin.arrivals:
+            pick = next(
+                (p for p in event.picks if p.resource_id == arrival.pick_id), None
+            )
+            if pick is None:
+                continue
+            key = f"{pick.waveform_id.get_seed_string()}-{arrival.phase}-{pick.time}"
+            if key in relabel_dict:
+                arrival.comments.append(copy.deepcopy(relabel_dict[key]))
+                info = json.loads(relabel_dict[key].text)
+                if "removed" in info["relabel"]["action"]:
+                    arrival.time_weight = 0
 
     @staticmethod
     def _remap_arrivals_to_existing_picks(
