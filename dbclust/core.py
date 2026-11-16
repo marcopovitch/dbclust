@@ -164,6 +164,47 @@ def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
     return keep
 
 
+PICK_COLUMNS = (
+    "station_id, channel, phase_type, phase_time, phase_score, "
+    "phase_evaluation, phase_method, event_id, agency"
+)
+
+
+def _materialize_job_picks(con, pick_type: Optional[str], lo, hi) -> None:
+    """Replace the PICKS view by an in-memory table holding only [lo, hi].
+
+    [lo, hi] must cover every time range the job queries: the backward
+    overlap before the partition start and the forward overlap after its last
+    window. Only a time filter is applied, so the per-window queries (score
+    thresholds, phase types, DISTINCT) return exactly what they returned on
+    the files. With parquet input the year/month partition columns are kept,
+    since the window queries filter on them.
+    """
+    started = time.time()
+    if pick_type == "parquet":
+        columns = PICK_COLUMNS + ", year, month"
+        partition_filter = (
+            f"(year > {lo.year} OR (year = {lo.year} AND month >= {lo.month})) "
+            f"AND (year < {hi.year} OR (year = {hi.year} AND month <= {hi.month})) AND "
+        )
+    else:
+        columns = PICK_COLUMNS
+        partition_filter = ""
+    con.execute(
+        f"""
+        CREATE TEMP TABLE PICKS_JOB AS
+        SELECT {columns} FROM PICKS
+        WHERE {partition_filter} phase_time BETWEEN '{lo}' AND '{hi}'
+        """
+    )
+    con.execute("DROP VIEW PICKS")
+    con.execute("ALTER TABLE PICKS_JOB RENAME TO PICKS")
+    n_rows = con.execute("SELECT COUNT(*) FROM PICKS").fetchone()[0]
+    logger.info(
+        f"Loaded {n_rows} picks for [{lo}, {hi}] in {time.time() - started:.2f} s"
+    )
+
+
 def get_cross_partition_picks(
     con, start, overlap_timedelta, global_start,
     P_proximity_threshold: float = 0.1,
@@ -194,7 +235,8 @@ def get_cross_partition_picks(
             OR
             (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {S_proba_threshold})
         )
-        ORDER BY station_id, phase_time, phase_type
+        ORDER BY station_id, phase_time, phase_type,
+                 channel, agency, phase_method, phase_score, event_id
     """
     df_all = con.sql(rqt).fetchdf()
     if df_all.empty:
@@ -255,7 +297,8 @@ def _reserve_s_band_sql(cfg: DBClustConfig, begin, end) -> str:
         FROM PICKS
         WHERE {time_where}
         AND {band}
-        ORDER BY station_id, phase_time, phase_type
+        ORDER BY station_id, phase_time, phase_type,
+                 channel, agency, phase_method, phase_score, event_id
     """
 
 
@@ -287,7 +330,8 @@ def get_cross_partition_reserve_picks(
         AND phase_type IN ('S', 'Sg', 'Sn')
         AND phase_score >= {s_proba_threshold_low}
         AND phase_score < {s_proba_threshold}
-        ORDER BY station_id, phase_time, phase_type
+        ORDER BY station_id, phase_time, phase_type,
+                 channel, agency, phase_method, phase_score, event_id
     """
     df_all = con.sql(rqt).fetchdf()
     if df_all.empty:
@@ -749,6 +793,17 @@ def dbclust(
         logger.info(f"[{job_index}] has {len(time_divisions)} time divisions.")
         logger.info(f"{time_divisions}")
 
+        # Read this job's picks from the input files once: every window query
+        # below (active picks, reserve band, backward overlap) then runs on a
+        # small in-memory table instead of scanning the files again.
+        if con is not None and time_divisions:
+            _materialize_job_picks(
+                con,
+                cfg.pick.type,
+                start - overlap_timedelta,
+                time_divisions[-1][1] + overlap_timedelta,
+            )
+
         # Instantiate a new tool (but empty) to get clusters
         previous_myclust = get_clusterize_from_config(cfg, phases=None)
 
@@ -834,7 +889,8 @@ def dbclust(
                             OR
                             (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {cfg.pick.S_proba_threshold})
                         )
-                        ORDER BY station_id, phase_time, phase_type
+                        ORDER BY station_id, phase_time, phase_type,
+                 channel, agency, phase_method, phase_score, event_id
                     """
                 else:
                     # csv
@@ -850,7 +906,8 @@ def dbclust(
                             OR
                             (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {cfg.pick.S_proba_threshold})
                         )
-                        ORDER BY station_id, phase_time, phase_type
+                        ORDER BY station_id, phase_time, phase_type,
+                 channel, agency, phase_method, phase_score, event_id
                     """
 
                 # Time measure of the query

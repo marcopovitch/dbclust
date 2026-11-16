@@ -223,3 +223,89 @@ def test_finalize_sqlite_rerun_of_merged_run(tmp_path):
     assert finalize_sqlite(cfg, completed_job_indices={0}) is False  # nothing at all
     final_db.write_bytes(b"")
     assert finalize_sqlite(cfg, completed_job_indices={0}) is True
+
+
+def test_job_picks_materialized_once(tmp_path):
+    """P3: window queries give the same rows on the files and on the job table."""
+    import duckdb
+
+    from dbclust.core import _materialize_job_picks
+    from dbclust.core import get_cross_partition_picks
+
+    base = pd.Timestamp("2014-07-09T09:50:00")
+    rows = []
+    for i in range(400):
+        t = base + pd.Timedelta(seconds=6 * i)
+        rows.append((f"FR.S{i % 7}", "00.HH", "P" if i % 2 else "S", t, 0.4 + (i % 6) / 10,
+                     "automatic", "PHASENET", None, "X", t.month, t.year))
+    df = pd.DataFrame(rows, columns=["station_id", "channel", "phase_type", "phase_time",
+                                     "phase_score", "phase_evaluation", "phase_method",
+                                     "event_id", "agency", "month", "year"])
+    path = str(tmp_path / "picks.parquet")
+    df.to_parquet(path)
+
+    start = pd.Timestamp("2014-07-09T10:00:00")
+    overlap = pd.Timedelta(250, "s")
+
+    def queries(con):
+        backward = get_cross_partition_picks(con, start, overlap, base, 0.1, 0.2, 0.6, 0.5)
+        window = con.sql(
+            f"SELECT DISTINCT station_id, phase_type, phase_time, phase_score FROM PICKS "
+            f"WHERE year = 2014 AND month = 7 AND phase_time BETWEEN '{start}' AND "
+            f"'{start + pd.Timedelta(minutes=10) + overlap}' ORDER BY ALL"
+        ).fetchdf()
+        return backward.reset_index(drop=True), window
+
+    def connect():
+        con = duckdb.connect(":memory:")
+        con.execute(f"CREATE VIEW PICKS AS SELECT * FROM read_parquet('{path}')")
+        return con
+
+    con = connect()
+    expected = queries(con)
+    con.close()
+
+    con = connect()
+    _materialize_job_picks(con, "parquet", start - overlap,
+                           start + pd.Timedelta(minutes=10) + overlap)
+    n_all = len(df)
+    n_job = con.execute("SELECT COUNT(*) FROM PICKS").fetchone()[0]
+    got = queries(con)
+    con.close()
+
+    assert 0 < n_job < n_all
+    assert len(expected[0]) > 0 and len(expected[1]) > 0
+    for a, b in zip(expected, got):
+        pd.testing.assert_frame_equal(a, b)
+
+
+def test_station_info_cache_follows_epochs():
+    """P5: the cached lookup still returns the epoch active at the pick time."""
+    from obspy.core.inventory import Channel, Inventory, Network, Station
+
+    from dbclust.phase import _get_station_info_from_inventory_uncached
+    from dbclust.phase import get_station_info_from_inventory
+
+    def channel(start, end):
+        return Channel(code="HHZ", location_code="00", latitude=0, longitude=0,
+                       elevation=0, depth=0, sample_rate=100,
+                       start_date=UTCDateTime(start), end_date=UTCDateTime(end) if end else None)
+
+    old = Station(code="STA", latitude=48.0, longitude=7.0, elevation=100.0,
+                  start_date=UTCDateTime("2000-01-01"), end_date=UTCDateTime("2012-01-01"),
+                  channels=[channel("2000-01-01", "2012-01-01")])
+    new = Station(code="STA", latitude=48.5, longitude=7.5, elevation=200.0,
+                  start_date=UTCDateTime("2012-01-02"), channels=[channel("2012-01-02", None)])
+    inv = Inventory(networks=[Network(code="FR", stations=[old, new])], source="test")
+
+    for t in ("2005-06-01T00:00:00", "2012-01-01T00:00:00", "2012-01-01T00:00:01",
+              "2014-07-09T10:00:00", "2005-06-01T00:00:00"):
+        expected = _get_station_info_from_inventory_uncached("FR", "STA", t, inv, "00", "HH")
+        got = get_station_info_from_inventory("FR", "STA", t, t, inv, loc="00", chan="HH")
+        assert repr(got) == repr(expected), t
+
+    lat_2005 = get_station_info_from_inventory(
+        "FR", "STA", "2005-06-01T00:00:00", "", inv, loc="00", chan="HH")[0]
+    lat_2014 = get_station_info_from_inventory(
+        "FR", "STA", "2014-07-09T10:00:00", "", inv, loc="00", chan="HH")[0]
+    assert float(lat_2005) == 48.0 and float(lat_2014) == 48.5
