@@ -12,7 +12,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -286,17 +286,28 @@ def detect_suspicious_duplicates(
     # Step 1: find candidate pairs from origins — bbox pre-filter then exact distance
     bbox_deg = max_dist_km / 60.0
     max_origin_dt_s = 5.0
-    ev_list = sorted(origins.keys())
+    # Sort by origin time and compare each event only with those within
+    # max_origin_dt_s after it (sliding window): linear instead of comparing
+    # every pair of the catalog.
+    def _epoch(t):
+        dt = datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+
+    timed = sorted((_epoch(row[0]), ev) for ev, row in origins.items())
     origin_pairs = []
-    for i, ev1 in enumerate(ev_list):
-        t1, lat1, lon1, ph1 = origins[ev1]
-        for ev2 in ev_list[i+1:]:
+    for i, (ts1, ev_a) in enumerate(timed):
+        for j in range(i + 1, len(timed)):
+            ts2, ev_b = timed[j]
+            dt_s = ts2 - ts1
+            if dt_s > max_origin_dt_s:
+                break
+            # keep the historical (ev1 < ev2) ordering of each pair
+            ev1, ev2 = (ev_a, ev_b) if ev_a < ev_b else (ev_b, ev_a)
+            t1, lat1, lon1, ph1 = origins[ev1]
             t2, lat2, lon2, ph2 = origins[ev2]
             if abs(lat1 - lat2) > bbox_deg or abs(lon1 - lon2) > bbox_deg:
-                continue
-            dt_s = abs((datetime.fromisoformat(t1.replace("Z", "+00:00")) -
-                        datetime.fromisoformat(t2.replace("Z", "+00:00"))).total_seconds())
-            if dt_s > max_origin_dt_s:
                 continue
             R = 6371.0
             dlat = math.radians(lat2 - lat1)

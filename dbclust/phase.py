@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import bisect
 import functools
 import io
 import logging
@@ -554,6 +555,55 @@ def get_station_info_from_inventory(
             - Location code (str)
             - List of channel codes (List[str])
     """
+    # This lookup runs once per pick (inventory.select + DataFrame building,
+    # about 1 ms): cache it on the inventory object. For a given
+    # (network, station, loc, chan), inventory.select(starttime=t) only
+    # depends on t through "end_date < t" tests on the network / station /
+    # channel epochs, so the result is constant between two consecutive end
+    # dates: the cache key is the rank of t among them.
+    cache = getattr(inventory, "_dbclust_station_info_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            inventory._dbclust_station_info_cache = cache
+        except AttributeError:
+            pass
+    entry = cache.get((network, station, loc, chan))
+    if entry is None:
+        end_dates = set()
+        for net in inventory.networks:
+            if net.code != network:
+                continue
+            if net.end_date is not None:
+                end_dates.add(net.end_date.timestamp)
+            for sta in net.stations:
+                if sta.code != station:
+                    continue
+                if sta.end_date is not None:
+                    end_dates.add(sta.end_date.timestamp)
+                for cha in sta.channels:
+                    if cha.end_date is not None:
+                        end_dates.add(cha.end_date.timestamp)
+        entry = (sorted(end_dates), {})
+        cache[(network, station, loc, chan)] = entry
+    boundaries, results = entry
+    epoch_rank = bisect.bisect_left(boundaries, UTCDateTime(time_search_begin).timestamp)
+    if epoch_rank not in results:
+        results[epoch_rank] = _get_station_info_from_inventory_uncached(
+            network, station, time_search_begin, inventory, loc, chan
+        )
+    return results[epoch_rank]
+
+
+def _get_station_info_from_inventory_uncached(
+    network: str,
+    station: str,
+    time_search_begin: str,
+    inventory: Inventory,
+    loc: Optional[str] = None,
+    chan: Optional[str] = None,
+) -> tuple:
+    """Uncached body of get_station_info_from_inventory()."""
     logger.debug(f"Fetching station info from inventory for {network}.{station}...")
 
     # Prepare regex pattern for channel and location for inventory.select()
@@ -722,7 +772,6 @@ def import_phases(
             df["station_id"] = df["station_id"].astype(str) + "." + channel
 
     # Filter by phase score thresholds
-    df_before = df.copy()
     # Same phase families as the SQL pick queries in core.py
     df = df.loc[
         ~(df["phase_type"].isin(P_PHASE_TYPES) & (df["phase_score"] < P_proba_threshold))
@@ -787,7 +836,7 @@ def import_phases(
         phases.append(myphase)
 
         # Optionally show phase details
-        if logger.level == logging.DEBUG:
+        if logger.isEnabledFor(logging.DEBUG):
             myphase.show_all()
 
     # Log cache information if applicable

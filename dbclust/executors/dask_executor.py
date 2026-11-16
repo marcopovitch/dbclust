@@ -42,7 +42,10 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int):
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
-    file_handler.setLevel(logging.INFO)
+    # Honour the level requested on the command line (-l) for dbclust's own
+    # loggers; the root logger stays at INFO to keep third-party debug out.
+    log_level = getattr(cfg, "log_level", logging.INFO)
+    file_handler.setLevel(log_level)
     root_logger.addHandler(file_handler)
     root_logger.setLevel(logging.INFO)
 
@@ -51,7 +54,7 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int):
     original_propagate = dbclust_logger.propagate
     for handler in original_handlers:
         dbclust_logger.removeHandler(handler)
-    dbclust_logger.setLevel(logging.INFO)
+    dbclust_logger.setLevel(log_level)
     dbclust_logger.propagate = True
 
     io_redirect_stack = ExitStack()
@@ -136,10 +139,18 @@ class DaskExecutor(ExecutorBase):
         ]:
             _logging.getLogger(name).setLevel(_logging.CRITICAL)
 
-        # Memory protection
-        Worker.memory_target_fraction = 0.70
-        Worker.memory_spill_fraction = 0.80
-        Worker.memory_pause_fraction = 0.95
+        # Memory protection. Set through the Dask config, which is forwarded
+        # to the worker processes: attributes set on the Worker class here
+        # only exist in this (client) process and never reach the workers.
+        import dask
+
+        dask.config.set(
+            {
+                "distributed.worker.memory.target": 0.70,
+                "distributed.worker.memory.spill": 0.80,
+                "distributed.worker.memory.pause": 0.95,
+            }
+        )
 
         # Start in batches to avoid spawning all nannies simultaneously (EMFILE).
         batch_size = min(16, max_workers)

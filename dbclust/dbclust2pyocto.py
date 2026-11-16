@@ -137,7 +137,11 @@ def adjust_associator_tolerance(
         Clusterize or None: Returns the processed cluster if successful,
                             otherwise returns None.
     """
-    associator = cfg.pyocto.current_model.associator
+    # Work on a private copy: cfg (hence its associator) is shared by every
+    # task of a thread-based executor (parsl_thread), and two tasks changing
+    # pick_match_tolerance on the same object would corrupt each other's
+    # search — and could leave a decayed tolerance behind for the whole run.
+    associator = copy.copy(cfg.pyocto.current_model.associator)
     original_tolerance = associator.pick_match_tolerance
     candidates = _tolerance_candidates(original_tolerance, tolerance_steps, min_tolerance)
     best_result = None
@@ -277,8 +281,8 @@ def adjust_associator_tolerance(
         logger.error("No partial result available. Skipping pyocto processing.")
         return None
     finally:
-        # Never leak a decayed tolerance into subsequent time windows: this
-        # associator object is shared for the whole run (cfg.pyocto.current_model).
+        # Kept for clarity; the associator is a private copy (see above), so
+        # nothing can leak into subsequent time windows or other tasks.
         associator.pick_match_tolerance = original_tolerance
 
 

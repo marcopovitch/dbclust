@@ -145,16 +145,64 @@ def unload_picks_list(df1: pd.DataFrame, picks: List) -> pd.DataFrame:
     df2["phase_time"] = pd.to_datetime(
         df2["phase_time"].map(lambda x: str(x)), utc=True
     )
-    df2["unload"] = True
+    # Match on the phase family (P/S), like Phase.identity(): the event pick
+    # carries the final phase_hint, which a relabel (e.g. Pg -> Pn) may have
+    # changed since the pick was read from the input files.
+    df2["phase_family"] = df2["phase_type"].astype(str).str[:1].str.upper()
     # remove duplicate pick as they came from same event but from multiple origins
-    df2.drop_duplicates(inplace=True)
+    df2 = df2[["station_id", "phase_family", "phase_time"]].drop_duplicates()
+    df2["unload"] = True
 
+    left = df1.assign(
+        phase_family=df1["phase_type"].astype(str).str[:1].str.upper()
+    )
     results = pd.merge(
-        df1, df2, how="left", on=["station_id", "phase_type", "phase_time"]
+        left, df2, how="left", on=["station_id", "phase_family", "phase_time"]
     )
     keep = results[results["unload"].isna()]
-    keep = keep.drop(columns=["unload"])
+    keep = keep.drop(columns=["unload", "phase_family"])
     return keep
+
+
+PICK_COLUMNS = (
+    "station_id, channel, phase_type, phase_time, phase_score, "
+    "phase_evaluation, phase_method, event_id, agency"
+)
+
+
+def _materialize_job_picks(con, pick_type: Optional[str], lo, hi) -> None:
+    """Replace the PICKS view by an in-memory table holding only [lo, hi].
+
+    [lo, hi] must cover every time range the job queries: the backward
+    overlap before the partition start and the forward overlap after its last
+    window. Only a time filter is applied, so the per-window queries (score
+    thresholds, phase types, DISTINCT) return exactly what they returned on
+    the files. With parquet input the year/month partition columns are kept,
+    since the window queries filter on them.
+    """
+    started = time.time()
+    if pick_type == "parquet":
+        columns = PICK_COLUMNS + ", year, month"
+        partition_filter = (
+            f"(year > {lo.year} OR (year = {lo.year} AND month >= {lo.month})) "
+            f"AND (year < {hi.year} OR (year = {hi.year} AND month <= {hi.month})) AND "
+        )
+    else:
+        columns = PICK_COLUMNS
+        partition_filter = ""
+    con.execute(
+        f"""
+        CREATE TEMP TABLE PICKS_JOB AS
+        SELECT {columns} FROM PICKS
+        WHERE {partition_filter} phase_time BETWEEN '{lo}' AND '{hi}'
+        """
+    )
+    con.execute("DROP VIEW PICKS")
+    con.execute("ALTER TABLE PICKS_JOB RENAME TO PICKS")
+    n_rows = con.execute("SELECT COUNT(*) FROM PICKS").fetchone()[0]
+    logger.info(
+        f"Loaded {n_rows} picks for [{lo}, {hi}] in {time.time() - started:.2f} s"
+    )
 
 
 def get_cross_partition_picks(
@@ -187,7 +235,8 @@ def get_cross_partition_picks(
             OR
             (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {S_proba_threshold})
         )
-        ORDER BY station_id, phase_time, phase_type
+        ORDER BY station_id, phase_time, phase_type,
+                 channel, agency, phase_method, phase_score, event_id
     """
     df_all = con.sql(rqt).fetchdf()
     if df_all.empty:
@@ -248,7 +297,8 @@ def _reserve_s_band_sql(cfg: DBClustConfig, begin, end) -> str:
         FROM PICKS
         WHERE {time_where}
         AND {band}
-        ORDER BY station_id, phase_time, phase_type
+        ORDER BY station_id, phase_time, phase_type,
+                 channel, agency, phase_method, phase_score, event_id
     """
 
 
@@ -280,7 +330,8 @@ def get_cross_partition_reserve_picks(
         AND phase_type IN ('S', 'Sg', 'Sn')
         AND phase_score >= {s_proba_threshold_low}
         AND phase_score < {s_proba_threshold}
-        ORDER BY station_id, phase_time, phase_type
+        ORDER BY station_id, phase_time, phase_type,
+                 channel, agency, phase_method, phase_score, event_id
     """
     df_all = con.sql(rqt).fetchdf()
     if df_all.empty:
@@ -328,6 +379,10 @@ def _prepare_reserve_df(
                 ~df_reserve["station_id"].str.contains(b, regex=True)
             ]
 
+    # Rename before dedup/unload, like the active picks (see dbclust()).
+    if cfg.station.rename is not None and not df_reserve.empty:
+        df_reserve = rename_waveform_id(df_reserve.copy(), cfg.station.rename)
+
     df_reserve = deduplicate_picks_by_time(
         df_reserve,
         cfg.pick.P_proximity_threshold,
@@ -345,7 +400,7 @@ def _prepare_reserve_df(
         blacklist=None,  # already applied above
         frequency_threshold=cfg.station.frequency_threshold,
         window_duration_minutes=(end - begin).total_seconds() / 60,
-        rename=cfg.station.rename,
+        rename=None,  # already applied above, before the dedup
     )
 
     if df_reserve.empty:
@@ -739,6 +794,17 @@ def dbclust(
         logger.info(f"[{job_index}] has {len(time_divisions)} time divisions.")
         logger.info(f"{time_divisions}")
 
+        # Read this job's picks from the input files once: every window query
+        # below (active picks, reserve band, backward overlap) then runs on a
+        # small in-memory table instead of scanning the files again.
+        if con is not None and time_divisions:
+            _materialize_job_picks(
+                con,
+                cfg.pick.type,
+                start - overlap_timedelta,
+                time_divisions[-1][1] + overlap_timedelta,
+            )
+
         # Instantiate a new tool (but empty) to get clusters
         previous_myclust = get_clusterize_from_config(cfg, phases=None)
 
@@ -824,7 +890,8 @@ def dbclust(
                             OR
                             (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {cfg.pick.S_proba_threshold})
                         )
-                        ORDER BY station_id, phase_time, phase_type
+                        ORDER BY station_id, phase_time, phase_type,
+                 channel, agency, phase_method, phase_score, event_id
                     """
                 else:
                     # csv
@@ -840,7 +907,8 @@ def dbclust(
                             OR
                             (phase_type IN ('S', 'Sg', 'Sn') AND phase_score >= {cfg.pick.S_proba_threshold})
                         )
-                        ORDER BY station_id, phase_time, phase_type
+                        ORDER BY station_id, phase_time, phase_type,
+                 channel, agency, phase_method, phase_score, event_id
                     """
 
                 # Time measure of the query
@@ -906,17 +974,34 @@ def dbclust(
                         ~df_subset["station_id"].str.contains(b, regex=True)
                     ]
 
+            # Rename stations BEFORE the proximity dedup and the unload of
+            # already-associated picks: both must see the final station codes.
+            # Otherwise components merged by a rename rule (e.g. ECHE/ECHN/ECHZ
+            # -> ECH) are never deduplicated, and picks of an accepted event
+            # (which carry the renamed code) are never unloaded.
+            if cfg.station.rename is not None and not df_subset.empty:
+                df_subset = rename_waveform_id(df_subset.copy(), cfg.station.rename)
+
             # remove picks from backward-overlap window that are not part of df_subset's
             # station filtering (blacklist/frequency/rename), so both windows are
             # subject to the same station configuration.
             if df_backward_overlap is not None and not df_backward_overlap.empty:
                 df_backward_overlap = apply_station_filters(
-                    df_backward_overlap,
+                    df_backward_overlap.copy(),
                     cfg.station.blacklist,
                     cfg.station.frequency_threshold,
-                    (end - begin).total_seconds() / 60,
+                    # the backward frame spans the overlap, not the window
+                    overlap_timedelta.total_seconds() / 60,
                     cfg.station.rename,
                 )
+                # get_cross_partition_picks() deduplicated on the original
+                # station codes: do it again on the renamed ones.
+                if cfg.station.rename is not None and not df_backward_overlap.empty:
+                    df_backward_overlap = deduplicate_picks_by_time(
+                        df_backward_overlap,
+                        cfg.pick.P_proximity_threshold,
+                        cfg.pick.S_proximity_threshold,
+                    )
 
             # starting pick preprocessing to get rid of too close picks
             logger.info(
@@ -999,7 +1084,7 @@ def dbclust(
                 picks_to_remove = []
             logger.info(f"After unload_picks_list() len(df_subset) = {len(df_subset)}")
 
-            # remove picks based on station frequency threshold, then rename stations
+            # remove picks based on station frequency threshold
             noisy_station_ids = noisy_station_ids_by_frequency(
                 df_subset,
                 cfg.station.frequency_threshold,
@@ -1010,7 +1095,7 @@ def dbclust(
                 blacklist=None,  # already applied above, before unload_picks_list
                 frequency_threshold=cfg.station.frequency_threshold,
                 window_duration_minutes=(end - begin).total_seconds() / 60,
-                rename=cfg.station.rename,
+                rename=None,  # already applied above, before the dedup
             )
 
             # Reserve pool: same filters as the active picks (blacklist,
@@ -1060,7 +1145,7 @@ def dbclust(
                     del df_reserve
                     gc.collect()
 
-            if logger.level == logging.DEBUG:
+            if logger.isEnabledFor(logging.DEBUG):
                 for p in forward_phases:
                     p.show_all()
 
@@ -1068,7 +1153,7 @@ def dbclust(
             del df_subset
             gc.collect()
 
-            if logger.level == logging.DEBUG:
+            if logger.isEnabledFor(logging.DEBUG):
                 logger.info("previous_myclust:")
                 previous_myclust.show_clusters()
 
@@ -1095,7 +1180,7 @@ def dbclust(
             del forward_phases
             df_backward_overlap = None
 
-            if logger.level == logging.DEBUG:
+            if logger.isEnabledFor(logging.DEBUG):
                 logger.info("myclust:")
                 myclust.show_clusters()
 
@@ -1229,7 +1314,8 @@ def dbclust(
                         tolerance_steps={1: 1, 0.5: 0.1, 0: 0.05},
                         min_tolerance=0.1,
                         include_noise_in_aggregation=cfg.cluster.include_noise_in_aggregation,
-                        log_level=logger.level,
+                        # logger.level is NOTSET (0) on this child logger
+                        log_level=logger.getEffectiveLevel(),
                     )
                 except pyproj.exceptions.ProjError as e:
                     # Data error (bad/out-of-range station coordinates for this window's
@@ -1359,6 +1445,9 @@ def dbclust(
                                 logger.info(f"Scatter file copied to {scat_dest}")
                             except (IOError, OSError) as e:
                                 logger.warning(f"Failed to copy scatter file for {event_id_short}: {e}")
+                    # These scatter files live in this window's tmp dir, removed
+                    # on exit: do not walk them again at every later window.
+                    locator.scat_files = []
 
             if len(clustcat) > 0:
                 for event in sorted(
@@ -1616,7 +1705,11 @@ def save_catalog(
             conn.commit()
             logger.info(f"Temp DB written: {temp_db_path}")
         except Exception as e:
+            # Do not swallow: the job would otherwise report success, be
+            # recorded in the checkpoint and never be re-run, while its events
+            # are missing from the temp DB (hence from the final database).
             logger.error(f"Error writing catalog to temp SQLite: {e}")
+            raise
         finally:
             if conn is not None:
                 try:

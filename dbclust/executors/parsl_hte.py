@@ -28,7 +28,8 @@ def _run_dbclust_task(cfg_file: str, log_level: int, job_index: int) -> Dict:
 
     Accepts the YAML config path instead of a DBClustConfig object to avoid
     serializing large objects (StationXML inventories, DataFrames) over ZMQ
-    for every task. DBClustConfig is reconstructed once per worker process.
+    for every task. DBClustConfig is reconstructed once per worker process
+    (see dbclust.config.load_config_cached).
 
     Args:
         cfg_file: Path to the YAML config file.
@@ -44,10 +45,10 @@ def _run_dbclust_task(cfg_file: str, log_level: int, job_index: int) -> Dict:
     import socket
     import time
 
-    from dbclust.config import DBClustConfig
+    from dbclust.config import load_config_cached
     from dbclust.core import dbclust
 
-    cfg = DBClustConfig(cfg_file)
+    cfg = load_config_cached(cfg_file)
     cfg.log_level = log_level
 
     log_dir = cfg.parallel.worker_log_dir if cfg.parallel.worker_log_dir else "runinfo"
@@ -167,23 +168,16 @@ class ParslHTEExecutor(ExecutorBase):
         import signal
         import psutil
 
-        # Patch Parsl's atexit handler to prevent "DFK still running" warning on exit
-        # We handle cleanup ourselves in cleanup()
-        try:
-            import parsl.dataflow.dflow as dflow_module
-            def _silent_atexit(*args, **kwargs):
-                pass
-            dflow_module.atexit.register = _silent_atexit
-            logger.debug("Patched Parsl atexit handler")
-        except Exception:
-            pass
-
         # Kill any orphaned process_worker_pool processes from a previous crashed run.
         # These hold ZMQ ports open and cause SIGSEGV (exit code -11) on the next launch.
+        # Only those started with this run's parsl_run_dir (their --logdir) are
+        # targeted, so a concurrent dbclust run using another parsl_run_dir on
+        # the same machine is left alone.
+        own_run_dir = os.path.abspath(self.cfg.parallel.parsl_run_dir or "runinfo")
         for proc in psutil.process_iter(["pid", "cmdline"]):
             try:
                 cmdline = " ".join(proc.info["cmdline"] or [])
-                if "process_worker_pool" in cmdline:
+                if "process_worker_pool" in cmdline and own_run_dir in cmdline:
                     logger.warning(f"Killing orphaned Parsl worker (pid {proc.pid})")
                     proc.send_signal(signal.SIGTERM)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -269,7 +263,8 @@ class ParslHTEExecutor(ExecutorBase):
         # run_dir/worker_logdir_root hold Parsl's own state + ZMQ IPC Unix-domain
         # sockets (~107-byte path length limit) — use parsl_run_dir, NOT the
         # (possibly long, per-run) application log dir in worker_log_dir.
-        run_dir = self.cfg.parallel.parsl_run_dir or "runinfo"
+        # Absolute, so that orphaned workers can be matched on it (see above).
+        run_dir = own_run_dir
         executor = HighThroughputExecutor(
             label="dbclust_hte",
             max_workers_per_node=max_workers,
@@ -291,7 +286,14 @@ class ParslHTEExecutor(ExecutorBase):
             strategy="none",  # disable auto scale-in which causes ZMQError mid-run
         )
 
-        parsl.load(config)
+        dfk = parsl.load(config)
+        # We handle cleanup ourselves in cleanup(): drop Parsl's own atexit hook
+        # to prevent the "DFK still running" warning on exit. (Replacing
+        # atexit.register, as done before, disabled it for the whole process.)
+        try:
+            atexit.unregister(dfk.atexit_cleanup)
+        except Exception:
+            pass
         logger.info(
             "Parsl HighThroughputExecutor initialized with "
             f"{max_workers} workers ({worker_source})"
@@ -520,9 +522,13 @@ class ParslHTEExecutor(ExecutorBase):
                     logger.info(f"All {total_tasks} tasks submitted.")
                     result_iter = self.wait_for_results(futures)
                 else:
-                    # Local HTE: sliding window — keep at most n_workers futures in flight
-                    # to avoid flooding the ZMQ queue with thousands of pending tasks.
-                    n_inflight = self.cfg.parallel.n_workers or 1
+                    # Local HTE: sliding window — keep at most one future in flight
+                    # per worker process (n_workers x oversubscription_factor, as
+                    # sized in initialize() and as the other executors do) to avoid
+                    # flooding the ZMQ queue with thousands of pending tasks.
+                    n_inflight = (self.cfg.parallel.n_workers or 1) * (
+                        self.cfg.parallel.oversubscription_factor or 1
+                    )
                     logger.info(
                         f"Submitting tasks with sliding window (max_inflight={n_inflight})..."
                     )
@@ -636,15 +642,17 @@ class ParslHTEExecutor(ExecutorBase):
         # On interrupt, aggressively kill Parsl child processes first
         # to prevent ZMQ/interchange from printing stack traces
         try:
-            current_pid = os.getpid()
+            # Only this run's own Parsl processes (descendants of this process):
+            # another dbclust run on the same machine must not be killed.
             killed = 0
-            for proc in psutil.process_iter(["pid", "ppid", "name", "cmdline"]):
+            for proc in psutil.Process(os.getpid()).children(recursive=True):
                 try:
-                    cmdline = " ".join(proc.info["cmdline"] or [])
-                    is_parsl_proc = ("interchange" in cmdline or "process_worker_pool" in cmdline)
-                    is_child = proc.info["ppid"] == current_pid and proc.pid != current_pid
-                    # Kill both direct children and any interchange process
-                    if is_parsl_proc or (is_child and "parsl" in cmdline.lower()):
+                    cmdline = " ".join(proc.cmdline() or [])
+                    if (
+                        "interchange" in cmdline
+                        or "process_worker_pool" in cmdline
+                        or "parsl" in cmdline.lower()
+                    ):
                         proc.send_signal(signal.SIGTERM)
                         killed += 1
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
