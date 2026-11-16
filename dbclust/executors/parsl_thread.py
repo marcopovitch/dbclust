@@ -61,7 +61,8 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int) -> Dict:
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
-    file_handler.setLevel(logging.INFO)
+    # Honour the level requested on the command line (-l)
+    file_handler.setLevel(getattr(cfg, "log_level", logging.INFO))
     file_handler.addFilter(ThreadFilter())
 
     # Create a filter to block current thread logs from existing handlers

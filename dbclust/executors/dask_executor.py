@@ -42,7 +42,10 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int):
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
-    file_handler.setLevel(logging.INFO)
+    # Honour the level requested on the command line (-l) for dbclust's own
+    # loggers; the root logger stays at INFO to keep third-party debug out.
+    log_level = getattr(cfg, "log_level", logging.INFO)
+    file_handler.setLevel(log_level)
     root_logger.addHandler(file_handler)
     root_logger.setLevel(logging.INFO)
 
@@ -51,7 +54,7 @@ def _run_dbclust_task(cfg: DBClustConfig, job_index: int):
     original_propagate = dbclust_logger.propagate
     for handler in original_handlers:
         dbclust_logger.removeHandler(handler)
-    dbclust_logger.setLevel(logging.INFO)
+    dbclust_logger.setLevel(log_level)
     dbclust_logger.propagate = True
 
     io_redirect_stack = ExitStack()

@@ -1602,10 +1602,20 @@ class NllLoc(object):
                 if outliers_pass2:
                     outlier_pick_ids = {a.pick_id for a in outliers_pass2}
                     picks3 = [p for p in event2.picks if p.resource_id not in outlier_pick_ids]
+                    # Outliers NLL actually used in pass 2 (non-null weight).
+                    # When there is none, pass 3 relocates with the same
+                    # effective data: logged to measure how often that happens.
+                    n_used_outliers = sum(
+                        1
+                        for a in outliers_pass2
+                        if a.time_weight is not None
+                        and not isclose(a.time_weight, 0, abs_tol=time_weight_tolerance)
+                    )
                     logger.info(
                         f"Pass 3 (MAD post-filter): {len(outliers_pass2)} outlier(s) removed "
                         f"({len(mad_outliers_pass2)} MAD, {len(polygon_outliers_pass2)} outside "
-                        f"zone polygon after pass 2), "
+                        f"zone polygon after pass 2; {n_used_outliers} with a non-null "
+                        f"pass-2 weight), "
                         f"{len(picks3)} picks remaining — relaunching NLL."
                     )
                     if len(picks3) >= self.nll_min_phase:

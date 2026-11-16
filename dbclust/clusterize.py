@@ -36,9 +36,10 @@ logger = logging.getLogger("dbclust.clusterize")
 TT_FAR = 1e6
 
 
-@functools.lru_cache(maxsize=None)
 def compute_tt(p1: Phase, p2: Phase, vmean) -> float:
-    # lru_cache doesn't work with multiprocessing/dask/etc.
+    # Not cached: an unbounded lru_cache keyed on Phase objects kept every
+    # Phase ever compared alive for the whole life of the worker process, and
+    # a given pair of picks is hardly ever compared twice.
     distance, az, baz = gps2dist_azimuth(
         p1.coord["latitude"],
         p1.coord["longitude"],

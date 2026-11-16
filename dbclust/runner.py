@@ -162,6 +162,14 @@ def finalize_sqlite(cfg: DBClustConfig, completed_job_indices=None) -> bool:
     all_temp_db_paths = sorted(glob.glob(os.path.join(temp_dir, "tmp_worker_*.db")))
 
     if not all_temp_db_paths:
+        final_db = cfg.catalog.sqlite_db_fullpath
+        if final_db and os.path.exists(final_db):
+            # Re-run of a run already merged (temp DBs removed after the
+            # merge): nothing left to do, and nothing went wrong.
+            logger.info(
+                f"No temp DBs to merge and {final_db} already exists: nothing to finalize."
+            )
+            return True
         logger.warning("No temp DBs found to merge, skipping SQLite finalization.")
         return False
 

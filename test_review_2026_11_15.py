@@ -166,3 +166,60 @@ def test_travel_time_grid_written_atomically(tmp_path):
     PyoctoConfig.create_travel_time_grid_file(None, vmodel, filename)
     assert os.path.exists(filename)
     assert os.listdir(tmp_path) == ["model"]
+
+
+def test_tolerance_search_does_not_mutate_shared_associator(monkeypatch):
+    """B6: the associator in cfg is shared between tasks and must stay untouched."""
+    from types import SimpleNamespace
+
+    import dbclust.dbclust2pyocto as d2p
+
+    shared = SimpleNamespace(pick_match_tolerance=1.5)
+    cfg = SimpleNamespace(
+        pyocto=SimpleNamespace(
+            current_model=SimpleNamespace(associator=shared),
+            default_model_name="m",
+            velocity_model=None,
+            delegate_dbclust=False,
+        ),
+        cluster=SimpleNamespace(min_picks_common=3),
+    )
+    myclust = SimpleNamespace(clusters=[], noise=[], preloc=None, n_clusters=0)
+    seen = []
+
+    def fake_dbclust2pyocto(myclust_copy, model_name, associator, *args, **kwargs):
+        # what another thread would read on the shared object during the search
+        seen.append((shared.pick_match_tolerance, associator.pick_match_tolerance))
+        if associator.pick_match_tolerance > 0.6:
+            raise d2p.MultipleEventIDsWithSameAgencyError("conflict")
+        return myclust_copy
+
+    monkeypatch.setattr(d2p, "dbclust2pyocto", fake_dbclust2pyocto)
+    result = d2p.adjust_associator_tolerance(
+        myclust, cfg, tolerance_steps={1: 1, 0.5: 0.1, 0: 0.05}, min_tolerance=0.1
+    )
+
+    assert result is not None
+    assert len(seen) > 1  # the search did lower the tolerance...
+    assert all(shared_value == 1.5 for shared_value, _ in seen)  # ...on its copy only
+    assert shared.pick_match_tolerance == 1.5
+
+
+def test_finalize_sqlite_rerun_of_merged_run(tmp_path):
+    """B10g: re-running an already merged run is not a failure."""
+    from types import SimpleNamespace
+
+    from dbclust.runner import finalize_sqlite
+
+    final_db = tmp_path / "final.db"
+    cfg = SimpleNamespace(
+        catalog=SimpleNamespace(
+            enable_sqlite=True,
+            temp_db_dir=str(tmp_path),
+            sqlite_db_path=str(tmp_path),
+            sqlite_db_fullpath=str(final_db),
+        )
+    )
+    assert finalize_sqlite(cfg, completed_job_indices={0}) is False  # nothing at all
+    final_db.write_bytes(b"")
+    assert finalize_sqlite(cfg, completed_job_indices={0}) is True
