@@ -1622,7 +1622,31 @@ class NllLoc(object):
                         )
                         if a not in mad_outliers_pass2
                     ]
-                outliers_pass2 = mad_outliers_pass2 + polygon_outliers_pass2
+                # Pass-2 geometry is the reliable one: automatic arrivals
+                # beyond a gap_dist_max_km gap are rejected for good. The
+                # pass-1 gap zeroing is only provisional (use_deactivated_arrivals
+                # lets pass 2 re-evaluate it), and the check above is skipped
+                # as soon as one manual pick is present. Unlike it, this one
+                # only targets automatic arrivals, so mixed events are covered.
+                gap_outliers_pass2 = []
+                if self.gap_dist_max_km is not None:
+                    already_flagged = mad_outliers_pass2 + polygon_outliers_pass2
+                    gap_outliers_pass2 = [
+                        a
+                        for a in get_arrival_with_distance_gap_greater_than(
+                            event2, self.gap_dist_max_km
+                        )
+                        if a not in already_flagged
+                    ]
+                    if gap_outliers_pass2:
+                        logger.info(
+                            f"Pass 2 gap_dist_max_km={self.gap_dist_max_km}km: "
+                            f"{len(gap_outliers_pass2)} automatic arrival(s) beyond the gap "
+                            f"flagged for removal before pass 3"
+                        )
+                outliers_pass2 = (
+                    mad_outliers_pass2 + polygon_outliers_pass2 + gap_outliers_pass2
+                )
                 if outliers_pass2:
                     outlier_pick_ids = {a.pick_id for a in outliers_pass2}
                     picks3 = [p for p in event2.picks if p.resource_id not in outlier_pick_ids]
