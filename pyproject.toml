@@ -78,6 +78,10 @@ obspy = { git = "https://github.com/marcopovitch/obspy-libmseed-threadsafe", rev
 [tool.uv.extra-build-dependencies]
 pyrocko = ["setuptools<71"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [tool.setuptools]
 packages = ["dbclust", "dbclust.executors", "dbclust.db", "Utils", "fdsnws"]
 

@@ -16,11 +16,12 @@ import shutil
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dbclust.config import DBClustConfig
 
-SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "samples")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SAMPLES_DIR = os.path.join(REPO_ROOT, "samples")
 
 CSV_HEADER = (
     "station_id,channel,phase_type,phase_time,phase_score,"
