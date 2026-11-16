@@ -1142,12 +1142,16 @@ class NllLoc(object):
             # SAVE_NLLOC_EXPECTATION alone only retypes the origin; it does not
             # enable the event-file write (iSaveNLLocEvent), so combine it with
             # SAVE_NLLOC_ALL (which NLLoc parses as a space-separated list).
-            "HYPYPOUT": (
+            "HYPOUT": (
                 "SAVE_NLLOC_ALL SAVE_NLLOC_EXPECTATION"
                 if "EXPECTATION" in self.hypout.upper()
                 else self.hypout
             ),
         }
+
+        # Legacy spelling of the placeholder, still used by template copies
+        # kept outside this repository.
+        tags["HYPYPOUT"] = tags["HYPOUT"]
 
         # Generate NLL configuration file
         try:

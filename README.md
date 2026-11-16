@@ -393,7 +393,7 @@ nll:
 
 (default: `SAVE_NLLOC_ALL`, i.e. the ML hypocenter; any other value is
 rejected when the config is loaded). The value is rendered into `LOCHYPOUT`
-of every NLL template via the `{{ HYPYPOUT }}` placeholder.
+of every NLL template via the `{{ HYPOUT }}` placeholder.
 
 In `SAVE_NLLOC_EXPECTATION` mode the maximum-likelihood hypocenter that the
 expectation replaced is kept, so that the ML/expectation offset
