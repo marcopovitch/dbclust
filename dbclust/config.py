@@ -870,6 +870,15 @@ class RelocationConfig:
     # Absolute threshold: remove picks with time_weight below this value (regardless of MAD)
     # Useful for extreme cases with many zero weights (e.g., 0.1)
     time_weight_outlier_absolute_threshold: Optional[float] = None
+    # --- Fixed depth ---
+    # Force the hypocenter depth (km, 0 = surface) on any template: LOCGRID is
+    # reduced to a thin depth interval at this depth and LOCSEARCH refined (see
+    # apply_fixed_depth_to_conf). null = free depth.
+    fixed_depth_km: Optional[float] = None
+    # multiplier of LOCSEARCH OCT nx, ny when the depth is fixed (16 16 -> 32 32)
+    fixed_depth_xy_refine: Optional[int] = 2
+    # thickness (km) of the depth interval [D, D + thickness] searched by NLLoc when the depth is fixed
+    fixed_depth_search_thickness_km: Optional[float] = 1.0
 
 
 @dataclass

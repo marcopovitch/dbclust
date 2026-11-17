@@ -206,6 +206,78 @@ class LocalizationError(Exception):
         self.txt = txt
 
 
+# Fixed-depth constraint (see apply_fixed_depth_to_conf): the NLLoc depth grid is
+# reduced to 2 nodes spaced by the search thickness, i.e. NLLoc searches z in
+# [D, D + thickness] km and the origin depth is then overwritten with D. numz=1
+# would give dz=0 and degenerate the octree. A very thin interval (0.02 km)
+# degrades the epicenter (alpes blast: RMS 0.29 -> 0.99, 11 km shift); the
+# historical surface templates used 0.2 km.
+FIXED_DEPTH_SEARCH_THICKNESS_KM = 1.0  # default search thickness (km): thicker = fewer boundary-31 rejections, epicenter closer to the free solution
+FIXED_DEPTH_GRID_NUMZ = 2
+
+
+def apply_fixed_depth_to_conf(
+    conf_text: str,
+    depth_km: float,
+    xy_refine: int = 2,
+    search_thickness_km: float = FIXED_DEPTH_SEARCH_THICKNESS_KM,
+) -> str:
+    """Constrain a rendered NLLoc control file to a fixed depth.
+
+    Works on any template, so no dedicated "fixed depth" template is needed:
+
+    - ``LOCGRID nx ny nz x0 y0 z0 dx dy dz ...``: nz -> 2, z0 -> ``depth_km``,
+      dz -> ``search_thickness_km`` (thickness of the searched depth interval).
+    - ``LOCSEARCH OCT nx ny nz ...``: nz -> 2 (matches the 2-node depth grid)
+      and nx, ny multiplied by ``xy_refine`` (the 16 16 5 -> 32 32 2 change of
+      the historical surface templates). Other LOCSEARCH types are left alone.
+
+    Raises:
+        LocalizationError: no (or malformed) LOCGRID line.
+    """
+    n_grid = 0
+    out = []
+    for line in conf_text.splitlines(keepends=True):
+        stripped = line.strip()
+        tokens = stripped.split()
+        if not tokens or stripped.startswith("#"):
+            out.append(line)
+            continue
+        eol = line[len(line.rstrip("\r\n")):]
+        if tokens[0] == "LOCGRID":
+            if len(tokens) < 10:
+                raise LocalizationError(f"malformed LOCGRID line: {stripped!r}")
+            tokens[3] = str(FIXED_DEPTH_GRID_NUMZ)
+            tokens[6] = f"{depth_km:.4f}"
+            tokens[9] = f"{search_thickness_km:.4f}"
+            out.append(" ".join(tokens) + eol)
+            n_grid += 1
+        elif tokens[0] == "LOCSEARCH":
+            if len(tokens) >= 5 and tokens[1].upper() == "OCT":
+                try:
+                    nx, ny = int(tokens[2]), int(tokens[3])
+                except ValueError:
+                    raise LocalizationError(
+                        f"malformed LOCSEARCH line: {stripped!r}"
+                    )
+                tokens[2] = str(nx * xy_refine)
+                tokens[3] = str(ny * xy_refine)
+                tokens[4] = str(FIXED_DEPTH_GRID_NUMZ)
+                out.append(" ".join(tokens) + eol)
+            else:
+                logger.warning(
+                    f"fixed depth: LOCSEARCH is not of type OCT, left unchanged: {stripped!r}"
+                )
+                out.append(line)
+        else:
+            out.append(line)
+    if n_grid != 1:
+        raise LocalizationError(
+            f"fixed depth: expected exactly one LOCGRID line in template, found {n_grid}"
+        )
+    return "".join(out)
+
+
 def sort_by_phase(arrival: Arrival) -> int:
     """
     Sorts an Arrival object by its phase.
@@ -359,6 +431,9 @@ class NllLoc(object):
         reserve_ps_count_weight: float = 0.5,  # weight of a reserve-completed P+S station in ps_with_both
         reserve_vp: float = 6.0,  # homogeneous P velocity (km/s) for S-time prediction
         reserve_vs: float = 3.5,  # homogeneous S velocity (km/s) for S-time prediction
+        fixed_depth_km: Optional[float] = None,  # force hypocenter depth (km); None = free depth
+        fixed_depth_xy_refine: int = 2,  # LOCSEARCH OCT nx,ny multiplier when depth is fixed
+        fixed_depth_search_thickness_km: float = FIXED_DEPTH_SEARCH_THICKNESS_KM,  # thickness of the searched depth interval
     ):
         # define locator
         self.nll_bin = nll_bin
@@ -409,6 +484,9 @@ class NllLoc(object):
         self.enable_residual_threshold_with_pick_zone = enable_residual_threshold_with_pick_zone
         self.pass2_degradation_factor = pass2_degradation_factor
         self.pass2_fallback = pass2_fallback
+        self.fixed_depth_km = fixed_depth_km
+        self.fixed_depth_xy_refine = fixed_depth_xy_refine
+        self.fixed_depth_search_thickness_km = fixed_depth_search_thickness_km
         self.enable_time_weight_outlier_filter = enable_time_weight_outlier_filter
         self.time_weight_outlier_mad_factor = time_weight_outlier_mad_factor
         self.time_weight_outlier_min_picks = time_weight_outlier_min_picks
@@ -1158,6 +1236,18 @@ class NllLoc(object):
         # Generate NLL configuration file
         try:
             self.replace(nll_template, conf_file, tags)
+            if self.fixed_depth_km is not None:
+                with open(conf_file, encoding="utf-8") as fh:
+                    conf_text = fh.read()
+                with open(conf_file, "w", encoding="utf-8") as fh:
+                    fh.write(
+                        apply_fixed_depth_to_conf(
+                            conf_text,
+                            self.fixed_depth_km,
+                            self.fixed_depth_xy_refine,
+                            self.fixed_depth_search_thickness_km,
+                        )
+                    )
         except Exception:
             logger.error(
                 f"Failed to generate NLL config: template={nll_template}, conf={conf_file}, tags={tags}"
@@ -1186,6 +1276,7 @@ class NllLoc(object):
             return _abort_localization(Catalog())
 
         # Initialize variables that may be set conditionally in the loop
+        fixed_depth_boundary31 = False
         scatter_volume = None
         expect_lat = None
         expect_lon = None
@@ -1203,6 +1294,22 @@ class NllLoc(object):
                 why = (
                     " ".join(line.split()[3:]).replace('"', "").replace("WARNING: ", "")
                 )
+                if self.fixed_depth_km is not None and "boundary 31" in why:
+                    # With a fixed depth LOCGRID is a thin depth interval, and NLLoc rejects
+                    # a maximum on the bottom of that interval (boundary 31) when the
+                    # picks prefer a deeper source. The depth is forced anyway, so
+                    # keep the location (last.hyp is written); the raw NLLoc depth
+                    # is stored in the fixed_depth comment of the origin. The x/y
+                    # are conditioned on the search interval, hence a possible epicentral
+                    # shift w.r.t. the free solution.
+                    logger.info(
+                        f"fixed depth {self.fixed_depth_km} km: NLLoc flagged the "
+                        "maximum on the bottom of the depth search interval (boundary 31): "
+                        "the picks prefer a deeper source than the search interval. Location "
+                        "kept, depth forced."
+                    )
+                    fixed_depth_boundary31 = True
+                    continue  # keep scanning: later lines may still hold fatal errors
                 logger.warning(f"Localization was ABORTED|IGNORED|REJECTED: {why}")
                 if self.nll_verbose:
                     print(result.stdout)
@@ -1338,6 +1445,29 @@ class NllLoc(object):
                     f"Found invalid {field} uncertainty value ({val!r}). Ignoring event !"
                 )
                 return _abort_localization(Catalog())
+
+        if self.fixed_depth_km is not None:
+            # NLLoc only searched a thin depth interval: its own depth (nll_depth_km) is
+            # an interval node, not the forced depth. Keep it in the comment, then
+            # write the exact depth.
+            nll_depth_km = o.depth / 1000.0 if o.depth is not None else None
+            o.depth = self.fixed_depth_km * 1000.0
+            o.depth_type = "operator assigned"
+            o.depth_errors.uncertainty = 0.0
+            o.comments.append(
+                Comment(
+                    text=json.dumps(
+                        {
+                            "fixed_depth_km": self.fixed_depth_km,
+                            "search_thickness_km": self.fixed_depth_search_thickness_km,
+                            "nll_depth_km": (
+                                None if nll_depth_km is None else round(nll_depth_km, 4)
+                            ),
+                            "boundary31_accepted": fixed_depth_boundary31,
+                        }
+                    )
+                )
+            )
 
         if not self.quakeml_settings:
             o.creation_info.agency_id = "MyAgencyId"

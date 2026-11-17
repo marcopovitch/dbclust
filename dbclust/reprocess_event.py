@@ -122,6 +122,13 @@ def process_file(
                 min_score_threshold_pick_zone=cfg.relocation.min_score_threshold_pick_zone,
                 enable_relabel_pick_zone=args.relabel,
                 enable_cleanup_pick_zone=True,
+                fixed_depth_km=(
+                    args.fixed_depth
+                    if getattr(args, "fixed_depth", None) is not None
+                    else cfg.relocation.fixed_depth_km
+                ),
+                fixed_depth_xy_refine=cfg.relocation.fixed_depth_xy_refine or 2,
+                fixed_depth_search_thickness_km=cfg.relocation.fixed_depth_search_thickness_km or 1.0,
             )
 
             try:
@@ -393,6 +400,15 @@ def parse_arguments() -> argparse.Namespace:
         dest="single_pass",
         help="NonLinLoc single pass (disables double pass)",
         action="store_true",
+    )
+    reloc_group.add_argument(
+        "--fixed-depth",
+        dest="fixed_depth",
+        metavar="KM",
+        type=float,
+        default=None,
+        help="Force the hypocenter depth (km, e.g. 0 for surface) with any "
+        "template (overrides relocation.fixed_depth_km of the config)",
     )
     reloc_group.add_argument(
         "-z",
